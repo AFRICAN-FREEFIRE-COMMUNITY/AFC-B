@@ -385,6 +385,10 @@ EVENT_FIELDS = [
     Field("is_waitlist_enabled", read=PUBLIC, write=ORGANIZER, clean=_clean_bool),
     Field("waitlist_mode", read=PUBLIC, write=ORGANIZER, clean=_clean_waitlist_mode),
 
+    # ── open roster (owner 2026-09-11): any AFC player may be fielded; never counts for
+    # rankings or tiers; team-only results. Side effects on save: open_roster.sync_after_save.
+    Field("open_roster", read=PUBLIC, write=ORGANIZER, clean=_clean_bool),
+
     # ── registration requirements ──
     Field("require_team_logo", read=PUBLIC, write=ORGANIZER, clean=_clean_bool),
     Field("require_esport_images", read=PUBLIC, write=ORGANIZER, clean=_clean_bool),

@@ -166,6 +166,12 @@ def write_team_result_row(*, match, tournament_team_id, row, ctx, frozen_roles):
     total_kills = sum(p["kills"] for p in played_players)
     total_damage = sum(p["damage"] for p in played_players)
     total_assists = sum(p["assists"] for p in played_players)
+    # TEAM-ONLY ENTRY (open-roster events, owner 2026-09-11): the form posts a team's kills with
+    # no player list at all. The team-level value is used only when no player entry was posted,
+    # so a row that names players can never be double counted. Ignored for a team that did not
+    # play, exactly like the per-player kills above.
+    if not players and team_played:
+        total_kills = int(row.get("kills") or 0)
 
     points = scoring_lib.compute_team_points(
         placement_points=ctx["placement_points"],

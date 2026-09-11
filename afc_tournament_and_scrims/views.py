@@ -26,6 +26,9 @@ from afc_tournament_and_scrims import scoring as scoring_lib
 # The ONE place a team's per-map result becomes stats rows, shared with the team
 # submission approval endpoint so both produce identical rows. See result_writes.py.
 from afc_tournament_and_scrims import result_writes
+# Open-roster events (owner 2026-09-11): the save-time side effect and the one-team-per-player
+# check every roster door shares. See afc_tournament_and_scrims/open_roster.py.
+from afc_tournament_and_scrims import open_roster
 # Role history (owner 2026-08-04): resolves the in-game role FROZEN on a player's event roster row so
 # every result path can stamp TournamentPlayerMatchStats.role_at_match. That stamp is what lets the
 # per-role ladders (afc_rankings/player_roles.py) report the role a player held WHEN the points were
@@ -2313,6 +2316,9 @@ def create_event(request):
             # auto-classify from the Tournament Tiers rules (owner 2026-06-30). Runs after create so
             # the classifier sees the event's final prize/teams/format.
             apply_event_tier(event, user, request.data)
+            # An open-roster event is switched out of the rankings the moment it exists
+            # (owner 2026-09-11); the admin cannot switch it back on while the roster is open.
+            open_roster.sync_after_save(event, user)
 
             # change sponsor_usernames to a list
             sponsor_usernames = _as_list(sponsor_usernames)
@@ -3754,6 +3760,8 @@ def edit_event(request):
         # a head/super admin's explicit pick overrides + pins it, otherwise it is re-classified
         # from the Tournament Tiers rules (owner 2026-06-30). Skipped-effect when pinned.
         apply_event_tier(event, user, request.data)
+        # Open roster (owner 2026-09-11): keeps the counting control switched off while on.
+        open_roster.sync_after_save(event, user)
 
         # new_data = {
         #     "event_name": event.event_name,
@@ -7409,7 +7417,11 @@ def register_for_event(request):
             TeamMembers.objects.filter(team=team).values_list("member_id", "in_game_role")
         )
         team_member_ids = set(club_roles_by_member_id)
-        if not set(roster_member_ids).issubset(team_member_ids):
+        # OPEN ROSTER (owner 2026-09-11): any AFC player may be fielded, so the club-membership
+        # rule is the one gate this event does not apply. Everything after it still does: staff
+        # exclusion (only ever matches club staff), per-player requirements, bans, the
+        # one-team-per-event conflict check, and the blacklist.
+        if not event.open_roster and not set(roster_member_ids).issubset(team_member_ids):
             return Response({"message": "One or more roster players are not members of this team."}, status=400)
 
         # ── EXCLUDE STAFF FROM THE EVENT ROSTER (roster-rules, 2026-06-15) ──
@@ -9260,10 +9272,11 @@ def validate_team_roster_discord(request):
         return Response({"message": f"Roster must contain {min_size} to {max_size} players."}, status=400)
 
     # -------- MEMBERSHIP CHECK --------
+    # Skipped for an open-roster event (owner 2026-09-11): outsiders are allowed there.
     team_member_ids = set(
         TeamMembers.objects.filter(team=team).values_list("member_id", flat=True)
     )
-    not_in_team = [uid for uid in roster_member_ids if uid not in team_member_ids]
+    not_in_team = [] if event.open_roster else [uid for uid in roster_member_ids if uid not in team_member_ids]
     if not_in_team:
         return Response({
             "message": "One or more roster players are not members of this team.",
@@ -23795,8 +23808,17 @@ def edit_roster(request):
     )
     team_member_ids = set(club_roles_by_member_id)
 
-    if not set(roster_member_ids).issubset(team_member_ids):
+    # OPEN ROSTER (owner 2026-09-11): the club-membership rule is skipped; see register_for_event.
+    if not event.open_roster and not set(roster_member_ids).issubset(team_member_ids):
         return Response({"message": "Roster players must belong to team."}, status=400)
+
+    # One team per player per event, on this door too. register_for_event has always refused a
+    # player already on another live roster of the same event; edit_roster never did, because a
+    # club member could not be on two clubs. An open-roster outsider can, so the same 409 applies
+    # here (and it is right for closed events as well).
+    conflict = open_roster.roster_conflict(event, roster_member_ids, exclude_tournament_team=tt)
+    if conflict:
+        return Response(conflict, status=409)
 
     # ---------------- LOAD USERS ----------------
     users = User.objects.filter(user_id__in=roster_member_ids)
@@ -24070,20 +24092,26 @@ def add_player_to_event_roster(request):
         return Response({"message": "User not found."}, status=404)
 
     # Same-team membership: the player must belong to THIS team (mirrors edit_roster's subset
-    # check, scoped to the single added user).
+    # check, scoped to the single added user). An OPEN-ROSTER event (owner 2026-09-11) takes
+    # any AFC player; `membership` is then None and the frozen role below is left None.
     membership = TeamMembers.objects.filter(team=team, member_id=add_user_id).first()
-    if not membership:
+    if not membership and not event.open_roster:
         return Response({"message": "This player is not a member of the team."}, status=400)
 
     # Exclude STAFF_ROLES: coach / manager / analyst are support-only and never rostered
     # (same rule as register_for_event; STAFF_ROLES imported from afc_team.views).
-    if membership.management_role in STAFF_ROLES:
+    if membership and membership.management_role in STAFF_ROLES:
         return Response({
             "message": (
                 "Staff (coach, manager, or analyst) cannot be added to an event roster. "
                 "Only players can be rostered."
             )
         }, status=400)
+
+    # One team per player per event (see edit_roster for why this door checks it too).
+    conflict = open_roster.roster_conflict(event, [add_user_id], exclude_tournament_team=tt)
+    if conflict:
+        return Response(conflict, status=409)
 
     # Already on this event roster? unique_together (tournament_team, user) would raise, so we
     # answer with a clean 409 instead of a 500.
@@ -24120,8 +24148,8 @@ def add_player_to_event_roster(request):
             status="pending" if event.is_sponsored else "active",
             # Freeze the club role onto the event roster. `membership` is the TeamMembers row
             # already fetched for the staff check above, so no extra query. Same anchor as
-            # register_for_event; see roster_roles.py.
-            in_game_role=membership.in_game_role,
+            # register_for_event; see roster_roles.py. None for an open-roster outsider.
+            in_game_role=membership.in_game_role if membership else None,
         )
         # Reopens the team for sponsor re-review if the add left any member non-active;
         # otherwise an idempotent refresh (see check_and_activate_team docstring).

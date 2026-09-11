@@ -381,6 +381,23 @@ class Event(models.Model):
     # register_for_event, and surfaced on the public event page so players know before trying.
     require_team_logo = models.BooleanField(default=False)
     require_esport_images = models.BooleanField(default=False)
+    # ── OPEN ROSTER (owner 2026-09-11) ───────────────────────────────────────────────────────
+    #   open_roster -> a team may field ANY AFC player for this event, not only its own club
+    #                  members. Consequences, all enforced from this one column:
+    #     - the "roster players must belong to team" gates in register_for_event, edit_roster,
+    #       add_player_to_event_roster and validate_team_roster_discord are skipped;
+    #     - a player still fits in ONE team per event (the existing conflict check, now on every
+    #       roster door), because an outsider could otherwise be fielded twice in one lobby;
+    #     - the event never locks club rosters or identities (afc_team._member_in_active_event_roster,
+    #       afc_auth._has_active_event_registration skip it), since nobody had to change club;
+    #     - the event counts for NOTHING in the rankings or tiers (afc_rankings.aggregation reads
+    #       the column directly and the counting control is forced off, see
+    #       afc_tournament_and_scrims/open_roster.py). Player profile stats still count
+    #       (owner 19:05: "only ranking and tiers");
+    #     - results may be entered per TEAM only (placement + kills), no player rows
+    #       (result_writes.write_team_result_row accepts a team-level kills value).
+    #   Declared once in event_contract.py (read PUBLIC, write ORGANIZER) like every other field.
+    open_roster = models.BooleanField(default=False)
     # ── Extra registration requirements (F3, owner 2026-06-19) ──────────────────────────────
     #   require_player_uid           -> every registering player (solo user, or each roster member
     #                                   of a team registration) must have their Free Fire UID set
