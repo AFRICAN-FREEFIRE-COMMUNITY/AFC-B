@@ -1,0 +1,32 @@
+Cloudflare DNS records for africanfreefirecommunity.com, captured 2026-09-11 13:26 UTC BEFORE any
+change (runbook section 3 item 4). Account zone id 6037d4a601bedfbd6490c771db3fa703, plan free,
+DNS Setup: Full, nameservers aragorn.ns.cloudflare.com + macy.ns.cloudflare.com.
+Every record is DNS only (grey). Nothing is proxied. Screenshot alongside this file.
+
+THE FOUR THAT CHANGE AT CUTOVER (all -> NEW_IP, stay DNS only):
+  A     africanfreefirecommunity.com          34.230.23.212   DNS only   Auto   (frontend box)
+  A     www.africanfreefirecommunity.com      34.230.23.212   DNS only   Auto   (frontend box)
+  A     api.africanfreefirecommunity.com      3.80.44.105     DNS only   Auto   (backend box)
+  A     www.api.africanfreefirecommunity.com  3.80.44.105     DNS only   Auto   (backend box)
+
+DO NOT TOUCH (Microsoft 365 mail + Teams + Intune, plus a third-party sender):
+  MX    africanfreefirecommunity.com          africanfreefirecommunity-com.mail.protection.outlook.com   priority 0   1 hr
+  CNAME autodiscover                          autodiscover.outlook.com                                   1 hr
+  CNAME enterpriseenrollment                  enterpriseenrollment-s.manage.microsoft.com                1 hr
+  CNAME enterpriseregistration                enterpriseregistration.windows.net                         1 hr
+  CNAME lyncdiscover                          webdir.online.lync.com                                     1 hr
+  CNAME sip                                   sipdir.online.lync.com                                     1 hr
+  CNAME selector1._domainkey                  selector1-africanfreefirecommunity-com._domainkey.africanfreefirecommunity.p-v1.dkim.mail.microsoft   1 hr
+  CNAME selector2._domainkey                  selector2-africanfreefirecommunity-com._domainkey.africanfreefirecommunity.p-v1.dkim.mail.microsoft   1 hr
+  CNAME sender._domainkey                     dkim.sendersrv.com                                         1 hr
+  SRV   _sipfederationtls._tcp                1 5061 sipfed.online.lync.com   priority 100                1 hr
+  SRV   _sip._tls                             1 443 sipdir.online.lync.com    priority 100                1 hr
+  TXT   africanfreefirecommunity.com          "v=spf1 include:_spf.google.com include:spf.protection.outlook.com include:sendersrv.com ~all"   1 hr
+  TXT   africanfreefirecommunity.com          "MS=ms66730650"                                            1 hr
+
+Page header says 22 of 200 records used; 17 rows were visible in the list export above. The
+five not listed did not render in the page text (likely below the fold or grouped); the rule
+stands regardless: only the four A records move.
+
+Rollback: set the four A records back to the IPs above. TTL Auto = 300 s, so the world follows
+within five minutes either way.
