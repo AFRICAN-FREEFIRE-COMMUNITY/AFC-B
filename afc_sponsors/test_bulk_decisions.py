@@ -18,6 +18,8 @@ COVERS
     - an unknown id: reported as 404 in its own result, the rest applied
     - the cap: more than BULK_DECISION_MAX ids is refused up front
     - undo is not an accepted bulk action
+    - both queues list pending rows FIRST even after decisions (the old order_by on the raw
+      status string put "approved" above "pending", alphabetically)
 
 Run: python manage.py test afc_sponsors.test_bulk_decisions
 """
@@ -176,3 +178,26 @@ class BulkDecisionTests(TestCase):
         )
         self.assertEqual(resp.status_code, 200, resp.content)
         self.assertEqual(resp.json()["submission"]["approval_status"], "approved")
+
+    # ---- ordering: pending sits at the top, in both queues --------------------------------
+
+    def test_decided_rows_do_not_float_above_pending(self):
+        """Approve two of Brand A's three rows, then read both queues: the pending row must come
+        first, then the rejected ones, then the approved ones. Before 2026-09-11 the raw status
+        string was the sort key and approved rows led the list."""
+        self._bulk(self.admin_tok, [self.a_rows[0].id, self.a_rows[1].id])
+        self._bulk(self.admin_tok, [self.b_row.id], action="reject", reason="No")
+
+        admin_q = self.client.get("/sponsors/queue/engagement-submissions/", **bearer(self.admin_tok))
+        self.assertEqual(admin_q.status_code, 200, admin_q.content)
+        statuses = [r["approval_status"] for r in admin_q.json()["results"]]
+        self.assertEqual(statuses, ["pending", "rejected", "approved", "approved"])
+
+        portal_q = self.client.get(
+            f"/sponsors/{self.brand_a.id}/events/{self.event.event_id}/engagement-submissions/",
+            **bearer(self.brand_a_tok),
+        )
+        self.assertEqual(portal_q.status_code, 200, portal_q.content)
+        statuses = [r["approval_status"] for r in portal_q.json()["results"]]
+        self.assertEqual(statuses, ["pending", "approved", "approved"])
+

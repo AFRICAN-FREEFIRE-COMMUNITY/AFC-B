@@ -39,6 +39,7 @@ ENDPOINTS (mounted at sponsors/ via afc/urls.py)
 """
 import csv
 
+from django.db.models import Case, IntegerField, Value, When
 from django.http import HttpResponse
 from django.utils import timezone
 
@@ -49,6 +50,20 @@ from afc_auth.models import Notifications
 from afc_auth.views import send_email, _email_shell
 
 from .models import Sponsor, EventSponsorship, SponsorEngagementSubmission
+
+
+# Work first. Both queues promise "pending sits at the top"; until 2026-09-11 they ordered by the
+# raw status string, and alphabetically "approved" comes BEFORE "pending", so the moment anything
+# was decided the decided rows floated above the work. Found while removing the post-decision
+# refetch (owner: "the pages shouldn't reload"): the refetch had been re-sorting the page and the
+# row just approved jumped to the top, which was half of what felt like a reload.
+QUEUE_STATUS_RANK = Case(
+    When(approval_status="pending", then=Value(0)),
+    When(approval_status="rejected", then=Value(1)),
+    When(approval_status="approved", then=Value(2)),
+    default=Value(3),  # not_required
+    output_field=IntegerField(),
+)
 from .views import (
     _auth_user,
     _is_sponsor_admin,
@@ -421,7 +436,8 @@ def sponsorship_submissions(request, sponsor_id, event_id):
     qs = (
         SponsorEngagementSubmission.objects.filter(sponsorship=sp)
         .select_related("user")
-        .order_by("approval_status", "-updated_at")  # pending sorts first (alphabetical luck)
+        .annotate(_rank=QUEUE_STATUS_RANK)
+        .order_by("_rank", "-updated_at")  # pending first, then most recently touched
     )
     engagement_param = request.GET.get("engagement")
     if engagement_param not in (None, ""):
@@ -527,7 +543,8 @@ def admin_submission_queue(request):
         .filter(sponsorship_id__in=list(by_id))
         .select_related("user")
         # Pending first so the work sits at the top, then most recently touched.
-        .order_by("approval_status", "-updated_at")
+        .annotate(_rank=QUEUE_STATUS_RANK)
+        .order_by("_rank", "-updated_at")
     )
     status_param = request.GET.get("status")
     if status_param:
