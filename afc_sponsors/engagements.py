@@ -644,40 +644,15 @@ def _notify_rejection(submission, reason, final=False):
     threading.Thread(target=_send, daemon=True).start()
 
 
-@api_view(["POST"])
-def decide_submission(request, submission_id):
-    """POST sponsors/submissions/<submission_id>/decide/
-    body: {action: approve|reject|reject_final|undo, reason?}
+def _apply_decision(user, sub, action, reason):
+    """Apply ONE sponsor decision to ONE submission. Returns (status_code, body).
 
-    The sponsor's decision surface (spec section 9):
-      approve       submission approved; when ALL of the player's required submissions are
-                    approved the registration activates (_sync_registration_state).
-      reject        REQUIRES a reason. Player notified (email + in-app) with the reason + a
-                    re-input prompt; resubmission returns the row to pending.
-      reject_final  REQUIRES a reason. Rejects AND releases the registration slot (solo: the
-                    competitor row leaves the active count; team: the member row is marked
-                    rejected and the team drops back to pending review).
-      undo          one-step revert of the last decision (prev_status snapshot), audit-logged
-                    like every admin action via the global AuditLogMiddleware.
-    Auth: an ACTIVE member of the sponsorship's sponsor, sponsor-admin, or the organizer who may
-    edit the event (owner 2026-08-14, see views.can_act_on_sponsorship)."""
-    user, err = _auth_user(request)
-    if err:
-        return err
-    try:
-        sub = SponsorEngagementSubmission.objects.select_related(
-            # sponsorship__event too: the organizer gate below reads it (owner 2026-08-14).
-            "sponsorship__sponsor", "sponsorship__event", "event", "user",
-        ).get(id=submission_id)
-    except SponsorEngagementSubmission.DoesNotExist:
-        return Response({"message": "Submission not found."}, status=404)
-    # Sponsor-admin, the sponsor's own members, or the organizer of THIS event (owner
-    # 2026-08-14): a queue nobody can clear is worse than one cleared by the event's organizer.
-    if not can_act_on_sponsorship(user, sub.sponsorship):
-        return Response({"message": "You do not have access to this sponsor."}, status=403)
-
-    action = request.data.get("action")
-    reason = (request.data.get("reason") or "").strip()
+    Pulled out of decide_submission on 2026-09-11 so the bulk endpoint below applies exactly
+    the same rules per row: the same four actions, the same reason requirement, the same
+    registration re-sync, the same notifications. Nothing here checks permission; the callers do,
+    because the bulk caller has to report a refused row without abandoning the rest.
+    """
+    reason = (reason or "").strip()
 
     if action == "approve":
         sub.prev_status, sub.prev_reason = sub.approval_status, sub.reason
@@ -688,7 +663,7 @@ def decide_submission(request, submission_id):
 
     elif action in ("reject", "reject_final"):
         if not reason:
-            return Response({"message": "A rejection reason is required."}, status=400)
+            return 400, {"message": "A rejection reason is required."}
         sub.prev_status, sub.prev_reason = sub.approval_status, sub.reason
         sub.approval_status, sub.reason = "rejected", reason
         sub.decided_by, sub.decided_at = user, timezone.now()
@@ -719,7 +694,7 @@ def decide_submission(request, submission_id):
 
     elif action == "undo":
         if not sub.prev_status:
-            return Response({"message": "Nothing to undo."}, status=400)
+            return 400, {"message": "Nothing to undo."}
         sub.approval_status, sub.reason = sub.prev_status, sub.prev_reason
         sub.prev_status, sub.prev_reason = "", ""
         sub.decided_by, sub.decided_at = user, timezone.now()
@@ -727,12 +702,118 @@ def decide_submission(request, submission_id):
         _sync_registration_state(sub)
 
     else:
-        return Response({"message": "Unknown action."}, status=400)
+        return 400, {"message": "Unknown action."}
 
-    return Response({"message": "Done.", "submission": {
+    return 200, {"message": "Done.", "submission": {
         "id": sub.id, "approval_status": sub.approval_status,
         "reason": sub.reason, "can_undo": bool(sub.prev_status),
-    }})
+    }}
+
+
+@api_view(["POST"])
+def decide_submission(request, submission_id):
+    """POST sponsors/submissions/<submission_id>/decide/
+    body: {action: approve|reject|reject_final|undo, reason?}
+
+    The sponsor's decision surface (spec section 9):
+      approve       submission approved; when ALL of the player's required submissions are
+                    approved the registration activates (_sync_registration_state).
+      reject        REQUIRES a reason. Player notified (email + in-app) with the reason + a
+                    re-input prompt; resubmission returns the row to pending.
+      reject_final  REQUIRES a reason. Rejects AND releases the registration slot (solo: the
+                    competitor row leaves the active count; team: the member row is marked
+                    rejected and the team drops back to pending review).
+      undo          one-step revert of the last decision (prev_status snapshot), audit-logged
+                    like every admin action via the global AuditLogMiddleware.
+    Auth: an ACTIVE member of the sponsorship's sponsor, sponsor-admin, or the organizer who may
+    edit the event (owner 2026-08-14, see views.can_act_on_sponsorship).
+    The rules live in _apply_decision, shared with decide_submissions (bulk)."""
+    user, err = _auth_user(request)
+    if err:
+        return err
+    try:
+        sub = SponsorEngagementSubmission.objects.select_related(
+            # sponsorship__event too: the organizer gate below reads it (owner 2026-08-14).
+            "sponsorship__sponsor", "sponsorship__event", "event", "user",
+        ).get(id=submission_id)
+    except SponsorEngagementSubmission.DoesNotExist:
+        return Response({"message": "Submission not found."}, status=404)
+    # Sponsor-admin, the sponsor's own members, or the organizer of THIS event (owner
+    # 2026-08-14): a queue nobody can clear is worse than one cleared by the event's organizer.
+    if not can_act_on_sponsorship(user, sub.sponsorship):
+        return Response({"message": "You do not have access to this sponsor."}, status=403)
+
+    code, body = _apply_decision(user, sub, request.data.get("action"), request.data.get("reason"))
+    return Response(body, status=code)
+
+
+# A batch is capped so one request cannot enqueue thousands of emails; the queue pages at 50.
+BULK_DECISION_MAX = 200
+
+
+@api_view(["POST"])
+def decide_submissions(request):
+    """POST sponsors/submissions/decide/
+    body: {ids: [int, ...], action: approve|reject|reject_final, reason?}
+
+    Bulk form of decide_submission (owner 2026-09-11: "there should be a way to bulk approve
+    or reject"). Same rules per row (_apply_decision), same permission gate per row
+    (can_act_on_sponsorship), same notifications. One request, up to BULK_DECISION_MAX ids.
+
+    Each id is decided independently and reported independently, so a batch that mixes rows the
+    caller may decide with rows they may not applies the allowed ones and refuses the others,
+    rather than failing the whole batch on the first refusal. Response:
+
+        200 {"results": [{"id", "ok", "status", "submission"?|"message"?}, ...],
+             "applied": n, "refused": m}
+
+    The frontend (ApprovalQueuePanel / EngagementSubmissionsPanel) patches its rows in place
+    from "submission" and shows one toast with the counts, instead of refetching the page.
+    `undo` is deliberately not bulk: it is a one-step revert per row and a mass undo would
+    be a surprise button."""
+    user, err = _auth_user(request)
+    if err:
+        return err
+    ids = request.data.get("ids")
+    action = request.data.get("action")
+    reason = request.data.get("reason")
+    if not isinstance(ids, list) or not ids:
+        return Response({"message": "ids must be a non-empty list."}, status=400)
+    if len(ids) > BULK_DECISION_MAX:
+        return Response({"message": f"At most {BULK_DECISION_MAX} submissions per request."}, status=400)
+    if action not in ("approve", "reject", "reject_final"):
+        return Response({"message": "action must be approve, reject or reject_final."}, status=400)
+    try:
+        wanted = [int(i) for i in ids]
+    except (TypeError, ValueError):
+        return Response({"message": "ids must be integers."}, status=400)
+    if action in ("reject", "reject_final") and not (reason or "").strip():
+        return Response({"message": "A rejection reason is required."}, status=400)
+
+    subs = {
+        s.id: s for s in SponsorEngagementSubmission.objects.select_related(
+            "sponsorship__sponsor", "sponsorship__event", "event", "user",
+        ).filter(id__in=wanted)
+    }
+    results, applied, refused = [], 0, 0
+    for sid in wanted:
+        sub = subs.get(sid)
+        if sub is None:
+            results.append({"id": sid, "ok": False, "status": 404, "message": "Submission not found."})
+            refused += 1
+            continue
+        if not can_act_on_sponsorship(user, sub.sponsorship):
+            results.append({"id": sid, "ok": False, "status": 403, "message": "You do not have access to this sponsor."})
+            refused += 1
+            continue
+        code, body = _apply_decision(user, sub, action, reason)
+        if code == 200:
+            results.append({"id": sid, "ok": True, "status": 200, "submission": body["submission"]})
+            applied += 1
+        else:
+            results.append({"id": sid, "ok": False, "status": code, "message": body.get("message", "")})
+            refused += 1
+    return Response({"results": results, "applied": applied, "refused": refused})
 
 
 @api_view(["POST"])
