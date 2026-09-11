@@ -1,5 +1,5 @@
 """
-AFC Bot — Document Upload Tool
+AFC Bot - Document Upload Tool
 ================================
 Run this script to add new documents (txt or PDF) to the bot's knowledge base.
 The bot will automatically pick up the new content the next time it replies.
@@ -20,7 +20,7 @@ try:
 except Exception:
     pass
 
-# Anchor to the script's folder (same as bot.py) — a cwd-relative "knowledge"
+# Anchor to the script's folder (same as bot.py) - a cwd-relative "knowledge"
 # would silently drop docs into <cwd>/knowledge where the bot never reads them.
 KNOWLEDGE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "knowledge")
 
