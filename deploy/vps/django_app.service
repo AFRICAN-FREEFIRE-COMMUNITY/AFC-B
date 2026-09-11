@@ -1,0 +1,39 @@
+[Unit]
+# AFC Django API under gunicorn. The unit the four celery-*.service files in
+# backend/deploy/systemd/ were modelled on; written down here (2026-09-11) because the AWS copy
+# lived only in /etc/systemd/system and was never in a repo. If aws-facts.md shows the AWS unit
+# differs in a way that matters (worker count, timeout, extra flags), that version wins; this is
+# the reconstruction.
+#
+# NO EnvironmentFile: afc/settings.py loads .env itself, and .env holds a multi-line RSA key that
+# systemd's parser would reject (see the note in celery-worker.service).
+Description=AFC Django API (gunicorn)
+After=network.target mysql.service redis-server.service
+
+[Service]
+Type=simple
+User=ubuntu
+Group=www-data
+WorkingDirectory=/home/ubuntu/AFC-B
+# 5 workers on 4 cores (2n+1 rule). --timeout 120 because OCR screenshot uploads and leaderboard
+# renders legitimately exceed gunicorn's 30 s default; a killed worker mid-upload is a lost result.
+# Bound to loopback only: nginx is the only thing that should reach it.
+ExecStart=/home/ubuntu/AFC-B/venv/bin/gunicorn afc.wsgi:application \
+    --workers 5 \
+    --bind 127.0.0.1:8000 \
+    --timeout 120 \
+    --graceful-timeout 30 \
+    --access-logfile - \
+    --error-logfile -
+ExecReload=/bin/kill -s HUP $MAINPID
+KillSignal=SIGTERM
+TimeoutStopSec=60
+Restart=always
+RestartSec=5
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=django_app
+
+[Install]
+WantedBy=multi-user.target
