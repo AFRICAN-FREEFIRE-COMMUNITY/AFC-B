@@ -211,13 +211,18 @@ def serialize_event_markers(event, control, exclusion_count):
         # counts_toward_rankings is the master switch - when it is false the three component
         # flags are still reported as stored, but nothing from this event scores (the admin UI
         # should show the row as switched off rather than reading the components).
-        "counts_toward_rankings": control.counts_toward_rankings if control else True,
+        # An open-roster event reads as OFF whatever the row says: that is what the
+        # aggregation does (it reads the event column), so the admin sees the truth.
+        "counts_toward_rankings": False if event.open_roster else (control.counts_toward_rankings if control else True),
         "count_winner": control.count_winner if control else True,
         "count_placement": control.count_placement if control else True,
         "count_kills": control.count_kills if control else True,
         # True iff an explicit control row exists (vs the implicit all-True default).
         "has_control_row": control is not None,
         "active_exclusions": exclusion_count,
+        # Open-roster events (owner 2026-09-11) are switched off for good; the admin UI shows the
+        # master switch locked with this as the reason instead of an editable toggle.
+        "locked_open_roster": bool(event.open_roster),
     }
 
 
@@ -230,11 +235,14 @@ def serialize_counting_control(event, control):
     return {
         "event_id": event.event_id,
         "event_name": event.event_name,
-        "counts_toward_rankings": control.counts_toward_rankings if control else True,
+        # An open-roster event reads as OFF whatever the row says: that is what the
+        # aggregation does (it reads the event column), so the admin sees the truth.
+        "counts_toward_rankings": False if event.open_roster else (control.counts_toward_rankings if control else True),
         "count_winner": control.count_winner if control else True,
         "count_placement": control.count_placement if control else True,
         "count_kills": control.count_kills if control else True,
         "has_control_row": control is not None,
+        "locked_open_roster": bool(event.open_roster),
         "updated_by": control.updated_by_id if control else None,
         "updated_at": control.updated_at.isoformat() if (control and control.updated_at) else None,
     }
@@ -426,6 +434,13 @@ def event_counting_update(request, event_id):
                 {"message": f"`{field}` must be a boolean (true/false)."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+    # An open-roster event cannot be switched back on (owner 2026-09-11). The aggregation ignores
+    # such an event whatever this row says, so accepting the toggle would only lie to the admin.
+    if event.open_roster and supplied.get("counts_toward_rankings") is True:
+        return Response(
+            {"message": "This is an open-roster event: it never counts toward rankings or tiers."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
 
     with transaction.atomic():
         # Materialise the control row (defaults all-True) so a first edit makes the implicit

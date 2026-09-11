@@ -3341,6 +3341,9 @@ def _has_active_event_registration(user) -> bool:
                 .filter(user=user, tournament_team__event__is_draft=False)
                 .exclude(status="rejected")
                 .exclude(tournament_team__status__in=["disqualified", "withdrawn", "left"])
+                # Open-roster events (owner 2026-09-11) never lock an identity: their results
+                # are entered per team, so no per-player row is ever matched against a name.
+                .exclude(tournament_team__event__open_roster=True)
                 .select_related("tournament_team", "tournament_team__event")):
         candidates.append((ttm.tournament_team.event, ttm.tournament_team, None))
     for rc in (RegisteredCompetitors.objects
