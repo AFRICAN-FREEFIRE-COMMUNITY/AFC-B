@@ -413,10 +413,21 @@ def send_email(to_address, subject, html_body, language="en", prelocalized=False
         # Defensive backstop: translation must NEVER stop an email going out. Keep English on error.
         print(f"Email localization skipped for {to_address} ({language}): {e}")
 
-    smtp_server = 'smtp.office365.com'
-    smtp_port = 587
+    # The mail provider is configuration, not code (2026-09-11). Every value below falls back to
+    # what has always been hardcoded here (Microsoft 365 SMTP as info@), so nothing changes until
+    # the .env says so. Switching the SITE's mail to a transactional provider (the runbook's
+    # decision 4: M365 caps this mailbox at 30 messages a minute and 1,000 a day to new
+    # recipients, which a tournament registration rush exceeds) is then four .env lines and a
+    # restart, no deploy:
+    #     EMAIL_HOST = smtp.<provider>      EMAIL_PORT = 587
+    #     EMAIL_HOST_USER = <smtp user>     EMAIL_PASSWORD = <smtp password>
+    #     EMAIL_FROM = info@africanfreefirecommunity.com   (the verified sender at that provider)
+    # EMAIL_HOST_USER defaults to EMAIL_FROM because M365 logs in as the mailbox itself.
+    smtp_server = os.getenv("EMAIL_HOST", "smtp.office365.com").strip()
+    smtp_port = int(os.getenv("EMAIL_PORT", "587"))
 
-    from_address = 'info@africanfreefirecommunity.com'
+    from_address = os.getenv("EMAIL_FROM", "info@africanfreefirecommunity.com").strip()
+    smtp_user = os.getenv("EMAIL_HOST_USER", from_address).strip()
     password = os.getenv("EMAIL_PASSWORD")
 
     try:
@@ -432,7 +443,7 @@ def send_email(to_address, subject, html_body, language="en", prelocalized=False
         server.starttls()
         server.ehlo()
 
-        server.login(from_address, password)
+        server.login(smtp_user, password)
 
         server.sendmail(from_address, to_address, msg.as_string())
         server.quit()
