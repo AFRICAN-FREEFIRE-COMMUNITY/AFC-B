@@ -17,6 +17,9 @@ urlpatterns = [
     # Literal prefixes (for-event/, submissions/, my-submissions/) before <int:sponsor_id>.
     path("for-event/<int:event_id>/", engagements.sponsorships_for_event,
          name="sponsors_for_event"),                                                   # GET (public)
+    # Bulk BEFORE the <int:submission_id> route so "decide" is never read as an id (2026-09-11).
+    path("submissions/decide/", engagements.decide_submissions,
+         name="sponsors_decide_submissions"),                                          # POST {ids, action, reason?}
     path("submissions/<int:submission_id>/decide/", engagements.decide_submission,
          name="sponsors_decide_submission"),                                           # POST
     path("submissions/<int:submission_id>/resubmit/", engagements.resubmit_submission,
