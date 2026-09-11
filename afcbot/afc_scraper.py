@@ -1,5 +1,5 @@
 """
-afc_scraper.py — single source of truth for building knowledge_base.txt.
+afc_scraper.py - single source of truth for building knowledge_base.txt.
 
 Used by all three entry points so they can never drift again:
   - bot.py:_do_scrape()          live on the box, every SCRAPE_INTERVAL_HOURS
@@ -14,8 +14,8 @@ Behavior:
     (/tournaments, /teams, /news, /home) render their content client-side, so the
     server HTML is just a nav/footer skeleton containing "Loading" / "No teams
     available". Capturing that pollutes the KB, so captures below MIN_CONTENT_CHARS
-    or that are obvious placeholders are dropped. (/contact is short but real — it
-    carries the support email + Discord — so the threshold keeps it.)
+    or that are obvious placeholders are dropped. (/contact is short but real - it
+    carries the support email + Discord - so the threshold keeps it.)
 
 NOTE: the AFC teams roster is NOT scraped into the KB. Embedding 560 teams in every
 reply's prompt was too heavy, so teams are served on demand via the bot's live tools
@@ -31,7 +31,7 @@ from bs4 import BeautifulSoup
 
 SITE_BASE = "https://africanfreefirecommunity.com"
 
-# Starting pages — the crawler also discovers linked pages automatically.
+# Starting pages - the crawler also discovers linked pages automatically.
 SEED_PAGES = [
     "/home",
     "/about",
@@ -110,12 +110,12 @@ def scrape_page(path: str):
             return "", set()
         return _clean_text(resp.text), _discover_links(resp.text)
     except Exception as e:
-        print(f"  ⚠️  Failed: {path} — {e}")
+        print(f"  ⚠️  Failed: {path} - {e}")
         return "", set()
 
 
 def build_knowledge_text() -> str:
-    """Crawl the site and return the full KB text. (Teams are NOT included — they
+    """Crawl the site and return the full KB text. (Teams are NOT included - they
     are served on demand by the bot's tools; see the module docstring.)"""
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     sections = [
@@ -140,7 +140,7 @@ def build_knowledge_text() -> str:
 
         text, links = scrape_page(path)
 
-        # Enqueue discovered links regardless of whether this page is a shell —
+        # Enqueue discovered links regardless of whether this page is a shell  - 
         # a new SSR page might only be linked from a shell's nav.
         for link in links:
             if (link.rstrip("/") or "/") not in scraped and link not in queue:
@@ -150,11 +150,11 @@ def build_knowledge_text() -> str:
             sections.append(f"\n--- PAGE: {path} ---")
             sections.append(text)
             captured += 1
-            print(f"  ✅  {path} — {len(text):,} chars, {len(links)} links")
+            print(f"  ✅  {path} - {len(text):,} chars, {len(links)} links")
         elif text:
-            print(f"  ⏭️  {path} — client-render shell ({len(text)} chars), skipped")
+            print(f"  ⏭️  {path} - client-render shell ({len(text)} chars), skipped")
         else:
-            print(f"  ⏭️  {path} — empty/error")
+            print(f"  ⏭️  {path} - empty/error")
 
     print(f"  📄  pages captured: {captured} of {len(scraped)} crawled")
     return "\n".join(sections)
@@ -168,11 +168,11 @@ def write_knowledge_base(dest: str = "knowledge_base.txt") -> int:
         with open(dest, "w", encoding="utf-8") as f:
             f.write(text)
         return len(text)
-    print("  ⚠️  too little content scraped — knowledge_base.txt left unchanged")
+    print("  ⚠️  too little content scraped - knowledge_base.txt left unchanged")
     return 0
 
 
 if __name__ == "__main__":
     base = os.path.dirname(os.path.abspath(__file__))
     chars = write_knowledge_base(os.path.join(base, "knowledge_base.txt"))
-    print(f"\n✅  knowledge_base.txt — {chars:,} chars")
+    print(f"\n✅  knowledge_base.txt - {chars:,} chars")
