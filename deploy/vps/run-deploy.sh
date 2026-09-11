@@ -50,9 +50,13 @@ flock -w 600 9 || { echo "another deploy still holds the lock after 10 minutes";
   if [ "$target" = backend ]; then
     git fetch -q --prune origin
     git rev-parse -q --verify "origin/$ref" >/dev/null || { echo "refused: origin/$ref does not exist"; exit 65; }
-    # checkout -B: create or move the local branch to the remote tip. Tracked files change,
-    # untracked ones (migrations, .env, media/, venv/) are left alone.
-    git checkout -q -B "$ref" "origin/$ref"
+    # checkout -f -B: create or move the local branch to the remote tip and OVERWRITE any local
+    # edit to a tracked file. Without -f the very second deploy went red (2026-09-11 16:37,
+    # "Your local changes ... would be overwritten"): a hand-copied script was one cause, and the
+    # bot's 3-hourly knowledge scrape rewriting the tracked afcbot/knowledge_base.txt is the one
+    # that would have recurred forever. Ignored files (migrations, .env, media/, venv/) and
+    # untracked files not in the way are left alone; a deploy deploys the branch, nothing else.
+    git checkout -q -f -B "$ref" "origin/$ref"
     echo "checkout: $(git rev-parse --short HEAD) $(git log -1 --format=%s)"
     exec bash deploy/vps/deploy-backend.sh
   else
