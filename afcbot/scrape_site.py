@@ -1,7 +1,7 @@
 """
-AFC Bot — Website Scraper (manual run)
+AFC Bot - Website Scraper (manual run)
 ======================================
-Thin wrapper around afc_scraper — the single source of truth shared with
+Thin wrapper around afc_scraper - the single source of truth shared with
 bot.py:_do_scrape() and scripts/scrape_knowledge.py. Run this to refresh the
 knowledge_base.txt the bot reads on every reply.
 
@@ -27,10 +27,10 @@ def run():
     dest = os.path.join(os.path.dirname(os.path.abspath(__file__)), "knowledge_base.txt")
     chars = afc_scraper.write_knowledge_base(dest)
     if chars:
-        print(f"\n✅  knowledge_base.txt updated — {chars:,} total characters")
+        print(f"\n✅  knowledge_base.txt updated - {chars:,} total characters")
         print("🔄  The bot will use the new content automatically on its next reply.")
     else:
-        print("\n⚠️  Nothing written — site/API returned too little. Existing file kept.")
+        print("\n⚠️  Nothing written - site/API returned too little. Existing file kept.")
 
 
 if __name__ == "__main__":

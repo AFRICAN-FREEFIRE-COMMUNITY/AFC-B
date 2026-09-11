@@ -1,0 +1,62 @@
+{
+  "_about": "Registry of bugs this codebase has produced MORE THAN ONCE. Each entry is an automatic check (tools/check_known_bugs.py) that runs on every push and PR and turns the run red with the bug id and file:line. Owner's rule, 2026-09-11: a bug seen twice gets a checker; a red checker is fixed before anything else. Add an entry the second time you meet a bug, with both sightings.",
+  "bugs": [
+    {
+      "id": "be-crlf-in-server-files",
+      "title": "Windows line endings in a file that runs on the server",
+      "why": "A shell script, systemd unit or nginx config edited on Windows and committed with CRLF fails on the box in ways that look unrelated: `$'\\r': command not found`, a systemd unit that will not parse, an rclone key with a trailing carriage return ('invalid key or value contains \\n or \\r').",
+      "seen": [
+        "2026-09-11 14:10 the whole deploy/vps kit needed a sed pass before its first run",
+        "2026-09-11 16:30 the same again for the retention scripts",
+        "2026-09-11 17:52 a carriage return rode along in the Backblaze key pipe and rclone refused it"
+      ],
+      "fix": "save the file with LF (the repo's .gitattributes now forces it for these paths); `sed -i 's/\\r$//' <file>`",
+      "kind": "crlf",
+      "globs": [
+        "deploy/**/*.sh",
+        "deploy/**/*.service",
+        "deploy/**/*.conf",
+        ".github/workflows/*.yml",
+        "tools/*.py",
+        "tools/*.sh"
+      ]
+    },
+    {
+      "id": "be-em-dash",
+      "title": "Em dash or en dash in source, docs or deploy files",
+      "why": "Hard rule (owner 2026-07-13): never an em dash or en dash anywhere. They read as machine-written and the owner has asked for their removal repeatedly.",
+      "seen": [
+        "2026-08-03: 2,427 removed across roughly 300 files in both repos",
+        "2026-09-04: the design lint found six more that had crept back in"
+      ],
+      "fix": "a hyphen with spaces, a comma, a colon, parentheses, or reword",
+      "kind": "regex",
+      "pattern": "[\\u2014\\u2013]",
+      "globs": [
+        "afc/**/*.py",
+        "afc_*/**/*.py",
+        "afcbot/**/*.py",
+        "deploy/**/*",
+        "tools/**/*",
+        "*.md"
+      ]
+    },
+    {
+      "id": "be-env-line-assumes-no-spaces",
+      "title": "A script edits .env with a `^KEY=` anchor, but the production .env writes `KEY = value`",
+      "why": "The AWS .env, and therefore the VPS one, has spaces around `=` for every line. A sed or grep anchored on `^KEY=` silently matches nothing, the old value stays, and the failure surfaces later as 'Access denied for user admin@localhost'. (Only the Django .env has this shape; afcbot/.env is plain KEY=value, so its keys are not in the pattern.)",
+      "seen": [
+        "2026-09-11 13:40 05-env-and-venv.sh was written with `^DB_USER=` and had to be rewritten before its first run",
+        "2026-09-11 15:33 the cutover re-sync restored the AWS .env and the DB lines had to be re-applied by hand with the loose pattern"
+      ],
+      "fix": "anchor as `^\\s*KEY\\s*=` and write back in the same `KEY = value` style",
+      "kind": "regex",
+      "pattern": "\\^(DB_|DJANGO_|EMAIL_)[A-Z_]+=",
+      "globs": [
+        "deploy/**/*.sh",
+        "tools/*.py",
+        "tools/*.sh"
+      ]
+    }
+  ]
+}

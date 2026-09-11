@@ -30,6 +30,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
+      - uses: actions/checkout@v4
+      # First, before anything touches the box: the registry of bugs this codebase has produced
+      # more than once (tools/known_bugs.json). A hit here means nothing deploys.
+      - name: Known-bug checker
+        run: python3 tools/check_known_bugs.py
+
       - name: Prepare ssh
         env:
           VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}

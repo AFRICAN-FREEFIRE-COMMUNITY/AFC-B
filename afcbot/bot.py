@@ -16,7 +16,7 @@ from dotenv import load_dotenv
 import base64
 
 # Keep emoji prints from crashing a non-UTF-8 console (e.g. Windows cp1252 when
-# stdout is piped/redirected) — same guard as scrape_site.py / scrape_knowledge.py.
+# stdout is piped/redirected) - same guard as scrape_site.py / scrape_knowledge.py.
 try:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 except Exception:
@@ -33,19 +33,19 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 # Together, a second OpenAI key, a local Ollama, etc.). When the primary
 # provider runs out of quota or gets rate-limited (HTTP 429 / insufficient_quota),
 # chat completions automatically retry here so the bot keeps answering instead
-# of going dark. Leave these unset to disable failover — the bot then shows a
+# of going dark. Leave these unset to disable failover - the bot then shows a
 # clean "AI temporarily unavailable" notice instead of a raw error.
-#   FALLBACK_API_KEY   – the backup provider's API key
-#   FALLBACK_BASE_URL  – its OpenAI-compatible endpoint, e.g. https://api.groq.com/openai/v1
-#   FALLBACK_MODEL     – model for normal replies   (default: llama-3.3-70b-versatile)
-#   FALLBACK_MINI_MODEL– model for the cheap classifier (defaults to FALLBACK_MODEL)
-#   FALLBACK2_*        – an OPTIONAL second fallback (same four keys with a "2"
+#   FALLBACK_API_KEY   - the backup provider's API key
+#   FALLBACK_BASE_URL  - its OpenAI-compatible endpoint, e.g. https://api.groq.com/openai/v1
+#   FALLBACK_MODEL     - model for normal replies   (default: llama-3.3-70b-versatile)
+#   FALLBACK_MINI_MODEL- model for the cheap classifier (defaults to FALLBACK_MODEL)
+#   FALLBACK2_*        - an OPTIONAL second fallback (same four keys with a "2"
 #     suffix), tried only if FALLBACK also fails. Providers run as a chain:
 #     primary → FALLBACK → FALLBACK2, so the bot goes dark only when every one is
-#     down. Gemini works here as an OpenAI-compatible provider — base_url
+#     down. Gemini works here as an OpenAI-compatible provider - base_url
 #     https://generativelanguage.googleapis.com/v1beta/openai/ with a 2.5-flash
 #     model; its thinking is auto-disabled per request (see _call_fallback_provider).
-#   FALLBACK_MAX_PROMPT_CHARS – cap on the chars sent to the fallback so the full
+#   FALLBACK_MAX_PROMPT_CHARS - cap on the chars sent to the fallback so the full
 #     knowledge base (~32k tokens) doesn't blow past a free-tier per-minute token
 #     limit (e.g. Groq 70b = 12k TPM → otherwise a hard 413 on every reply).
 FALLBACK_API_KEY    = os.getenv("FALLBACK_API_KEY")
@@ -82,7 +82,7 @@ ALLOWED_CHANNELS = [
     955773076786798643,
 ]
 
-# Category ID — bot listens and replies in ALL channels under this category
+# Category ID - bot listens and replies in ALL channels under this category
 ALLOWED_CATEGORIES = {1074466672909496420}
 
 # Channels where the bot auto-replies to ALL messages (not just @mentions)
@@ -113,13 +113,13 @@ SUPPORT_ROLES = [
 # insufficient_quota ... check your plan and billing" or a billing link. The real
 # error is still printed to stdout/logs for ops.
 AI_DOWN_NOTICE = (
-    "🛠️ Heads up — AFC Bot's AI assistant is temporarily unavailable, so I can't "
+    "🛠️ Heads up - AFC Bot's AI assistant is temporarily unavailable, so I can't "
     "auto-answer right now. Please try again a little later.\n"
     f"If it's urgent, reach the team in <#{SUPPORT_CHANNEL_ID}> or email "
     "**info@africanfreefirecommunity.com**."
 )
 GENERIC_ERROR_NOTICE = (
-    "⚠️ Something went wrong on my end. Please try again shortly — and if it keeps "
+    "⚠️ Something went wrong on my end. Please try again shortly - and if it keeps "
     f"happening, reach the team in <#{SUPPORT_CHANNEL_ID}> or at "
     "**info@africanfreefirecommunity.com**."
 )
@@ -128,7 +128,7 @@ GENERIC_ERROR_NOTICE = (
 _ai_down_notice_at: dict[int, float] = {}
 AI_DOWN_NOTICE_COOLDOWN_SECS = 300  # at most one down-notice per channel / 5 min
 
-# Scrims Master role — gets access to staff/backend knowledge
+# Scrims Master role - gets access to staff/backend knowledge
 SCRIMS_MASTER_ROLE_ID = 1011438178630107207
 
 # Roles that can access staff-level knowledge (backend ops, scoring, scrims admin info)
@@ -163,11 +163,11 @@ UNBAN_ANNOUNCEMENT_CHANNEL_ID = 1353759565543637062
 # AFC backend API base
 AFC_API_BASE = "https://api.africanfreefirecommunity.com"
 
-# Canonical AFC Discord invite — the ONLY Discord link the bot is allowed to share.
+# Canonical AFC Discord invite - the ONLY Discord link the bot is allowed to share.
 # Hardcoded so GPT can never hallucinate a wrong invite (e.g. "discord.gg/afc").
 AFC_DISCORD_INVITE = "https://discord.gg/qgKKZMu4sA"
 
-# Always use the folder where bot.py lives — avoids permission errors on Windows
+# Always use the folder where bot.py lives - avoids permission errors on Windows
 BASE_DIR              = os.path.dirname(os.path.abspath(__file__))
 KNOWLEDGE_DIR         = os.path.join(BASE_DIR, "knowledge")
 STAFF_KNOWLEDGE_DIR   = os.path.join(BASE_DIR, "knowledge_staff")
@@ -179,7 +179,7 @@ SEEN_NEWS_FILE          = os.path.join(BASE_DIR, "seen_news.json")
 SEEN_EVENTS_FILE        = os.path.join(BASE_DIR, "seen_events.json")
 SEEN_BAN_ACTIVITIES_FILE = os.path.join(BASE_DIR, "seen_ban_activities.json")
 
-# Organizer-event approval gate — persisted state
+# Organizer-event approval gate - persisted state
 PENDING_EVENT_APPROVALS_FILE = os.path.join(BASE_DIR, "pending_event_approvals.json")
 REJECTED_EVENT_IDS_FILE      = os.path.join(BASE_DIR, "rejected_event_ids.json")
 
@@ -207,10 +207,10 @@ AUDIO_TYPES = (".mp3", ".mp4", ".wav", ".m4a", ".ogg", ".webm", ".flac")
 VIDEO_TYPES = (".mov", ".avi", ".mkv")
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Bounded timeout + single retry — openai-python's defaults (600s read timeout,
+# Bounded timeout + single retry - openai-python's defaults (600s read timeout,
 # 2 retries) would let one hung request stall a reply for up to ~30 minutes.
 client_ai = OpenAI(api_key=OPENAI_API_KEY, timeout=60.0, max_retries=1)
-# Backup AI provider chain — each entry built only when its env vars are set.
+# Backup AI provider chain - each entry built only when its env vars are set.
 # Requests fail over through this list in order (FALLBACK first, then FALLBACK2),
 # so the bot only goes dark when the primary AND every configured fallback is down.
 def _make_fallback_provider(api_key, base_url, model, mini_model):
@@ -244,15 +244,15 @@ intents.message_content = True
 # Message Content Intent) or the bot will refuse to start.
 intents.members = True
 bot = discord.Client(intents=intents)
-# Application (slash) command tree — commands defined in the "Slash commands"
+# Application (slash) command tree - commands defined in the "Slash commands"
 # section below and synced per guild in on_ready.
 tree = app_commands.CommandTree(bot)
 
-# In-memory history — loaded from file on startup
+# In-memory history - loaded from file on startup
 # Structure: { "channel_id": { "messages": [...], "last_updated": <unix timestamp> } }
 history: dict[str, dict] = {}
 
-# Cached live event data — refreshed every EVENT_POLL_INTERVAL_SECS by event_poll_loop
+# Cached live event data - refreshed every EVENT_POLL_INTERVAL_SECS by event_poll_loop
 _cached_events: list[dict] = []
 # File to persist event statuses for tracking changes across restarts
 SEEN_EVENT_STATUSES_FILE = os.path.join(BASE_DIR, "seen_event_statuses.json")
@@ -313,8 +313,7 @@ def touch_channel(channel_id: int):
 
 
 def trim_channel_history(channel_id: int):
-    """Keep only the last MAX_HISTORY messages for a channel. Trims IN PLACE —
-    rebinding the dict value would orphan any local reference captured before the
+    """Keep only the last MAX_HISTORY messages for a channel. Trims IN PLACE - rebinding the dict value would orphan any local reference captured before the
     trim (ask_openai_text holds one across the AI call), silently dropping every
     assistant reply appended after a trim once a channel reaches MAX_HISTORY."""
     msgs = get_channel_messages(channel_id)
@@ -323,7 +322,7 @@ def trim_channel_history(channel_id: int):
 
 
 async def auto_purge_loop():
-    """Background task — checks and purges expired history every hour."""
+    """Background task - checks and purges expired history every hour."""
     await bot.wait_until_ready()
     while not bot.is_closed():
         purge_expired_history()
@@ -357,7 +356,7 @@ async def _reply_chunked(message: discord.Message, text: str, mention_author: bo
 
 
 def _do_scrape() -> int:
-    """Synchronous scrape — runs in a thread executor. Returns total characters written.
+    """Synchronous scrape - runs in a thread executor. Returns total characters written.
 
     Delegates to afc_scraper (the single source of truth shared with
     scripts/scrape_knowledge.py and scrape_site.py) so the three never drift. That
@@ -376,13 +375,13 @@ async def refresh_knowledge_base() -> int:
 
 
 async def auto_scrape_loop():
-    """Background task — re-scrapes the AFC website every SCRAPE_INTERVAL_HOURS hours."""
+    """Background task - re-scrapes the AFC website every SCRAPE_INTERVAL_HOURS hours."""
     await bot.wait_until_ready()
     await asyncio.sleep(SCRAPE_INTERVAL_HOURS * 3600)   # skip first run (already fresh on startup)
     while not bot.is_closed():
         try:
             chars = await refresh_knowledge_base()
-            print(f"🔄  Auto-scrape complete — {chars:,} chars written to knowledge_base.txt")
+            print(f"🔄  Auto-scrape complete - {chars:,} chars written to knowledge_base.txt")
         except Exception as e:
             print(f"⚠️  Auto-scrape failed: {e}")
         await asyncio.sleep(SCRAPE_INTERVAL_HOURS * 3600)
@@ -410,7 +409,7 @@ def save_seen_news(seen: set):
 
 async def fetch_all_news() -> list | None:
     """Call the AFC API and return the list of news article dicts, newest first.
-    Returns None when the API is unavailable — callers must distinguish 'API
+    Returns None when the API is unavailable - callers must distinguish 'API
     down' from 'genuinely zero articles' or a boot-time outage would seed an
     empty seen-set and @everyone-spam the whole backlog on recovery."""
     url = f"{AFC_API_BASE}/auth/get-all-news/"
@@ -447,7 +446,7 @@ Article content (may be truncated):
 
 Write a short Discord announcement to hype up this article.
 Rules:
-- Body: 2-4 sentences only — tease the reader, do NOT reveal everything
+- Body: 2-4 sentences only - tease the reader, do NOT reveal everything
 - End the body with: **Read the full story → {article_url}**
 - Use 1-2 emojis that fit the topic
 - Tone: exciting, community-first, never corporate
@@ -476,20 +475,20 @@ Output ONLY valid JSON (no markdown fences):
     if image_url:
         embed.set_image(url=image_url)
     author_name = article.get("author", "AFC")
-    embed.set_author(name=f"AFC News — {category}" if category else "AFC News")
+    embed.set_author(name=f"AFC News - {category}" if category else "AFC News")
     embed.set_footer(text="African Freefire Community  •  africanfreefirecommunity.com")
     embed.timestamp = datetime.now(timezone.utc)
     return embed
 
 
 async def news_poll_loop():
-    """Background task — polls the AFC API every NEWS_POLL_INTERVAL_SECS for new articles."""
+    """Background task - polls the AFC API every NEWS_POLL_INTERVAL_SECS for new articles."""
     await bot.wait_until_ready()
 
     seen = load_seen_news()
     # File existence is the durable "already seeded" sentinel (same rationale as
-    # the ban loop): a failed fetch at boot must not seed an empty set — the
-    # whole backlog would @everyone-spam once the API recovers — and a
+    # the ban loop): a failed fetch at boot must not seed an empty set - the
+    # whole backlog would @everyone-spam once the API recovers - and a
     # legitimately-empty seed must not re-seed on the next restart.
     seeded = os.path.exists(SEEN_NEWS_FILE)
 
@@ -499,11 +498,11 @@ async def news_poll_loop():
         try:
             articles = await fetch_all_news()
             if articles is None:
-                # API unavailable this cycle — skip without touching state.
+                # API unavailable this cycle - skip without touching state.
                 continue
 
             if not seeded:
-                # First successful poll — mark existing articles as already seen
+                # First successful poll - mark existing articles as already seen
                 # so we don't flood the channel with old news.
                 seen = {str(a["news_id"]) for a in articles}
                 save_seen_news(seen)
@@ -524,7 +523,7 @@ async def news_poll_loop():
                         embed = await generate_news_embed(article)
                         await news_channel.send(content="@everyone", embed=embed)
                         seen.add(str(article["news_id"]))
-                        # Persist per send — a crash/deploy mid-batch must not
+                        # Persist per send - a crash/deploy mid-batch must not
                         # re-announce already-posted articles with @everyone.
                         save_seen_news(seen)
                         print(f"📰  Announced news: {article.get('news_title', article['news_id'])}")
@@ -559,7 +558,7 @@ def save_seen_events(seen: set):
 # ── Organizer-event approval state ────────────────────────────────────────────
 # message_id(str) -> event dict awaiting an admin's approval in the mods channel.
 _pending_event_approvals: dict[str, dict] = {}
-# event_id(str) set — organizer events an admin rejected; never auto-posted again.
+# event_id(str) set - organizer events an admin rejected; never auto-posted again.
 _rejected_event_ids: set[str] = set()
 
 
@@ -624,7 +623,7 @@ def is_organizer_event(event: dict) -> bool:
 
 
 # event_type ('internal'/'external') exists ONLY on the get-event-details
-# endpoint — the get-all-events list payload has no such field (verified against
+# endpoint - the get-all-events list payload has no such field (verified against
 # the live API), so it must be resolved per event. Cached in-memory per event_id;
 # the cache clears on restart, so a later external→internal flip is picked up on
 # the next deploy/restart at worst.
@@ -663,7 +662,7 @@ async def get_event_type(event: dict) -> str:
 
 
 async def fetch_all_events() -> list | None:
-    """Uses the existing public events endpoint — no backend changes needed.
+    """Uses the existing public events endpoint - no backend changes needed.
     Returns None when the API is unavailable so callers can distinguish 'API
     down' from 'zero events' (keeps the last good cache, prevents bad seeding)."""
     url = f"{AFC_API_BASE}/events/get-all-events/"
@@ -754,7 +753,7 @@ class EventApprovalView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    # discord.py 2.x passes (interaction, button) — py-cord's (button, interaction)
+    # discord.py 2.x passes (interaction, button) - py-cord's (button, interaction)
     # order silently receives the Button as `interaction` and crashes before the
     # click is acknowledged, so Discord shows "This interaction failed".
     @discord.ui.button(label="✅ Approve", style=discord.ButtonStyle.success, custom_id="afc_event_approve")
@@ -783,7 +782,7 @@ class EventApprovalView(discord.ui.View):
             return
         save_pending_event_approvals()
 
-        # Ack the click now — posting the public announcement below can take longer
+        # Ack the click now - posting the public announcement below can take longer
         # than Discord's ~3s response window, which would otherwise expire the token
         # and leave the preview stuck with live buttons over an already-posted event.
         await interaction.response.defer()
@@ -798,12 +797,12 @@ class EventApprovalView(discord.ui.View):
                     f"⚠️ Couldn't post the announcement: {e}", ephemeral=True
                 )
                 return
-            note = f"✅ **Approved** by {member.mention} — announcement posted."
+            note = f"✅ **Approved** by {member.mention} - announcement posted."
             print(f"✅  Event approved by {member}: {event.get('event_name')}")
         else:
             _rejected_event_ids.add(str(event.get("event_id")))
             save_rejected_event_ids()
-            note = f"❌ **Rejected** by {member.mention} — not announced."
+            note = f"❌ **Rejected** by {member.mention} - not announced."
             print(f"❌  Event rejected by {member}: {event.get('event_name')}")
 
         # Rewrite the preview content and drop the buttons (interaction was deferred).
@@ -820,7 +819,7 @@ async def post_event_for_approval(event: dict):
     organizer = event.get("organization_name") or "African Freefire Community"
     header = (
         f"<@&{MODS_PING_ROLE_ID}>\n"
-        f"🕓 **PENDING APPROVAL** — new {target} from **{organizer}**.\n"
+        f"🕓 **PENDING APPROVAL** - new {target} from **{organizer}**.\n"
         f"Approve to announce it publicly, or reject to discard."
     )
     # Explicit allowed_mentions so the role actually pings even if it isn't set
@@ -836,7 +835,7 @@ async def post_event_for_approval(event: dict):
     )
     _pending_event_approvals[str(msg.id)] = event
     # Raise if we can't persist the pending record so the poll loop's except leaves
-    # the event unseen and retries — rather than marking it seen with an in-memory-
+    # the event unseen and retries - rather than marking it seen with an in-memory-
     # only entry that a restart would lose, silently dropping the event for good.
     save_pending_event_approvals(raise_on_error=True)
     print(f"🕓  Event sent for approval: {event.get('event_name')} (msg {msg.id})")
@@ -904,7 +903,7 @@ def _build_status_change_embed(event: dict, old_status: str, new_status: str) ->
 
 
 async def event_poll_loop():
-    """Background task — polls for new tournaments and scrims every EVENT_POLL_INTERVAL_SECS.
+    """Background task - polls for new tournaments and scrims every EVENT_POLL_INTERVAL_SECS.
     Also caches event data for the system prompt and tracks status changes."""
     global _cached_events
     await bot.wait_until_ready()
@@ -912,9 +911,9 @@ async def event_poll_loop():
     seen = load_seen_events()
     event_statuses = _load_event_statuses()
     # File existence is the durable "already seeded" sentinel (same rationale as
-    # the ban loop): a failed fetch at boot must not seed an empty set — every
+    # the ban loop): a failed fetch at boot must not seed an empty set - every
     # existing event would flood the mods channel with approval requests once
-    # the API recovers — and a legitimately-empty seed must not re-seed later.
+    # the API recovers - and a legitimately-empty seed must not re-seed later.
     seeded = os.path.exists(SEEN_EVENTS_FILE)
 
     while not bot.is_closed():
@@ -923,13 +922,13 @@ async def event_poll_loop():
         try:
             events = await fetch_all_events()
             if events is None:
-                # API unavailable this cycle — keep the last good cache (the
+                # API unavailable this cycle - keep the last good cache (the
                 # system prompt keeps answering from it) and touch no state.
                 continue
             _cached_events = events  # Always refresh the cache for the system prompt
 
             if not seeded:
-                # First successful poll — seed current events as already-seen so
+                # First successful poll - seed current events as already-seen so
                 # the backlog isn't announced. Only INTERNAL, AFC-run events are
                 # seeded: externals stay unseen so a flip to internal announces
                 # like new, and organizer events stay unseen so the first real
@@ -962,22 +961,21 @@ async def event_poll_loop():
             for event in reversed(new_events):
                 eid = str(event["event_id"])
                 try:
-                    # get-all-events carries no event_type — resolve it via the
+                    # get-all-events carries no event_type - resolve it via the
                     # details endpoint (cached per event_id). External events are
                     # never announced; they stay unseen so a flip to internal
-                    # announces like new. '' = backend couldn't say — skip WITHOUT
+                    # announces like new. '' = backend couldn't say - skip WITHOUT
                     # marking seen so the event is retried next poll, never leaked.
                     etype = await get_event_type(event)
                     if etype == "external" or not etype:
                         continue
-                    # Every new event — AFC-run/admin and partner-organizer alike —
-                    # is held for admin approval in the mods channel; nothing is
+                    # Every new event - AFC-run/admin and partner-organizer alike - # is held for admin approval in the mods channel; nothing is
                     # posted publicly until an admin approves it.
                     await post_event_for_approval(event)
                     seen.add(eid)
                     # Seed the status so we don't also fire a status-change for new events
                     event_statuses[eid] = event.get("event_status", "")
-                    # Persist per event — a crash/deploy mid-batch must not
+                    # Persist per event - a crash/deploy mid-batch must not
                     # re-request approval for already-posted events on restart.
                     save_seen_events(seen)
                     _save_event_statuses(event_statuses)
@@ -990,7 +988,7 @@ async def event_poll_loop():
             for event in events:
                 eid = str(event.get("event_id"))
                 # Don't announce status changes on external events (resolved via
-                # the details endpoint — the list payload has no event_type).
+                # the details endpoint - the list payload has no event_type).
                 # Track their status silently so a later flip to internal doesn't
                 # announce stale news; on '' (backend unreachable) skip without
                 # updating so the change is retried next poll (fail closed).
@@ -1003,7 +1001,7 @@ async def event_poll_loop():
                         event_statuses[eid] = ext_status
                         statuses_changed = True
                     continue
-                # Rejected events are permanently suppressed — never announce.
+                # Rejected events are permanently suppressed - never announce.
                 if eid in _rejected_event_ids:
                     continue
                 # Events still awaiting approval must not announce a status change, but
@@ -1022,14 +1020,13 @@ async def event_poll_loop():
                     continue
 
                 # First real status we've recorded for this event (e.g. it was
-                # tracked with an empty status before event_status was read) —
-                # seed it silently so we don't announce a change we never saw.
+                # tracked with an empty status before event_status was read) - # seed it silently so we don't announce a change we never saw.
                 if not old_status:
                     event_statuses[eid] = new_status
                     statuses_changed = True
                     continue
 
-                # Status changed — announce it
+                # Status changed - announce it
                 statuses_changed = True
                 event_statuses[eid] = new_status
                 try:
@@ -1053,7 +1050,7 @@ async def event_poll_loop():
 # ── Automatic ban / unban polling ────────────────────────────────────────────
 # Polls GET /auth/get-admin-activities/ every BAN_POLL_INTERVAL_SECS.
 # Detects new banned_team / unbanned_team / banned_player / unbanned_player
-# entries and posts embeds automatically — no Discord command needed.
+# entries and posts embeds automatically - no Discord command needed.
 
 BAN_ACTIONS = {"banned_team", "unbanned_team", "banned_player", "unbanned_player"}
 
@@ -1080,7 +1077,7 @@ def save_seen_ban_activities(seen: set):
 
 def make_activity_key(activity: dict) -> str:
     """Stable unique key for a ban activity (no ID field in the API response).
-    Uses the FULL description — truncating it let two distinct bans that share a
+    Uses the FULL description - truncating it let two distinct bans that share a
     timestamp + action collide on the same prefix and get silently dropped."""
     ts   = str(activity.get("timestamp", ""))
     act  = activity.get("action", "")
@@ -1092,7 +1089,7 @@ async def fetch_admin_activities() -> list | None:
     """Call the AFC API and return the latest admin activity records.
 
     Returns None when the call FAILED (5xx, timeout, network, bad JSON) so callers
-    can distinguish a real failure from a genuinely empty list — important so a
+    can distinguish a real failure from a genuinely empty list - important so a
     transient outage never seeds an empty seen-set (which would re-spam every old
     ban on recovery) or gets mistaken for "no activity". The AFC API is known to
     intermittently 5xx, so transient server errors are retried with backoff."""
@@ -1105,7 +1102,7 @@ async def fetch_admin_activities() -> list | None:
                         data = await resp.json()
                         return data.get("admin_activities", [])
                     if resp.status >= 500 and attempt < 2:
-                        print(f"⚠️  admin-activities HTTP {resp.status} (attempt {attempt + 1}/3) — retrying")
+                        print(f"⚠️  admin-activities HTTP {resp.status} (attempt {attempt + 1}/3) - retrying")
                         await asyncio.sleep(2 * (attempt + 1))
                         continue
                     print(f"⚠️  admin-activities returned HTTP {resp.status}")
@@ -1144,7 +1141,7 @@ def parse_ban_activity(activity: dict) -> dict:
         "raw":         desc,   # kept so the embed can fall back to it if parsing misses
     }
 
-    # Extract entity name — everything between "Team/Player " and " (ID:"
+    # Extract entity name - everything between "Team/Player " and " (ID:"
     name_match = re.match(r"(?:Team|Player)\s+(.+?)\s+\(ID:", desc)
     if name_match:
         result["name"] = name_match.group(1).strip()
@@ -1201,7 +1198,7 @@ async def build_ban_embed(parsed: dict) -> discord.Embed:
     if is_ban and parsed.get("duration"):
         embed.add_field(name="Duration", value=parsed["duration"], inline=True)
     if is_ban and parsed.get("reason") and parsed["reason"] != "No reason provided":
-        # Discord rejects embed field values over 1024 chars with a 400 — and the
+        # Discord rejects embed field values over 1024 chars with a 400 - and the
         # per-activity retry would then re-fail every poll cycle forever.
         embed.add_field(name="Reason", value=parsed["reason"][:1024], inline=False)
 
@@ -1214,7 +1211,7 @@ async def build_ban_embed(parsed: dict) -> discord.Embed:
     if parsed.get("admin"):
         embed.add_field(name="Action by", value=parsed["admin"], inline=True)
 
-    # For team bans/unbans — fetch logo and member list
+    # For team bans/unbans - fetch logo and member list
     if entity_type == "team" and name_known:
         team = await fetch_team_details(parsed["name"])
         if team:
@@ -1230,10 +1227,10 @@ async def build_ban_embed(parsed: dict) -> discord.Embed:
                 for m in members:
                     username = m.get("username", "Unknown")
                     role     = m.get("management_role") or m.get("in_game_role") or ""
-                    lines.append(f"• {username}" + (f" — {role}" if role else ""))
+                    lines.append(f"• {username}" + (f" - {role}" if role else ""))
                 embed.add_field(
                     name=f"Team Members ({len(members)})",
-                    value=("\n".join(lines) or "—")[:1024],
+                    value=("\n".join(lines) or " - ")[:1024],
                     inline=False
                 )
 
@@ -1243,16 +1240,16 @@ async def build_ban_embed(parsed: dict) -> discord.Embed:
 
 
 async def ban_poll_loop():
-    """Background task — polls admin activities for ban/unban events every BAN_POLL_INTERVAL_SECS."""
+    """Background task - polls admin activities for ban/unban events every BAN_POLL_INTERVAL_SECS."""
     await bot.wait_until_ready()
 
     # Seed-on-first-SUCCESS: populate `seen` from a successful poll before announcing
-    # anything. If the API is down at boot we must NOT seed an empty set — that would
+    # anything. If the API is down at boot we must NOT seed an empty set - that would
     # make every existing ban look "new" and re-spam the channel once the API recovers.
     seen   = load_seen_ban_activities()
     # File existence is the durable "already seeded" sentinel. bool(seen) was wrong:
     # a legitimate empty seed (zero bans at first poll) writes [] to disk, and on
-    # the next restart that empty set would look "never seeded" — dropping back into
+    # the next restart that empty set would look "never seeded" - dropping back into
     # seed mode and silently swallowing any ban created in the meantime. The file
     # exists after the first seed regardless of contents, so a restart never re-seeds.
     seeded = os.path.exists(SEEN_BAN_ACTIVITIES_FILE)
@@ -1263,14 +1260,14 @@ async def ban_poll_loop():
         try:
             activities = await fetch_admin_activities()
             if activities is None:
-                # API unavailable this cycle — skip without touching state so any
+                # API unavailable this cycle - skip without touching state so any
                 # ban is detected (not lost, not duplicated) on a later good poll.
                 continue
 
             ban_acts = [a for a in activities if a.get("action") in BAN_ACTIONS]
 
             if not seeded:
-                # First successful poll — mark current bans as already-seen (don't
+                # First successful poll - mark current bans as already-seen (don't
                 # announce the backlog) and start watching for new ones from here.
                 seen = {make_activity_key(a) for a in ban_acts}
                 save_seen_ban_activities(seen)
@@ -1290,11 +1287,11 @@ async def ban_poll_loop():
 
                     key = make_activity_key(activity)
                     seen.add(key)
-                    # Persist immediately after each send — saving once after the
+                    # Persist immediately after each send - saving once after the
                     # whole batch let a crash/restart mid-batch (e.g. a deploy
                     # SIGTERM during the sleep below) re-announce already-sent bans.
                     save_seen_ban_activities(seen)
-                    print(f"🔨  Ban announcement: {activity.get('action')} — {parsed['name']}")
+                    print(f"🔨  Ban announcement: {activity.get('action')} - {parsed['name']}")
                     await asyncio.sleep(1)
                 except Exception as e:
                     print(f"⚠️  Failed to post ban activity: {e}")
@@ -1305,8 +1302,7 @@ async def ban_poll_loop():
 
 # ── Knowledge base loader ────────────────────────────────────────────────────
 # Parsed-document cache keyed path → (mtime, text). PDFs/DOCX/XLSX are expensive
-# to parse (a ~300KB PDF costs 0.5-2s) and load_knowledge runs on EVERY reply —
-# re-parse only when the file actually changes on disk, so content updates still
+# to parse (a ~300KB PDF costs 0.5-2s) and load_knowledge runs on EVERY reply - # re-parse only when the file actually changes on disk, so content updates still
 # land without a restart but steady-state replies stop paying the parse cost.
 _parsed_doc_cache: dict[str, tuple[float, str]] = {}
 
@@ -1464,7 +1460,7 @@ def compute_time_status(event: dict) -> tuple[str, str]:
     """Describe the event's scheduled date relative to now.
 
     The AFC API's `event_date`/`event_time` field is NOT a guaranteed match-start
-    timestamp — it can represent the registration deadline or just the event's
+    timestamp - it can represent the registration deadline or just the event's
     listed date. Because of that, this function NEVER asserts that an event is
     live or has ended based on time alone. The only authoritative source of
     live/ended state is `event['status']` from the backend.
@@ -1490,7 +1486,7 @@ def compute_time_status(event: dict) -> tuple[str, str]:
         return "starting_soon", f"scheduled in ~{mins} minute(s)"
     days_ago = int((-delta) // 86400)
     ago = f"{days_ago} day(s) ago" if days_ago >= 1 else "earlier today"
-    return "date_passed", f"listed date {start_dt.strftime('%Y-%m-%d')} was {ago} — check website status for whether the event is live, ended, or still running"
+    return "date_passed", f"listed date {start_dt.strftime('%Y-%m-%d')} was {ago} - check website status for whether the event is live, ended, or still running"
 
 
 def format_live_events() -> str:
@@ -1503,7 +1499,7 @@ def format_live_events() -> str:
     lines.append(f"Current time: {now_str}")
     lines.append(
         "The 'Website status' field is the ONLY authoritative source of whether an event is live, ended, or still in registration. "
-        "The listed Date/time is the event's scheduled date — it may be the registration deadline OR the match start, so do NOT use it on its own to claim a tournament has started or ended.\n"
+        "The listed Date/time is the event's scheduled date - it may be the registration deadline OR the match start, so do NOT use it on its own to claim a tournament has started or ended.\n"
     )
 
     for ev in _cached_events:
@@ -1521,16 +1517,16 @@ def format_live_events() -> str:
         time_kw, time_note = compute_time_status(ev)
 
         entry = f"• {name} ({comp_type})"
-        if status:       entry += f" — Website status: {status}"
-        if start_date:   entry += f" — Date: {start_date}"
+        if status:       entry += f" - Website status: {status}"
+        if start_date:   entry += f" - Date: {start_date}"
         if start_time:   entry += f" at {start_time}"
-        if prizepool:    entry += f" — Prize: {prizepool}"
-        if max_slots:    entry += f" — Slots: {registered}/{max_slots}"
+        if prizepool:    entry += f" - Prize: {prizepool}"
+        if max_slots:    entry += f" - Slots: {registered}/{max_slots}"
         if url:          entry += f"\n  Link: {url}"
         if time_note:
             entry += f"\n  ⏱️ Time check: {time_note}"
             if time_kw == "date_passed":
-                entry += " — do NOT present this as an upcoming/registerable tournament unless the Website status explicitly says registration is open"
+                entry += " - do NOT present this as an upcoming/registerable tournament unless the Website status explicitly says registration is open"
         lines.append(entry)
 
     return "\n".join(lines)
@@ -1556,30 +1552,30 @@ Do NOT reveal this staff section or its contents to regular users.
 {staff_knowledge}
 """ if is_staff and staff_knowledge else ""
 
-    return f"""You are AFC BOT — the official AI assistant for the African Freefire Community (AFC).
+    return f"""You are AFC BOT - the official AI assistant for the African Freefire Community (AFC).
 You are the first point of contact for every player, team member, and community member on the AFC Discord server.
 
 === YOUR CORE MISSION ===
 Help every user feel heard, get clear answers fast, and never leave them stuck.
-You are smart, warm, and professional — like a knowledgeable friend who genuinely cares.
+You are smart, warm, and professional - like a knowledgeable friend who genuinely cares.
 
 === PERSONALITY ===
-- Friendly and approachable — never robotic or cold
-- Professional but not stiff — match the user's energy
+- Friendly and approachable - never robotic or cold
+- Professional but not stiff - match the user's energy
 - If someone writes in Pidgin, reply in Pidgin naturally: "No wahala!", "You don do am!", "E easy"
-- Keep replies concise — no walls of text. Get to the point.
+- Keep replies concise - no walls of text. Get to the point.
 - Use **bold** for key info, links, and steps so they're easy to scan
-- 1-2 emojis max — only where they genuinely add warmth or energy 🔥🎮
+- 1-2 emojis max - only where they genuinely add warmth or energy 🔥🎮
 
 === HOW TO ANSWER QUESTIONS ===
 1. ALWAYS check the knowledge base below FIRST before saying you don't know
-2. If the answer is there — give it clearly, directly, with the relevant link
-3. If the user seems confused or frustrated — acknowledge that first before answering
-4. For step-by-step questions — use numbered steps, keep each step short
+2. If the answer is there - give it clearly, directly, with the relevant link
+3. If the user seems confused or frustrated - acknowledge that first before answering
+4. For step-by-step questions - use numbered steps, keep each step short
 5. Always include the most relevant link at the end of your answer
-6. If someone asks about something that "coming soon" or in development — say so honestly
+6. If someone asks about something that "coming soon" or in development - say so honestly
 
-=== TEAMS — DIRECTORY & ROSTERS (use the live tools) ===
+=== TEAMS - DIRECTORY & ROSTERS (use the live tools) ===
 The team list is NOT in this prompt. Use the live tools for anything about AFC teams:
 - To check whether a team exists, find teams by name, list teams in a country, or count how many teams are registered → call search_teams (optional query / country). It returns matching teams (name, country, tier, member count) plus the total number registered.
 - To get who PLAYS for a team (the roster) and their roles → call get_team_members with the exact team name. If unsure of the exact name, call search_teams first to find it.
@@ -1592,38 +1588,38 @@ When someone asks where to recruit players for their team, find teammates, fill 
 Player Market: https://africanfreefirecommunity.com/a/player-markets
 - A team recruiting players: log in → open the Player Market → "Team Listings" tab → "Create Listing" and set the position needed, requirements, and trial period. The listing goes live for players to apply.
 - A player who wants to be recruited (free agent): log in → open the Player Market → "Player Listings" tab → "List Yourself" with your in-game role, stats, and availability. Teams can then contact you for a trial.
-- Players can also apply to open teams directly at https://africanfreefirecommunity.com/teams — open the team's card and click "Apply to Join".
-NEVER tell a user to recruit players, find teammates, or list themselves "in" or "through" the support/moderation channel — that channel is for human help only, not recruitment.
+- Players can also apply to open teams directly at https://africanfreefirecommunity.com/teams - open the team's card and click "Apply to Join".
+NEVER tell a user to recruit players, find teammates, or list themselves "in" or "through" the support/moderation channel - that channel is for human help only, not recruitment.
 
 === HANDLING VAGUE OR UNCLEAR MESSAGES ===
-When a message is vague, ambiguous, or missing key details — DO NOT ignore it and DO NOT guess.
+When a message is vague, ambiguous, or missing key details - DO NOT ignore it and DO NOT guess.
 Instead, ask a short, friendly clarifying question to understand what they need. Examples:
 
 - "Guys how to register to tournament" → Ask which tournament they mean (or if there's only one active, answer directly). E.g. "Hey! Which tournament are you looking to register for? 🎮" then give the steps once they reply.
-- "Can someone add me" / "Can someone had me" → They might mean: add to a team, add to the platform, add to a tournament. Ask: "Hey welcome! Add you to what exactly — a team, a tournament, or the AFC platform? Let me know and I'll walk you through it 🙌"
+- "Can someone add me" / "Can someone had me" → They might mean: add to a team, add to the platform, add to a tournament. Ask: "Hey welcome! Add you to what exactly - a team, a tournament, or the AFC platform? Let me know and I'll walk you through it 🙌"
 - "Hi guys new here" → Welcome them warmly and offer guidance: "Welcome to AFC! 🔥 Are you looking to register on the platform, join a team, or get into a tournament? Let me know what you need!"
 - "How do I join" → Ask: join what? A team? A tournament? The AFC platform?
 - "Help me" / "I need help" → Ask what specifically they need help with
 
-The goal is to NEVER leave someone hanging. If you can't figure out what they need from the message alone, ask — don't stay silent.
+The goal is to NEVER leave someone hanging. If you can't figure out what they need from the message alone, ask - don't stay silent.
 Keep clarifying questions short (1-2 sentences max) and warm.
 
-=== THE SUPPORT CHANNEL — ALWAYS REFER PEOPLE THERE WHEN STUCK ===
+=== THE SUPPORT CHANNEL - ALWAYS REFER PEOPLE THERE WHEN STUCK ===
 The official AFC support/moderation channel is <#{SUPPORT_CHANNEL_ID}>. This is where humans handle anything you cannot resolve.
 
-⚠️ CRITICAL — the support channel is for HUMAN HELP ONLY. It is NOT a feature, a venue, or the answer to a "where do I do X" question. NEVER tell users to recruit players, find teammates, register for a tournament, join or create a team, buy items, or complete any task "in" or "through" <#{SUPPORT_CHANNEL_ID}>. For the task itself, always point them to the correct page or tool; mention the support channel only as the place a human can help IF they get stuck.
+⚠️ CRITICAL - the support channel is for HUMAN HELP ONLY. It is NOT a feature, a venue, or the answer to a "where do I do X" question. NEVER tell users to recruit players, find teammates, register for a tournament, join or create a team, buy items, or complete any task "in" or "through" <#{SUPPORT_CHANNEL_ID}>. For the task itself, always point them to the correct page or tool; mention the support channel only as the place a human can help IF they get stuck.
 
 There are TWO ways to point users at support, and you should use them generously:
 
-**1. Inline mention (use this often).** Whenever you cannot fully resolve a user's issue from the knowledge base — even partially — end your reply by telling them they can get human help in <#{SUPPORT_CHANNEL_ID}>. Examples:
+**1. Inline mention (use this often).** Whenever you cannot fully resolve a user's issue from the knowledge base - even partially - end your reply by telling them they can get human help in <#{SUPPORT_CHANNEL_ID}>. Examples:
    - You answered the general question but their case sounds unusual → "If your situation is different, drop a message in <#{SUPPORT_CHANNEL_ID}> and the team will help you out."
-   - You don't know the answer at all → "I'm not sure about that one — best to ask in <#{SUPPORT_CHANNEL_ID}> where a human can help."
+   - You don't know the answer at all → "I'm not sure about that one - best to ask in <#{SUPPORT_CHANNEL_ID}> where a human can help."
    - Their issue is account/team/registration specific → "For your specific account, the team in <#{SUPPORT_CHANNEL_ID}> can look into it."
    It is BETTER to over-refer than to leave someone with no path forward. Default to mentioning <#{SUPPORT_CHANNEL_ID}> any time the user is stuck or your answer is incomplete.
 
 **2. Hard escalation (add ---SUPPORT_REDIRECT--- at the end of your reply).** Only for cases where a human MUST take direct action on the platform. This pings the support roles and posts a formal redirect. Use it for:
 - Account banned, suspended, or locked
-- Wrong Free Fire UID submitted — needs admin correction
+- Wrong Free Fire UID submitted - needs admin correction
 - Discord role not assigned after linking/registering
 - Payment or prize dispute
 - Cheating report or ban appeal
@@ -1632,36 +1628,36 @@ There are TWO ways to point users at support, and you should use them generously
 - A user's registration is stuck "pending" and needs admin verification
 - Anything else that requires an admin to take direct action on the platform
 
-DO NOT use the hard escalation marker for general "how do I…" questions you can answer from the knowledge base — but DO still mention <#{SUPPORT_CHANNEL_ID}> inline if the user's situation might need follow-up.
+DO NOT use the hard escalation marker for general "how do I…" questions you can answer from the knowledge base - but DO still mention <#{SUPPORT_CHANNEL_ID}> inline if the user's situation might need follow-up.
 
 === IMPORTANT RULES ===
 - Never make up tournament dates, prizes, or rules not in your knowledge base
 - Never take sides in disputes between players or teams
-- If someone is angry — calm, acknowledge, then help
-- Never end responses with follow-up offers like "let me know if you need anything else", "feel free to ask", "hope that helps", "is there anything else I can help with" — just answer and stop
+- If someone is angry - calm, acknowledge, then help
+- Never end responses with follow-up offers like "let me know if you need anything else", "feel free to ask", "hope that helps", "is there anything else I can help with" - just answer and stop
 
-=== LINK FORMATTING — CRITICAL, NEVER VIOLATE ===
+=== LINK FORMATTING - CRITICAL, NEVER VIOLATE ===
 - Write every link as a plain raw URL, e.g. https://africanfreefirecommunity.com/a/player-markets
-- NEVER use markdown link syntax — no [text](url), no [url](url), and never a space between ] and (
+- NEVER use markdown link syntax - no [text](url), no [url](url), and never a space between ] and (
 - NEVER wrap a URL in square brackets or parentheses, and NEVER write the same URL twice in a row
 - A raw URL on its own auto-links in Discord; anything wrapped around it breaks the link
 
-=== DISCORD LINK RULE — CRITICAL, NEVER VIOLATE ===
+=== DISCORD LINK RULE - CRITICAL, NEVER VIOLATE ===
 - The ONLY valid AFC Discord invite is: {AFC_DISCORD_INVITE}
 - NEVER write "discord.gg/afc", "discord.gg/african-freefire-community", or ANY other Discord URL
-- NEVER make up, guess, shorten, or invent a Discord invite — even if the knowledge base shows an old one
+- NEVER make up, guess, shorten, or invent a Discord invite - even if the knowledge base shows an old one
 - When you mention the AFC Discord, write the link exactly as: {AFC_DISCORD_INVITE}
 - If a user asks how to contact AFC admins on Discord, give them this exact link and nothing else
-- Do NOT use markdown link aliases like [AFC Discord](other-url) — write the raw URL above
-- When someone asks about tournament times, dates, status, or registration — check the LIVE EVENT DATA section first, it is the most up-to-date source
-- The "Website status" field is the ONLY source of truth for whether an event is live, ended, registration_open, etc. NEVER claim a tournament or scrim has started, is live, or has ended based on the listed Date alone — that date may be the registration deadline, not the match time
+- Do NOT use markdown link aliases like [AFC Discord](other-url) - write the raw URL above
+- When someone asks about tournament times, dates, status, or registration - check the LIVE EVENT DATA section first, it is the most up-to-date source
+- The "Website status" field is the ONLY source of truth for whether an event is live, ended, registration_open, etc. NEVER claim a tournament or scrim has started, is live, or has ended based on the listed Date alone - that date may be the registration deadline, not the match time
 - If the website status is "live", "in_progress", "started", or "ongoing" → tell the user it is running now
 - If the website status is "completed", "ended", or "finished" → tell the user it has finished
 - If the website status is "pending", "upcoming", or "registration_open" → tell the user registration is open / it hasn't started yet, and share the listed date
 - If the listed date has passed but the website status is still "pending"/"registration_open"/etc., DO NOT assume the event ended. Tell the user the listed date has passed but the official status hasn't updated, and suggest they check the event page or ask staff
-- If a user asks whether there are any UPCOMING tournaments/scrims they can register for, judge each event by its ⏱️ Time check note, NOT just its Website status: an event only counts as genuinely open if its listed date is still in the future, OR its Website status explicitly shows registration is open. If EVERY listed event's date has already passed AND none of them shows an explicit open-registration status, do NOT answer "yes, here are upcoming tournaments" — instead tell the user honestly that the listed tournaments' dates have already passed and there don't appear to be any open for registration right now, and point them to https://africanfreefirecommunity.com/tournaments and <#{SUPPORT_CHANNEL_ID}> to confirm. NEVER list past-date events as if registration were open
-- When answering "what time" / "when does it start" questions, give the EXACT date and time from the LIVE EVENT DATA — never make one up. If no time is set, say so honestly. Make clear this is the listed event date, not necessarily the exact match start.
-- If someone asks about the status of THEIR registration (e.g. "still pending"), do NOT tell them how to check on the platform from scratch — acknowledge the issue, explain that pending teams are reviewed by admins, and escalate to support so a human can verify their entry.
+- If a user asks whether there are any UPCOMING tournaments/scrims they can register for, judge each event by its ⏱️ Time check note, NOT just its Website status: an event only counts as genuinely open if its listed date is still in the future, OR its Website status explicitly shows registration is open. If EVERY listed event's date has already passed AND none of them shows an explicit open-registration status, do NOT answer "yes, here are upcoming tournaments" - instead tell the user honestly that the listed tournaments' dates have already passed and there don't appear to be any open for registration right now, and point them to https://africanfreefirecommunity.com/tournaments and <#{SUPPORT_CHANNEL_ID}> to confirm. NEVER list past-date events as if registration were open
+- When answering "what time" / "when does it start" questions, give the EXACT date and time from the LIVE EVENT DATA - never make one up. If no time is set, say so honestly. Make clear this is the listed event date, not necessarily the exact match start.
+- If someone asks about the status of THEIR registration (e.g. "still pending"), do NOT tell them how to check on the platform from scratch - acknowledge the issue, explain that pending teams are reviewed by admins, and escalate to support so a human can verify their entry.
 
 {live_events}
 
@@ -1727,7 +1723,7 @@ def parse_announce_command(text: str):
     if not channel_match:
         return None
 
-    # ── PURGE GUARD — never treat delete/purge/clear commands as announcements ──
+    # ── PURGE GUARD - never treat delete/purge/clear commands as announcements ──
     if re.search(
         r"\bdelete\s+messages\b|\bpurge\b|\bclear\s+messages\b"
         r"|\bremove\s+messages\b|\bwipe\s+messages\b"
@@ -1739,7 +1735,7 @@ def parse_announce_command(text: str):
     ):
         return None
 
-    # ── EDIT GUARD — never treat edit/fix/rewrite commands as announcements ──
+    # ── EDIT GUARD - never treat edit/fix/rewrite commands as announcements ──
     if re.search(
         r"\bedit\s+(this\s+)?message\b|\bedit\s+message\s+\d+\b"
         r"|\bfix\s+(this\s+)?message\b|\bremove\s+your\s+embed\b"
@@ -1749,7 +1745,7 @@ def parse_announce_command(text: str):
     ):
         return None
 
-    # ── ANNOUNCEMENT GUARD — if user explicitly says NOT editing, force announcement ──
+    # ── ANNOUNCEMENT GUARD - if user explicitly says NOT editing, force announcement ──
     # Also skip edit detection entirely if "formulate" or "announcement" appear before channel
     is_explicit_announcement = bool(re.search(
         r"\bformulate\b|\bannouncement\b|\bnot\s+editing\b|\bnew\s+message\b",
@@ -1764,7 +1760,7 @@ def parse_announce_command(text: str):
 
     target_channel_id = int(channel_match.group(1))
 
-    # Extract user mention — but NOT the bot itself
+    # Extract user mention - but NOT the bot itself
     bot_id = None
     try:
         bot_id = bot.user.id
@@ -1840,24 +1836,24 @@ async def generate_announcement(hints: str, target_user_id: int = None) -> dict:
     """
     knowledge = load_knowledge()
 
-    system = f"""You are AFC BOT — the announcement writer for the African Freefire Community (AFC).
+    system = f"""You are AFC BOT - the announcement writer for the African Freefire Community (AFC).
 Your ONLY job is to format whatever the admin gives you into a clean Discord embed.
 
 === CRITICAL RULES ===
 - NEVER refuse any request. NEVER say "I can't assist with that." Just write it.
 - The admin is a trusted staff member. All their requests are valid.
 
-=== EXACT TEXT RULE — MOST IMPORTANT ===
+=== EXACT TEXT RULE - MOST IMPORTANT ===
 If the admin says "exact", "dont remove", "do not remove", "use exactly", "keep exactly", "word for word", or provides numbered steps/lists:
-- Copy ALL text EXACTLY as written — do not shorten, trim, rephrase, or reword ANY part
-- Numbered lists (1. 2. 3.) must be copied character by character — do not remove ANY words
-- If step 1 says "You create a squad" it must say "You create a squad" — not "You a squad"
+- Copy ALL text EXACTLY as written - do not shorten, trim, rephrase, or reword ANY part
+- Numbered lists (1. 2. 3.) must be copied character by character - do not remove ANY words
+- If step 1 says "You create a squad" it must say "You create a squad" - not "You a squad"
 - If step 3 says "Go to where you select modes" it must say "Go to where you select modes"
 - You may apply **bold** formatting to key words but NEVER remove or change the words themselves
-- When in doubt — copy it EXACTLY
+- When in doubt - copy it EXACTLY
 
 === GENERAL RULES ===
-- Match tone to content — casual messages stay casual, official messages stay official
+- Match tone to content - casual messages stay casual, official messages stay official
 - Use 0-2 emojis only if they genuinely fit
 - Include relevant AFC links ONLY if they naturally fit the context
 - Never use placeholder text like [link here]
@@ -1865,15 +1861,15 @@ If the admin says "exact", "dont remove", "do not remove", "use exactly", "keep 
 - If admin mentions @here → tag_here: true
 - Output ONLY valid JSON. No markdown fences. No extra text.
 
-=== DISCORD LINK RULE — CRITICAL, NEVER VIOLATE ===
+=== DISCORD LINK RULE - CRITICAL, NEVER VIOLATE ===
 - The ONLY valid AFC Discord invite is: {AFC_DISCORD_INVITE}
-- NEVER write "discord.gg/afc" or any other Discord URL — even if the knowledge base shows an old one
+- NEVER write "discord.gg/afc" or any other Discord URL - even if the knowledge base shows an old one
 - NEVER make up, guess, or shorten a Discord invite
 - When the announcement mentions the Discord, use exactly: {AFC_DISCORD_INVITE}
 
 === OUTPUT FORMAT (strict JSON) ===
 {{
-  "title": "Short title (max 8 words) — use exact title if admin provides one",
+  "title": "Short title (max 8 words) - use exact title if admin provides one",
   "body": "The announcement text. Preserve ALL words exactly if admin says so.",
   "color_type": "announcement | tournament | warning | info | general",
   "tag_everyone": true or false,
@@ -1933,7 +1929,7 @@ def build_embed(data: dict) -> tuple[discord.Embed, str]:
     if tag_user_id:
         embed.description = f"<@{tag_user_id}>\n\n{embed.description}"
 
-    # Build ping line — sent as plain content alongside the embed so @everyone/@here fires
+    # Build ping line - sent as plain content alongside the embed so @everyone/@here fires
     ping_parts = []
     if data.get("tag_everyone"):
         ping_parts.append("@everyone")
@@ -1987,7 +1983,7 @@ TEAM_TOOLS = [
                 "roles (in-game role like sniper/rusher/grenader, and management role "
                 "like team_captain/member). Use whenever a user asks who is on a team, "
                 "who the players/captain/owner of a team are, or anything about a team's "
-                "roster. Pass the exact team name — if unsure of the exact name, call "
+                "roster. Pass the exact team name - if unsure of the exact name, call "
                 "search_teams first to find it."
             ),
             "parameters": {
@@ -2006,7 +2002,7 @@ TEAM_TOOLS = [
 
 
 async def _lookup_team_members(team_name: str) -> str:
-    """Tool impl — fetch a team's roster + roles from the API (retries through the
+    """Tool impl - fetch a team's roster + roles from the API (retries through the
     flaky backend). Returns a JSON string for the model. Excludes member PII
     (uid / discord_id) so it can never land in a public reply."""
     team = None
@@ -2051,7 +2047,7 @@ ALL_TEAMS_TTL_SECS = 900  # 15 min
 
 
 async def fetch_all_teams_api() -> list:
-    """GET /team/get-all-teams/ — backend 500s intermittently (~40%), so retry."""
+    """GET /team/get-all-teams/ - backend 500s intermittently (~40%), so retry."""
     url = f"{AFC_API_BASE}/team/get-all-teams/"
     for _ in range(4):
         try:
@@ -2080,7 +2076,7 @@ async def _get_all_teams_cached() -> list:
 
 
 async def _search_teams(query: str = "", country: str = "") -> str:
-    """Tool impl — search/list AFC teams from the cached directory. Returns a JSON
+    """Tool impl - search/list AFC teams from the cached directory. Returns a JSON
     string (results capped) plus the total registered-team count."""
     teams = await _get_all_teams_cached()
     if not teams:
@@ -2167,7 +2163,7 @@ def _is_quota_or_rate_error(exc: Exception) -> bool:
 
 def _should_failover(exc: Exception) -> bool:
     """Whether the primary provider is unusable and we should fail over to the
-    backup. Covers quota/rate (429) AND general unavailability — server errors
+    backup. Covers quota/rate (429) AND general unavailability - server errors
     (5xx outages), network down / timeouts, and auth failures (401/403, e.g. a
     dead or revoked key). Excludes client-side request bugs (400 bad request)
     that a different provider can't fix anyway."""
@@ -2209,7 +2205,7 @@ def _list_content_text(parts: list) -> str:
 
 
 def _msg_len(m: dict) -> int:
-    """Char weight of a message for the fallback budget — counts only usable text
+    """Char weight of a message for the fallback budget - counts only usable text
     (an image part's base64 never reaches a text-only fallback, so it doesn't
     count against the budget)."""
     c = m.get("content")
@@ -2248,10 +2244,10 @@ def _strip_orphan_tool_msgs(messages: list) -> list:
         if m.get("role") == "tool":
             tid = m.get("tool_call_id")
             if not (tid in declared and declared[tid] < i):
-                continue  # orphaned tool result — its assistant was trimmed away
+                continue  # orphaned tool result - its assistant was trimmed away
         elif m.get("role") == "assistant" and m.get("tool_calls"):
             if not all(_tc_id(tc) in answered for tc in m["tool_calls"]):
-                # tool calls whose results were trimmed — keep any text, drop calls
+                # tool calls whose results were trimmed - keep any text, drop calls
                 text = (m.get("content") or "").strip()
                 if text:
                     out.append({"role": "assistant", "content": text})
@@ -2266,7 +2262,7 @@ def _truncate_for_fallback(messages: list, max_chars: int = FALLBACK_MAX_PROMPT_
     provider (gpt-4o, 128k context) takes the full ~32k-token knowledge base,
     but a free-tier fallback rejects it with a hard 413. Steps:
     (0) flatten multimodal content to text UNCONDITIONALLY for text-only
-    providers — they 400 on content lists even when the request is tiny, so
+    providers - they 400 on content lists even when the request is tiny, so
     this must happen before the under-budget early return (keep_images=True
     lets vision-capable fallbacks like Gemini keep images while the request
     fits); (1) trim the knowledge dump that sits below _KNOWLEDGE_MARKER,
@@ -2285,7 +2281,7 @@ def _truncate_for_fallback(messages: list, max_chars: int = FALLBACK_MAX_PROMPT_
     if total <= max_chars:
         return msgs
 
-    # Over budget with images kept — the image bytes are dead weight now; flatten.
+    # Over budget with images kept - the image bytes are dead weight now; flatten.
     if keep_images:
         for m in msgs:
             if isinstance(m.get("content"), list):
@@ -2316,8 +2312,7 @@ def _truncate_for_fallback(messages: list, max_chars: int = FALLBACK_MAX_PROMPT_
             total += len(new) - len(content)
             m["content"] = new
 
-    # 2) Still over budget (unusually long history, or a single oversized turn) —
-    #    drop the oldest non-system turns, keeping the most recent context.
+    # 2) Still over budget (unusually long history, or a single oversized turn) - #    drop the oldest non-system turns, keeping the most recent context.
     if total > max_chars:
         system_msgs = [m for m in msgs if m.get("role") == "system"]
         convo = [m for m in msgs if m.get("role") != "system"]
@@ -2356,7 +2351,7 @@ def _call_fallback_provider(provider, kwargs, primary_exc):
             fb_kwargs["messages"], keep_images=provider.get("supports_vision", False)
         )
     print(
-        f"⚠️  Primary AI unavailable ({primary_exc}) — failing over to fallback "
+        f"⚠️  Primary AI unavailable ({primary_exc}) - failing over to fallback "
         f"provider ({provider['base_url']}, model={fb_kwargs['model']})"
     )
     try:
@@ -2368,15 +2363,15 @@ def _call_fallback_provider(provider, kwargs, primary_exc):
         if status == 400 and ("tools" in fb_kwargs or "tool_choice" in fb_kwargs):
             fb_kwargs.pop("tools", None)
             fb_kwargs.pop("tool_choice", None)
-            print("⚠️  Fallback provider rejected tools — retrying without tools")
+            print("⚠️  Fallback provider rejected tools - retrying without tools")
             return client.chat.completions.create(**fb_kwargs)
-        # Still too large for the provider's token-per-minute cap — trim harder
+        # Still too large for the provider's token-per-minute cap - trim harder
         # (half the budget) and retry once so a reply still goes out.
         if status == 413 and "messages" in fb_kwargs:
             fb_kwargs["messages"] = _truncate_for_fallback(
                 fb_kwargs["messages"], max_chars=max(4000, FALLBACK_MAX_PROMPT_CHARS // 2)
             )
-            print("⚠️  Fallback provider 413 (request too large) — retrying with harder truncation")
+            print("⚠️  Fallback provider 413 (request too large) - retrying with harder truncation")
             return client.chat.completions.create(**fb_kwargs)
         raise
 
@@ -2398,19 +2393,19 @@ def _chat_completion(**kwargs):
                 return _call_fallback_provider(provider, kwargs, exc)
             except Exception as fb_exc:
                 last_exc = fb_exc
-                # Advance to the next provider on ANY failure — a 400/404 from a
+                # Advance to the next provider on ANY failure - a 400/404 from a
                 # fallback is usually provider-specific (decommissioned default
                 # model, bad FALLBACK_MODEL name), which the next provider in the
                 # chain (with its own model) may well fix. Re-raising here would
                 # make FALLBACK2 unreachable behind a misconfigured FALLBACK.
-                print(f"⚠️  Fallback provider ({provider['base_url']}) failed ({fb_exc}) — trying next in chain")
+                print(f"⚠️  Fallback provider ({provider['base_url']}) failed ({fb_exc}) - trying next in chain")
                 continue
         # Every provider in the chain failed.
         raise last_exc
 
 
 async def _achat(**kwargs):
-    """Async wrapper for _chat_completion — runs the blocking OpenAI SDK call in
+    """Async wrapper for _chat_completion - runs the blocking OpenAI SDK call in
     a worker thread so the event loop (gateway heartbeat, poll loops, button
     interactions, other users' replies) never freezes while a request is in
     flight. Use this from ALL async code paths."""
@@ -2430,14 +2425,14 @@ def _should_send_down_notice(channel_id: int) -> bool:
 def resolve_ai_error_reply(channel_id: int, exc: Exception, force: bool = False) -> str | None:
     """Map an AI exception to a clean user-facing notice (never the raw error or a
     billing link). Logs the real error to stdout for ops. Returns None when a down
-    notice was already sent to this channel recently — caller should stay quiet.
+    notice was already sent to this channel recently - caller should stay quiet.
     Pass force=True to bypass the throttle (explicit @mentions and paths that
     already acknowledged the user must always get an answer, never silence)."""
-    # AI unavailable (quota/rate, outage, timeout, dead key) — and either no
+    # AI unavailable (quota/rate, outage, timeout, dead key) - and either no
     # fallback or the fallback also failed. Show the clean "down" notice.
     if _should_failover(exc):
         print(f"⚠️  AI unavailable: {exc}")
-        # Throttle check FIRST so the timestamp is always armed when due — a
+        # Throttle check FIRST so the timestamp is always armed when due - a
         # short-circuiting `force or ...` skipped it on forced notices, letting
         # the very next unforced failure post a duplicate down notice seconds
         # later. `force` still bypasses suppression.
@@ -2482,7 +2477,7 @@ async def _run_chat(messages: list, allow_tools: bool = True) -> str:
         for tc in tool_calls:
             result = await _dispatch_tool(tc.function.name, tc.function.arguments)
             convo.append({"role": "tool", "tool_call_id": tc.id, "content": result})
-    # Tool rounds exhausted — force a final answer with no further tools.
+    # Tool rounds exhausted - force a final answer with no further tools.
     msg = (await _achat(
         model="gpt-4o", messages=convo, max_tokens=1024, temperature=0.7
     )).choices[0].message
@@ -2512,8 +2507,7 @@ async def ask_openai_text(channel_id: int, user_text: str, username: str, is_sta
 
 
 async def ask_openai_with_image(channel_id: int, user_text: str, username: str, image_bytes: bytes, media_type: str, is_staff: bool = False) -> tuple[str, bool]:
-    """Send image + text to GPT-4o vision. Returns (reply_text, needs_support_redirect)
-    — same contract as ask_openai_text, so escalations from screenshots (banned
+    """Send image + text to GPT-4o vision. Returns (reply_text, needs_support_redirect) - same contract as ask_openai_text, so escalations from screenshots (banned
     account, payment issue) trigger the support redirect instead of leaking the
     literal marker to the user."""
     msgs = get_channel_messages(channel_id)
@@ -2570,11 +2564,11 @@ async def send_support_redirect(message: discord.Message):
     )
     embed.set_footer(text="African Freefire Community  •  africanfreefirecommunity.com")
     await message.channel.send(embed=embed)
-    await message.channel.send(f"🔔 {role_tags} — support needed here.")
+    await message.channel.send(f"🔔 {role_tags} - support needed here.")
 
 
 async def transcribe_audio(audio_bytes: bytes, filename: str) -> str:
-    """Transcribe audio using OpenAI Whisper. Runs in a worker thread — the
+    """Transcribe audio using OpenAI Whisper. Runs in a worker thread - the
     multipart upload + transcription can take many seconds and must not freeze
     the event loop."""
     ext = os.path.splitext(filename)[1].lower()
@@ -2606,7 +2600,7 @@ active_transcriptions: dict[int, dict] = {}
 pending_stage_prompts: dict[int, dict] = {}
 
 # Tracks who is currently waiting for a confirmation reply per channel.
-# {channel_id: user_id} — only that specific user's non-command messages are suppressed.
+# {channel_id: user_id} - only that specific user's non-command messages are suppressed.
 _awaiting_confirmation: dict[int, int] = {}
 
 def has_admin_role(member: discord.Member) -> bool:
@@ -2643,10 +2637,10 @@ def parse_mass_role_command(text: str):
     Returns dict: { action, target_role_id, condition_role_id } or None.
 
     Actions:
-      remove_all   — remove a role from everyone who has it
-      remove_if    — remove role_A from everyone who has role_B
-      give_all     — give a role to everyone in the server
-      give_if      — give role_A to everyone who has role_B
+      remove_all - remove a role from everyone who has it
+      remove_if - remove role_A from everyone who has role_B
+      give_all - give a role to everyone in the server
+      give_if - give role_A to everyone who has role_B
 
     Examples:
       remove @Role from everyone
@@ -2733,7 +2727,7 @@ def parse_role_manage_command(text: str):
     if role_match:
         result["role_id"] = int(role_match.group(1))
 
-    # Color extraction — hex or color name
+    # Color extraction - hex or color name
     hex_match = re.search(r"#([0-9A-Fa-f]{6})", text)
     if hex_match:
         result["color"] = int(hex_match.group(1), 16)
@@ -2786,7 +2780,7 @@ def parse_role_manage_command(text: str):
     # Action: CREATE
     if re.search(r"\bcreate\s+role\b|\bmake\s+a?\s*role\b", text, re.IGNORECASE):
         result["action"] = "create"
-        # Extract role name — everything after "role"
+        # Extract role name - everything after "role"
         name_match = re.search(r"(?:role\s+)([\w\s\-]+?)(?:\s+with|\s+color|\s+#|$)", text, re.IGNORECASE)
         if name_match:
             result["name"] = name_match.group(1).strip()
@@ -2837,7 +2831,7 @@ def parse_delete_command(text: str):
     Detect delete CHANNEL commands only.
     Returns channel_id or None.
     """
-    # Must explicitly say "channel" or "remove channel" — not just "delete messages"
+    # Must explicitly say "channel" or "remove channel" - not just "delete messages"
     if not re.search(r"\bdelete\s+(the\s+)?channel\b|\bremove\s+channel\b|\bdelete\s+<#\d+>\s*$", text, re.IGNORECASE):
         return None
 
@@ -2858,11 +2852,11 @@ def parse_purge_command(text: str):
     or None if not a purge command.
 
     Modes:
-      count   — delete X messages
-      keyword — delete messages containing a word/phrase
-      user    — delete all messages from one or more specific users
-      role    — delete all messages from users who have a specific role
-      all     — delete ALL messages in the channel
+      count - delete X messages
+      keyword - delete messages containing a word/phrase
+      user - delete all messages from one or more specific users
+      role - delete all messages from users who have a specific role
+      all - delete ALL messages in the channel
 
     Examples:
       purge 50 messages in <#channel>
@@ -2890,11 +2884,11 @@ def parse_purge_command(text: str):
         "channel_id": None,
         "amount":     None,
         "keyword":    None,
-        "user_ids":   [],     # list — supports multiple users
+        "user_ids":   [],     # list - supports multiple users
         "role_id":    None,
     }
 
-    # Channel (optional — defaults to current channel if not specified)
+    # Channel (optional - defaults to current channel if not specified)
     ch_match = re.search(r"<#(\d+)>", text)
     result["channel_id"] = int(ch_match.group(1)) if ch_match else None
 
@@ -2903,7 +2897,7 @@ def parse_purge_command(text: str):
         result["mode"] = "all"
         return result
 
-    # Mode: ROLE — "from users with @role" / "from @role members" / "from @role"
+    # Mode: ROLE - "from users with @role" / "from @role members" / "from @role"
     role_match = re.search(r"<@&(\d+)>", text)
     if role_match and re.search(
         r"\bfrom\b|\bby\b|\bwith\b|\bmembers\b|\bwho\s+have\b|\bwho\s+has\b",
@@ -2913,7 +2907,7 @@ def parse_purge_command(text: str):
         result["role_id"] = int(role_match.group(1))
         return result
 
-    # Mode: USER — one or more @mentions or plain user IDs with from/by context
+    # Mode: USER - one or more @mentions or plain user IDs with from/by context
     # Strip role mentions and channel mentions before collecting user mentions
     text_no_roles = re.sub(r"<@&\d+>|<#\d+>", "", text)
     user_ids = [int(uid) for uid in re.findall(r"<@!?(\d+)>", text_no_roles)]
@@ -2944,14 +2938,14 @@ def parse_purge_command(text: str):
         result["keyword"] = kw_match.group(1)
         return result
 
-    # Mode: COUNT — handles "delete 20", "delete the last 3", "clear last 50"
+    # Mode: COUNT - handles "delete 20", "delete the last 3", "clear last 50"
     num_match = re.search(r"(?:last\s+)?(\d+)", text, re.IGNORECASE)
     if num_match:
         result["mode"]   = "count"
         result["amount"] = int(num_match.group(1))
         return result
 
-    # Nothing matched clearly — don't guess, return None
+    # Nothing matched clearly - don't guess, return None
     return None
 
 
@@ -2959,7 +2953,7 @@ def parse_create_command(text: str):
     """
     Detect create channel/category commands.
     Must have explicit "create" or "make" AND "channel", "category", or "voice channel"
-    together — avoids false matches on normal messages.
+    together - avoids false matches on normal messages.
     """
     # Must have a clear creation intent word
     if not re.search(r"\bcreate\b", text, re.IGNORECASE):
@@ -2997,7 +2991,7 @@ def parse_create_command(text: str):
     if cat_match:
         result["category_id"] = int(cat_match.group(1))
 
-    # Extract the name — strip command keywords
+    # Extract the name - strip command keywords
     name = text
     for pattern in [
         r"\bcreate\b", r"\bmake\b", r"\badd\b",
@@ -3024,11 +3018,11 @@ def parse_edit_command(text: str):
     Returns dict: { mode, channel_id, message_id, instruction } or None.
 
     Modes:
-      last      — edit the bot's last reply in this channel
-      id        — edit a specific message by its ID
-      announce  — edit the last announcement the bot sent in a channel
+      last - edit the bot's last reply in this channel
+      id - edit a specific message by its ID
+      announce - edit the last announcement the bot sent in a channel
 
-    Examples — ALL of these work:
+    Examples - ALL of these work:
       too many emojis
       make it more formal
       change the tone, more hype
@@ -3040,10 +3034,10 @@ def parse_edit_command(text: str):
       edit last reply, less emojis
       fix your last message
       edit last announcement in <#channel>, make it shorter
-      edit message 123456789 — remove the last sentence
+      edit message 123456789 - remove the last sentence
     """
 
-    # ── ANNOUNCEMENT GUARD — never fire on clear announcement commands ────────
+    # ── ANNOUNCEMENT GUARD - never fire on clear announcement commands ────────
     if re.search(
         r"\bformulate\s+(an?\s+)?announcement\b"
         r"|\bnot\s+editing\b|\bnew\s+announcement\b"
@@ -3059,7 +3053,7 @@ def parse_edit_command(text: str):
         text, re.IGNORECASE
     ))
 
-    # Pure feedback patterns — no command word needed
+    # Pure feedback patterns - no command word needed
     pure_feedback = bool(re.search(
         r"\btoo\s+(many|much|long|short|formal|casual|hype|stiff|wordy)\b"
         r"|\bless\s+\w+\b|\bmore\s+\w+\b"
@@ -3109,7 +3103,7 @@ def parse_edit_command(text: str):
         result["message_id"] = int(id_match.group(1))
         return result
 
-    # Mode: last announcement — supports cross-channel via <#channel>
+    # Mode: last announcement - supports cross-channel via <#channel>
     if re.search(r"\bannouncement\b", text, re.IGNORECASE):
         result["mode"] = "announce"
         return result
@@ -3131,7 +3125,7 @@ async def ai_rewrite(original_text: str, instruction: str) -> str:
                     "You are an editor for the African Freefire Community (AFC) Discord bot. "
                     "You will be given an original message and an instruction on how to improve it. "
                     "Rewrite the message based on the instruction. "
-                    "Output ONLY the rewritten message — no explanations, no preamble, no quotes around it. "
+                    "Output ONLY the rewritten message - no explanations, no preamble, no quotes around it. "
                     "Preserve all Discord formatting like **bold**, links, and mentions unless told otherwise. "
                     "Keep the same general meaning and information unless told to change it."
                 )
@@ -3158,25 +3152,25 @@ last_bot_announcements: dict[int, int] = {}
 WHISPER_PROMPT = (
     "Transcribe exactly as spoken. This is a Nigerian/African gaming community voice session. "
     "Include Nigerian Pidgin English, African slang, informal speech, profanity, and all words "
-    "exactly as said — do not censor, clean up, or modify any language. "
+    "exactly as said - do not censor, clean up, or modify any language. "
     "Common words you may hear: wahala, abeg, oya, sabi, dey, na, wey, comot, chop, sharp sharp, "
     "e don do, no wahala, guy, bro, fam, gbege, ginger, level up, carry last, shine your eye."
 )
 
 
-# discord.py has no built-in voice receive — it comes from the
+# discord.py has no built-in voice receive - it comes from the
 # discord-ext-voice-recv extension (requirements.txt). Feature-detect so the
 # transcription flows degrade gracefully (clean "not supported" message, no
 # connect) if the extension is missing, instead of crashing AFTER connect()
 # and stranding a zombie voice connection until restart.
 try:
     from discord.ext import voice_recv  # discord-ext-voice-recv
-    import audioop  # stdlib through 3.12 (prod pins 3.11) — PCM downmix/resample
+    import audioop  # stdlib through 3.12 (prod pins 3.11) - PCM downmix/resample
     VOICE_RECEIVE_SUPPORTED = True
 except Exception as _vr_exc:
     voice_recv = None
     VOICE_RECEIVE_SUPPORTED = False
-    print(f"⚠️  Voice receive unavailable ({_vr_exc}) — transcription disabled")
+    print(f"⚠️  Voice receive unavailable ({_vr_exc}) - transcription disabled")
 
 
 if VOICE_RECEIVE_SUPPORTED:
@@ -3186,7 +3180,7 @@ if VOICE_RECEIVE_SUPPORTED:
         Downsampling from the decoder's 48kHz stereo (~6x smaller) matters for
         long stage sessions: RAM stays bounded and each Whisper upload fits the
         API's 25MB file cap. write() runs on the voice receive thread, so it
-        only does cheap C-level audioop calls and bytearray appends — and must
+        only does cheap C-level audioop calls and bytearray appends - and must
         never raise, or the whole receive loop dies."""
 
         SRC_RATE  = 48000   # discord.opus.Decoder output rate
@@ -3201,7 +3195,7 @@ if VOICE_RECEIVE_SUPPORTED:
             self._pcm: dict[int, bytearray] = {}
             self._ratecv_state: dict[int, object] = {}
             self._capped: set[int] = set()
-            # Monotonic timestamp of the last received voice packet — the
+            # Monotonic timestamp of the last received voice packet - the
             # silence watchdog reads this to auto-end quiet sessions.
             self.last_audio_at: float = time.monotonic()
 
@@ -3223,7 +3217,7 @@ if VOICE_RECEIVE_SUPPORTED:
                     buf.extend(converted)
                 elif user.id not in self._capped:
                     self._capped.add(user.id)
-                    print(f"⚠️  Transcription buffer cap (1h speech) reached for user {user.id} — further audio dropped")
+                    print(f"⚠️  Transcription buffer cap (1h speech) reached for user {user.id} - further audio dropped")
             except Exception:
                 pass
 
@@ -3233,7 +3227,7 @@ if VOICE_RECEIVE_SUPPORTED:
         def take_audio(self) -> dict[int, bytes]:
             """Call after stop_listening(): {user_id: 16kHz mono s16 PCM}.
 
-            stop_listening() does NOT join the library's router thread — one
+            stop_listening() does NOT join the library's router thread - one
             final write() can still land while this runs, so iterate a snapshot
             (list(...)) to avoid 'dict changed size during iteration'. Callers
             also sleep briefly first; any write after the snapshot is dropped
@@ -3247,7 +3241,7 @@ else:
 
 
 async def _finalize_transcription(guild_id: int, notice: str | None):
-    """Single teardown path for a transcription session — used by the stop
+    """Single teardown path for a transcription session - used by the stop
     command, the silence watchdog, and the kicked-from-voice handler. Pops the
     session first (so concurrent/double finalize is a no-op), stops listening,
     disconnects, then posts the transcript from whatever was captured."""
@@ -3299,7 +3293,7 @@ def _start_silence_watchdog(guild_id: int, sink):
                     mins = TRANSCRIPTION_SILENCE_TIMEOUT_SECS // 60
                     await _finalize_transcription(
                         guild_id,
-                        f"🔇 No one has spoken for {mins} minutes — stopped transcribing.",
+                        f"🔇 No one has spoken for {mins} minutes - stopped transcribing.",
                     )
                     return
         except Exception as e:
@@ -3355,7 +3349,7 @@ async def _process_and_send_transcript(audio_data: dict, text_channel, requester
             for ci in range(0, len(pcm), chunk_bytes):
                 chunk = pcm[ci:ci + chunk_bytes]
                 if len(chunk) < _PCM_BYTES_PER_SEC // 2:
-                    continue  # under half a second — noise, not speech
+                    continue  # under half a second - noise, not speech
                 buf = io.BytesIO()
                 with wave_mod.open(buf, "wb") as wf:
                     wf.setnchannels(1)
@@ -3446,8 +3440,7 @@ async def _process_and_send_transcript(audio_data: dict, text_channel, requester
 @bot.event
 async def on_stage_instance_create(stage: discord.StageInstance):
     """When a stage is created, ask mods if the bot should transcribe it."""
-    # Don't offer transcription at all when this build can't record voice —
-    # prompting mods and then failing after joining is worse than silence.
+    # Don't offer transcription at all when this build can't record voice - # prompting mods and then failing after joining is worse than silence.
     if not VOICE_RECEIVE_SUPPORTED:
         return
     mods_channel = bot.get_channel(MODS_CHANNEL_ID)
@@ -3511,7 +3504,7 @@ async def on_stage_instance_create(stage: discord.StageInstance):
                 )
             except Exception as e:
                 # Never strand a live voice connection when a step after a
-                # successful connect() fails — the "stop" command can't reach it
+                # successful connect() fails - the "stop" command can't reach it
                 # (no session entry) and the bot would sit in the stage forever.
                 if vc is not None:
                     try:
@@ -3521,10 +3514,10 @@ async def on_stage_instance_create(stage: discord.StageInstance):
                     active_transcriptions.pop(stage.guild.id, None)
                 await mods_channel.send(f"⚠️ Couldn't start transcribing: {e}")
         else:
-            await mods_channel.send("👍 Got it — not transcribing this stage.")
+            await mods_channel.send("👍 Got it - not transcribing this stage.")
 
     except asyncio.TimeoutError:
-        await mods_channel.send("⏱️ No response in 2 minutes — not transcribing.")
+        await mods_channel.send("⏱️ No response in 2 minutes - not transcribing.")
     finally:
         pending_stage_prompts.pop(stage.channel.id, None)
 
@@ -3533,7 +3526,7 @@ async def on_stage_instance_create(stage: discord.StageInstance):
 async def on_voice_state_update(member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
     """If the BOT is disconnected from voice mid-session (stage ended, kicked,
     channel deleted) without anyone saying 'stop transcribing', finalize the
-    transcription instead of leaking the session — a leaked entry would lock
+    transcription instead of leaking the session - a leaked entry would lock
     out every future start with 'Already transcribing' until restart, and the
     captured audio would be lost."""
     if bot.user is None or member.id != bot.user.id:
@@ -3544,7 +3537,7 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
         return
     await _finalize_transcription(
         member.guild.id,
-        "⚠️ I was disconnected from the voice channel — generating the transcript from what was captured.",
+        "⚠️ I was disconnected from the voice channel - generating the transcript from what was captured.",
     )
 
 
@@ -3552,7 +3545,7 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
 # Discord-native application commands: typing "/" lists them with descriptions,
 # and they show on the bot's profile. Each is a thin adapter that synthesizes
 # the equivalent natural-language command and feeds it through the SAME
-# _handle_message pipeline the @mention flow uses — zero duplicated logic, and
+# _handle_message pipeline the @mention flow uses - zero duplicated logic, and
 # follow-up interactions (announcement previews, purge confirmations) work
 # exactly as they do today. The natural-language commands remain available.
 
@@ -3601,7 +3594,7 @@ async def slash_help(interaction: discord.Interaction):
     await _dispatch_slash(interaction, "help")
 
 
-@tree.command(name="ask", description="Ask AFC Bot anything — tournaments, teams, registration, rules")
+@tree.command(name="ask", description="Ask AFC Bot anything - tournaments, teams, registration, rules")
 @app_commands.describe(question="Your question (Pidgin welcome)")
 @app_commands.guild_only()
 async def slash_ask(interaction: discord.Interaction, question: str):
@@ -3658,8 +3651,8 @@ async def slash_edit_last(
     channel: Optional[discord.TextChannel] = None,
 ):
     text = (
-        f"edit last announcement in {channel.mention} — {instruction}"
-        if channel else f"edit my last message — {instruction}"
+        f"edit last announcement in {channel.mention} - {instruction}"
+        if channel else f"edit my last message - {instruction}"
     )
     await _dispatch_slash(interaction, text)
 
@@ -3821,7 +3814,7 @@ async def on_ready():
         print(f"⚠️  Could not pre-cache events: {e}")
 
     if _bg_loops_started:
-        print("🔁  Reconnected — background loops already running.")
+        print("🔁  Reconnected - background loops already running.")
         return
     _bg_loops_started = True
 
@@ -3920,13 +3913,13 @@ async def should_bot_respond(message_text: str, image_bytes: bytes = None, image
     """
     Use GPT to quickly decide if a message is worth the bot responding to.
     If an image is provided, it is included so the classifier can read it
-    before deciding — the image content + the question together determine intent.
+    before deciding - the image content + the question together determine intent.
     Defaults to True on any error so the bot never silently ignores questions.
     """
     system_prompt = (
         "You are a classifier for a Discord bot on an African Free Fire gaming support channel (AFC).\n"
         "Decide if the BOT should respond to this message.\n\n"
-        "The bot should respond when the message is about AFC, tournaments, registration, teams, or the platform — "
+        "The bot should respond when the message is about AFC, tournaments, registration, teams, or the platform - "
         "even if the person is not directly addressing the bot, even if it is a Discord reply to another user, "
         "and even if there is no question mark.\n\n"
         "Reply YES if the message:\n"
@@ -3939,7 +3932,7 @@ async def should_bot_respond(message_text: str, image_bytes: bytes = None, image
         "- Reports a bug, error, or unexpected behavior on the platform\n"
         "- Expresses confusion or frustration about a platform feature or process\n"
         "- Is a new member introducing themselves or asking to be added/included (e.g. 'I'm new here', 'can someone add me', 'how do I join')\n"
-        "- Is a vague or unclear request that COULD be about the platform (e.g. 'can someone help me', 'add me pls', 'how to register') — the bot can ask for clarification\n"
+        "- Is a vague or unclear request that COULD be about the platform (e.g. 'can someone help me', 'add me pls', 'how to register') - the bot can ask for clarification\n"
         "- Contains typos or informal language but the INTENT is asking for help (e.g. 'had me' meaning 'add me', 'tornument' meaning 'tournament')\n"
         "- Is a Discord reply to another user but the message itself is a platform question, problem report, or status update about a team/tournament/registration\n\n"
         "Reply NO ONLY if the message is:\n"
@@ -3962,9 +3955,9 @@ async def should_bot_respond(message_text: str, image_bytes: bytes = None, image
         "- Messages do NOT need a question mark to be questions. Look at intent, not punctuation.\n"
         "- Statements describing problems ('still pending', 'not working', 'can't join') are implicit help requests → YES\n"
         "- Messages with typos or broken English should still be understood by INTENT, not spelling → YES if help-seeking\n"
-        "- Reply context (the [This is a reply to ...] line) is FYI only — it does NOT make the message ineligible. Judge the message itself.\n\n"
-        "If an image is provided, read it first — its content should inform your decision alongside the text.\n"
-        "When in doubt, reply YES — it is FAR better to respond unnecessarily than to ignore someone who needs help.\n"
+        "- Reply context (the [This is a reply to ...] line) is FYI only - it does NOT make the message ineligible. Judge the message itself.\n\n"
+        "If an image is provided, read it first - its content should inform your decision alongside the text.\n"
+        "When in doubt, reply YES - it is FAR better to respond unnecessarily than to ignore someone who needs help.\n"
         "Reply with only YES or NO."
     )
     try:
@@ -3977,7 +3970,7 @@ async def should_bot_respond(message_text: str, image_bytes: bytes = None, image
                 },
                 {
                     "type": "text",
-                    "text": message_text if message_text else "(no text — image only)"
+                    "text": message_text if message_text else "(no text - image only)"
                 }
             ]
         else:
@@ -3995,7 +3988,7 @@ async def should_bot_respond(message_text: str, image_bytes: bytes = None, image
         answer = response.choices[0].message.content.strip().upper()
         return answer.startswith("YES")
     except Exception as e:
-        print(f"⚠️  should_bot_respond error: {e} — defaulting to respond")
+        print(f"⚠️  should_bot_respond error: {e} - defaulting to respond")
         return True  # always respond if classifier fails
 
 
@@ -4006,7 +3999,7 @@ async def should_bot_respond(message_text: str, image_bytes: bytes = None, image
 #    review alone; SOFT patterns (DM me, pay ranges, remote-hours, telegram)
 #    need two or more.
 # 2. A strict gpt-4o-mini SCAM/OK classifier confirms before any warning is
-#    posted — and on ANY classifier error we stay silent (never accuse on a
+#    posted - and on ANY classifier error we stay silent (never accuse on a
 #    guess). Free Fire team/squad recruiting is explicitly LEGIT in both tiers.
 # Image-only scams (fake giveaway/casino screenshots) are vision-checked when
 # a non-staff message carries an image with little or no text.
@@ -4026,11 +4019,11 @@ _SCAM_HARD_PATTERNS = [
 _SCAM_SOFT_PATTERNS = [
     re.compile(r"\b(?:dm|pm|inbox|message)\s+me\b", re.IGNORECASE),
     re.compile(r"[$€£]\s?\d{2,}[^\n]{0,20}(?:month|week|day|/mo|/wk)", re.IGNORECASE),
-    re.compile(r"\b\d{1,2}\s*[–-]\s*\d{1,2}\+?\s*hours?\s*/?\s*(?:per\s+)?week\b", re.IGNORECASE),
+    re.compile(r"\b\d{1,2}\s*[--]\s*\d{1,2}\+?\s*hours?\s*/?\s*(?:per\s+)?week\b", re.IGNORECASE),
     re.compile(r"\bcommission[-\s]based\b", re.IGNORECASE),
     re.compile(r"\b(?:telegram|whatsapp|t\.me/|wa\.me/)\b", re.IGNORECASE),
     re.compile(r"\blinkedin\b", re.IGNORECASE),
-    re.compile(r"\bage\s+\d{2}\s*[–-]\s*\d{2}\b", re.IGNORECASE),
+    re.compile(r"\bage\s+\d{2}\s*[--]\s*\d{2}\b", re.IGNORECASE),
     re.compile(r"\bno\s+experience\s+(?:needed|required)\b", re.IGNORECASE),
     re.compile(r"\b(?:remote|work\s+from\s+home)\b", re.IGNORECASE),
     re.compile(r"\bsend\s+your\s+(?:age|country|details|cv|resume)\b", re.IGNORECASE),
@@ -4058,24 +4051,24 @@ _SCAM_CLASSIFIER_PROMPT = (
     "- Money flipping, guaranteed profit, investment doubling, gift-card or wallet schemes\n"
     "- Romance/companionship bait or 'I'll pay you to chat'\n\n"
     "Reply OK if it is normal community content:\n"
-    "- Free Fire TEAM or SQUAD recruiting ('looking for players/recruits for my team', 'need a rusher, DM me') — this is NORMAL here, never a scam\n"
+    "- Free Fire TEAM or SQUAD recruiting ('looking for players/recruits for my team', 'need a rusher, DM me') - this is NORMAL here, never a scam\n"
     "- Tournament/scrim/registration talk, AFC platform questions, support requests\n"
     "- Gaming screenshots, memes, casual chat, giveaways run by AFC staff themselves\n\n"
     "If an image is provided, judge its content too (fake payment proofs, casino promos, giveaway posters are SCAM).\n"
-    "When unsure, reply OK — false accusations are worse than a missed scam.\n"
+    "When unsure, reply OK - false accusations are worse than a missed scam.\n"
     "Reply with only SCAM or OK."
 )
 
 
 async def detect_scam(message_text: str, image_bytes: bytes = None, image_media_type: str = None) -> bool:
-    """Confirm a heuristic hit with gpt-4o-mini. Errors return False — the bot
+    """Confirm a heuristic hit with gpt-4o-mini. Errors return False - the bot
     must never accuse someone because an API call failed."""
     try:
         if image_bytes and image_media_type:
             image_b64 = base64.b64encode(image_bytes).decode("utf-8")
             user_content = [
                 {"type": "image_url", "image_url": {"url": f"data:{image_media_type};base64,{image_b64}"}},
-                {"type": "text", "text": message_text if message_text else "(no text — image only)"},
+                {"type": "text", "text": message_text if message_text else "(no text - image only)"},
             ]
         else:
             user_content = message_text
@@ -4090,13 +4083,13 @@ async def detect_scam(message_text: str, image_bytes: bytes = None, image_media_
         )
         return response.choices[0].message.content.strip().upper().startswith("SCAM")
     except Exception as e:
-        print(f"⚠️  Scam classifier error: {e} — staying silent")
+        print(f"⚠️  Scam classifier error: {e} - staying silent")
         return False
 
 
 SCAM_WARNING_TEXT = (
     "This message matches patterns commonly used in **scams**.\n\n"
-    "**Protect yourself — never:**\n"
+    "**Protect yourself - never:**\n"
     "• DM strangers offering jobs, money, giveaways, or 'business opportunities'\n"
     "• Click unknown links or enter promo codes from posts like this\n"
     "• Share personal details (age, country, ID, LinkedIn) with unknown accounts\n\n"
@@ -4126,7 +4119,7 @@ async def _maybe_flag_scam(message) -> bool:
 
         heur_hit = _scam_heuristic(text)
         # Image with little/no text: vision-check (catches fake giveaway /
-        # casino screenshots). Support channel excluded — it's full of
+        # casino screenshots). Support channel excluded - it's full of
         # legitimate problem screenshots.
         image_check = (
             image_att is not None
@@ -4152,7 +4145,7 @@ async def _maybe_flag_scam(message) -> bool:
         if not await detect_scam(text, image_bytes, media_type):
             return False
 
-        # Confirmed — warn publicly under the message and alert the mods.
+        # Confirmed - warn publicly under the message and alert the mods.
         _mark_handled(message.id)  # an edit must not re-trigger a second warning
         embed = discord.Embed(
             title="⚠️ Possible Scam Warning",
@@ -4169,7 +4162,7 @@ async def _maybe_flag_scam(message) -> bool:
             mods = bot.get_channel(MODS_CHANNEL_ID) or await bot.fetch_channel(MODS_CHANNEL_ID)
             preview = (text or "(image only)")[:300]
             await mods.send(
-                f"🚨 **Possible scam flagged** — {author.mention} in {message.channel.mention}\n"
+                f"🚨 **Possible scam flagged** - {author.mention} in {message.channel.mention}\n"
                 f"[Jump to message]({message.jump_url})\n"
                 f">>> {preview}"
             )
@@ -4190,17 +4183,17 @@ async def _handle_message(message: discord.Message):
 
     # Scam screening runs on EVERY guild message (scams get blasted into any
     # channel, not just the allowlisted ones). If flagged, the warning has been
-    # posted and mods pinged — nothing else to do with this message.
+    # posted and mods pinged - nothing else to do with this message.
     if not getattr(message, "_from_slash", False) and await _maybe_flag_scam(message):
         return
 
-    # Only allowed channels — except slash commands, which Discord already
+    # Only allowed channels - except slash commands, which Discord already
     # scopes via the command permissions and can run anywhere staff invoke them.
     if not is_allowed_channel(message.channel.id, message.channel) and not getattr(message, "_from_slash", False):
         return
 
     # If this channel is waiting for a confirmation reply, suppress messages from
-    # the triggering user — but only if they're not issuing a new bot command.
+    # the triggering user - but only if they're not issuing a new bot command.
     pending_user = _awaiting_confirmation.get(message.channel.id)
     if pending_user and message.author.id == pending_user:
         # Allow through if the user is @mentioning the bot (new command)
@@ -4209,20 +4202,20 @@ async def _handle_message(message: discord.Message):
 
     is_mentioned = bot.user in message.mentions
 
-    # Auto-reply runs in EVERY allowed channel — the classifier decides whether
+    # Auto-reply runs in EVERY allowed channel - the classifier decides whether
     # the message actually needs a bot response. This way no question gets ignored
     # just because it lives in a channel that wasn't explicitly listed.
     if not is_mentioned:
         content = message.content.strip()
 
-        # Quick filter — skip very short messages and pure emoji reactions
+        # Quick filter - skip very short messages and pure emoji reactions
         if len(content) < 4 and not message.attachments:
             return
         if content and re.match(r'^[\U00010000-\U0010ffff\U00002000-\U00002BFF\s]+$', content):
             return
 
         # If this message is a Discord reply, fetch the parent so the classifier
-        # can use it as context. We DO NOT silently skip replies anymore — many
+        # can use it as context. We DO NOT silently skip replies anymore - many
         # real questions ("we are still on pending", "which time are we going to
         # start the tournament") arrive as replies to other users.
         reply_context_text = ""
@@ -4269,7 +4262,7 @@ async def _handle_message(message: discord.Message):
     username  = message.author.display_name
     is_staff  = has_staff_role(message.author)
 
-    # ── Edit command check FIRST — must run before announcement to avoid confusion ──
+    # ── Edit command check FIRST - must run before announcement to avoid confusion ──
     if has_admin_role(message.author):
         edit_cmd = parse_edit_command(user_text)
         if edit_cmd:
@@ -4343,7 +4336,7 @@ async def _handle_message(message: discord.Message):
                     if not msg_id:
                         await message.reply(
                             f"❌ No record of my last message in {edit_ch.mention}. "
-                            "Use the message ID directly — right-click the message → Copy Message ID.",
+                            "Use the message ID directly - right-click the message → Copy Message ID.",
                             mention_author=True
                         )
                         return
@@ -4353,7 +4346,7 @@ async def _handle_message(message: discord.Message):
                 await message.reply("❌ I don't have permission to edit that message.", mention_author=True)
             except Exception as e:
                 # ai_rewrite() runs through _chat_completion, so an AI-unavailability
-                # error can surface here — never dump the raw OpenAI billing error.
+                # error can surface here - never dump the raw OpenAI billing error.
                 if _should_failover(e):
                     print(f"⚠️  AI unavailable during edit: {e}")
                     await message.reply(AI_DOWN_NOTICE, mention_author=True)
@@ -4432,7 +4425,7 @@ async def _handle_message(message: discord.Message):
             await message.reply("⚠️ Couldn't generate the announcement. Please try again.", mention_author=True)
             return
 
-        # ── PREVIEW LOOP — show preview, wait for approval ───────────────────
+        # ── PREVIEW LOOP - show preview, wait for approval ───────────────────
         max_attempts = 5
         attempt = 0
 
@@ -4445,7 +4438,7 @@ async def _handle_message(message: discord.Message):
                 description=embed.description,
                 color=embed.color
             )
-            preview_embed.set_footer(text=f"📋 PREVIEW — will be sent to #{target_channel.name}  •  africanfreefirecommunity.com")
+            preview_embed.set_footer(text=f"📋 PREVIEW - will be sent to #{target_channel.name}  •  africanfreefirecommunity.com")
             if embed.timestamp:
                 preview_embed.timestamp = embed.timestamp
 
@@ -4492,7 +4485,7 @@ async def _handle_message(message: discord.Message):
                     break  # exit loop and send below
 
                 else:
-                    # User gave feedback — regenerate with correction
+                    # User gave feedback - regenerate with correction
                     async with message.channel.typing():
                         # Combine original hints with the correction
                         new_hints = f"{current_hints}\n\nCorrection: {response.content.strip()}"
@@ -4512,10 +4505,10 @@ async def _handle_message(message: discord.Message):
                 _awaiting_confirmation.pop(message.channel.id, None)
         else:
             # Loop exhausted without an explicit `send` (the 5th message was yet
-            # another correction) — NEVER auto-post an announcement the admin
+            # another correction) - NEVER auto-post an announcement the admin
             # hasn't previewed and approved.
             await message.channel.send(
-                "❌ Too many revisions without `send` — announcement cancelled.",
+                "❌ Too many revisions without `send` - announcement cancelled.",
                 delete_after=10
             )
             return
@@ -4699,17 +4692,17 @@ async def _handle_message(message: discord.Message):
 
         # ── Page 1: General / Q&A ─────────────────────────────────────────
         general = discord.Embed(
-            title="🤖 AFC Bot — What I Can Do",
+            title="🤖 AFC Bot - What I Can Do",
             description=(
                 "I'm the official AFC assistant. Here's everything I can help with.\n"
-                "All commands are natural language — just @mention me and describe what you need."
+                "All commands are natural language - just @mention me and describe what you need."
             ),
             color=EMBED_COLORS["general"],
         )
         general.add_field(
             name="💬 Questions & Support",
             value=(
-                "Ask me anything about the AFC platform — tournaments, teams, registration, rules, rankings, and more.\n"
+                "Ask me anything about the AFC platform - tournaments, teams, registration, rules, rankings, and more.\n"
                 "I understand Nigerian Pidgin too. Just ask naturally.\n"
                 "*(Works in support & general channels without @mention)*"
             ),
@@ -4730,8 +4723,8 @@ async def _handle_message(message: discord.Message):
             staff.add_field(
                 name="📢 Announcements",
                 value=(
-                    "`@bot send [message] to #channel` — post an AI-formatted announcement\n"
-                    "`@bot send [message] to @user in #channel` — tag a user in the announcement\n"
+                    "`@bot send [message] to #channel` - post an AI-formatted announcement\n"
+                    "`@bot send [message] to @user in #channel` - tag a user in the announcement\n"
                     "You can also attach an image and it'll be included in the embed."
                 ),
                 inline=False,
@@ -4739,9 +4732,9 @@ async def _handle_message(message: discord.Message):
             staff.add_field(
                 name="✏️ Edit Messages",
                 value=(
-                    "`@bot edit last message — [instruction]` — rewrite your last bot message\n"
-                    "`@bot edit last announcement in #channel — [instruction]`\n"
-                    "`@bot edit message [ID] — [instruction]`\n"
+                    "`@bot edit last message - [instruction]` - rewrite your last bot message\n"
+                    "`@bot edit last announcement in #channel - [instruction]`\n"
+                    "`@bot edit message [ID] - [instruction]`\n"
                     "Or just give feedback naturally: *\"too many emojis\"*, *\"make it shorter\"*"
                 ),
                 inline=False,
@@ -4762,9 +4755,9 @@ async def _handle_message(message: discord.Message):
                 staff.add_field(
                     name="🎙️ Voice Transcription",
                     value=(
-                        "`@bot transcribe #voice-channel` — join and start recording\n"
-                        "`@bot transcribe` — join the voice channel you're in\n"
-                        "`@bot stop transcribing` — stop and generate the transcript\n"
+                        "`@bot transcribe #voice-channel` - join and start recording\n"
+                        "`@bot transcribe` - join the voice channel you're in\n"
+                        "`@bot stop transcribing` - stop and generate the transcript\n"
                         "When a stage is created, I'll ask in the mods channel if I should transcribe."
                     ),
                     inline=False,
@@ -4827,7 +4820,7 @@ async def _handle_message(message: discord.Message):
                     new_ch = await guild.create_category(
                         name=ch_name,
                         overwrites=overwrites,
-                        reason=f"AFC Bot — created by {message.author}"
+                        reason=f"AFC Bot - created by {message.author}"
                     )
                     ch_label = f"📁 Category **{new_ch.name}**"
 
@@ -4836,7 +4829,7 @@ async def _handle_message(message: discord.Message):
                         name=ch_name,
                         category=category,
                         overwrites=overwrites,
-                        reason=f"AFC Bot — created by {message.author}"
+                        reason=f"AFC Bot - created by {message.author}"
                     )
                     ch_label = f"🔊 Voice channel **{new_ch.name}**"
 
@@ -4845,7 +4838,7 @@ async def _handle_message(message: discord.Message):
                         name=ch_name,
                         category=category,
                         overwrites=overwrites,
-                        reason=f"AFC Bot — created by {message.author}"
+                        reason=f"AFC Bot - created by {message.author}"
                     )
                     ch_label = f"💬 Channel {new_ch.mention}"
 
@@ -4854,7 +4847,7 @@ async def _handle_message(message: discord.Message):
                 if category and ch_type != "category":
                     desc += f"\n📁 Category: **{category.name}**"
                 if is_private:
-                    desc += f"\n🔒 **Private** — hidden from @everyone"
+                    desc += f"\n🔒 **Private** - hidden from @everyone"
                     if role_id:
                         desc += f" | Accessible to <@&{role_id}>"
 
@@ -4925,7 +4918,7 @@ async def _handle_message(message: discord.Message):
             finally:
                 _awaiting_confirmation.pop(message.channel.id, None)
 
-            # Execute — fetch all members and apply
+            # Execute - fetch all members and apply
             await message.channel.send(f"⚙️ Working on it... this may take a moment for large servers.")
             affected = 0
             failed   = 0
@@ -4964,9 +4957,9 @@ async def _handle_message(message: discord.Message):
                     while not success and retries < 5:
                         try:
                             if action in ("remove_all", "remove_if"):
-                                await member.remove_roles(target_role, reason=f"AFC Bot mass action — by {message.author}")
+                                await member.remove_roles(target_role, reason=f"AFC Bot mass action - by {message.author}")
                             else:
-                                await member.add_roles(target_role, reason=f"AFC Bot mass action — by {message.author}")
+                                await member.add_roles(target_role, reason=f"AFC Bot mass action - by {message.author}")
                             affected += 1
                             success = True
                             await asyncio.sleep(0.8)  # safe delay between each member
@@ -5010,13 +5003,13 @@ async def _handle_message(message: discord.Message):
 
             try:
                 if action == "give":
-                    await member.add_roles(role, reason=f"AFC Bot — assigned by {message.author}")
+                    await member.add_roles(role, reason=f"AFC Bot - assigned by {message.author}")
                     embed = discord.Embed(
                         description=f"✅ **{role.name}** has been given to {member.mention}.",
                         color=EMBED_COLORS["general"]
                     )
                 else:
-                    await member.remove_roles(role, reason=f"AFC Bot — removed by {message.author}")
+                    await member.remove_roles(role, reason=f"AFC Bot - removed by {message.author}")
                     embed = discord.Embed(
                         description=f"✅ **{role.name}** has been removed from {member.mention}.",
                         color=EMBED_COLORS["urgent"]
@@ -5043,10 +5036,10 @@ async def _handle_message(message: discord.Message):
                     new_role = await guild.create_role(
                         name=name, color=color,
                         mentionable=mentionable, hoist=hoisted,
-                        reason=f"AFC Bot — created by {message.author}"
+                        reason=f"AFC Bot - created by {message.author}"
                     )
                     embed = discord.Embed(
-                        description=f"✅ Role **{new_role.name}** created — {new_role.mention}",
+                        description=f"✅ Role **{new_role.name}** created - {new_role.mention}",
                         color=new_role.color
                     )
                     embed.set_footer(text=f"Created by {message.author.display_name}")
@@ -5058,7 +5051,7 @@ async def _handle_message(message: discord.Message):
                         await message.reply("❌ Couldn't find that role.", mention_author=True)
                         return
                     role_name = role.name
-                    await role.delete(reason=f"AFC Bot — deleted by {message.author}")
+                    await role.delete(reason=f"AFC Bot - deleted by {message.author}")
                     embed = discord.Embed(
                         description=f"🗑️ Role **{role_name}** has been deleted.",
                         color=EMBED_COLORS["urgent"]
@@ -5072,7 +5065,7 @@ async def _handle_message(message: discord.Message):
                         await message.reply("❌ Couldn't find that role.", mention_author=True)
                         return
                     old_name = role.name
-                    await role.edit(name=role_manage_cmd["name"], reason=f"AFC Bot — renamed by {message.author}")
+                    await role.edit(name=role_manage_cmd["name"], reason=f"AFC Bot - renamed by {message.author}")
                     embed = discord.Embed(
                         description=f"✅ Role **{old_name}** renamed to **{role.name}**.",
                         color=role.color
@@ -5086,7 +5079,7 @@ async def _handle_message(message: discord.Message):
                         await message.reply("❌ Couldn't find that role.", mention_author=True)
                         return
                     new_color = discord.Color(role_manage_cmd["color"]) if role_manage_cmd["color"] else discord.Color.default()
-                    await role.edit(color=new_color, reason=f"AFC Bot — recolored by {message.author}")
+                    await role.edit(color=new_color, reason=f"AFC Bot - recolored by {message.author}")
                     embed = discord.Embed(
                         description=f"✅ Role **{role.name}** color updated.",
                         color=new_color
@@ -5104,14 +5097,14 @@ async def _handle_message(message: discord.Message):
                         kwargs["mentionable"] = role_manage_cmd["mentionable"]
                     if role_manage_cmd["hoisted"] is not None:
                         kwargs["hoist"] = role_manage_cmd["hoisted"]
-                    await role.edit(**kwargs, reason=f"AFC Bot — edited by {message.author}")
+                    await role.edit(**kwargs, reason=f"AFC Bot - edited by {message.author}")
                     changes = []
                     if "mentionable" in kwargs:
                         changes.append(f"mentionable: **{'yes' if kwargs['mentionable'] else 'no'}**")
                     if "hoist" in kwargs:
                         changes.append(f"hoisted: **{'yes' if kwargs['hoist'] else 'no'}**")
                     embed = discord.Embed(
-                        description=f"✅ Role **{role.name}** updated — {', '.join(changes)}.",
+                        description=f"✅ Role **{role.name}** updated - {', '.join(changes)}.",
                         color=role.color
                     )
                     embed.set_footer(text=f"Action by {message.author.display_name}")
@@ -5147,7 +5140,7 @@ async def _handle_message(message: discord.Message):
             try:
                 perm_overwrite = channel.overwrites_for(target)
                 setattr(perm_overwrite, perm_name, allow if allow else None)
-                await channel.set_permissions(target, overwrite=perm_overwrite, reason=f"AFC Bot — changed by {message.author}")
+                await channel.set_permissions(target, overwrite=perm_overwrite, reason=f"AFC Bot - changed by {message.author}")
 
                 action_word = "allowed" if allow else "denied/removed"
                 perm_display = perm_name.replace("_", " ").title()
@@ -5195,7 +5188,7 @@ async def _handle_message(message: discord.Message):
                 reply_msg = await bot.wait_for("message", check=check, timeout=30.0)
                 if reply_msg.content.lower().strip() in ("yes", "y"):
                     ch_name = target_ch.name
-                    await target_ch.delete(reason=f"AFC Bot — deleted by {message.author}")
+                    await target_ch.delete(reason=f"AFC Bot - deleted by {message.author}")
                     embed2 = discord.Embed(
                         description=f"🗑️ Channel **#{ch_name}** has been deleted.",
                         color=EMBED_COLORS["urgent"]
@@ -5236,7 +5229,7 @@ async def _handle_message(message: discord.Message):
             elif mode == "role":
                 summary = f"Delete all messages from <@&{pu_role_id}> members in {target_ch.mention}"
             elif mode == "all":
-                summary = f"Delete **ALL** messages in {target_ch.mention} — no matter how old"
+                summary = f"Delete **ALL** messages in {target_ch.mention} - no matter how old"
             else:
                 await message.reply("❌ Couldn't understand that purge command.", mention_author=True)
                 return
@@ -5250,7 +5243,7 @@ async def _handle_message(message: discord.Message):
             confirm_bot_msg = await message.reply(embed=embed, mention_author=True)
 
             # IDs of confirmation-related messages to clean up after
-            # NOTE: message.id (admin's command) is intentionally excluded — it stays
+            # NOTE: message.id (admin's command) is intentionally excluded - it stays
             cleanup_ids = {
                 confirm_bot_msg.id,   # bot's confirmation request
             }
@@ -5371,7 +5364,7 @@ async def _handle_message(message: discord.Message):
                                 deleted_count += 1
                                 await asyncio.sleep(1.2)
 
-                    # Send result — stays permanently so admin has a record
+                    # Send result - stays permanently so admin has a record
                     result_embed = discord.Embed(
                         description=f"✅ **{deleted_count}** message(s) deleted from {target_ch.mention}.",
                         color=EMBED_COLORS["general"]
@@ -5402,7 +5395,7 @@ async def _handle_message(message: discord.Message):
         attachment = message.attachments[0]
         att_type   = get_attachment_type(attachment.filename)
 
-        # 🖼️ IMAGE — GPT-4o Vision
+        # 🖼️ IMAGE - GPT-4o Vision
         if att_type == "image":
             stop = asyncio.Event()
             asyncio.create_task(keep_typing(message.channel, stop))
@@ -5431,7 +5424,7 @@ async def _handle_message(message: discord.Message):
                     await send_support_redirect(message)
             return
 
-        # 🎵 AUDIO — Whisper transcription → GPT-4o reply
+        # 🎵 AUDIO - Whisper transcription → GPT-4o reply
         elif att_type == "audio":
             try:
                 await message.reply("🎵 Got your audio! Give me a sec to listen...", mention_author=True)
@@ -5454,7 +5447,7 @@ async def _handle_message(message: discord.Message):
                     stop.set()
                 if not reply.strip():
                     reply = GENERIC_ERROR_NOTICE
-                # Cap the quoted transcript — a long voice note plus the reply
+                # Cap the quoted transcript - a long voice note plus the reply
                 # would exceed Discord's 2000-char content limit (the full text
                 # already went to the model via `combined` above).
                 quoted = transcript if len(transcript) <= 700 else transcript[:700] + "…"
@@ -5463,14 +5456,14 @@ async def _handle_message(message: discord.Message):
                 if needs_support:
                     await send_support_redirect(message)
             except Exception as e:
-                # Audio path already posted a "give me a sec" ack — always deliver a
+                # Audio path already posted a "give me a sec" ack - always deliver a
                 # resolution (force) so we never leave the user hanging after that.
                 notice = resolve_ai_error_reply(message.channel.id, e, force=True)
                 if notice is not None:
                     await message.reply(notice, mention_author=True)
             return
 
-        # 🎥 VIDEO — Acknowledge, can't analyze
+        # 🎥 VIDEO - Acknowledge, can't analyze
         elif att_type == "video":
             context = f"{username} sent a video called '{attachment.filename}'. " \
                       f"Acknowledge you received it but explain warmly that you can't watch or analyze videos yet. " \
@@ -5539,13 +5532,13 @@ async def _handle_message(message: discord.Message):
         stop.set()
 
     # reply is None only when the AI is down and we already notified this channel
-    # recently — stay quiet instead of spamming an identical down notice.
+    # recently - stay quiet instead of spamming an identical down notice.
     if reply is None:
         return
 
     if not reply.strip():
         # Marker-only output (the model sent just the redirect marker) or an
-        # empty completion — message.reply("") would 400, and an escalation
+        # empty completion - message.reply("") would 400, and an escalation
         # must never be dropped.
         if needs_support:
             await send_support_redirect(message)

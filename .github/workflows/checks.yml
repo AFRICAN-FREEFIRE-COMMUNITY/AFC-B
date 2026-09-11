@@ -1,0 +1,23 @@
+# Known-bug checker on every pull request and every push to a non-main branch.
+#
+# tools/known_bugs.json is the registry of bugs this codebase has produced more than once;
+# tools/check_known_bugs.py runs it (standard library, sub-second). Owner's rule (2026-09-11): a
+# bug seen twice gets a checker, and a red checker is fixed before anything else is merged. The
+# same check is the first step of deploy-backend.yml, so nothing that trips it can deploy.
+# Output lines are greppable: KNOWN-BUG <id> <file>:<line>.
+
+name: Checks
+
+on:
+  pull_request:
+  push:
+    branches-ignore: [main]
+
+jobs:
+  known-bugs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Known-bug checker
+        run: python3 tools/check_known_bugs.py
