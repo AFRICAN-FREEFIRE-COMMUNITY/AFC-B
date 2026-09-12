@@ -59,6 +59,7 @@ from .models import (
 # One answer to "is this stage Clash Squad?", across all three generations of stage_format
 # values ("cs - knockout", plain "cs", ...). See stage_formats.py for why the literals moved.
 from .stage_formats import is_clash_squad
+from .group_capacity import GroupCapacityError, check_fits, plan_placements
 
 
 # ── auth ───────────────────────────────────────────────────────────────────────────────────────
@@ -153,13 +154,18 @@ def _clear_group_seeding(stage):
     return deleted
 
 
-def _distribute_into_groups(stage, shuffle=True, only_ungrouped=False):
+def _distribute_into_groups(stage, shuffle=True, only_ungrouped=False, strict=False):
     """Distribute the stage's active competitors into its groups (shuffle + round-robin modulo - 
     the same algorithm as views.seed_stage_competitors_to_groups_team). Handles team and solo
     transparently (StageCompetitor carries tournament_team OR player).
 
     only_ungrouped=True seeds ONLY competitors that currently have no StageGroupCompetitor in the
     stage (used after a group delete, so already-placed competitors are not duplicated/moved).
+
+    strict=True (the explicit "reseed" action) raises GroupCapacityError when the stage's
+    competitors_per_group cannot hold everyone, so the organizer reads the numbers instead of a
+    silent partial seed. The best-effort callers (autoseed inside a registration, the clean-up
+    after a group or stage delete, Start event) leave it False and place what fits.
 
     Returns the number of group-seed rows created. Reconciles Discord roles best-effort.
     """
@@ -193,9 +199,14 @@ def _distribute_into_groups(stage, shuffle=True, only_ungrouped=False):
     if shuffle:
         random.shuffle(competitors)
 
+    # The stage's structure decides the split (group_capacity.py): least-loaded-first over the rows
+    # already in the groups, never past competitors_per_group. strict=False because this runs
+    # inside a registration (autoseed) and after a group delete: it must place what fits and never
+    # fail the operation that called it; the explicit reseed passes strict=True and is refused.
+    targets = plan_placements(stage, groups, len(competitors), strict=strict)
+
     entries = []
-    for index, competitor in enumerate(competitors):
-        group = groups[index % len(groups)]
+    for competitor, group in zip(competitors, targets):
         if competitor.tournament_team_id:
             entries.append(StageGroupCompetitor(stage_group=group, tournament_team=competitor.tournament_team))
         else:
@@ -457,10 +468,17 @@ def reseed_into_groups(request):
                 "requires_force": True,
             }, status=400)
 
-    with transaction.atomic():
-        if clear_existing:
-            _clear_group_seeding(stage)
-        seeded = _distribute_into_groups(stage, shuffle=shuffle, only_ungrouped=not clear_existing)
+    try:
+        with transaction.atomic():
+            if clear_existing:
+                _clear_group_seeding(stage)
+            # strict: a pool the structure cannot hold is refused (and the clear above rolled
+            # back), never trimmed. See group_capacity.py.
+            seeded = _distribute_into_groups(
+                stage, shuffle=shuffle, only_ungrouped=not clear_existing, strict=True,
+            )
+    except GroupCapacityError as e:
+        return Response({"message": str(e)}, status=400)
 
     groups = StageGroups.objects.filter(stage=stage).count()
     return Response({"message": "Competitors seeded into groups.",
@@ -551,41 +569,48 @@ def seed_next_stage_by_standings(request):
     # standings (N = this RR stage's teams_qualifying_from_stage, else everyone) by writing their
     # StageCompetitor rows - the same sink advance_round_robin uses - so no separate advance step is
     # needed. Ordering is always the combined RR standings, best-first.
-    with transaction.atomic():
-        existing = list(StageCompetitor.objects.filter(
-            stage=next_stage, status="active", tournament_team__isnull=False))
-        auto_advanced = 0
-        if existing:
-            pool_ids = [c.tournament_team_id for c in existing]
-        else:
-            n_qual = rr_stage.teams_qualifying_from_stage or len(standings)
-            n_qual = max(1, min(int(n_qual), len(standings)))
-            pool_ids = [row["tournament_team_id"] for row in standings[:n_qual]]
-            for tid in pool_ids:
-                _, created = StageCompetitor.objects.get_or_create(
-                    stage=next_stage, tournament_team_id=tid, player=None,
-                    defaults={"status": "active"})
-                if created:
-                    auto_advanced += 1
+    try:
+        with transaction.atomic():
+            existing = list(StageCompetitor.objects.filter(
+                stage=next_stage, status="active", tournament_team__isnull=False))
+            auto_advanced = 0
+            if existing:
+                pool_ids = [c.tournament_team_id for c in existing]
+            else:
+                n_qual = rr_stage.teams_qualifying_from_stage or len(standings)
+                n_qual = max(1, min(int(n_qual), len(standings)))
+                pool_ids = [row["tournament_team_id"] for row in standings[:n_qual]]
+                for tid in pool_ids:
+                    _, created = StageCompetitor.objects.get_or_create(
+                        stage=next_stage, tournament_team_id=tid, player=None,
+                        defaults={"status": "active"})
+                    if created:
+                        auto_advanced += 1
 
-        # Order by RR finish (best first); teams the standings do not cover trail at the end.
-        pool_ids.sort(key=lambda tid: rank.get(tid, len(rank)))
+            # Order by RR finish (best first); teams the standings do not cover trail at the end.
+            pool_ids.sort(key=lambda tid: rank.get(tid, len(rank)))
 
-        # Snake the ranked pool across the groups: even rounds L->R, odd rounds R->L.
-        n = len(groups)
-        assignments = defaultdict(list)   # StageGroups -> [tournament_team_id]
-        for i, tid in enumerate(pool_ids):
-            pos = i % n
-            group = groups[pos] if (i // n) % 2 == 0 else groups[n - 1 - pos]
-            assignments[group].append(tid)
+            # The next stage's structure caps the snake too (group_capacity.py). Old rows are about to
+            # be wiped, so the room is groups x size; raised inside atomic() so nothing is committed.
+            check_fits(next_stage, groups, len(pool_ids), counts={g.group_id: 0 for g in groups})
 
-        _clear_group_seeding(next_stage)   # wipe old group rows (StageCompetitor pool untouched)
-        entries = [
-            StageGroupCompetitor(stage_group=group, tournament_team_id=tid)
-            for group, tids in assignments.items() for tid in tids
-        ]
-        StageGroupCompetitor.objects.bulk_create(entries, ignore_conflicts=True)
-        _reconcile_group_roles(next_stage)   # sync Discord group roles best-effort
+            # Snake the ranked pool across the groups: even rounds L->R, odd rounds R->L.
+            n = len(groups)
+            assignments = defaultdict(list)   # StageGroups -> [tournament_team_id]
+            for i, tid in enumerate(pool_ids):
+                pos = i % n
+                group = groups[pos] if (i // n) % 2 == 0 else groups[n - 1 - pos]
+                assignments[group].append(tid)
+
+            _clear_group_seeding(next_stage)   # wipe old group rows (StageCompetitor pool untouched)
+            entries = [
+                StageGroupCompetitor(stage_group=group, tournament_team_id=tid)
+                for group, tids in assignments.items() for tid in tids
+            ]
+            StageGroupCompetitor.objects.bulk_create(entries, ignore_conflicts=True)
+            _reconcile_group_roles(next_stage)   # sync Discord group roles best-effort
+    except GroupCapacityError as e:
+        return Response({"message": str(e)}, status=400)
 
     lead = f"Advanced {auto_advanced} and seeded " if auto_advanced else "Seeded "
     return Response({
