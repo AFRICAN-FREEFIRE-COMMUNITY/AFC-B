@@ -24620,6 +24620,7 @@ def upload_match_result_image(request):
         except OcrKeyRequired as exc:
             return key_required_response(exc)
         except ProviderError as exc:
+            import logging
             logging.getLogger("afc_tournament_and_scrims").warning(
                 "OCR provider refused for match %s: %s", match_id, exc.message)
             return Response({"message": exc.message, "code": "ocr_provider_error"}, status=503)

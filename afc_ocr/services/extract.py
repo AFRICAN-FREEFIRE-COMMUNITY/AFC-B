@@ -104,6 +104,39 @@ def resolve_credentials(org, actor):
     raise OcrKeyRequired(org)
 
 
+class SharedCredentials:
+    """One credential resolution shared by every screenshot of ONE upload (owner 2026-09-12).
+
+    A map's standings can span several screenshots, read in parallel threads. If each thread
+    resolved on its own, the first would spend the organization's single free read and the
+    second would be refused, so the whole upload failed AFTER the free read was gone. The first
+    thread that reaches the AI engine resolves here under a lock; every other thread reuses the
+    same Credentials, so one upload spends at most one free read. A refusal is remembered and
+    re-raised to every later caller, so nothing is read on a refused upload.
+
+    Built by the request thread (afc_ocr.views.upload_ocr_session, afc_leaderboard.ocr.process_job)
+    and handed to extract_rows(shared_credentials=...)."""
+
+    def __init__(self, org, actor):
+        self.org = org
+        self.actor = actor
+        self._creds = None
+        self._refusal = None
+        self._lock = threading.Lock()
+
+    def get(self):
+        with self._lock:
+            if self._refusal is not None:
+                raise self._refusal
+            if self._creds is None:
+                try:
+                    self._creds = resolve_credentials(self.org, self.actor)
+                except OcrKeyRequired as exc:
+                    self._refusal = exc
+                    raise
+            return self._creds
+
+
 def key_available(org, actor) -> bool:
     """Would an escalated read be allowed right now, WITHOUT spending anything? The batch run
     endpoints ask this before queueing a job, so the organizer gets the 402 sentence up front
@@ -197,7 +230,7 @@ _STUDENT_LOCK = threading.Lock()
 
 
 def extract_rows(image_bytes, mime_type, event_type, aliases=None, team_notes=None, prompt_kind=None,
-                 org=None, actor=None, event=None, leaderboard=None):
+                 org=None, actor=None, event=None, leaderboard=None, shared_credentials=None):
     """LOCAL-FIRST OCR extraction with an AI fallback (the self-hosted OCR student, P3).
 
     Own-key OCR (owner 2026-09-12): `org` is the organization that owns the event / leaderboard
@@ -205,6 +238,8 @@ def extract_rows(image_bytes, mime_type, event_type, aliases=None, team_notes=No
     past the local engine, resolve_credentials decides whose key pays (AFC staff -> AFC; the
     org's key; the org's single free read; else OcrKeyRequired, which the views answer as 402).
     Every AI read writes an OcrUsage row. `engine` names the provider and model that read it.
+    `shared_credentials` (a SharedCredentials) makes the screenshots of one multi-image upload
+    resolve ONCE between them, so the free read is spent at most once per upload.
 
     Returns (raw_output: dict, engine: str). This is the ONE place the upload paths get their
     extraction, so the local-vs-Gemini routing lives in a single auditable spot. Flow:
@@ -248,7 +283,7 @@ def extract_rows(image_bytes, mime_type, event_type, aliases=None, team_notes=No
     if gemini_enabled:
         # Whose key: the organization's own, AFC's free read, or AFC's (staff / AFC-run). A missing
         # key raises OcrKeyRequired for the views to turn into the connect-your-key answer.
-        creds = resolve_credentials(org, actor)
+        creds = shared_credentials.get() if shared_credentials is not None else resolve_credentials(org, actor)
         if not creds.api_key:
             if student_json is not None:
                 return student_json, f"local_best_effort_{(conf or {}).get('model_version', 'v0')}"
