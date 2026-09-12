@@ -83,6 +83,9 @@ INSTALLED_APPS = [
     'afc_organizers',
     'afc_partner_api',
     'afc_sponsors',
+    # Group draw (owner 2026-09-12): teams turn over a sealed card to pick their own group for a
+    # stage. Phase 2 (AFC Seeds) builds on it. See afc_draws/models.py.
+    'afc_draws',
     'oauth2_provider',
     'afc_sso',
     # AFC's own WhatsApp Cloud API integration (message log, template registry,
