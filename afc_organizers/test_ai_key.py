@@ -631,7 +631,7 @@ class EventUploadTests(TransactionTestCase):
         k = OrganizationAiKey(organization=org, provider="openai", model="gpt-4.1-mini")
         k.set_key("sk-org-key-7777")
         k.save()
-        refusal = openai_reply(json.dumps({"error": {"message": "Incorrect API key provided: sk-org-***7777."}}), status=401)
+        refusal = FakeResponse(401, {"error": {"message": "Incorrect API key provided: sk-org-***7777."}})
         with patch.object(openai_compat.requests, "post", return_value=refusal):
             r = Client().post("/events/upload-match-result-image/",
                               {"match_id": match.match_id, "images": [self._shot()]},
