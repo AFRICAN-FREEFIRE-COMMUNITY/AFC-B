@@ -150,8 +150,8 @@ def call_gemini(image_bytes: bytes, mime_type: str, aliases: list, team_notes: l
     # returned a 502/504 to the user even though the socket would eventually have succeeded. Cap the
     # timeout so a hung read fails cleanly (with a friendly message) BEFORE the gateway kills it.
     # Read at call time so ops / tests can override GEMINI_HTTP_TIMEOUT without a redeploy; the
-    # default (20s) is defined in settings.py and leaves headroom under the 30s gateway.
-    timeout = getattr(settings, "GEMINI_HTTP_TIMEOUT", 20)
+    # default (45s since the VPS move, nginx allows 120s) is defined in settings.py.
+    timeout = getattr(settings, "GEMINI_HTTP_TIMEOUT", 45)
 
     # ── A6: bounded exponential backoff + jitter on transient upstream failures ──
     # Retry ONLY the transient statuses: 429 (rate-limited) and 503 (temporarily unavailable). Never
