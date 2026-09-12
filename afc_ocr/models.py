@@ -373,3 +373,37 @@ class OCRCropLabel(models.Model):
 
     def __str__(self):
         return f'OCRCropLabel {self.field}="{self.text}" @P{self.placement}'
+
+
+class OcrUsage(models.Model):
+    """One row per screenshot read by an AI engine: whose key paid, for what, did it work.
+
+    WHY (owner 2026-09-12): the organizer's page shows "37 reads this month, about $0.02", the
+    admin page shows who reads how much, and AFC's own key is no longer a surprise bill. The
+    local engine's reads are NOT rows here: they cost nothing and belong to nobody's bill.
+
+    Written by afc_ocr.services.extract._record_usage for every provider call, including the
+    failed ones (the error is what the organizer's page and the failure notification show).
+    """
+    PAID_BY = [("org", "The organization's key"), ("afc_free", "AFC, the free read"), ("afc", "AFC")]
+    organization = models.ForeignKey("afc_organizers.Organization", null=True, blank=True,
+                                     on_delete=models.SET_NULL, related_name="ocr_usage")
+    event = models.ForeignKey("afc_tournament_and_scrims.Event", null=True, blank=True,
+                              on_delete=models.SET_NULL, related_name="+")
+    leaderboard = models.ForeignKey("afc_leaderboard.StandaloneLeaderboard", null=True, blank=True,
+                                    on_delete=models.SET_NULL, related_name="+")
+    actor = models.ForeignKey("afc_auth.User", null=True, blank=True, on_delete=models.SET_NULL, related_name="+")
+    paid_by = models.CharField(max_length=10, choices=PAID_BY)
+    provider = models.CharField(max_length=24)
+    model = models.CharField(max_length=120)
+    ok = models.BooleanField(default=True)
+    latency_ms = models.PositiveIntegerField(default=0)
+    error = models.CharField(max_length=300, blank=True, default="")
+    # The registry's per-image price line at the time of the read, in USD, so the counter can
+    # say "about $0.02" without a second lookup. Approximate by nature.
+    cost_estimate_usd = models.DecimalField(max_digits=8, decimal_places=5, default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "afc_ocr_usage"
+        indexes = [models.Index(fields=["organization", "created_at"]), models.Index(fields=["paid_by", "created_at"])]

@@ -31,8 +31,10 @@ class ExtractRowsTests(TestCase):
     (settings.GEMINI_MODEL - pinned to flash here so the assertion doesn't drift with env)."""
 
     def test_routes_to_gemini_when_local_first_off(self):
-        # Mock the Gemini call inside the extract module (where it is imported) so no HTTP fires.
-        with mock.patch.object(extract, "call_gemini", return_value=_RAW) as mocked:
+        # Mock the Gemini call behind the provider layer (own-key OCR, 2026-09-12: extract reaches
+        # Gemini through services.providers.gemini) so no HTTP fires.
+        from afc_ocr.services.providers import gemini as gemini_provider
+        with mock.patch.object(gemini_provider, "call_gemini", return_value=_RAW) as mocked:
             raw, engine = extract.extract_rows(
                 image_bytes=b"\x89PNG", mime_type="image/png", event_type="team",
                 aliases=[], team_notes=[],

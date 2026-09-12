@@ -476,6 +476,15 @@ def process_job(job):
         # read + HTTP only) - all DB writes happen back on this thread, in image order, so
         # merge_placements sees the same ordering the sequential loop produced. One image
         # failing raises out of ex.map and fails the whole job, exactly as before.
+        # Own-key OCR: the organization and the actor are resolved HERE, on the request thread,
+        # not inside _read_one. The pool threads open their own DB connections, and a lazy FK
+        # load there cannot see rows the calling transaction has not committed (seen in the
+        # eager-Celery test: "User matching query does not exist").
+        key_org = lb.organization
+        key_actor = job.created_by
+        # One credential resolution for every screenshot of this map (SharedCredentials): the
+        # free read is spent at most once per job, and no thread is refused after another spent it.
+        shared_creds = extract.SharedCredentials(key_org, key_actor)
         def _read_one(img):
             data = img.image.read()           # FieldFile.read() opens lazily
             try:
@@ -483,8 +492,11 @@ def process_job(job):
             except Exception:
                 pass
             started = time.monotonic()
+            # Own-key OCR (owner 2026-09-12): the leaderboard's organization pays, or spends its
+            # free read; with neither, OcrKeyRequired fails the job with the sentence (below).
             raw, eng = extract.extract_rows(
                 data, _guess_mime(img.image.name), event_type, prompt_kind=prompt_kind,
+                org=key_org, actor=key_actor, leaderboard=lb, shared_credentials=shared_creds,
             )
             # Per-image wall time, persisted in raw_output so prod slowness is diagnosable
             # from the DB ("which engine, how long, per screenshot") without box access.

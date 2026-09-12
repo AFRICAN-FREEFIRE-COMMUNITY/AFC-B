@@ -130,12 +130,17 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 
 # Socket timeout (seconds) for the synchronous Gemini OCR call. Read at call time by
-# afc_ocr.services.gemini.call_gemini via getattr(settings, "GEMINI_HTTP_TIMEOUT", 20). Kept
-# comfortably UNDER the prod ~30s gateway (ALB / Elastic Beanstalk) budget so a slow or hung
-# Gemini read fails cleanly on our side (turned into a friendly 503 by upload_ocr_session)
-# instead of the gateway returning a raw 502/504 to the user. Env-overridable so a Pro model or
-# a slow network can be given more headroom without a redeploy.
-GEMINI_HTTP_TIMEOUT = int(os.getenv("GEMINI_HTTP_TIMEOUT", "20"))
+# afc_ocr.services.gemini.call_gemini via getattr(settings, "GEMINI_HTTP_TIMEOUT", 45). It must
+# stay UNDER the gateway budget so a slow or hung Gemini read fails cleanly on our side (turned
+# into a friendly 503 by upload_ocr_session) instead of the gateway returning a raw 502/504.
+# Was 20s under the AWS ALB (~30s); since the VPS move (2026-09-11) nginx allows 120s
+# (deploy/nginx proxy_read_timeout), and gemini-2.5-flash regularly needs 15 to 30 s on a full
+# result screen, so 20s turned ordinary reads into "took too long" (seen 2026-09-12). 45s leaves
+# headroom under 120s. Env-overridable so a Pro model or a slow network can be given more.
+GEMINI_HTTP_TIMEOUT = int(os.getenv("GEMINI_HTTP_TIMEOUT", "45"))
+# Own-key OCR (owner 2026-09-12): the HTTP timeout for an organization's OWN provider (OpenAI,
+# Anthropic, OpenRouter, ...); the Gemini path keeps GEMINI_HTTP_TIMEOUT above.
+OCR_PROVIDER_HTTP_TIMEOUT = int(os.getenv("OCR_PROVIDER_HTTP_TIMEOUT", "30"))
 
 # Translations (news/events/notifications/emails via afc_auth.translation) run on DeepL, NOT Gemini
 # (owner 2026-06-20) - DeepL is purpose-built for translation with a generous free tier. Gemini above

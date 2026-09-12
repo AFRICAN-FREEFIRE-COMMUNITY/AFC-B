@@ -41,6 +41,16 @@ class Organization(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
+    # ── OCR on the organization's own AI key (owner 2026-09-12) ──
+    # How many screenshot reads AFC still pays for on this organization's behalf. Default ONE,
+    # a taste of how OCR works; after that the organization connects its own key
+    # (OrganizationAiKey below) or the OCR button says so. An AFC admin can top this up
+    # (views_ai_key.admin_set_allowance). Spent only when the AI engine is used on AFC's key:
+    # the local engine's reads are free and never touch it. See afc_ocr.services.extract.
+    ocr_free_reads_left = models.PositiveIntegerField(default=1)
+    # An AFC admin can switch OCR off for an organization outright (abuse, a disputed bill).
+    ocr_disabled = models.BooleanField(default=False)
+
     # ── Paid-event terms (feature "paid-events", 2026-06-08) ──
     # An organizer must read + accept the paid-event terms (escrow held by the processor, AFC
     # releases to the organizer only after the event runs, first 10 paid tournaments per org are
@@ -881,3 +891,86 @@ class OrganizationEarning(models.Model):
 
     def __str__(self):
         return f"earning org {self.organization_id} event {self.event_id}: {self.amount} ({self.status})"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# OCR on the organization's own AI key (owner 2026-09-12)
+# ─────────────────────────────────────────────────────────────────────────────
+class OrganizationAiKey(models.Model):
+    """ONE AI provider key per organization, sealed at rest, used for nothing but reading result
+    screenshots on the organization's behalf.
+
+    WHY: OCR used to run on AFC's single Gemini key for every organizer on the platform, so a busy
+    organizer's screenshots were AFC's bill. The owner's rule: one free read per organization,
+    then their own key, from any provider that can read an image (the registry in
+    afc_ocr.services.providers). The key is treated like a password: sealed with
+    afc_auth.secret_box, never returned by any endpoint (last_four only), every change logged in
+    OrganizationAiKeyEvent.
+
+    HOW IT CONNECTS
+      - Written by afc_organizers.views_ai_key (connect / change / test / disconnect), gated on the
+        org owner or a member with can_manage_members.
+      - Read by afc_ocr.services.extract.resolve_credentials when a screenshot is escalated to
+        the AI engine for an event or leaderboard owned by this organization.
+      - Shown on the organizer's Organization settings > AI key page and on the admin OCR keys
+        page (provider + model + last four, never the key).
+    """
+    organization = models.OneToOneField(Organization, on_delete=models.CASCADE, related_name="ai_key")
+    # A registry id: gemini, openai, anthropic, openrouter, groq, mistral, xai, custom.
+    provider = models.CharField(max_length=24)
+    # The model id sent to the provider; pre-filled with the registry's recommendation, editable.
+    model = models.CharField(max_length=120)
+    # Only for provider="custom": the OpenAI-compatible base URL the organizer pasted.
+    base_url = models.URLField(max_length=300, blank=True, default="")
+    key_sealed = models.TextField()
+    last_four = models.CharField(max_length=4)
+    added_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, on_delete=models.SET_NULL, related_name="+")
+    added_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    # The last Test-key run (also refreshed by every real read): when, did it work, the
+    # provider's own message when it did not, so the page can say why in words.
+    last_tested_at = models.DateTimeField(null=True, blank=True)
+    last_test_ok = models.BooleanField(default=False)
+    last_error = models.CharField(max_length=300, blank=True, default="")
+    # Reads that failed in a row on this key; at 3 the org owner is told (extract._record_usage).
+    consecutive_failures = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        db_table = "afc_organizers_ai_key"
+
+    def set_key(self, plain: str):
+        from afc_auth.secret_box import seal
+        self.key_sealed = seal(plain.strip())
+        self.last_four = plain.strip()[-4:]
+
+    def get_key(self) -> str:
+        """The plaintext, for the length of one provider request. "" when the box cannot open it
+        (a SECRET_KEY rotation), which the routing treats as "no key": the organizer pastes it again."""
+        from afc_auth.secret_box import open_sealed
+        return open_sealed(self.key_sealed)
+
+    def __str__(self):
+        return f"{self.organization_id}: {self.provider}/{self.model} ending {self.last_four}"
+
+
+class OrganizationAiKeyEvent(models.Model):
+    """Who did what to the organization's AI key, and when. Connect, change, test, disconnect,
+    and the admin's allowance top-ups / OCR switch. Never the key itself: the provider and the
+    last four are enough to answer "which key was that"."""
+    ACTIONS = [
+        ("connected", "Connected"), ("changed", "Changed"), ("tested", "Tested"),
+        ("disconnected", "Disconnected"), ("allowance", "Allowance changed"),
+        ("disabled", "OCR disabled"), ("enabled", "OCR enabled"),
+    ]
+    organization = models.ForeignKey(Organization, on_delete=models.CASCADE, related_name="ai_key_events")
+    actor = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, on_delete=models.SET_NULL, related_name="+")
+    action = models.CharField(max_length=14, choices=ACTIONS)
+    provider = models.CharField(max_length=24, blank=True, default="")
+    last_four = models.CharField(max_length=4, blank=True, default="")
+    # The test verdict or the new allowance, in words, so the history reads without a decoder.
+    detail = models.CharField(max_length=300, blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "afc_organizers_ai_key_event"
+        ordering = ["-created_at"]
