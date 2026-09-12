@@ -483,8 +483,11 @@ def process_job(job):
             except Exception:
                 pass
             started = time.monotonic()
+            # Own-key OCR (owner 2026-09-12): the leaderboard's organization pays, or spends its
+            # free read; with neither, OcrKeyRequired fails the job with the sentence (below).
             raw, eng = extract.extract_rows(
                 data, _guess_mime(img.image.name), event_type, prompt_kind=prompt_kind,
+                org=lb.organization, actor=job.created_by, leaderboard=lb,
             )
             # Per-image wall time, persisted in raw_output so prod slowness is diagnosable
             # from the DB ("which engine, how long, per screenshot") without box access.

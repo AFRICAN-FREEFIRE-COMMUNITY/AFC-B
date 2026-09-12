@@ -136,6 +136,9 @@ GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 # instead of the gateway returning a raw 502/504 to the user. Env-overridable so a Pro model or
 # a slow network can be given more headroom without a redeploy.
 GEMINI_HTTP_TIMEOUT = int(os.getenv("GEMINI_HTTP_TIMEOUT", "20"))
+# Own-key OCR (owner 2026-09-12): the HTTP timeout for an organization's OWN provider (OpenAI,
+# Anthropic, OpenRouter, ...); the Gemini path keeps GEMINI_HTTP_TIMEOUT above.
+OCR_PROVIDER_HTTP_TIMEOUT = int(os.getenv("OCR_PROVIDER_HTTP_TIMEOUT", "30"))
 
 # Translations (news/events/notifications/emails via afc_auth.translation) run on DeepL, NOT Gemini
 # (owner 2026-06-20) - DeepL is purpose-built for translation with a generous free tier. Gemini above

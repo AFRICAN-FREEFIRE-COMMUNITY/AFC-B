@@ -47,7 +47,18 @@ def _safe_int(x, default=0):
         return default
 
 
-def _extract_with_router(image_bytes, mime_type, aliases, team_notes, event_type):
+def key_required_response(exc):
+    """The organizer's answer when a read needs a key they have not connected (owner 2026-09-12):
+    the sentence, a code the pages switch on, and the slug that builds the connect-page link."""
+    org = getattr(exc, "organization", None)
+    return Response({
+        "message": str(exc),
+        "code": "ocr_key_required",
+        "organization_slug": getattr(org, "slug", None),
+    }, status=402)
+
+
+def _extract_with_router(image_bytes, mime_type, aliases, team_notes, event_type, org=None, actor=None, event=None):
     """Thin delegate to the shared OCR extraction service (afc_ocr.services.extract.extract_rows).
 
     The local-first-then-Gemini routing body was lifted into services/extract.py (P2) so the
@@ -57,7 +68,8 @@ def _extract_with_router(image_bytes, mime_type, aliases, team_notes, event_type
     Called by upload_ocr_session + ocr_from_stored_image below.
     """
     from .services.extract import extract_rows
-    return extract_rows(image_bytes, mime_type, event_type, aliases=aliases, team_notes=team_notes)
+    return extract_rows(image_bytes, mime_type, event_type, aliases=aliases, team_notes=team_notes,
+                        org=org, actor=actor, event=event)
 
 
 def _auth(request):
@@ -229,13 +241,27 @@ def upload_ocr_session(request):
     from concurrent.futures import ThreadPoolExecutor
     from afc_leaderboard.ocr import merge_placements
 
+    # Own-key OCR (owner 2026-09-12): the event's organization pays for escalated reads, or
+    # spends its free read, or the upload is refused with the connect-your-key sentence (402).
+    _event_for_key = _get_event(match)
+    _org_for_key = getattr(_event_for_key, "organization", None)
+
     def _read_one(payload):
         data, mime = payload
-        return _extract_with_router(data, mime, aliases, team_notes, event_type)
+        return _extract_with_router(data, mime, aliases, team_notes, event_type,
+                                    org=_org_for_key, actor=user, event=_event_for_key)
 
+    from .services.extract import OcrKeyRequired
+    from .services.providers import ProviderError
     try:
         with ThreadPoolExecutor(max_workers=min(4, len(payloads))) as ex:
             outputs = list(ex.map(_read_one, payloads))   # ex.map preserves upload order
+    except OcrKeyRequired as exc:
+        return key_required_response(exc)
+    except ProviderError as exc:
+        # The organizer's own provider refused (a revoked key, no credit): its message, in words.
+        logger.warning("OCR provider refused for match %s: %s", match_id, exc.message)
+        return Response({"message": exc.message, "code": "ocr_provider_error"}, status=503)
     except RuntimeError as exc:
         # A5/A9/A10: services/gemini.call_gemini raises FRIENDLY, key-free RuntimeErrors for the
         # known-safe cases (a Gemini timeout -> "took too long, try again", a safety block, an
@@ -675,8 +701,16 @@ def ocr_from_stored_image(request):
         logger.exception("Could not open stored image %s for match %s", image_id, match_id)
         return Response({"message": "Could not open that stored image. Please try again."}, status=500)
 
+    from .services.extract import OcrKeyRequired
+    from .services.providers import ProviderError
     try:
-        raw_output, engine = _extract_with_router(image_bytes, mime_type, aliases, team_notes, event_type)
+        raw_output, engine = _extract_with_router(image_bytes, mime_type, aliases, team_notes, event_type,
+                                                  org=getattr(event, "organization", None), actor=user, event=event)
+    except OcrKeyRequired as exc:
+        return key_required_response(exc)
+    except ProviderError as exc:
+        logger.warning("OCR provider refused for stored image %s match %s: %s", image_id, match_id, exc.message)
+        return Response({"message": exc.message, "code": "ocr_provider_error"}, status=503)
     except RuntimeError as exc:
         # A5/A9/A10: friendly, key-free RuntimeError from services/gemini (timeout / safety block /
         # unreadable result). Safe to surface verbatim; the API key is stripped at the gemini layer.

@@ -1552,10 +1552,21 @@ def ocr_extract(request, lb_id):
     image_bytes = screenshot.read()
     mime_type = screenshot.content_type or "image/jpeg"
 
+    # Own-key OCR (owner 2026-09-12): the leaderboard's organization pays for an escalated read,
+    # or spends its free read, or the upload is refused with the connect-your-key sentence.
+    from afc_ocr.services.extract import OcrKeyRequired
+    from afc_ocr.services.providers import ProviderError
+    from afc_ocr.views import key_required_response
     try:
         raw_output, _engine = extract.extract_rows(
             image_bytes, mime_type, event_type, prompt_kind=prompt_kind,
+            org=lb.organization, actor=user, leaderboard=lb,
         )
+    except OcrKeyRequired as exc:
+        return key_required_response(exc)
+    except ProviderError as exc:
+        logger.warning("OCR provider refused for leaderboard %s: %s", lb_id, exc.message)
+        return Response({"message": exc.message, "code": "ocr_provider_error"}, status=503)
     except Exception:
         # A10: keep the real failure (which can carry the Gemini key / internal detail) in the server
         # log only; hand the client a generic, safe message. Same pattern as afc_ocr.views.
