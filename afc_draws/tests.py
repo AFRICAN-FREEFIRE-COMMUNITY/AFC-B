@@ -92,10 +92,6 @@ def _get(path, token=None):
     return Client().get(path, **kw)
 
 
-# open_draw and remind queue afc_draws.tasks.send_draw_emails; patched at the fixture so no test
-# publishes to the broker (on the VPS rig that Redis feeds the PRODUCTION worker). The tests that
-# care about the emails read the mock.
-@patch("afc_draws.tasks.send_draw_emails.delay")
 class DrawFixture(TestCase):
     """An event with one 3-group stage and 7 registered clubs, each with a captain (owner) and a
     plain member. Team i's captain token is self.tokens[i]."""
@@ -103,6 +99,13 @@ class DrawFixture(TestCase):
     n_teams = 7
 
     def setUp(self):
+        # open_draw and remind queue afc_draws.tasks.send_draw_emails; patched here (a patcher
+        # in setUp reaches every subclass, a class decorator would not) so no test publishes to
+        # the broker: on the VPS rig that Redis feeds the PRODUCTION worker. Tests that care
+        # about the emails read self.mail.
+        patcher = patch("afc_draws.tasks.send_draw_emails.delay")
+        self.mail = patcher.start()
+        self.addCleanup(patcher.stop)
         self.admin, self.admin_tok = _user("dr_admin", role="admin")
         self.event = _event(self.admin)
         self.stage = _stage(self.event, groups=3)
@@ -123,7 +126,7 @@ class DrawFixture(TestCase):
 
 
 class DealTests(DrawFixture):
-    def test_even_deal_and_sealed_mapping(self, _mail):
+    def test_even_deal_and_sealed_mapping(self):
         draw = services.deal(self.stage, self.admin)
         cards = list(draw.cards.all())
         self.assertEqual(len(cards), 7)
@@ -136,7 +139,7 @@ class DealTests(DrawFixture):
         self.assertEqual(draw.commitment, services.commitment_for(draw.salt, services.mapping_of(cards)))
         self.assertEqual(draw.status, "draft")
 
-    def test_refuses_without_groups_or_competitors_or_over_seeded_groups(self, _mail):
+    def test_refuses_without_groups_or_competitors_or_over_seeded_groups(self):
         empty_event = _event(self.admin, event_name="Empty")
         bare = Stages.objects.create(
             event=empty_event, stage_name="S", start_date=date.today(), end_date=date.today(),
@@ -149,7 +152,7 @@ class DealTests(DrawFixture):
             services.deal(self.stage, self.admin)
         self.assertEqual(ctx.exception.status, 409)
 
-    def test_board_hides_groups_while_open_and_publishes_salt_when_closed(self, _mail):
+    def test_board_hides_groups_while_open_and_publishes_salt_when_closed(self):
         draw = services.deal(self.stage, self.admin)
         services.open_draw(draw, timezone.now() + timedelta(hours=1))
         board = services.serialize_board(draw)
@@ -163,14 +166,14 @@ class DealTests(DrawFixture):
 
 
 class LifecycleTests(DrawFixture):
-    def test_only_a_manager_may_create(self, _mail):
+    def test_only_a_manager_may_create(self):
         resp = _post(self.tokens[0], f"/draws/stages/{self.stage.stage_id}/create/")
         self.assertEqual(resp.status_code, 403, resp.content)
         resp = _post(self.admin_tok, f"/draws/stages/{self.stage.stage_id}/create/")
         self.assertEqual(resp.status_code, 201, resp.content)
         self.assertEqual(resp.json()["cards_total"], 7)
 
-    def test_open_needs_a_future_close_time(self, _mail):
+    def test_open_needs_a_future_close_time(self):
         draw = services.deal(self.stage, self.admin)
         resp = _post(self.admin_tok, f"/draws/{draw.draw_id}/open/", {"closes_at": "nonsense"})
         self.assertEqual(resp.status_code, 400)
@@ -182,7 +185,7 @@ class LifecycleTests(DrawFixture):
         self.assertEqual(resp.status_code, 200, resp.content)
         self.assertEqual(resp.json()["status"], "open")
 
-    def test_reset_deletes_the_draw_and_its_group_rows_unless_results_exist(self, _mail):
+    def test_reset_deletes_the_draw_and_its_group_rows_unless_results_exist(self):
         draw = services.deal(self.stage, self.admin)
         services.open_draw(draw, timezone.now() + timedelta(hours=1))
         cap0 = User.objects.get(username="dr_cap0")
@@ -216,7 +219,7 @@ class PickTests(DrawFixture):
     def _pick(self, token, number, **extra):
         return _post(token, f"/draws/{self.draw.draw_id}/pick/", {"card_number": number, **extra})
 
-    def test_captain_picks_and_the_group_row_is_written(self, _mail):
+    def test_captain_picks_and_the_group_row_is_written(self):
         resp = self._pick(self.tokens[0], 3)
         self.assertEqual(resp.status_code, 200, resp.content)
         card = DrawCard.objects.get(draw=self.draw, number=3)
@@ -232,25 +235,25 @@ class PickTests(DrawFixture):
         taken = [c for c in body["cards"] if c["number"] == 3][0]
         self.assertEqual((taken["taken"], taken["competitor"]), (True, "Club 0"))
 
-    def test_plain_member_and_outsider_cannot_pick(self, _mail):
+    def test_plain_member_and_outsider_cannot_pick(self):
         resp = self._pick(self.member_tok, 1)
         self.assertEqual(resp.status_code, 403, resp.content)
         stranger, stranger_tok = _user("dr_stranger")
         resp = self._pick(stranger_tok, 1)
         self.assertEqual(resp.status_code, 403)
 
-    def test_one_card_per_team_and_taken_card_refused(self, _mail):
+    def test_one_card_per_team_and_taken_card_refused(self):
         self.assertEqual(self._pick(self.tokens[0], 1).status_code, 200)
         self.assertEqual(self._pick(self.tokens[0], 2).status_code, 409)     # second pick
         self.assertEqual(self._pick(self.tokens[1], 1).status_code, 409)     # taken card
         self.assertEqual(self._pick(self.tokens[1], 99).status_code, 404)    # no such card
         self.assertEqual(self._pick(self.tokens[1], "x").status_code, 400)   # not a number
 
-    def test_pick_refused_once_closed(self, _mail):
+    def test_pick_refused_once_closed(self):
         services.close_draw(self.draw)
         self.assertEqual(self._pick(self.tokens[0], 1).status_code, 409)
 
-    def test_board_is_public_and_viewer_specific(self, _mail):
+    def test_board_is_public_and_viewer_specific(self):
         resp = _get(f"/draws/{self.draw.draw_id}/board/")
         self.assertEqual(resp.status_code, 200)
         self.assertIsNone(resp.json()["viewer"])
@@ -266,7 +269,7 @@ class ConcurrentPickTests(TransactionTestCase):
     TransactionTestCase because the two picks must run in real, separate transactions."""
 
     @patch("afc_draws.tasks.send_draw_emails.delay")
-    def test_race_on_one_card_has_one_winner(self, _mail):
+    def test_race_on_one_card_has_one_winner(self):
         admin, _ = _user("rc_admin", role="admin")
         event = _event(admin)
         stage = _stage(event, groups=2)
@@ -309,7 +312,7 @@ class CloseTests(DrawFixture):
         self.draw = services.deal(self.stage, self.admin)
         services.open_draw(self.draw, timezone.now() + timedelta(hours=1))
 
-    def test_close_places_every_straggler_exactly_once(self, _mail):
+    def test_close_places_every_straggler_exactly_once(self):
         cap0 = User.objects.get(username="dr_cap0")
         cap1 = User.objects.get(username="dr_cap1")
         services.pick(self.draw, cap0, 2)
@@ -330,7 +333,7 @@ class CloseTests(DrawFixture):
         # the seal verifies against the published mapping
         self.assertEqual(body["commitment"], services.commitment_for(body["salt"], body["mapping"]))
 
-    def test_a_late_competitor_gets_an_extra_card_in_the_smallest_group(self, _mail):
+    def test_a_late_competitor_gets_an_extra_card_in_the_smallest_group(self):
         late_cap, _ = _user("dr_late")
         team = Team.objects.create(team_name="Late FC", team_owner=late_cap, team_creator=late_cap)
         tt = TournamentTeam.objects.create(event=self.event, team=team, registered_by=late_cap)
@@ -345,7 +348,7 @@ class CloseTests(DrawFixture):
             counts[c.stage_group_id] = counts.get(c.stage_group_id, 0) + 1
         self.assertEqual(sorted(counts.values()), [2, 3, 3])
 
-    def test_lazy_close_on_read_after_the_deadline(self, _mail):
+    def test_lazy_close_on_read_after_the_deadline(self):
         StageDraw.objects.filter(pk=self.draw.pk).update(closes_at=timezone.now() - timedelta(seconds=1))
         resp = _get(f"/draws/{self.draw.draw_id}/board/")
         self.assertEqual(resp.json()["status"], "closed")
@@ -353,7 +356,7 @@ class CloseTests(DrawFixture):
 
 
 class GuardTests(DrawFixture):
-    def test_seeder_refuses_while_a_draw_is_open(self, _mail):
+    def test_seeder_refuses_while_a_draw_is_open(self):
         draw = services.deal(self.stage, self.admin)
         services.open_draw(draw, timezone.now() + timedelta(hours=1))
         resp = _post(self.admin_tok, "/events/seed-stage-competitors-to-groups-team/",
@@ -364,7 +367,7 @@ class GuardTests(DrawFixture):
 
 
 class NotifyTests(DrawFixture):
-    def test_open_notifies_captains_not_plain_members(self, _mail):
+    def test_open_notifies_captains_not_plain_members(self):
         draw = services.deal(self.stage, self.admin)
         services.open_draw(draw, timezone.now() + timedelta(hours=1))
         opened = Notifications.objects.filter(notification_type="group_draw_open")
@@ -373,7 +376,7 @@ class NotifyTests(DrawFixture):
                          {f"dr_cap{i}" for i in range(7)})
         self.assertEqual(opened.first().target_type, "event")
 
-    def test_close_notifies_only_the_auto_placed(self, _mail):
+    def test_close_notifies_only_the_auto_placed(self):
         draw = services.deal(self.stage, self.admin)
         services.open_draw(draw, timezone.now() + timedelta(hours=1))
         services.pick(draw, User.objects.get(username="dr_cap0"), 1)
@@ -385,7 +388,7 @@ class NotifyTests(DrawFixture):
 class CapacityTests(DrawFixture):
     """The stage's competitors_per_group (group_capacity.py) decides the deal."""
 
-    def test_deal_refuses_when_the_pool_does_not_fit(self, _mail):
+    def test_deal_refuses_when_the_pool_does_not_fit(self):
         Stages.objects.filter(pk=self.stage.pk).update(competitors_per_group=2)   # 3 x 2 = 6 < 7
         self.stage.refresh_from_db()
         resp = _post(self.admin_tok, f"/draws/stages/{self.stage.stage_id}/create/")
@@ -393,7 +396,7 @@ class CapacityTests(DrawFixture):
         self.assertIn("7 teams for 3 groups of 2: room for 6", resp.json()["message"])
         self.assertFalse(StageDraw.objects.filter(stage=self.stage).exists())
 
-    def test_deal_within_the_size_is_even_and_the_board_says_the_size(self, _mail):
+    def test_deal_within_the_size_is_even_and_the_board_says_the_size(self):
         Stages.objects.filter(pk=self.stage.pk).update(competitors_per_group=3)
         self.stage.refresh_from_db()
         draw = services.deal(self.stage, self.admin)
@@ -403,7 +406,7 @@ class CapacityTests(DrawFixture):
         self.assertEqual(sorted(counts.values()), [2, 2, 3])
         self.assertEqual(services.serialize_board(draw)["per_group"], 3)
 
-    def test_a_late_competitor_is_left_unplaced_when_every_group_is_full(self, _mail):
+    def test_a_late_competitor_is_left_unplaced_when_every_group_is_full(self):
         Stages.objects.filter(pk=self.stage.pk).update(competitors_per_group=3)
         self.stage.refresh_from_db()
         # 9 competitors fill 3 x 3 exactly; the tenth has nowhere to go at close
@@ -430,7 +433,7 @@ class WindowTests(DrawFixture):
         super().setUp()
         self.draw = services.deal(self.stage, self.admin)
 
-    def test_open_records_the_choice_and_the_window_can_change(self, _mail):
+    def test_open_records_the_choice_and_the_window_can_change(self):
         resp = _post(self.admin_tok, f"/draws/{self.draw.draw_id}/open/",
                      {"closes_at": (timezone.now() + timedelta(hours=1)).isoformat(), "auto_place_at_close": False})
         self.assertEqual(resp.status_code, 200, resp.content)
@@ -452,7 +455,7 @@ class WindowTests(DrawFixture):
         resp = _post(self.member_tok, f"/draws/{self.draw.draw_id}/window/", {"auto_place_at_close": False})
         self.assertEqual(resp.status_code, 403)
 
-    def test_close_can_leave_the_rest_unplaced(self, _mail):
+    def test_close_can_leave_the_rest_unplaced(self):
         services.open_draw(self.draw, timezone.now() + timedelta(hours=1))
         services.pick(self.draw, User.objects.get(username="dr_cap0"), 1)
         services.pick(self.draw, User.objects.get(username="dr_cap1"), 2)
@@ -468,7 +471,7 @@ class WindowTests(DrawFixture):
         # the seal still verifies
         self.assertEqual(body["commitment"], services.commitment_for(body["salt"], body["mapping"]))
 
-    def test_the_deadline_honours_the_choice(self, _mail):
+    def test_the_deadline_honours_the_choice(self):
         services.open_draw(self.draw, timezone.now() + timedelta(hours=1), auto_place_at_close=False)
         StageDraw.objects.filter(pk=self.draw.pk).update(closes_at=timezone.now() - timedelta(seconds=1))
         board = _get(f"/draws/{self.draw.draw_id}/board/").json()
@@ -482,14 +485,16 @@ class RemindAndAccessTests(DrawFixture):
         super().setUp()
         self.draw = services.deal(self.stage, self.admin)
 
-    def test_open_emails_every_captain(self, mail):
+    def test_open_emails_every_captain(self):
+        mail = self.mail
         services.open_draw(self.draw, timezone.now() + timedelta(hours=1))
         self.assertEqual(mail.call_count, 1)
         ids, subject = mail.call_args.args[0], mail.call_args.args[1]
         self.assertEqual(len(ids), 7)
         self.assertIn("Group draw open", subject)
 
-    def test_remind_reaches_only_the_unpicked_once_per_ten_minutes(self, mail):
+    def test_remind_reaches_only_the_unpicked_once_per_ten_minutes(self):
+        mail = self.mail
         services.open_draw(self.draw, timezone.now() + timedelta(hours=1))
         mail.reset_mock()
         services.pick(self.draw, User.objects.get(username="dr_cap0"), 3)
@@ -508,7 +513,7 @@ class RemindAndAccessTests(DrawFixture):
         resp = _post(self.member_tok, f"/draws/{self.draw.draw_id}/remind/")
         self.assertEqual(resp.status_code, 403)
 
-    def test_the_email_task_sends_one_per_recipient(self, _mail):
+    def test_the_email_task_sends_one_per_recipient(self):
         with patch("afc_auth.views.send_email", return_value=True) as send:
             ids = [User.objects.get(username=f"dr_cap{i}").user_id for i in range(3)]
             sent = draw_tasks.send_draw_emails(ids, "Subject", "<b>lead</b>", "tail", "https://x/e")
@@ -516,7 +521,7 @@ class RemindAndAccessTests(DrawFixture):
         self.assertEqual({c.args[0] for c in send.call_args_list}, {f"dr_cap{i}@x.com" for i in range(3)})
         self.assertEqual(send.call_args_list[0].kwargs["language"], "en")
 
-    def test_a_team_from_another_event_cannot_pick(self, _mail):
+    def test_a_team_from_another_event_cannot_pick(self):
         services.open_draw(self.draw, timezone.now() + timedelta(hours=1))
         other_cap, other_tok = _user("dr_other")
         other_event = _event(self.admin, event_name="Other Cup")
