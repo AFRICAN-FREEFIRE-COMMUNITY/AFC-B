@@ -495,3 +495,30 @@ class UploadGateTests(TestCase):
         self.assertEqual(r.status_code, 402, r.content)
         self.assertEqual(r.json()["code"], "ocr_key_required")
         self.assertEqual(r.json()["organization_slug"], "ug-lb-org")
+
+    def test_batch_run_answers_402_up_front_without_queueing(self):
+        from afc_leaderboard.models import LeaderboardOcrJob, StandaloneLeaderboard
+        owner, tok = _user("ug_batch_owner")
+        org = _org("ug-batch-org", owner)
+        OrganizationMember.objects.filter(organization=org, user=owner).update(can_upload_results=True)
+        org.ocr_free_reads_left = 0
+        org.save(update_fields=["ocr_free_reads_left"])
+        lb = StandaloneLeaderboard.objects.create(name="LB", format="team", organization=org, creator=owner)
+        job = LeaderboardOcrJob.objects.create(leaderboard=lb, created_by=owner, status="failed", error="old")
+        with patch("afc_leaderboard.views.process_leaderboard_ocr_job.delay") as delay:
+            r = _post(tok, f"/leaderboards/standalone/{lb.pk}/ocr/jobs/{job.pk}/run/")
+            r2 = _post(tok, f"/leaderboards/standalone/{lb.pk}/ocr/run-all/")
+        self.assertEqual((r.status_code, r2.status_code), (402, 402), (r.content, r2.content))
+        self.assertEqual(r.json()["code"], "ocr_key_required")
+        delay.assert_not_called()
+        job.refresh_from_db()
+        self.assertEqual(job.status, "failed")
+        # with the free read back, the run is queued
+        org.ocr_free_reads_left = 1
+        org.save(update_fields=["ocr_free_reads_left"])
+        with patch("afc_leaderboard.views.process_leaderboard_ocr_job.delay") as delay:
+            r = _post(tok, f"/leaderboards/standalone/{lb.pk}/ocr/jobs/{job.pk}/run/")
+        self.assertEqual(r.status_code, 200, r.content)
+        delay.assert_called_once()
+        org.refresh_from_db()
+        self.assertEqual(org.ocr_free_reads_left, 1, "the pre-check never spends the free read")
