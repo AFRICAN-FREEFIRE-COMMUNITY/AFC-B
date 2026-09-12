@@ -3,11 +3,16 @@ afc_draws/services.py - everything the group draw DOES, kept out of the views so
 testable without a request and reusable by Phase 2 (AFC Seeds: rerolls and peeks act on the same
 cards through the same helpers).
 
-    deal(stage, user)                 create the draw: one sealed card per active competitor
-    open_draw(draw, closes_at)        start accepting picks, notify every eligible captain/player
+    deal(stage, user)                 create the draw: one sealed card per active competitor,
+                                      the stage's group size respected (group_capacity.py)
+    open_draw(draw, closes_at, auto)  start accepting picks, notify every eligible captain/player
+                                      in-app and by email
+    update_window(draw, ...)          change the close time or the straggler choice while open
     pick(draw, user, number, team_id) turn one card over for the competitor the user acts for
-    close_draw(draw)                  deal the stragglers into what is left, publish the salt
+    close_draw(draw, place_rest)      publish the salt; deal the stragglers into what is left
+                                      (the organizer's choice, auto_place_at_close by default)
     maybe_lazy_close(draw)            a draw past its close time closes on the next read
+    remind(draw, user)                "you have not picked yet", in-app + email, rate limited
     reset(draw)                       throw the draw away (only while the stage has no result)
     draw_is_open(stage)               the guard the ordinary seeders ask before dealing
     serialize_board(draw, viewer)     the board the event page and the organizer card render
@@ -33,6 +38,7 @@ from django.db import IntegrityError, transaction
 from django.utils import timezone
 
 from afc_auth.models import Notifications
+from afc_tournament_and_scrims.group_capacity import GroupCapacityError, plan_placements
 from afc_tournament_and_scrims.models import Match, StageCompetitor, StageGroupCompetitor, StageGroups
 
 from .models import DrawCard, StageDraw
@@ -127,9 +133,13 @@ def deal(stage, user):
     if StageGroupCompetitor.objects.filter(stage_group__stage=stage).exists():
         raise DrawError("The groups of this stage already hold teams. Clear them before opening a draw.", 409)
 
-    # Even deal, then shuffle the order the cards are numbered in. Card i hides groups[i % g] BEFORE
-    # the shuffle, so every group gets its fair share whatever the numbers end up being.
-    slots = [groups[i % len(groups)] for i in range(len(competitors))]
+    # Even deal, then shuffle the order the cards are numbered in. The split comes from the stage's
+    # structure (group_capacity.plan_placements): round robin on an empty stage, never more cards
+    # for a group than competitors_per_group, refused with the numbers when the pool does not fit.
+    try:
+        slots = plan_placements(stage, groups, len(competitors))
+    except GroupCapacityError as e:
+        raise DrawError(str(e))
     random.SystemRandom().shuffle(slots)
 
     salt = secrets.token_hex(16)
@@ -145,9 +155,10 @@ def deal(stage, user):
     return draw
 
 
-def open_draw(draw, closes_at):
-    """Start the window. closes_at must be in the future; stragglers are dealt at that moment
-    (lazily, on the next read after it passes) or when the organizer closes early."""
+def open_draw(draw, closes_at, auto_place_at_close=True):
+    """Start the window. closes_at must be in the future. At that moment (lazily, on the next read
+    after it passes) or when the organizer closes early, the stragglers are dealt the remaining
+    cards if auto_place_at_close, otherwise left for the organizer to place by hand."""
     if draw.status != StageDraw.STATUS_DRAFT:
         raise DrawError("Only a draft draw can be opened.", 409)
     if closes_at is None or closes_at <= timezone.now():
@@ -155,8 +166,30 @@ def open_draw(draw, closes_at):
     draw.status = StageDraw.STATUS_OPEN
     draw.opens_at = timezone.now()
     draw.closes_at = closes_at
-    draw.save(update_fields=["status", "opens_at", "closes_at", "updated_at"])
+    draw.auto_place_at_close = bool(auto_place_at_close)
+    draw.save(update_fields=["status", "opens_at", "closes_at", "auto_place_at_close", "updated_at"])
     _notify_open(draw)
+    return draw
+
+
+def update_window(draw, closes_at=None, auto_place_at_close=None):
+    """Change the close time and/or the straggler choice of an OPEN draw (owner 2026-09-12: "a time
+    frame that can be set before it closes"). A new close time must be in the future; the board
+    everyone is watching picks it up on its next poll."""
+    if draw.status != StageDraw.STATUS_OPEN:
+        raise DrawError("Only an open draw can be changed.", 409)
+    fields = ["updated_at"]
+    if closes_at is not None:
+        if closes_at <= timezone.now():
+            raise DrawError("The close time must be in the future.")
+        draw.closes_at = closes_at
+        fields.append("closes_at")
+    if auto_place_at_close is not None:
+        draw.auto_place_at_close = bool(auto_place_at_close)
+        fields.append("auto_place_at_close")
+    if len(fields) == 1:
+        raise DrawError("Nothing to change.")
+    draw.save(update_fields=fields)
     return draw
 
 
@@ -206,42 +239,70 @@ def pick(draw, user, number, tournament_team_id=None):
     return card
 
 
-def close_draw(draw):
-    """Deal every unpicked competitor into the cards that are left, at random, then publish."""
+def _stragglers(draw, cards):
+    """Active competitors of the stage with no card and no hand-placed group row."""
+    taken_keys = {
+        ("team", c.tournament_team_id) if c.tournament_team_id else ("player", c.player_id)
+        for c in cards if c.is_taken
+    }
+    # Someone hand-placed in a group after the draw was dealt is not a straggler either. One query
+    # for the whole stage: the board calls this on every poll.
+    grouped_keys = {
+        ("team", t) if t else ("player", p)
+        for t, p in StageGroupCompetitor.objects.filter(stage_group__stage=draw.stage)
+        .values_list("tournament_team_id", "player_id")
+    }
+    return [
+        c for c in active_competitors(draw.stage)
+        if _competitor_key(c) not in taken_keys and _competitor_key(c) not in grouped_keys
+    ]
+
+
+def close_draw(draw, place_rest=None):
+    """Publish the salt. Whoever has not picked is dealt the remaining cards at random when
+    place_rest (default: the draw's auto_place_at_close, the organizer's choice at open time) is
+    true; otherwise they stay unplaced in the stage pool for the organizer to seed or move by hand,
+    and the board lists them. Either way each of them is told."""
     with transaction.atomic():
         draw = StageDraw.objects.select_for_update().get(pk=draw.pk)
         if draw.status == StageDraw.STATUS_CLOSED:
             return draw
         if draw.status != StageDraw.STATUS_OPEN:
             raise DrawError("Only an open draw can be closed.", 409)
+        if place_rest is None:
+            place_rest = draw.auto_place_at_close
 
         cards = list(draw.cards.select_related("stage_group").all())
-        taken_keys = {
-            ("team", c.tournament_team_id) if c.tournament_team_id else ("player", c.player_id)
-            for c in cards if c.is_taken
-        }
-        stragglers = [c for c in active_competitors(draw.stage) if _competitor_key(c) not in taken_keys]
-        # Someone hand-placed in a group after the draw was dealt is not a straggler.
-        stragglers = [c for c in stragglers if not _already_grouped(draw.stage, c)]
+        stragglers = _stragglers(draw, cards)
         free = [c for c in cards if not c.is_taken]
         random.SystemRandom().shuffle(free)
 
         placed_auto = []
+        left_unplaced = []
         for comp in stragglers:
+            if not place_rest:
+                left_unplaced.append(comp)
+                continue
             if free:
                 card = free.pop()
             else:
                 # A competitor added to the stage after the deal: give them a card in the group
-                # holding the fewest cards so the deal stays as even as it can be.
+                # holding the fewest cards so the deal stays as even as it can be. A stage whose
+                # groups are full (competitors_per_group) has nowhere to put them: left unplaced.
                 card = _extra_card(draw, cards)
+                if card is None:
+                    left_unplaced.append(comp)
+                    continue
                 cards.append(card)
             _take(card, comp, None, DrawCard.VIA_AUTO)
             placed_auto.append((comp, card))
 
         draw.status = StageDraw.STATUS_CLOSED
         draw.closed_at = timezone.now()
-        draw.save(update_fields=["status", "closed_at", "updated_at"])
+        draw.auto_place_at_close = bool(place_rest)
+        draw.save(update_fields=["status", "closed_at", "auto_place_at_close", "updated_at"])
     _notify_auto_placed(draw, placed_auto)
+    _notify_unplaced(draw, left_unplaced)
     return draw
 
 
@@ -250,6 +311,47 @@ def maybe_lazy_close(draw):
     if draw.status == StageDraw.STATUS_OPEN and draw.closes_at and draw.closes_at <= timezone.now():
         return close_draw(draw)
     return draw
+
+
+REMIND_EVERY_MINUTES = 10
+
+
+def remind(draw, user):
+    """Tell everyone who has not picked yet, in-app and by email (owner 2026-09-12: "notify
+    everyone through notifications or mail"). One reminder per draw per REMIND_EVERY_MINUTES.
+    Returns the number of competitors reminded."""
+    if draw.status != StageDraw.STATUS_OPEN:
+        raise DrawError("Only an open draw has anyone left to remind.", 409)
+    now = timezone.now()
+    if draw.last_reminder_at and (now - draw.last_reminder_at).total_seconds() < REMIND_EVERY_MINUTES * 60:
+        wait = REMIND_EVERY_MINUTES - int((now - draw.last_reminder_at).total_seconds() // 60)
+        raise DrawError(f"A reminder went out less than {REMIND_EVERY_MINUTES} minutes ago. Try again in {wait} min.", 429)
+    cards = list(draw.cards.all())
+    stragglers = _stragglers(draw, cards)
+    if not stragglers:
+        raise DrawError("Everyone has picked already.")
+    event = draw.stage.event
+    when = _when(draw.closes_at)
+    users = []
+    for comp in stragglers:
+        users.extend(_people_who_pick_for(comp))
+    _notify(
+        users, event,
+        f"Reminder: pick your group for {event.event_name}",
+        f"The group draw for {draw.stage.stage_name} closes {when} and you have not turned a card "
+        f"over yet. Open the event page and pick before it closes.",
+        "group_draw_reminder",
+    )
+    _email(
+        users, event,
+        f"Reminder: pick your group for {event.event_name}",
+        f"The group draw for <strong>{draw.stage.stage_name}</strong> closes <strong>{when}</strong> "
+        f"and you have not turned a card over yet.",
+        f"{'Anyone who has not picked by then is placed automatically.' if draw.auto_place_at_close else 'Anyone who has not picked by then will be placed by the organizer.'}",
+    )
+    draw.last_reminder_at = now
+    draw.save(update_fields=["last_reminder_at", "updated_at"])
+    return len(stragglers)
 
 
 def reset(draw):
@@ -304,15 +406,19 @@ def _take(card, comp, user, via):
 
 
 def _extra_card(draw, cards):
+    """One more card, in the group holding the fewest cards that still has room under the stage's
+    competitors_per_group (group_capacity.plan_placements). None when every group is full."""
     counts = {}
     for c in cards:
         counts[c.stage_group_id] = counts.get(c.stage_group_id, 0) + 1
     groups = list(StageGroups.objects.filter(stage=draw.stage).order_by("group_id"))
     for g in groups:
         counts.setdefault(g.group_id, 0)
-    smallest = min(groups, key=lambda g: (counts[g.group_id], g.group_id))
+    target = plan_placements(draw.stage, groups, 1, counts=counts, strict=False)
+    if not target:
+        return None
     number = max((c.number for c in cards), default=0) + 1
-    return DrawCard.objects.create(draw=draw, number=number, stage_group=smallest)
+    return DrawCard.objects.create(draw=draw, number=number, stage_group=target[0])
 
 
 # ── notifications ───────────────────────────────────────────────────────────────────────────────
@@ -351,20 +457,74 @@ def _notify(users, event, title, message, kind):
     return len(seen)
 
 
+def _when(dt):
+    """A close time as people read it, with the zone named, since email has no viewer clock."""
+    if not dt:
+        return ""
+    local = timezone.localtime(dt)
+    return local.strftime("%d %b %Y, %H:%M ") + (local.tzname() or "UTC")
+
+
+def _event_url(event):
+    from django.conf import settings
+    return f"{settings.FRONTEND_URL}/tournaments/{event.slug or event.event_id}"
+
+
+def _email(users, event, subject, lead_html, tail_text):
+    """The email twin of _notify: one branded message per distinct user with an address, in that
+    user's language, sent by afc_draws.tasks.send_draw_emails off the request thread (one SMTP
+    session per recipient would hold a 48-team open for a minute). Returns the recipient count."""
+    from .tasks import send_draw_emails
+
+    ids = []
+    seen = set()
+    for u in users:
+        if getattr(u, "email", None) and u.user_id not in seen:
+            seen.add(u.user_id)
+            ids.append(u.user_id)
+    if ids:
+        send_draw_emails.delay(ids, subject, lead_html, tail_text, _event_url(event))
+    return len(ids)
+
+
 def _notify_open(draw):
     stage = draw.stage
     event = stage.event
-    when = timezone.localtime(draw.closes_at).strftime("%d %b %H:%M") if draw.closes_at else ""
+    when = _when(draw.closes_at)
     users = []
     for comp in active_competitors(stage):
         users.extend(_people_who_pick_for(comp))
-    return _notify(
+    tail = (
+        "Anyone who has not picked by then is placed automatically."
+        if draw.auto_place_at_close else
+        "Anyone who has not picked by then will be placed by the organizer."
+    )
+    n = _notify(
         users, event,
         f"Group draw open: {event.event_name}",
-        f"Pick your group for {stage.stage_name}. Turn over a card on the event page before {when}; "
-        f"anyone who has not picked by then is placed automatically.",
+        f"Pick your group for {stage.stage_name}. Turn over a card on the event page before {when}; {tail[0].lower() + tail[1:]}",
         "group_draw_open",
     )
+    _email(
+        users, event,
+        f"Group draw open: {event.event_name}",
+        f"Pick your group for <strong>{stage.stage_name}</strong>. Turn over a card on the event page "
+        f"before <strong>{when}</strong>.",
+        tail,
+    )
+    return n
+
+
+def _notify_unplaced(draw, comps):
+    event = draw.stage.event
+    for comp in comps:
+        _notify(
+            _people_who_pick_for(comp), event,
+            f"Group draw closed: {event.event_name}",
+            f"The group draw for {draw.stage.stage_name} closed before you picked. The organizer will "
+            f"place your team in a group.",
+            "group_draw_unplaced",
+        )
 
 
 def _notify_auto_placed(draw, placed):
@@ -380,6 +540,14 @@ def _notify_auto_placed(draw, placed):
 
 
 # ── the board ───────────────────────────────────────────────────────────────────────────────────
+
+def _straggler_name(comp):
+    if comp.tournament_team_id:
+        return comp.tournament_team.display_name
+    if comp.player_id and comp.player.user:
+        return comp.player.user.username
+    return "Player"
+
 
 def _competitor_name(card):
     if card.tournament_team_id:
@@ -411,6 +579,10 @@ def serialize_board(draw, viewer=None):
         "opens_at": draw.opens_at.isoformat() if draw.opens_at else None,
         "closes_at": draw.closes_at.isoformat() if draw.closes_at else None,
         "closed_at": draw.closed_at.isoformat() if draw.closed_at else None,
+        # The organizer's choice about stragglers, and how the structure sizes the groups.
+        "auto_place_at_close": draw.auto_place_at_close,
+        "per_group": stage.competitors_per_group,
+        "last_reminder_at": draw.last_reminder_at.isoformat() if draw.last_reminder_at else None,
         "commitment": draw.commitment,
         "groups": [{"group_id": g.group_id, "group_name": g.group_name} for g in groups],
         "cards_total": len(cards),
@@ -430,6 +602,8 @@ def serialize_board(draw, viewer=None):
         ],
         "salt": draw.salt if closed else None,
         "mapping": mapping_of(cards) if closed else None,
+        # Who still has no card (open) or was left for the organizer (closed without placing).
+        "unpicked": [_straggler_name(c) for c in _stragglers(draw, cards)],
         "viewer": None,
     }
     if viewer is not None and getattr(viewer, "user_id", None):

@@ -66,6 +66,17 @@ class StageDraw(models.Model):
     closes_at = models.DateTimeField(null=True, blank=True)
     closed_at = models.DateTimeField(null=True, blank=True)
 
+    # What happens to whoever has not picked when the draw closes (owner 2026-09-12: "the
+    # admin/organizers decides if they want to randomize the teams/players who did not pick").
+    # True: they are dealt the remaining cards at random, as before. False: they stay unplaced in
+    # the stage pool and the organizer seeds or moves them by hand; the board lists them.
+    # Set when the draw opens, changeable while it is open (services.update_window).
+    auto_place_at_close = models.BooleanField(default=True)
+    # The last time the organizer sent "you have not picked yet" to the stragglers
+    # (services.remind): one reminder per draw per REMIND_EVERY, so a nervous organizer cannot
+    # spam a captain's inbox.
+    last_reminder_at = models.DateTimeField(null=True, blank=True)
+
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
         related_name="draws_created",
