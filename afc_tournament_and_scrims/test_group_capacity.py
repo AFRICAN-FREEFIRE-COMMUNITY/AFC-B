@@ -73,9 +73,6 @@ def _post(token, path, body=None):
                          HTTP_AUTHORIZATION=f"Bearer {token}")
 
 
-# The Discord role sync behind every seed is a Celery task; patched so a test never publishes
-# to the broker (on the VPS rig that is the PRODUCTION worker's Redis).
-@patch("afc_tournament_and_scrims.views.assign_group_roles_from_db_task.delay")
 class Fixture(TestCase):
     """An event, a 2-group stage, 8 registered clubs in the stage pool."""
 
@@ -83,6 +80,12 @@ class Fixture(TestCase):
     size = None
 
     def setUp(self):
+        # The Discord role sync behind every seed is a Celery task; patched here (a patcher in
+        # setUp reaches every subclass) so a test never publishes to the broker, which on the
+        # VPS rig is the PRODUCTION worker's Redis.
+        patcher = patch("afc_tournament_and_scrims.views.assign_group_roles_from_db_task.delay")
+        patcher.start()
+        self.addCleanup(patcher.stop)
         self.admin, self.admin_tok = _user("gc_admin", role="admin")
         self.event = _event(self.admin)
         self.stage = _stage(self.event, groups=2, size=self.size)
@@ -103,12 +106,12 @@ class Fixture(TestCase):
 
 
 class PlanTests(Fixture):
-    def test_no_size_is_round_robin(self, _delay):
+    def test_no_size_is_round_robin(self):
         plan = plan_placements(self.stage, self.groups, 5)
         self.assertEqual([g.group_name for g in plan], ["Group A", "Group B", "Group A", "Group B", "Group A"])
         self.assertIsNone(stage_capacity(self.stage, self.groups))
 
-    def test_size_caps_and_fills_least_loaded_first(self, _delay):
+    def test_size_caps_and_fills_least_loaded_first(self):
         self.stage.competitors_per_group = 4
         # Group B already holds two rows: the next three land A, A, B (then A, B ...)
         StageGroupCompetitor.objects.create(stage_group=self.groups[1], tournament_team=self.tts[0])
@@ -117,7 +120,7 @@ class PlanTests(Fixture):
         self.assertEqual([g.group_name for g in plan], ["Group A", "Group A", "Group B"])
         self.assertEqual(stage_capacity(self.stage, self.groups), 8)
 
-    def test_over_capacity_is_refused_with_the_numbers(self, _delay):
+    def test_over_capacity_is_refused_with_the_numbers(self):
         self.stage.competitors_per_group = 3
         with self.assertRaises(GroupCapacityError) as ctx:
             plan_placements(self.stage, self.groups, 8)
@@ -127,7 +130,7 @@ class PlanTests(Fixture):
         self.assertEqual(len(plan), 6)
         self.assertEqual(sorted(g.group_name for g in plan), ["Group A"] * 3 + ["Group B"] * 3)
 
-    def test_check_fits_counts_existing_rows(self, _delay):
+    def test_check_fits_counts_existing_rows(self):
         self.stage.competitors_per_group = 2
         StageGroupCompetitor.objects.create(stage_group=self.groups[0], tournament_team=self.tts[0])
         check_fits(self.stage, self.groups, 3)  # room: A 1 + B 2
@@ -138,7 +141,7 @@ class PlanTests(Fixture):
 class SeederTests(Fixture):
     size = 3
 
-    def test_team_seeder_refuses_over_capacity_and_touches_nothing(self, _delay):
+    def test_team_seeder_refuses_over_capacity_and_touches_nothing(self):
         # a stale row, which clear_existing would wipe: it must survive the refusal (rollback)
         StageGroupCompetitor.objects.create(stage_group=self.groups[0], tournament_team=self.tts[0])
         resp = _post(self.admin_tok, "/events/seed-stage-competitors-to-groups-team/",
@@ -147,14 +150,14 @@ class SeederTests(Fixture):
         self.assertIn("8 teams for 2 groups of 3: room for 6", resp.json()["message"])
         self.assertEqual(self.counts(), [1, 0])
 
-    def test_team_seeder_fills_evenly_under_capacity(self, _delay):
+    def test_team_seeder_fills_evenly_under_capacity(self):
         Stages.objects.filter(pk=self.stage.pk).update(competitors_per_group=4)
         resp = _post(self.admin_tok, "/events/seed-stage-competitors-to-groups-team/",
                      {"stage_id": self.stage.stage_id, "clear_existing": True})
         self.assertEqual(resp.status_code, 200, resp.content)
         self.assertEqual(self.counts(), [4, 4])
 
-    def test_autoseed_places_what_fits(self, _delay):
+    def test_autoseed_places_what_fits(self):
         placed = _distribute_into_groups(self.stage, shuffle=False, only_ungrouped=True)
         self.assertEqual(placed, 6)
         self.assertEqual(self.counts(), [3, 3])
@@ -162,7 +165,7 @@ class SeederTests(Fixture):
         grouped = StageGroupCompetitor.objects.filter(stage_group__stage=self.stage).count()
         self.assertEqual(StageCompetitor.objects.filter(stage=self.stage).count() - grouped, 2)
 
-    def test_explicit_reseed_refuses(self, _delay):
+    def test_explicit_reseed_refuses(self):
         resp = _post(self.admin_tok, "/events/seeding/reseed/",
                      {"event_id": self.event.event_id, "stage_id": self.stage.stage_id, "clear_existing": True})
         self.assertEqual(resp.status_code, 400, resp.content)
@@ -175,7 +178,7 @@ class RoundTripTests(Fixture):
         return _post(self.admin_tok, "/events/edit-event/",
                      {"event_id": self.event.event_id, "stages": [stage_payload]})
 
-    def test_edit_event_writes_and_the_readers_echo(self, _delay):
+    def test_edit_event_writes_and_the_readers_echo(self):
         d = str(date.today())
         stage_payload = {
             "stage_id": self.stage.stage_id, "stage_name": "Group Stage",
