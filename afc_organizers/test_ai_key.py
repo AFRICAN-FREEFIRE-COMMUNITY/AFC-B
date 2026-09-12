@@ -523,7 +523,12 @@ class UploadGateTests(TestCase):
         org.refresh_from_db()
         self.assertEqual(org.ocr_free_reads_left, 1, "the pre-check never spends the free read")
 
-    # ── the event flows: paid_by on the response, and the bulk per-map upload's gate ──────────
+
+# ── the event flows: paid_by on the response, one free read per multi-screenshot upload, and
+# the bulk per-map upload's gate. TransactionTestCase because upload_ocr_session reads the
+# screenshots in pool THREADS: their connections only see committed rows.
+@override_settings(GEMINI_API_KEY="afc-gemini-key", OCR_LOCAL_FIRST=False, OCR_GEMINI_FALLBACK=True)
+class EventUploadTests(TransactionTestCase):
     def _match_with_leaderboard(self, owner, org):
         """One event -> stage -> group -> match with a scoring Leaderboard, the shape both event
         upload endpoints require before they read anything."""
@@ -550,7 +555,6 @@ class UploadGateTests(TestCase):
         from afc_organizers.views_ai_key import sample_screenshot
         return SimpleUploadedFile("shot.png", sample_screenshot(), content_type="image/png")
 
-    @override_settings(GEMINI_API_KEY="afc-gemini-key", OCR_LOCAL_FIRST=False, OCR_GEMINI_FALLBACK=True)
     def test_event_upload_says_the_free_read_was_spent(self):
         owner, tok = _user("ug_ev_owner")
         org = _org("ug-ev-org", owner)
@@ -575,7 +579,23 @@ class UploadGateTests(TestCase):
         self.assertEqual(r.json()["code"], "ocr_key_required")
         g.assert_not_called()
 
-    @override_settings(GEMINI_API_KEY="afc-gemini-key", OCR_LOCAL_FIRST=False, OCR_GEMINI_FALLBACK=True)
+    def test_three_screenshots_of_one_map_spend_one_free_read(self):
+        owner, tok = _user("ug_ev_owner3")
+        org = _org("ug-ev-org3", owner)
+        OrganizationMember.objects.filter(organization=org, user=owner).update(can_upload_results=True)
+        _event_, match = self._match_with_leaderboard(owner, org)
+        with patch("afc_ocr.services.providers.gemini.call_gemini", return_value=GOOD) as g,              patch("afc_ocr.views.validate_ocr_images", return_value=None):
+            r = Client().post("/events/ocr-match-result/",
+                              {"match_id": match.match_id, "map_index": 1,
+                               "screenshot": [self._shot(), self._shot(), self._shot()]},
+                              HTTP_AUTHORIZATION=f"Bearer {tok}")
+        self.assertEqual(r.status_code, 201, r.content)
+        self.assertEqual(r.json()["paid_by"], "afc_free")
+        self.assertEqual(g.call_count, 3, "every screenshot was read")
+        org.refresh_from_db()
+        self.assertEqual(org.ocr_free_reads_left, 0, "one upload spent one free read, not three")
+        self.assertEqual(OcrUsage.objects.filter(organization=org, paid_by="afc_free", ok=True).count(), 3)
+
     def test_bulk_per_map_upload_answers_402_before_reading_and_reports_paid_by(self):
         owner, tok = _user("ug_bulk_owner")
         org = _org("ug-bulk-org", owner)
@@ -603,7 +623,6 @@ class UploadGateTests(TestCase):
         self.assertEqual(r.json()["paid_by"], "org")
         self.assertEqual(OcrUsage.objects.filter(organization=org, paid_by="org", ok=True).count(), 1)
 
-    @override_settings(GEMINI_API_KEY="afc-gemini-key", OCR_LOCAL_FIRST=False, OCR_GEMINI_FALLBACK=True)
     def test_bulk_per_map_upload_carries_the_providers_words_on_refusal(self):
         owner, tok = _user("ug_bulk_owner2")
         org = _org("ug-bulk-org2", owner)

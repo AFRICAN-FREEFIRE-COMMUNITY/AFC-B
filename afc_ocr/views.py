@@ -58,7 +58,8 @@ def key_required_response(exc):
     }, status=402)
 
 
-def _extract_with_router(image_bytes, mime_type, aliases, team_notes, event_type, org=None, actor=None, event=None):
+def _extract_with_router(image_bytes, mime_type, aliases, team_notes, event_type, org=None, actor=None, event=None,
+                         shared_credentials=None):
     """Thin delegate to the shared OCR extraction service (afc_ocr.services.extract.extract_rows).
 
     The local-first-then-Gemini routing body was lifted into services/extract.py (P2) so the
@@ -69,7 +70,8 @@ def _extract_with_router(image_bytes, mime_type, aliases, team_notes, event_type
     """
     from .services.extract import extract_rows
     return extract_rows(image_bytes, mime_type, event_type, aliases=aliases, team_notes=team_notes,
-                        org=org, actor=actor, event=event)
+                        org=org, actor=actor, event=event,
+                        shared_credentials=shared_credentials)
 
 
 def _auth(request):
@@ -243,13 +245,19 @@ def upload_ocr_session(request):
 
     # Own-key OCR (owner 2026-09-12): the event's organization pays for escalated reads, or
     # spends its free read, or the upload is refused with the connect-your-key sentence (402).
+    # All the screenshots of this upload share ONE credential resolution (SharedCredentials), so
+    # the free read is spent at most once per upload and no thread is refused after another
+    # spent it. The refusal (OcrKeyRequired) is raised by whichever thread hits it first.
+    from .services.extract import SharedCredentials
     _event_for_key = _get_event(match)
     _org_for_key = getattr(_event_for_key, "organization", None)
+    _shared_creds = SharedCredentials(_org_for_key, user)
 
     def _read_one(payload):
         data, mime = payload
         return _extract_with_router(data, mime, aliases, team_notes, event_type,
-                                    org=_org_for_key, actor=user, event=_event_for_key)
+                                    org=_org_for_key, actor=user, event=_event_for_key,
+                                    shared_credentials=_shared_creds)
 
     from .services.extract import OcrKeyRequired
     from .services.providers import ProviderError
