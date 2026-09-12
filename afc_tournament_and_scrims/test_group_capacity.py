@@ -197,7 +197,7 @@ class RoundTripTests(Fixture):
         public = Client().post("/events/get-event-details-not-logged-in/", json.dumps({"slug": self.event.slug}),
                                content_type="application/json")
         self.assertEqual(public.status_code, 200, public.content)
-        self.assertEqual(public.json()["stages"][0]["competitors_per_group"], 4)
+        self.assertEqual(public.json()["event_details"]["stages"][0]["competitors_per_group"], 4)
 
         # empty clears it
         stage_payload["competitors_per_group"] = ""
