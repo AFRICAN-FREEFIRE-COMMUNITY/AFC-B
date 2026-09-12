@@ -12324,6 +12324,11 @@ def seed_stage_competitors_to_groups(request):
         return Response({"message": "stage_id is required."}, status=400)
 
     stage = get_object_or_404(Stages, stage_id=stage_id)
+    # Group draw (owner 2026-09-12): while the teams are picking their own groups, the random
+    # seeder must not deal over them. Close or reset the draw first (afc_draws.services).
+    from afc_draws.services import draw_is_open as _draw_is_open
+    if _draw_is_open(stage):
+        return Response({"message": "A group draw is open for this stage. Close or reset it before seeding."}, status=409)
     # Organizer parity (owner 2026-07-04): owning organizer (can_manage_registrations) may act on their OWN event.
     if not _is_event_admin(admin) and not org_can_event(admin, "can_manage_registrations", stage.event):
         return Response({"message": "You do not have permission to perform this action."}, status=403)
@@ -19517,6 +19522,11 @@ def seed_stage_competitors_to_groups_team(request):
         return Response({"message": "stage_id required"}, status=400)
 
     stage = get_object_or_404(Stages, stage_id=stage_id)
+    # Group draw (owner 2026-09-12): while the teams are picking their own groups, the random
+    # seeder must not deal over them. Close or reset the draw first (afc_draws.services).
+    from afc_draws.services import draw_is_open as _draw_is_open
+    if _draw_is_open(stage):
+        return Response({"message": "A group draw is open for this stage. Close or reset it before seeding."}, status=409)
     # Organizer parity (owner 2026-07-04): owning organizer (can_manage_registrations) may act on their OWN event.
     if not _is_event_admin(admin) and not org_can_event(admin, "can_manage_registrations", stage.event):
         return Response({"message": "You do not have permission to perform this action."}, status=403)

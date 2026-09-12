@@ -39,6 +39,8 @@ urlpatterns = [
     # WEBSITE/tasks/sponsors-redesign-design.md; replaces the user-keyed SponsorEvent dashboard
     # over P2's cutover.
     path("sponsors/", include('afc_sponsors.urls')),
+    # Group draw (owner 2026-09-12): sealed card draw for a stage's groups. afc_draws/views.py.
+    path("draws/", include('afc_draws.urls')),
     # Standalone Leaderboards (afc_leaderboard, Phase 1). Event-less leaderboards an AFC admin or
     # organizer creates with real-or-ghost participants + per-map results. Routes live under
     # leaderboards/standalone/… (distinct from the event-tied tournament-leaderboard/ prefix above).
