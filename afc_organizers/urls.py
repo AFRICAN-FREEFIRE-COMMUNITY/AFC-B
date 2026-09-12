@@ -15,6 +15,7 @@ from django.urls import path
 from . import (
     views_admin, views_organizer, views_public,
     views_reviews, views_reports, views_blacklist, views_blacklist_lookup,
+    views_ai_key,
     views_leaderboard_design, co_organizers, payouts,
 )
 
@@ -209,4 +210,12 @@ urlpatterns = [
     # have published events, with logo + derived event_count / verified / tier.
     path("get-organizations-public/", views_public.get_organizations_directory,
          name="organizers_public_directory"),
+    # ── OCR on the organization's own AI key (owner 2026-09-12): views_ai_key ──
+    path("organization/<slug:slug>/ai-key/", views_ai_key.ai_key, name="organizers_ai_key"),                     # GET / PUT / DELETE
+    path("organization/<slug:slug>/ai-key/test/", views_ai_key.ai_key_test, name="organizers_ai_key_test"),     # POST
+    path("organization/<slug:slug>/ai-key/usage/", views_ai_key.ai_key_usage, name="organizers_ai_key_usage"),  # GET
+    path("organization/<slug:slug>/ai-key/history/", views_ai_key.ai_key_history, name="organizers_ai_key_history"),
+    path("admin/ai-keys/", views_ai_key.admin_ai_keys, name="organizers_admin_ai_keys"),                          # GET
+    path("admin/ai-keys/<int:org_id>/allowance/", views_ai_key.admin_set_allowance, name="organizers_admin_ai_allowance"),
+    path("admin/ai-keys/<int:org_id>/ocr-disabled/", views_ai_key.admin_set_ocr_disabled, name="organizers_admin_ai_disabled"),
 ]

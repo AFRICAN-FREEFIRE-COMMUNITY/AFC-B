@@ -24456,7 +24456,7 @@ def total_published_news(request):
     })
 
 
-def _extract_results_from_image(image_file, participant_type):
+def _extract_results_from_image(image_file, participant_type, org=None, actor=None, event=None):
     """
     Extract structured results from a Free Fire match-result screenshot. Returns a list of dicts.
     Raises on failure (the caller catches + logs).
@@ -24490,7 +24490,9 @@ def _extract_results_from_image(image_file, participant_type):
     # This helper only has participant_type (no match), so no per-match alias/team-note context is
     # injected - same as the old OpenAI call, which also used none. The shared service handles the
     # empty context fine; alias-assisted OCR still runs on the primary afc_ocr upload path.
-    raw_output, _engine = extract_rows(image_bytes, mime, event_type, aliases=[], team_notes=[])
+    # Own-key OCR (owner 2026-09-12): org / actor / event decide whose key pays (services.extract).
+    raw_output, _engine = extract_rows(image_bytes, mime, event_type, aliases=[], team_notes=[],
+                                       org=org, actor=actor, event=event)
 
     placements = (raw_output or {}).get("placements", []) or []
 
@@ -24594,7 +24596,9 @@ def upload_match_result_image(request):
     for img_file in images:
         img_file.seek(0)
         try:
-            extracted = _extract_results_from_image(img_file, participant_type)
+            extracted = _extract_results_from_image(
+                img_file, participant_type, org=getattr(event, "organization", None), actor=admin, event=event,
+            )
             if isinstance(extracted, list):
                 all_raw.extend(extracted)
         except Exception as e:

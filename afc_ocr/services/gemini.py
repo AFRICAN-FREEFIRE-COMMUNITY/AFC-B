@@ -107,7 +107,8 @@ Return the SAME structure with the two extra fields per placement:
     return base
 
 
-def call_gemini(image_bytes: bytes, mime_type: str, aliases: list, team_notes: list, prompt_kind=None) -> dict:
+def call_gemini(image_bytes: bytes, mime_type: str, aliases: list, team_notes: list, prompt_kind=None,
+                api_key: str = None, model: str = None) -> dict:
     # prompt_kind selects the prompt variant (None/"solo" = the existing player prompt;
     # "team_standings" = additionally read a team_name per placement). It is threaded down from
     # services.extract.extract_rows so the standalone-leaderboard team flow can ask Gemini for a
@@ -119,11 +120,14 @@ def call_gemini(image_bytes: bytes, mime_type: str, aliases: list, team_notes: l
     # Callers (services.extract.extract_rows -> upload_ocr_session, and afc_leaderboard.ocr.process_job)
     # persist / render str(exc) in the review dialog, so every message raised here must be client-safe
     # and key-free.
-    api_key = getattr(settings, "GEMINI_API_KEY", "")
+    # Own-key OCR (owner 2026-09-12): an organization's Gemini key and model arrive through
+    # `api_key` / `model` (services.providers.gemini); with neither, AFC's own key from settings,
+    # exactly as before.
+    api_key = api_key or getattr(settings, "GEMINI_API_KEY", "")
     if not api_key:
         raise ValueError("GEMINI_API_KEY is not configured in settings.")
 
-    url = GEMINI_URL_TMPL.format(model=effective_model(), api_key=api_key)
+    url = GEMINI_URL_TMPL.format(model=model or effective_model(), api_key=api_key)
     b64 = base64.b64encode(image_bytes).decode("utf-8")
 
     payload = {
