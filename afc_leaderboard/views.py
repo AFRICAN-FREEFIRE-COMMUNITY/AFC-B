@@ -1893,6 +1893,11 @@ def ocr_job_run(request, lb_id, job_id):
         return jnf
     if job.status == "processing":
         return Response({"job": _serialize_job(job)})  # already running; let the FE keep polling
+    # Own-key OCR (owner 2026-09-12): say no NOW, in words, rather than queue a job that fails.
+    from afc_ocr.services.extract import OcrKeyRequired, key_available
+    from afc_ocr.views import key_required_response
+    if not key_available(lb.organization, user):
+        return key_required_response(OcrKeyRequired(lb.organization))
     job.status = "pending"
     job.error = ""
     job.save(update_fields=["status", "error", "updated_at"])
@@ -1918,6 +1923,11 @@ def ocr_run_all(request, lb_id):
         return nf
     if not can_manage_standalone_lb(user, lb):
         return Response({"message": "You do not have permission to edit this leaderboard."}, status=403)
+    # Own-key OCR (owner 2026-09-12): the same up-front answer as run/ above.
+    from afc_ocr.services.extract import OcrKeyRequired, key_available
+    from afc_ocr.views import key_required_response
+    if not key_available(lb.organization, user):
+        return key_required_response(OcrKeyRequired(lb.organization))
 
     to_run = list(lb.ocr_jobs.filter(status__in=["pending", "failed"]))
     for j in to_run:

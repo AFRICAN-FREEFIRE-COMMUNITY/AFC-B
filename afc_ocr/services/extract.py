@@ -104,6 +104,23 @@ def resolve_credentials(org, actor):
     raise OcrKeyRequired(org)
 
 
+def key_available(org, actor) -> bool:
+    """Would an escalated read be allowed right now, WITHOUT spending anything? The batch run
+    endpoints ask this before queueing a job, so the organizer gets the 402 sentence up front
+    instead of a failed job a minute later."""
+    if org is None or _is_staff(actor):
+        return True
+    if getattr(org, "ocr_disabled", False):
+        return False
+    try:
+        key = org.ai_key
+    except Exception:  # RelatedObjectDoesNotExist
+        key = None
+    if key is not None and key.get_key():
+        return True
+    return org.ocr_free_reads_left > 0
+
+
 def _record_usage(creds, org, actor, ok, latency_ms, error="", event=None, leaderboard=None):
     """One OcrUsage row per AI read, and the key's own health stamps. Never raises."""
     try:
