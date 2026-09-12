@@ -278,6 +278,9 @@ def upload_ocr_session(request):
     placement_lists = [(raw.get("placements", []) or []) for raw, _eng in outputs]
     # Record the last non-empty engine for the FE "which engine" badge (mirrors process_job).
     engine = next((eng for _raw, eng in reversed(outputs) if eng), "")
+    # Whose key paid (own-key OCR, owner 2026-09-12): "org" / "afc_free" / "afc" / "" (local read).
+    # The FE tells the organizer when a read was AFC's free one, so the next refusal is no surprise.
+    paid_by = next((raw.get("_paid_by") for raw, _eng in outputs if raw.get("_paid_by")), "")
     merged = merge_placements(placement_lists, is_team=(event_type == "team"))
 
     # Canonical draft shape the rest of the flow expects: {"placements": [...]}. We store the
@@ -329,6 +332,7 @@ def upload_ocr_session(request):
         # Which engine produced this draft (local student vN / gemini-2.5-pro / best-effort).
         # The review UI shows it as the "Engine" badge so the admin sees how it was read.
         "engine":     engine,
+        "paid_by":    paid_by,
     }, status=201)
 
 
@@ -761,6 +765,7 @@ def ocr_from_stored_image(request):
         # Which engine produced this draft (local student vN / gemini-2.5-pro / best-effort).
         # The review UI shows it as the "Engine" badge so the admin sees how it was read.
         "engine":     engine,
+        "paid_by":    raw_output.get("_paid_by", ""),
     }, status=201)
 
 
