@@ -122,6 +122,7 @@ class SharedCredentials:
         self.actor = actor
         self._creds = None
         self._refusal = None
+        self._refunded = False
         self._lock = threading.Lock()
 
     def get(self):
@@ -135,6 +136,20 @@ class SharedCredentials:
                     self._refusal = exc
                     raise
             return self._creds
+
+    def refund_if_free(self):
+        """A read that FAILED on the free allowance gives the read back, once per upload. The
+        organizer did nothing wrong (a provider timeout, a safety block) and would otherwise lose
+        the one demonstration read to it. Seen 2026-09-12 on the scratch rig: Gemini timed out,
+        the free read was gone, the organizer had seen nothing work."""
+        with self._lock:
+            if self._creds is None or self._creds.paid_by != "afc_free" or self._refunded:
+                return
+            self._refunded = True
+        from django.db.models import F
+        from afc_organizers.models import Organization
+        Organization.objects.filter(pk=self.org.pk).update(ocr_free_reads_left=F("ocr_free_reads_left") + 1)
+        self.org.ocr_free_reads_left = (self.org.ocr_free_reads_left or 0) + 1
 
 
 def key_available(org, actor) -> bool:
@@ -283,13 +298,18 @@ def extract_rows(image_bytes, mime_type, event_type, aliases=None, team_notes=No
     if gemini_enabled:
         # Whose key: the organization's own, AFC's free read, or AFC's (staff / AFC-run). A missing
         # key raises OcrKeyRequired for the views to turn into the connect-your-key answer.
-        creds = shared_credentials.get() if shared_credentials is not None else resolve_credentials(org, actor)
+        shared = shared_credentials if shared_credentials is not None else SharedCredentials(org, actor)
+        creds = shared.get()
         if not creds.api_key:
             if student_json is not None:
                 return student_json, f"local_best_effort_{(conf or {}).get('model_version', 'v0')}"
             raise RuntimeError("No OCR engine available (local unavailable and no AI key configured).")
-        out = ai_read(creds, image_bytes, mime_type, aliases, team_notes, prompt_kind,
-                      org=org, actor=actor, event=event, leaderboard=leaderboard)
+        try:
+            out = ai_read(creds, image_bytes, mime_type, aliases, team_notes, prompt_kind,
+                          org=org, actor=actor, event=event, leaderboard=leaderboard)
+        except ProviderError:
+            shared.refund_if_free()   # a failed read on the free allowance is not the organizer's fault
+            raise
         # Label the engine with the ACTUAL provider + model used, so the FE badge + the training
         # corpus record the real teacher.
         engine = creds.model if creds.provider == "gemini" else f"{creds.provider}:{creds.model}"

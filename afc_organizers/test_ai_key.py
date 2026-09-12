@@ -240,6 +240,35 @@ class RoutingTests(TestCase):
         with self.assertRaises(extract.OcrKeyRequired):
             extract.resolve_credentials(self.org, self.owner)
 
+    def test_a_failed_read_on_the_free_allowance_gives_the_read_back(self):
+        event = _event(self.owner, self.org)
+        refusal = ProviderError("The screenshot reader took too long. Try again, or upload fewer screenshots at once.", 504)
+        with patch("afc_ocr.services.providers.gemini.call_gemini", side_effect=RuntimeError(refusal.message)):
+            with self.assertRaises(ProviderError):
+                extract.extract_rows(b"img", "image/png", "team", org=self.org, actor=self.owner, event=event)
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.ocr_free_reads_left, 1, "a provider failure is not the organizer's fault")
+        row = OcrUsage.objects.get()
+        self.assertEqual((row.paid_by, row.ok), ("afc_free", False))
+        self.assertIn("took too long", row.error)
+        # and the read still works afterwards, spending it for real this time
+        with patch("afc_ocr.services.providers.gemini.call_gemini", return_value=GOOD):
+            out, _engine = extract.extract_rows(b"img", "image/png", "team", org=self.org, actor=self.owner, event=event)
+        self.assertEqual(out["_paid_by"], "afc_free")
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.ocr_free_reads_left, 0)
+
+    def test_three_failing_screenshots_of_one_upload_refund_the_free_read_once(self):
+        shared = extract.SharedCredentials(self.org, self.owner)
+        with patch("afc_ocr.services.providers.gemini.call_gemini", side_effect=RuntimeError("boom")):
+            for _ in range(3):
+                with self.assertRaises(ProviderError):
+                    extract.extract_rows(b"img", "image/png", "team", org=self.org, actor=self.owner,
+                                         shared_credentials=shared)
+        self.org.refresh_from_db()
+        self.assertEqual(self.org.ocr_free_reads_left, 1, "given back once, never three times")
+        self.assertEqual(OcrUsage.objects.filter(paid_by="afc_free", ok=False).count(), 3)
+
     def test_a_key_that_no_longer_opens_falls_back_to_the_free_read(self):
         OrganizationAiKey.objects.create(organization=self.org, provider="openai", model="m",
                                          key_sealed="garbage", last_four="xxxx")
