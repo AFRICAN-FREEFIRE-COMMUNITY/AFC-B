@@ -4,7 +4,8 @@ afc_draws/views.py - the HTTP face of the group draw (owner 2026-09-12, Phase 1)
 Routes (afc_draws/urls.py, mounted at draws/):
     POST draws/stages/<stage_id>/create/     organizer/admin  deal + seal the cards      -> board
     POST draws/<draw_id>/open/               organizer/admin  {closes_at: ISO, auto_place_at_close?} -> board
-    POST draws/<draw_id>/window/             organizer/admin  {closes_at?: ISO, auto_place_at_close?} while open -> board
+    POST draws/<draw_id>/window/             organizer/admin  {closes_at?: ISO, auto_place_at_close?} while open,
+                                                              {visibility?: everyone|participants} any time -> board
     POST draws/<draw_id>/close/              organizer/admin  {place_rest?: bool} publish; stragglers dealt or left -> board
     POST draws/<draw_id>/remind/             organizer/admin  in-app + email to everyone unpicked -> board + {reminded}
     POST draws/<draw_id>/reset/              organizer/admin  delete the draw            -> {message}
@@ -115,8 +116,9 @@ def open_draw(request, draw_id):
 
 @api_view(["POST"])
 def update_window(request, draw_id):
-    """Change an OPEN draw's close time and/or straggler choice (owner 2026-09-12). Body:
-    {closes_at?: ISO 8601 in the future, auto_place_at_close?: bool}; at least one of them."""
+    """Change an OPEN draw's close time and/or straggler choice (owner 2026-09-12), or who may see
+    the board in any state. Body: {closes_at?: ISO 8601 in the future, auto_place_at_close?: bool,
+    visibility?: "everyone" | "participants"}; at least one of them."""
     user, err = _auth_user(request)
     if err:
         return err
@@ -129,7 +131,8 @@ def update_window(request, draw_id):
     if raw_when and closes_at is None:
         return Response({"message": "closes_at must be an ISO 8601 datetime."}, status=400)
     auto_place = _as_bool(request.data.get("auto_place_at_close"))
-    draw, err = _run(services.update_window, draw, closes_at, auto_place)
+    visibility = request.data.get("visibility")
+    draw, err = _run(services.update_window, draw, closes_at, auto_place, str(visibility) if visibility else None)
     if err:
         return err
     return Response(services.serialize_board(draw, user))

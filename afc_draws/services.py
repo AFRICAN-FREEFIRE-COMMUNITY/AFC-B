@@ -101,6 +101,32 @@ def competitors_user_acts_for(stage, user):
     return mine
 
 
+def user_is_participant(event, user):
+    """Registered and in the event: a member of any club with a TournamentTeam in it (any role,
+    not only the captain: the whole roster should be able to watch its draw), or a registered
+    solo player. What a board limited to participants is gated on."""
+    from afc_team.models import TeamMembers
+    from afc_tournament_and_scrims.models import TournamentTeam
+
+    if user is None or not getattr(user, "user_id", None):
+        return False
+    team_ids = TournamentTeam.objects.filter(event=event, team__isnull=False).values_list("team_id", flat=True)
+    if TeamMembers.objects.filter(team_id__in=team_ids, member=user).exists():
+        return True
+    return StageCompetitor.objects.filter(
+        stage__event=event, status="active", player__user=user,
+    ).exists()
+
+
+def user_may_see_board(draw, user):
+    """Everyone when the draw is open to everyone; otherwise participants and whoever may run it."""
+    if draw.visibility != StageDraw.VISIBILITY_PARTICIPANTS:
+        return True
+    if user is None or not getattr(user, "user_id", None):
+        return False
+    return user_is_participant(draw.stage.event, user) or user_may_run_draw(user, draw.stage)
+
+
 def user_may_run_draw(user, stage):
     """Whoever may seed the stage may run its draw: AFC event admins, or an organizer with
     can_manage_registrations on the owning org (the same gate the seeders use)."""
@@ -172,13 +198,19 @@ def open_draw(draw, closes_at, auto_place_at_close=True):
     return draw
 
 
-def update_window(draw, closes_at=None, auto_place_at_close=None):
+def update_window(draw, closes_at=None, auto_place_at_close=None, visibility=None):
     """Change the close time and/or the straggler choice of an OPEN draw (owner 2026-09-12: "a time
-    frame that can be set before it closes"). A new close time must be in the future; the board
-    everyone is watching picks it up on its next poll."""
-    if draw.status != StageDraw.STATUS_OPEN:
-        raise DrawError("Only an open draw can be changed.", 409)
+    frame that can be set before it closes"), and/or who may see the board (any state). A new
+    close time must be in the future; the board everyone is watching picks it up on its next poll."""
     fields = ["updated_at"]
+    if visibility is not None:
+        if visibility not in (StageDraw.VISIBILITY_EVERYONE, StageDraw.VISIBILITY_PARTICIPANTS):
+            raise DrawError("visibility must be 'everyone' or 'participants'.")
+        draw.visibility = visibility
+        fields.append("visibility")
+    if closes_at is not None or auto_place_at_close is not None:
+        if draw.status != StageDraw.STATUS_OPEN:
+            raise DrawError("Only an open draw can have its close time or straggler choice changed.", 409)
     if closes_at is not None:
         if closes_at <= timezone.now():
             raise DrawError("The close time must be in the future.")
@@ -313,19 +345,21 @@ def maybe_lazy_close(draw):
     return draw
 
 
-REMIND_EVERY_MINUTES = 10
+# Reminders go out ONLY when the organizer presses the button (owner 2026-09-12: "it should only
+# send when they say it should"). This is not a schedule: it is a guard against a double press
+# emailing every captain twice within a minute.
+REMIND_GUARD_SECONDS = 60
 
 
 def remind(draw, user):
     """Tell everyone who has not picked yet, in-app and by email (owner 2026-09-12: "notify
-    everyone through notifications or mail"). One reminder per draw per REMIND_EVERY_MINUTES.
-    Returns the number of competitors reminded."""
+    everyone through notifications or mail"), when the organizer asks and only then. Returns the
+    number of competitors reminded."""
     if draw.status != StageDraw.STATUS_OPEN:
         raise DrawError("Only an open draw has anyone left to remind.", 409)
     now = timezone.now()
-    if draw.last_reminder_at and (now - draw.last_reminder_at).total_seconds() < REMIND_EVERY_MINUTES * 60:
-        wait = REMIND_EVERY_MINUTES - int((now - draw.last_reminder_at).total_seconds() // 60)
-        raise DrawError(f"A reminder went out less than {REMIND_EVERY_MINUTES} minutes ago. Try again in {wait} min.", 429)
+    if draw.last_reminder_at and (now - draw.last_reminder_at).total_seconds() < REMIND_GUARD_SECONDS:
+        raise DrawError("That reminder just went out. Give it a minute before sending another.", 429)
     cards = list(draw.cards.all())
     stragglers = _stragglers(draw, cards)
     if not stragglers:
@@ -558,10 +592,28 @@ def _competitor_name(card):
     return None
 
 
+def serialize_hidden(draw):
+    """What a viewer who may not see a participants-only board gets: enough for the page to say
+    the draw exists and who may see it, none of the cards, names, seal or mapping."""
+    stage = draw.stage
+    return {
+        "draw_id": draw.draw_id,
+        "stage_id": stage.stage_id,
+        "stage_name": stage.stage_name,
+        "event_id": stage.event.event_id,
+        "status": draw.status,
+        "visibility": draw.visibility,
+        "hidden": True,
+    }
+
+
 def serialize_board(draw, viewer=None):
     """What the event page and the organizer card render. The salt and the mapping are only
-    included once the draw is closed; while it is open, only the commitment is shown."""
+    included once the draw is closed; while it is open, only the commitment is shown. A board the
+    organizer limited to participants comes back as serialize_hidden for anyone else."""
     draw = maybe_lazy_close(draw)
+    if not user_may_see_board(draw, viewer):
+        return serialize_hidden(draw)
     stage = draw.stage
     cards = list(
         draw.cards.select_related("stage_group", "tournament_team__team", "tournament_team__ghost_team", "player__user")
@@ -581,6 +633,7 @@ def serialize_board(draw, viewer=None):
         "closed_at": draw.closed_at.isoformat() if draw.closed_at else None,
         # The organizer's choice about stragglers, and how the structure sizes the groups.
         "auto_place_at_close": draw.auto_place_at_close,
+        "visibility": draw.visibility,
         "per_group": stage.competitors_per_group,
         "last_reminder_at": draw.last_reminder_at.isoformat() if draw.last_reminder_at else None,
         "commitment": draw.commitment,

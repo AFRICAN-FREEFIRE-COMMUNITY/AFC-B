@@ -15,8 +15,12 @@ What must stay true, and the test that holds it:
     - the stage's group size caps the deal and the extra card               (CapacityTests)
     - the close time and the straggler choice can change while open; a
       close that leaves the rest unplaced lists and notifies them          (WindowTests)
-    - a reminder reaches only the unpicked, in-app and by email, once per
-      10 minutes; a team registered in ANOTHER event cannot pick           (RemindAndAccessTests)
+    - a reminder reaches only the unpicked, in-app and by email, and only
+      when the organizer presses the button (a double press is refused);
+      a team registered in ANOTHER event cannot pick                       (RemindAndAccessTests)
+    - a board limited to participants hides its cards from guests and
+      outsiders, shows them to any member of a registered club and to
+      the organizer; the choice can change in any state                    (VisibilityTests)
 
 Run: python manage.py test afc_draws
 """
@@ -494,7 +498,7 @@ class RemindAndAccessTests(DrawFixture):
         self.assertEqual(len(ids), 7)
         self.assertIn("Group draw open", subject)
 
-    def test_remind_reaches_only_the_unpicked_once_per_ten_minutes(self):
+    def test_remind_reaches_only_the_unpicked_and_refuses_a_double_press(self):
         mail = self.mail
         services.open_draw(self.draw, timezone.now() + timedelta(hours=1))
         mail.reset_mock()
@@ -507,9 +511,13 @@ class RemindAndAccessTests(DrawFixture):
                          {f"dr_cap{i}" for i in range(1, 7)})
         self.assertEqual(mail.call_count, 1)
         self.assertEqual(len(mail.call_args.args[0]), 6)
-        # a second one right away is refused
+        # a second press within the minute is refused (a double-send guard, not a schedule)
         resp = _post(self.admin_tok, f"/draws/{self.draw.draw_id}/remind/")
         self.assertEqual(resp.status_code, 429, resp.content)
+        # a minute later the organizer may send again
+        StageDraw.objects.filter(pk=self.draw.pk).update(last_reminder_at=timezone.now() - timedelta(seconds=61))
+        resp = _post(self.admin_tok, f"/draws/{self.draw.draw_id}/remind/")
+        self.assertEqual(resp.status_code, 200, resp.content)
         # a plain member may not send one
         resp = _post(self.member_tok, f"/draws/{self.draw.draw_id}/remind/")
         self.assertEqual(resp.status_code, 403)
@@ -533,4 +541,50 @@ class RemindAndAccessTests(DrawFixture):
                      {"card_number": 1, "tournament_team_id": tt.tournament_team_id})
         self.assertEqual(resp.status_code, 403, resp.content)
         self.assertFalse(self.draw.cards.get(number=1).is_taken)
+
+
+class VisibilityTests(DrawFixture):
+    def setUp(self):
+        super().setUp()
+        self.draw = services.deal(self.stage, self.admin)
+
+    def test_everyone_by_default(self):
+        board = _get(f"/draws/{self.draw.draw_id}/board/").json()
+        self.assertEqual(board["visibility"], "everyone")
+        self.assertEqual(len(board["cards"]), 7)
+
+    def test_participants_only_hides_the_board_from_guests_and_outsiders(self):
+        resp = _post(self.admin_tok, f"/draws/{self.draw.draw_id}/window/", {"visibility": "participants"})
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertEqual(resp.json()["visibility"], "participants")
+        # a guest: the stub, no cards, no seal
+        guest = _get(f"/draws/{self.draw.draw_id}/board/").json()
+        self.assertTrue(guest["hidden"])
+        self.assertNotIn("cards", guest)
+        self.assertNotIn("commitment", guest)
+        # the event list carries the same stub
+        listed = _get(f"/draws/events/{self.event.event_id}/").json()["draws"][0]
+        self.assertTrue(listed["hidden"])
+        # a signed-in user with no club in this event: hidden too
+        _, other_tok = _user("dr_outsider")
+        self.assertTrue(_get(f"/draws/{self.draw.draw_id}/board/", other_tok).json()["hidden"])
+        # a plain MEMBER of a registered club (not the captain) sees it
+        member_board = _get(f"/draws/{self.draw.draw_id}/board/", self.member_tok).json()
+        self.assertNotIn("hidden", member_board)
+        self.assertEqual(len(member_board["cards"]), 7)
+        # the captain and the organizer see it
+        self.assertEqual(len(_get(f"/draws/{self.draw.draw_id}/board/", self.tokens[0]).json()["cards"]), 7)
+        self.assertEqual(len(_get(f"/draws/{self.draw.draw_id}/board/", self.admin_tok).json()["cards"]), 7)
+        # back to everyone, in draft state (visibility is not tied to the window)
+        resp = _post(self.admin_tok, f"/draws/{self.draw.draw_id}/window/", {"visibility": "everyone"})
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertEqual(len(_get(f"/draws/{self.draw.draw_id}/board/").json()["cards"]), 7)
+        # nonsense is refused, and so is a plain member changing it
+        self.assertEqual(_post(self.admin_tok, f"/draws/{self.draw.draw_id}/window/", {"visibility": "nobody"}).status_code, 400)
+        self.assertEqual(_post(self.member_tok, f"/draws/{self.draw.draw_id}/window/", {"visibility": "participants"}).status_code, 403)
+
+    def test_close_time_still_needs_an_open_draw(self):
+        resp = _post(self.admin_tok, f"/draws/{self.draw.draw_id}/window/",
+                     {"closes_at": (timezone.now() + timedelta(hours=1)).isoformat()})
+        self.assertEqual(resp.status_code, 409, resp.content)
 

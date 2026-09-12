@@ -72,6 +72,15 @@ class StageDraw(models.Model):
     # the stage pool and the organizer seeds or moves them by hand; the board lists them.
     # Set when the draw opens, changeable while it is open (services.update_window).
     auto_place_at_close = models.BooleanField(default=True)
+    # Who may see the board (owner 2026-09-12: "it being hidden from non participants should be
+    # up to the admin/org"). "everyone" is the default and how the draw has always worked; the
+    # seal is meant to be checked by anyone. "participants" limits the board to members of a team
+    # registered in the event and registered solo players (services.user_is_participant); whoever
+    # may run the draw always sees it. Changeable at any time (services.update_window).
+    VISIBILITY_EVERYONE = "everyone"
+    VISIBILITY_PARTICIPANTS = "participants"
+    VISIBILITY_CHOICES = [(VISIBILITY_EVERYONE, "Everyone"), (VISIBILITY_PARTICIPANTS, "Registered teams and players")]
+    visibility = models.CharField(max_length=12, choices=VISIBILITY_CHOICES, default=VISIBILITY_EVERYONE)
     # The last time the organizer sent "you have not picked yet" to the stragglers
     # (services.remind): one reminder per draw per REMIND_EVERY, so a nervous organizer cannot
     # spam a captain's inbox.
