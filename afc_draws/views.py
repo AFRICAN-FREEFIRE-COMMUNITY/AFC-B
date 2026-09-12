@@ -3,8 +3,11 @@ afc_draws/views.py - the HTTP face of the group draw (owner 2026-09-12, Phase 1)
 
 Routes (afc_draws/urls.py, mounted at draws/):
     POST draws/stages/<stage_id>/create/     organizer/admin  deal + seal the cards      -> board
-    POST draws/<draw_id>/open/               organizer/admin  {closes_at: ISO}           -> board
-    POST draws/<draw_id>/close/              organizer/admin  deal stragglers, publish   -> board
+    POST draws/<draw_id>/open/               organizer/admin  {closes_at: ISO, auto_place_at_close?} -> board
+    POST draws/<draw_id>/window/             organizer/admin  {closes_at?: ISO, auto_place_at_close?} while open,
+                                                              {visibility?: everyone|participants} any time -> board
+    POST draws/<draw_id>/close/              organizer/admin  {place_rest?: bool} publish; stragglers dealt or left -> board
+    POST draws/<draw_id>/remind/             organizer/admin  in-app + email to everyone unpicked -> board + {reminded}
     POST draws/<draw_id>/reset/              organizer/admin  delete the draw            -> {message}
     GET  draws/<draw_id>/board/              public (Bearer optional: adds "viewer")     -> board
     GET  draws/events/<event_id>/            public (Bearer optional)                    -> {draws:[board...]}
@@ -50,6 +53,22 @@ def _manager_or_403(user, stage):
     return None
 
 
+def _parse_when(raw):
+    """An ISO 8601 datetime from the body, made aware in the server zone when it comes naive."""
+    when = parse_datetime(str(raw)) if raw else None
+    if when is not None and timezone.is_naive(when):
+        when = timezone.make_aware(when, timezone.get_current_timezone())
+    return when
+
+
+def _as_bool(value, default=None):
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in ("1", "true", "yes", "on")
+
+
 def _run(fn, *args, **kwargs):
     """Call a service; a DrawError becomes its HTTP answer."""
     try:
@@ -76,7 +95,8 @@ def create_draw(request, stage_id):
 
 @api_view(["POST"])
 def open_draw(request, draw_id):
-    """Open the window. Body: {closes_at: ISO 8601 datetime, in the future}."""
+    """Open the window. Body: {closes_at: ISO 8601 datetime in the future, auto_place_at_close?:
+    bool (default true) - whether whoever has not picked by then is dealt in automatically}."""
     user, err = _auth_user(request)
     if err:
         return err
@@ -84,13 +104,35 @@ def open_draw(request, draw_id):
     denied = _manager_or_403(user, draw.stage)
     if denied:
         return denied
-    raw = request.data.get("closes_at")
-    closes_at = parse_datetime(str(raw)) if raw else None
+    closes_at = _parse_when(request.data.get("closes_at"))
     if closes_at is None:
         return Response({"message": "closes_at must be an ISO 8601 datetime."}, status=400)
-    if timezone.is_naive(closes_at):
-        closes_at = timezone.make_aware(closes_at, timezone.get_current_timezone())
-    draw, err = _run(services.open_draw, draw, closes_at)
+    auto_place = _as_bool(request.data.get("auto_place_at_close"), default=True)
+    draw, err = _run(services.open_draw, draw, closes_at, auto_place)
+    if err:
+        return err
+    return Response(services.serialize_board(draw, user))
+
+
+@api_view(["POST"])
+def update_window(request, draw_id):
+    """Change an OPEN draw's close time and/or straggler choice (owner 2026-09-12), or who may see
+    the board in any state. Body: {closes_at?: ISO 8601 in the future, auto_place_at_close?: bool,
+    visibility?: "everyone" | "participants"}; at least one of them."""
+    user, err = _auth_user(request)
+    if err:
+        return err
+    draw = get_object_or_404(StageDraw, draw_id=draw_id)
+    denied = _manager_or_403(user, draw.stage)
+    if denied:
+        return denied
+    raw_when = request.data.get("closes_at")
+    closes_at = _parse_when(raw_when)
+    if raw_when and closes_at is None:
+        return Response({"message": "closes_at must be an ISO 8601 datetime."}, status=400)
+    auto_place = _as_bool(request.data.get("auto_place_at_close"))
+    visibility = request.data.get("visibility")
+    draw, err = _run(services.update_window, draw, closes_at, auto_place, str(visibility) if visibility else None)
     if err:
         return err
     return Response(services.serialize_board(draw, user))
@@ -98,7 +140,8 @@ def open_draw(request, draw_id):
 
 @api_view(["POST"])
 def close_draw(request, draw_id):
-    """Close now: everyone unpicked is dealt into the remaining cards."""
+    """Close now. Body: {place_rest?: bool}. Everyone unpicked is dealt into the remaining cards
+    when place_rest is true (default: the choice made at open), otherwise left for the organizer."""
     user, err = _auth_user(request)
     if err:
         return err
@@ -106,10 +149,30 @@ def close_draw(request, draw_id):
     denied = _manager_or_403(user, draw.stage)
     if denied:
         return denied
-    draw, err = _run(services.close_draw, draw)
+    place_rest = _as_bool(request.data.get("place_rest"))
+    draw, err = _run(services.close_draw, draw, place_rest)
     if err:
         return err
     return Response(services.serialize_board(draw, user))
+
+
+@api_view(["POST"])
+def remind(request, draw_id):
+    """Tell everyone who has not picked, in-app and by email. One per 10 minutes per draw."""
+    user, err = _auth_user(request)
+    if err:
+        return err
+    draw = get_object_or_404(StageDraw, draw_id=draw_id)
+    denied = _manager_or_403(user, draw.stage)
+    if denied:
+        return denied
+    count, err = _run(services.remind, draw, user)
+    if err:
+        return err
+    draw.refresh_from_db()
+    out = services.serialize_board(draw, user)
+    out["reminded"] = count
+    return Response(out)
 
 
 @api_view(["POST"])

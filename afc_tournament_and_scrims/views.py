@@ -38,6 +38,7 @@ from .models import Event, EventInviteToken, EventPageView, MatchResultImage, Re
 # One answer to "what KIND of stage is this?" for all three generations of stage_format values
 # (owner item 21, 2026-08-13). create_event / edit_event branch on it below. See stage_formats.py.
 from .stage_formats import is_clash_squad
+from .group_capacity import GroupCapacityError, plan_placements
 from afc_auth.models import AdminHistory, BannedPlayer, DiscordRoleAssignment, DiscordStageRoleAssignmentProgress, LoginHistory, News, Notifications, Roles, User, UserRoles
 # set_audit -> supply a SPECIFIC human audit summary (entity name + before/after) that the
 # AuditLogMiddleware records, e.g. "Changed Detty December: event type from internal to external".
@@ -2355,6 +2356,9 @@ def create_event(request):
                     start_date=parse_date(stage_data["start_date"]),
                     end_date=parse_date(stage_data["end_date"]),
                     number_of_groups=int(stage_data["number_of_groups"]),
+                    # Group size (owner 2026-09-12): the other half of the structure. Empty or 0
+                    # means no fixed size. See group_capacity.py for what it changes.
+                    competitors_per_group=int(stage_data.get("competitors_per_group") or 0) or None,
                     stage_format=stage_data["stage_format"],
                     teams_qualifying_from_stage=int(stage_data["teams_qualifying_from_stage"]),
                     stage_discord_role_id=stage_data.get("stage_discord_role_id"),
@@ -2717,6 +2721,7 @@ def duplicate_event(request, event_id):
                 start_date=old_stage.start_date,
                 end_date=old_stage.end_date,
                 number_of_groups=old_stage.number_of_groups,
+                competitors_per_group=old_stage.competitors_per_group,
                 stage_format=old_stage.stage_format,
                 teams_qualifying_from_stage=old_stage.teams_qualifying_from_stage,
                 stage_discord_role_id=old_stage.stage_discord_role_id,
@@ -3818,6 +3823,8 @@ def edit_event(request):
                     "start_date": parse_date(stage_data["start_date"]),
                     "end_date": parse_date(stage_data["end_date"]),
                     "number_of_groups": int(stage_data["number_of_groups"]),
+                    # Group size (owner 2026-09-12); empty or 0 clears it. See group_capacity.py.
+                    "competitors_per_group": int(stage_data.get("competitors_per_group") or 0) or None,
                     "stage_format": stage_data["stage_format"],
                     "teams_qualifying_from_stage": int(stage_data["teams_qualifying_from_stage"]),
                     "stage_discord_role_id": stage_data.get("stage_discord_role_id"),
@@ -5564,6 +5571,8 @@ def get_event_details(request):
             "point_rush_target_stage_id": stage.point_rush_target_stage_id,
             "stage_status": stage.stage_status,
             "teams_qualifying_from_stage": stage.teams_qualifying_from_stage,
+            # Group size (owner 2026-09-12): the Structure tab and the draw board show it.
+            "competitors_per_group": stage.competitors_per_group,
             "groups": groups_payload,
             # ── BR Round-Robin echo (None for every other format): base groups + the
             # game-day lobbies' source group ids, so the FE stage builder can rehydrate. ──
@@ -6217,6 +6226,8 @@ def get_event_details_not_logged_in(request):
             "stage_format": stage.stage_format,
             "stage_status": stage.stage_status,
             "teams_qualifying_from_stage": stage.teams_qualifying_from_stage,
+            # Group size (owner 2026-09-12): the Structure tab shows it to everyone.
+            "competitors_per_group": stage.competitors_per_group,
             "groups": groups_payload,
             # ── Branching advancement rules echo (feature #9): [] for a legacy/rule-less stage.
             # Drives the public TournamentStructure branch chips (anon viewers). ──
@@ -10806,6 +10817,8 @@ def get_event_details_for_admin(request):
             "start_date": stage.start_date,
             "end_date": stage.end_date,
             "number_of_groups": stage.number_of_groups,
+            # Group size (owner 2026-09-12): the edit form re-hydrates the stage modal from here.
+            "competitors_per_group": stage.competitors_per_group,
             "total_groups": groups.count(),
             "stage_discord_role_id": stage.stage_discord_role_id,
             "groups": group_details,
@@ -12360,14 +12373,19 @@ def seed_stage_competitors_to_groups(request):
 
     shuffle(to_seed)
 
-    seeded_idx = 0
+    # Which group each player lands in comes from the stage's structure (group_capacity.py):
+    # least-loaded-first, never past competitors_per_group, refused outright when the pool does
+    # not fit. On a stage with no size this is the same round robin as before.
+    try:
+        targets = plan_placements(stage, groups, len(to_seed))
+    except GroupCapacityError as e:
+        return Response({"message": str(e)}, status=400)
+
     sgc_rows = []
     role_rows = []
 
-    for comp in to_seed:
+    for comp, group in zip(to_seed, targets):
         player = comp.player
-        group = groups[seeded_idx % len(groups)]
-        seeded_idx += 1
 
         sgc_rows.append(StageGroupCompetitor(
             stage_group=group,
@@ -19535,61 +19553,70 @@ def seed_stage_competitors_to_groups_team(request):
     if not groups.exists():
         return Response({"message": "No groups found."}, status=400)
 
-    with transaction.atomic():
+    try:
+        with transaction.atomic():
 
-        if clear_existing:
-            StageGroupCompetitor.objects.filter(
+            if clear_existing:
+                StageGroupCompetitor.objects.filter(
+                    stage_group__stage=stage
+                ).delete()
+
+            # Prevent accidental reseed
+            if StageGroupCompetitor.objects.filter(
                 stage_group__stage=stage
-            ).delete()
-
-        # Prevent accidental reseed
-        if StageGroupCompetitor.objects.filter(
-            stage_group__stage=stage
-        ).exists() and not clear_existing:
-            return Response(
-                {"message": "Groups already seeded. Use clear_existing=True to reseed."},
-                status=400
-            )
-
-        competitors = list(
-            StageCompetitor.objects.filter(
-                stage=stage,
-                status="active"
-            )
-        )
-
-        if not competitors:
-            return Response({"message": "No stage competitors found."}, status=400)
-
-        if shuffle:
-            random.shuffle(competitors)
-
-        group_list = list(groups)
-        group_count = len(group_list)
-
-        new_entries = []
-
-        for index, competitor in enumerate(competitors):
-            group = group_list[index % group_count]
-
-            if competitor.tournament_team:
-                new_entries.append(
-                    StageGroupCompetitor(
-                        stage_group=group,
-                        tournament_team=competitor.tournament_team
-                    )
-                )
-            else:
-                new_entries.append(
-                    StageGroupCompetitor(
-                        stage_group=group,
-                        player=competitor.player
-                    )
+            ).exists() and not clear_existing:
+                return Response(
+                    {"message": "Groups already seeded. Use clear_existing=True to reseed."},
+                    status=400
                 )
 
-        StageGroupCompetitor.objects.bulk_create(new_entries)
+            competitors = list(
+                StageCompetitor.objects.filter(
+                    stage=stage,
+                    status="active"
+                )
+            )
 
-        result = reconcile_group_roles_for_stage(stage)
+            if not competitors:
+                return Response({"message": "No stage competitors found."}, status=400)
+
+            if shuffle:
+                random.shuffle(competitors)
+
+            group_list = list(groups)
+            group_count = len(group_list)
+
+            # The stage's structure decides the split (group_capacity.py): least-loaded-first, never
+            # past competitors_per_group, refused with the numbers when the pool does not fit. With no
+            # size set this is the round robin it always was.
+            # Raised, not returned: a `return` inside transaction.atomic() COMMITS, and with
+            # clear_existing the groups were just emptied. The except below answers after rollback.
+            targets = plan_placements(stage, group_list, len(competitors))
+
+            new_entries = []
+
+            for competitor, group in zip(competitors, targets):
+
+                if competitor.tournament_team:
+                    new_entries.append(
+                        StageGroupCompetitor(
+                            stage_group=group,
+                            tournament_team=competitor.tournament_team
+                        )
+                    )
+                else:
+                    new_entries.append(
+                        StageGroupCompetitor(
+                            stage_group=group,
+                            player=competitor.player
+                        )
+                    )
+
+            StageGroupCompetitor.objects.bulk_create(new_entries)
+
+            result = reconcile_group_roles_for_stage(stage)
+    except GroupCapacityError as e:
+        return Response({"message": str(e)}, status=400)
 
 
     return Response({

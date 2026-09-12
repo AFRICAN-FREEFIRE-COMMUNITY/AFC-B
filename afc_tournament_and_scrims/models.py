@@ -991,6 +991,15 @@ class Stages(models.Model):
     start_date = models.DateField()
     end_date = models.DateField()
     number_of_groups = models.PositiveIntegerField()
+    # How many competitors each group is built to hold (owner 2026-09-12: "the groups are not
+    # decided by the mechanism, but by what was set in the structure, how many per group and how
+    # many groups"). Null means no fixed size, which is how every stage behaved before this field:
+    # the seeders and the group draw split whatever is in the stage evenly across the groups.
+    # With a size set, every split (group_capacity.py: both random seeders, autoseed, the
+    # standings snake, the draw deal) fills least-loaded-first, never past the size, and refuses
+    # a pool larger than groups x size with a sentence naming the numbers. Teams for a squad
+    # event, players for a solo one; the frontend labels it accordingly.
+    competitors_per_group = models.PositiveIntegerField(null=True, blank=True)
     stage_format = models.CharField(max_length=100, choices=STAGE_FORMAT_CHOICES)
     teams_qualifying_from_stage = models.PositiveIntegerField()
     stage_discord_role_id = models.CharField(max_length=100, null=True, blank=True)
