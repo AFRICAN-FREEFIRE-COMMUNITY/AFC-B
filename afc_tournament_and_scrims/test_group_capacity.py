@@ -194,7 +194,7 @@ class RoundTripTests(Fixture):
         admin_view = _post(self.admin_tok, "/events/get-event-details-for-admin/", {"slug": self.event.slug})
         self.assertEqual(admin_view.status_code, 200, admin_view.content)
         self.assertEqual(admin_view.json()["stages"][0]["competitors_per_group"], 4)
-        public = Client().post("/events/get-event-details-not-logged-in/", json.dumps({"event_id": self.event.event_id}),
+        public = Client().post("/events/get-event-details-not-logged-in/", json.dumps({"slug": self.event.slug}),
                                content_type="application/json")
         self.assertEqual(public.status_code, 200, public.content)
         self.assertEqual(public.json()["stages"][0]["competitors_per_group"], 4)

@@ -419,6 +419,7 @@ class CapacityTests(DrawFixture):
         services.open_draw(draw, timezone.now() + timedelta(hours=1))
         cap, _ = _user("dr_tenth")
         team = Team.objects.create(team_name="Tenth", team_owner=cap, team_creator=cap)
+        TeamMembers.objects.create(team=team, member=cap, management_role="team_captain")
         tt = TournamentTeam.objects.create(event=self.event, team=team, registered_by=cap)
         StageCompetitor.objects.create(stage=self.stage, tournament_team=tt)
         services.close_draw(draw)
