@@ -522,3 +522,102 @@ class UploadGateTests(TestCase):
         delay.assert_called_once()
         org.refresh_from_db()
         self.assertEqual(org.ocr_free_reads_left, 1, "the pre-check never spends the free read")
+
+    # ── the event flows: paid_by on the response, and the bulk per-map upload's gate ──────────
+    def _match_with_leaderboard(self, owner, org):
+        """One event -> stage -> group -> match with a scoring Leaderboard, the shape both event
+        upload endpoints require before they read anything."""
+        from afc_tournament_and_scrims.models import Leaderboard, Match, StageGroups, Stages
+        event = _event(owner, org)
+        st = Stages.objects.create(
+            event=event, stage_name="Group Stage", start_date=date.today(), end_date=date.today(),
+            number_of_groups=1, stage_format="br - normal", teams_qualifying_from_stage=1,
+        )
+        group = StageGroups.objects.create(
+            stage=st, group_name="Group A", playing_date=date.today(),
+            playing_time=datetime.time(18, 0), teams_qualifying=1, match_count=1,
+        )
+        lb = Leaderboard.objects.create(
+            leaderboard_name="LB", event=event, stage=st, group=group, creator=owner,
+            placement_points={"1": 12}, kill_point=1.0, leaderboard_method="manual",
+        )
+        match = Match.objects.create(leaderboard=lb, group=group, match_number=1, match_map="bermuda",
+                                     scoring_settings={"placement_points": {"1": 12}, "kill_point": 1})
+        return event, match
+
+    def _shot(self):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        from afc_organizers.views_ai_key import sample_screenshot
+        return SimpleUploadedFile("shot.png", sample_screenshot(), content_type="image/png")
+
+    @override_settings(GEMINI_API_KEY="afc-gemini-key", OCR_LOCAL_FIRST=False, OCR_GEMINI_FALLBACK=True)
+    def test_event_upload_says_the_free_read_was_spent(self):
+        owner, tok = _user("ug_ev_owner")
+        org = _org("ug-ev-org", owner)
+        OrganizationMember.objects.filter(organization=org, user=owner).update(can_upload_results=True)
+        _event_, match = self._match_with_leaderboard(owner, org)
+        with patch("afc_ocr.services.providers.gemini.call_gemini", return_value=GOOD), \
+             patch("afc_ocr.views.validate_ocr_images", return_value=None):
+            r = Client().post("/events/ocr-match-result/",
+                              {"match_id": match.match_id, "map_index": 1, "screenshot": self._shot()},
+                              HTTP_AUTHORIZATION=f"Bearer {tok}")
+        self.assertEqual(r.status_code, 201, r.content)
+        self.assertEqual(r.json()["paid_by"], "afc_free")
+        org.refresh_from_db()
+        self.assertEqual(org.ocr_free_reads_left, 0)
+        # the next one is refused with the sentence, before any read
+        with patch("afc_ocr.services.providers.gemini.call_gemini", return_value=GOOD) as g, \
+             patch("afc_ocr.views.validate_ocr_images", return_value=None):
+            r = Client().post("/events/ocr-match-result/",
+                              {"match_id": match.match_id, "map_index": 1, "screenshot": self._shot()},
+                              HTTP_AUTHORIZATION=f"Bearer {tok}")
+        self.assertEqual(r.status_code, 402, r.content)
+        self.assertEqual(r.json()["code"], "ocr_key_required")
+        g.assert_not_called()
+
+    @override_settings(GEMINI_API_KEY="afc-gemini-key", OCR_LOCAL_FIRST=False, OCR_GEMINI_FALLBACK=True)
+    def test_bulk_per_map_upload_answers_402_before_reading_and_reports_paid_by(self):
+        owner, tok = _user("ug_bulk_owner")
+        org = _org("ug-bulk-org", owner)
+        OrganizationMember.objects.filter(organization=org, user=owner).update(can_upload_results=True)
+        _event_, match = self._match_with_leaderboard(owner, org)
+        org.ocr_free_reads_left = 0
+        org.save(update_fields=["ocr_free_reads_left"])
+        with patch("afc_ocr.services.providers.gemini.call_gemini", return_value=GOOD) as g:
+            r = Client().post("/events/upload-match-result-image/",
+                              {"match_id": match.match_id, "images": [self._shot(), self._shot()]},
+                              HTTP_AUTHORIZATION=f"Bearer {tok}")
+        self.assertEqual(r.status_code, 402, r.content)
+        self.assertEqual(r.json()["code"], "ocr_key_required")
+        self.assertEqual(r.json()["organization_slug"], "ug-bulk-org")
+        g.assert_not_called()
+        # on the org's own key the read runs and the response says whose key paid
+        k = OrganizationAiKey(organization=org, provider="openai", model="gpt-4.1-mini")
+        k.set_key("sk-org-key-7777")
+        k.save()
+        with patch.object(openai_compat.requests, "post", return_value=openai_reply(json.dumps(GOOD))):
+            r = Client().post("/events/upload-match-result-image/",
+                              {"match_id": match.match_id, "images": [self._shot()]},
+                              HTTP_AUTHORIZATION=f"Bearer {tok}")
+        self.assertEqual(r.status_code, 201, r.content)
+        self.assertEqual(r.json()["paid_by"], "org")
+        self.assertEqual(OcrUsage.objects.filter(organization=org, paid_by="org", ok=True).count(), 1)
+
+    @override_settings(GEMINI_API_KEY="afc-gemini-key", OCR_LOCAL_FIRST=False, OCR_GEMINI_FALLBACK=True)
+    def test_bulk_per_map_upload_carries_the_providers_words_on_refusal(self):
+        owner, tok = _user("ug_bulk_owner2")
+        org = _org("ug-bulk-org2", owner)
+        OrganizationMember.objects.filter(organization=org, user=owner).update(can_upload_results=True)
+        _event_, match = self._match_with_leaderboard(owner, org)
+        k = OrganizationAiKey(organization=org, provider="openai", model="gpt-4.1-mini")
+        k.set_key("sk-org-key-7777")
+        k.save()
+        refusal = openai_reply(json.dumps({"error": {"message": "Incorrect API key provided: sk-org-***7777."}}), status=401)
+        with patch.object(openai_compat.requests, "post", return_value=refusal):
+            r = Client().post("/events/upload-match-result-image/",
+                              {"match_id": match.match_id, "images": [self._shot()]},
+                              HTTP_AUTHORIZATION=f"Bearer {tok}")
+        self.assertEqual(r.status_code, 503, r.content)
+        self.assertEqual(r.json()["code"], "ocr_provider_error")
+        self.assertIn("Incorrect API key provided", r.json()["message"])
+        self.assertNotIn("sk-org-key-7777", r.content.decode())

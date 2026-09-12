@@ -1584,7 +1584,11 @@ def ocr_extract(request, lb_id):
 
     # draft_id is a stateless correlation id for the FE only (we never persist an OCRSession here - 
     # the standalone flow has no Match to bind one to). The FE echoes it back on apply for tracing.
-    return Response({"draft_id": str(uuid.uuid4()), "format": lb.format, "rows": rows})
+    return Response({
+        "draft_id": str(uuid.uuid4()), "format": lb.format, "rows": rows,
+        # Whose key paid ("org" / "afc_free" / "afc"), so the FE can say when the free read went.
+        "paid_by": (raw_output or {}).get("_paid_by", ""),
+    })
 
 
 @api_view(["POST"])

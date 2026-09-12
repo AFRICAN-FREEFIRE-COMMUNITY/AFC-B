@@ -24474,6 +24474,8 @@ def _extract_results_from_image(image_file, participant_type, org=None, actor=No
     scoring / matching path stays untouched:
       team -> [{"placement", "players": [{"name","kills"}, ...]}]   (placements[] as-is)
       solo -> [{"placement", "name", "kills"}]                      (one player per placement)
+    Returns (rows, paid_by): paid_by is "org" / "afc_free" / "afc" for an AI read, "" for a local
+    one (own-key OCR, owner 2026-09-12), so the caller can tell the organizer the free read went.
     """
     from afc_ocr.services.extract import extract_rows
 
@@ -24495,6 +24497,7 @@ def _extract_results_from_image(image_file, participant_type, org=None, actor=No
                                        org=org, actor=actor, event=event)
 
     placements = (raw_output or {}).get("placements", []) or []
+    paid_by = (raw_output or {}).get("_paid_by", "")
 
     if event_type == "solo":
         # Flatten one player per placement into the {"placement","name","kills"} row the solo
@@ -24508,10 +24511,10 @@ def _extract_results_from_image(image_file, participant_type, org=None, actor=No
                 "name": first.get("name") or "",
                 "kills": int(first.get("kills") or 0),
             })
-        return rows
+        return rows, paid_by
 
     # team: placements[] already matches [{"placement","players":[{name,kills}]}]
-    return placements
+    return placements, paid_by
 
 
 def _merge_team_results(all_results):
@@ -24590,17 +24593,36 @@ def upload_match_result_image(request):
     kill_point = float(getattr(leaderboard, "kill_point", 1.0) or 1.0)
 
     # -------- EXTRACT RESULTS FROM EACH IMAGE --------
+    # Own-key OCR (owner 2026-09-12): the same answers the other upload sites give. No key and no
+    # free read left -> 402 with the connect-your-key sentence BEFORE any image is read; a provider
+    # refusal -> 503 carrying the provider's own words. Inside the loop too, because the free read
+    # is one image and a multi-image upload can run out mid-batch.
+    from afc_ocr.services.extract import OcrKeyRequired, key_available
+    from afc_ocr.services.providers import ProviderError
+    from afc_ocr.views import key_required_response
+    event_org = getattr(event, "organization", None)
+    if not key_available(event_org, admin):
+        return key_required_response(OcrKeyRequired(event_org))
+
     all_raw = []
     extraction_errors = []
+    paid_by = ""
 
     for img_file in images:
         img_file.seek(0)
         try:
-            extracted = _extract_results_from_image(
-                img_file, participant_type, org=getattr(event, "organization", None), actor=admin, event=event,
+            extracted, image_paid_by = _extract_results_from_image(
+                img_file, participant_type, org=event_org, actor=admin, event=event,
             )
+            paid_by = image_paid_by or paid_by
             if isinstance(extracted, list):
                 all_raw.extend(extracted)
+        except OcrKeyRequired as exc:
+            return key_required_response(exc)
+        except ProviderError as exc:
+            logging.getLogger("afc_tournament_and_scrims").warning(
+                "OCR provider refused for match %s: %s", match_id, exc.message)
+            return Response({"message": exc.message, "code": "ocr_provider_error"}, status=503)
         except Exception as e:
             # Log the REAL exception server-side (owner 2026-07-09, bug #7): this used to be
             # append-only, so an OCR failure surfaced to the admin as a bare "1 failed" with the
@@ -24820,6 +24842,8 @@ def upload_match_result_image(request):
         "unmatched": unmatched,
         "extraction_errors": extraction_errors,
         "images": saved_images,
+        # Whose key paid ("org" / "afc_free" / "afc"), so the FE can say when the free read went.
+        "paid_by": paid_by,
     }, status=201)
 
 
