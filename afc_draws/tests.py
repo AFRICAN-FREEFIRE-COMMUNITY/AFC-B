@@ -269,7 +269,7 @@ class ConcurrentPickTests(TransactionTestCase):
     TransactionTestCase because the two picks must run in real, separate transactions."""
 
     @patch("afc_draws.tasks.send_draw_emails.delay")
-    def test_race_on_one_card_has_one_winner(self):
+    def test_race_on_one_card_has_one_winner(self, _mail):
         admin, _ = _user("rc_admin", role="admin")
         event = _event(admin)
         stage = _stage(event, groups=2)
@@ -409,8 +409,8 @@ class CapacityTests(DrawFixture):
     def test_a_late_competitor_is_left_unplaced_when_every_group_is_full(self):
         Stages.objects.filter(pk=self.stage.pk).update(competitors_per_group=3)
         self.stage.refresh_from_db()
-        # 9 competitors fill 3 x 3 exactly; the tenth has nowhere to go at close
-        for i in range(7, 10):
+        # 7 + 2 = 9 competitors fill 3 x 3 exactly; a tenth has nowhere to go at close
+        for i in range(7, 9):
             cap, _ = _user(f"dr_late{i}")
             team = Team.objects.create(team_name=f"Late {i}", team_owner=cap, team_creator=cap)
             tt = TournamentTeam.objects.create(event=self.event, team=team, registered_by=cap)

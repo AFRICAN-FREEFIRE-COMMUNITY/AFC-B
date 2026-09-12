@@ -113,11 +113,11 @@ class PlanTests(Fixture):
 
     def test_size_caps_and_fills_least_loaded_first(self):
         self.stage.competitors_per_group = 4
-        # Group B already holds two rows: the next three land A, A, B (then A, B ...)
+        # Group B already holds two rows: the next four land A, A (now level), then A, B
         StageGroupCompetitor.objects.create(stage_group=self.groups[1], tournament_team=self.tts[0])
         StageGroupCompetitor.objects.create(stage_group=self.groups[1], tournament_team=self.tts[1])
-        plan = plan_placements(self.stage, self.groups, 3)
-        self.assertEqual([g.group_name for g in plan], ["Group A", "Group A", "Group B"])
+        plan = plan_placements(self.stage, self.groups, 4)
+        self.assertEqual([g.group_name for g in plan], ["Group A", "Group A", "Group A", "Group B"])
         self.assertEqual(stage_capacity(self.stage, self.groups), 8)
 
     def test_over_capacity_is_refused_with_the_numbers(self):
@@ -191,7 +191,7 @@ class RoundTripTests(Fixture):
         self.stage.refresh_from_db()
         self.assertEqual(self.stage.competitors_per_group, 4)
 
-        admin_view = _post(self.admin_tok, "/events/get-event-details-for-admin/", {"event_id": self.event.event_id})
+        admin_view = _post(self.admin_tok, "/events/get-event-details-for-admin/", {"slug": self.event.slug})
         self.assertEqual(admin_view.status_code, 200, admin_view.content)
         self.assertEqual(admin_view.json()["stages"][0]["competitors_per_group"], 4)
         public = Client().post("/events/get-event-details-not-logged-in/", json.dumps({"event_id": self.event.event_id}),
