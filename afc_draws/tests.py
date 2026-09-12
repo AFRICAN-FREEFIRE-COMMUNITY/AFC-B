@@ -12,6 +12,15 @@ What must stay true, and the test that holds it:
     - a draw past its close time closes itself on the next read            (CloseTests)
     - the random seeders refuse while a draw is open                       (GuardTests)
     - opening notifies every captain, closing notifies the auto-placed     (NotifyTests)
+    - the stage's group size caps the deal and the extra card               (CapacityTests)
+    - the close time and the straggler choice can change while open; a
+      close that leaves the rest unplaced lists and notifies them          (WindowTests)
+    - a reminder reaches only the unpicked, in-app and by email, and only
+      when the organizer presses the button (a double press is refused);
+      a team registered in ANOTHER event cannot pick                       (RemindAndAccessTests)
+    - a board limited to participants hides its cards from guests and
+      outsiders, shows them to any member of a registered club and to
+      the organizer; the choice can change in any state                    (VisibilityTests)
 
 Run: python manage.py test afc_draws
 """
@@ -19,12 +28,14 @@ import datetime
 import json
 import threading
 from datetime import date, timedelta
+from unittest.mock import patch
 
 from django.db import connection
 from django.test import Client, TestCase, TransactionTestCase
 from django.utils import timezone
 
 from afc_auth.models import Notifications, SessionToken, User, UserProfile
+from afc_draws import tasks as draw_tasks
 from afc_team.models import Team, TeamMembers
 from afc_tournament_and_scrims.models import (
     Event, Match, Leaderboard, StageCompetitor, StageGroupCompetitor, StageGroups, Stages,
@@ -92,6 +103,13 @@ class DrawFixture(TestCase):
     n_teams = 7
 
     def setUp(self):
+        # open_draw and remind queue afc_draws.tasks.send_draw_emails; patched here (a patcher
+        # in setUp reaches every subclass, a class decorator would not) so no test publishes to
+        # the broker: on the VPS rig that Redis feeds the PRODUCTION worker. Tests that care
+        # about the emails read self.mail.
+        patcher = patch("afc_draws.tasks.send_draw_emails.delay")
+        self.mail = patcher.start()
+        self.addCleanup(patcher.stop)
         self.admin, self.admin_tok = _user("dr_admin", role="admin")
         self.event = _event(self.admin)
         self.stage = _stage(self.event, groups=3)
@@ -254,7 +272,8 @@ class ConcurrentPickTests(TransactionTestCase):
     """Two captains tap the same card in the same instant: exactly one holds it afterwards.
     TransactionTestCase because the two picks must run in real, separate transactions."""
 
-    def test_race_on_one_card_has_one_winner(self):
+    @patch("afc_draws.tasks.send_draw_emails.delay")
+    def test_race_on_one_card_has_one_winner(self, _mail):
         admin, _ = _user("rc_admin", role="admin")
         event = _event(admin)
         stage = _stage(event, groups=2)
@@ -369,3 +388,203 @@ class NotifyTests(DrawFixture):
         auto = Notifications.objects.filter(notification_type="group_draw_auto")
         self.assertEqual(auto.count(), 6)
         self.assertNotIn("dr_cap0", set(auto.values_list("user__username", flat=True)))
+
+class CapacityTests(DrawFixture):
+    """The stage's competitors_per_group (group_capacity.py) decides the deal."""
+
+    def test_deal_refuses_when_the_pool_does_not_fit(self):
+        Stages.objects.filter(pk=self.stage.pk).update(competitors_per_group=2)   # 3 x 2 = 6 < 7
+        self.stage.refresh_from_db()
+        resp = _post(self.admin_tok, f"/draws/stages/{self.stage.stage_id}/create/")
+        self.assertEqual(resp.status_code, 400, resp.content)
+        self.assertIn("7 teams for 3 groups of 2: room for 6", resp.json()["message"])
+        self.assertFalse(StageDraw.objects.filter(stage=self.stage).exists())
+
+    def test_deal_within_the_size_is_even_and_the_board_says_the_size(self):
+        Stages.objects.filter(pk=self.stage.pk).update(competitors_per_group=3)
+        self.stage.refresh_from_db()
+        draw = services.deal(self.stage, self.admin)
+        counts = {}
+        for c in draw.cards.all():
+            counts[c.stage_group_id] = counts.get(c.stage_group_id, 0) + 1
+        self.assertEqual(sorted(counts.values()), [2, 2, 3])
+        self.assertEqual(services.serialize_board(draw)["per_group"], 3)
+
+    def test_a_late_competitor_is_left_unplaced_when_every_group_is_full(self):
+        Stages.objects.filter(pk=self.stage.pk).update(competitors_per_group=3)
+        self.stage.refresh_from_db()
+        # 7 + 2 = 9 competitors fill 3 x 3 exactly; a tenth has nowhere to go at close
+        for i in range(7, 9):
+            cap, _ = _user(f"dr_late{i}")
+            team = Team.objects.create(team_name=f"Late {i}", team_owner=cap, team_creator=cap)
+            tt = TournamentTeam.objects.create(event=self.event, team=team, registered_by=cap)
+            StageCompetitor.objects.create(stage=self.stage, tournament_team=tt)
+        draw = services.deal(self.stage, self.admin)
+        services.open_draw(draw, timezone.now() + timedelta(hours=1))
+        cap, _ = _user("dr_tenth")
+        team = Team.objects.create(team_name="Tenth", team_owner=cap, team_creator=cap)
+        TeamMembers.objects.create(team=team, member=cap, management_role="team_captain")
+        tt = TournamentTeam.objects.create(event=self.event, team=team, registered_by=cap)
+        StageCompetitor.objects.create(stage=self.stage, tournament_team=tt)
+        services.close_draw(draw)
+        self.assertEqual(draw.cards.count(), 9)
+        board = services.serialize_board(draw)
+        self.assertEqual(board["unpicked"], ["Tenth"])
+        self.assertEqual(Notifications.objects.filter(notification_type="group_draw_unplaced", user=cap).count(), 1)
+
+
+class WindowTests(DrawFixture):
+    def setUp(self):
+        super().setUp()
+        self.draw = services.deal(self.stage, self.admin)
+
+    def test_open_records_the_choice_and_the_window_can_change(self):
+        resp = _post(self.admin_tok, f"/draws/{self.draw.draw_id}/open/",
+                     {"closes_at": (timezone.now() + timedelta(hours=1)).isoformat(), "auto_place_at_close": False})
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertFalse(resp.json()["auto_place_at_close"])
+        later = timezone.now() + timedelta(hours=5)
+        resp = _post(self.admin_tok, f"/draws/{self.draw.draw_id}/window/",
+                     {"closes_at": later.isoformat(), "auto_place_at_close": True})
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertTrue(resp.json()["auto_place_at_close"])
+        self.draw.refresh_from_db()
+        self.assertEqual(int(self.draw.closes_at.timestamp()), int(later.timestamp()))
+        # the past is refused, and so is an empty change
+        resp = _post(self.admin_tok, f"/draws/{self.draw.draw_id}/window/",
+                     {"closes_at": (timezone.now() - timedelta(minutes=1)).isoformat()})
+        self.assertEqual(resp.status_code, 400)
+        resp = _post(self.admin_tok, f"/draws/{self.draw.draw_id}/window/", {})
+        self.assertEqual(resp.status_code, 400)
+        # a plain member may not touch the window
+        resp = _post(self.member_tok, f"/draws/{self.draw.draw_id}/window/", {"auto_place_at_close": False})
+        self.assertEqual(resp.status_code, 403)
+
+    def test_close_can_leave_the_rest_unplaced(self):
+        services.open_draw(self.draw, timezone.now() + timedelta(hours=1))
+        services.pick(self.draw, User.objects.get(username="dr_cap0"), 1)
+        services.pick(self.draw, User.objects.get(username="dr_cap1"), 2)
+        resp = _post(self.admin_tok, f"/draws/{self.draw.draw_id}/close/", {"place_rest": False})
+        self.assertEqual(resp.status_code, 200, resp.content)
+        body = resp.json()
+        self.assertEqual(body["status"], "closed")
+        self.assertEqual(body["cards_taken"], 2)
+        self.assertEqual(len(body["unpicked"]), 5)
+        self.assertEqual(StageGroupCompetitor.objects.filter(stage_group__stage=self.stage).count(), 2)
+        self.assertEqual(Notifications.objects.filter(notification_type="group_draw_unplaced").count(), 5)
+        self.assertEqual(Notifications.objects.filter(notification_type="group_draw_auto").count(), 0)
+        # the seal still verifies
+        self.assertEqual(body["commitment"], services.commitment_for(body["salt"], body["mapping"]))
+
+    def test_the_deadline_honours_the_choice(self):
+        services.open_draw(self.draw, timezone.now() + timedelta(hours=1), auto_place_at_close=False)
+        StageDraw.objects.filter(pk=self.draw.pk).update(closes_at=timezone.now() - timedelta(seconds=1))
+        board = _get(f"/draws/{self.draw.draw_id}/board/").json()
+        self.assertEqual(board["status"], "closed")
+        self.assertEqual(board["cards_taken"], 0)
+        self.assertEqual(len(board["unpicked"]), 7)
+
+
+class RemindAndAccessTests(DrawFixture):
+    def setUp(self):
+        super().setUp()
+        self.draw = services.deal(self.stage, self.admin)
+
+    def test_open_emails_every_captain(self):
+        mail = self.mail
+        services.open_draw(self.draw, timezone.now() + timedelta(hours=1))
+        self.assertEqual(mail.call_count, 1)
+        ids, subject = mail.call_args.args[0], mail.call_args.args[1]
+        self.assertEqual(len(ids), 7)
+        self.assertIn("Group draw open", subject)
+
+    def test_remind_reaches_only_the_unpicked_and_refuses_a_double_press(self):
+        mail = self.mail
+        services.open_draw(self.draw, timezone.now() + timedelta(hours=1))
+        mail.reset_mock()
+        services.pick(self.draw, User.objects.get(username="dr_cap0"), 3)
+        resp = _post(self.admin_tok, f"/draws/{self.draw.draw_id}/remind/")
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertEqual(resp.json()["reminded"], 6)
+        reminded = Notifications.objects.filter(notification_type="group_draw_reminder")
+        self.assertEqual(set(reminded.values_list("user__username", flat=True)),
+                         {f"dr_cap{i}" for i in range(1, 7)})
+        self.assertEqual(mail.call_count, 1)
+        self.assertEqual(len(mail.call_args.args[0]), 6)
+        # a second press within the minute is refused (a double-send guard, not a schedule)
+        resp = _post(self.admin_tok, f"/draws/{self.draw.draw_id}/remind/")
+        self.assertEqual(resp.status_code, 429, resp.content)
+        # a minute later the organizer may send again
+        StageDraw.objects.filter(pk=self.draw.pk).update(last_reminder_at=timezone.now() - timedelta(seconds=61))
+        resp = _post(self.admin_tok, f"/draws/{self.draw.draw_id}/remind/")
+        self.assertEqual(resp.status_code, 200, resp.content)
+        # a plain member may not send one
+        resp = _post(self.member_tok, f"/draws/{self.draw.draw_id}/remind/")
+        self.assertEqual(resp.status_code, 403)
+
+    def test_the_email_task_sends_one_per_recipient(self):
+        with patch("afc_auth.views.send_email", return_value=True) as send:
+            ids = [User.objects.get(username=f"dr_cap{i}").user_id for i in range(3)]
+            sent = draw_tasks.send_draw_emails(ids, "Subject", "<b>lead</b>", "tail", "https://x/e")
+        self.assertEqual(sent, 3)
+        self.assertEqual({c.args[0] for c in send.call_args_list}, {f"dr_cap{i}@x.com" for i in range(3)})
+        self.assertEqual(send.call_args_list[0].kwargs["language"], "en")
+
+    def test_a_team_from_another_event_cannot_pick(self):
+        services.open_draw(self.draw, timezone.now() + timedelta(hours=1))
+        other_cap, other_tok = _user("dr_other")
+        other_event = _event(self.admin, event_name="Other Cup")
+        team = Team.objects.create(team_name="Elsewhere", team_owner=other_cap, team_creator=other_cap)
+        TeamMembers.objects.create(team=team, member=other_cap, management_role="team_captain")
+        tt = TournamentTeam.objects.create(event=other_event, team=team, registered_by=other_cap)
+        resp = _post(other_tok, f"/draws/{self.draw.draw_id}/pick/",
+                     {"card_number": 1, "tournament_team_id": tt.tournament_team_id})
+        self.assertEqual(resp.status_code, 403, resp.content)
+        self.assertFalse(self.draw.cards.get(number=1).is_taken)
+
+
+class VisibilityTests(DrawFixture):
+    def setUp(self):
+        super().setUp()
+        self.draw = services.deal(self.stage, self.admin)
+
+    def test_everyone_by_default(self):
+        board = _get(f"/draws/{self.draw.draw_id}/board/").json()
+        self.assertEqual(board["visibility"], "everyone")
+        self.assertEqual(len(board["cards"]), 7)
+
+    def test_participants_only_hides_the_board_from_guests_and_outsiders(self):
+        resp = _post(self.admin_tok, f"/draws/{self.draw.draw_id}/window/", {"visibility": "participants"})
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertEqual(resp.json()["visibility"], "participants")
+        # a guest: the stub, no cards, no seal
+        guest = _get(f"/draws/{self.draw.draw_id}/board/").json()
+        self.assertTrue(guest["hidden"])
+        self.assertNotIn("cards", guest)
+        self.assertNotIn("commitment", guest)
+        # the event list carries the same stub
+        listed = _get(f"/draws/events/{self.event.event_id}/").json()["draws"][0]
+        self.assertTrue(listed["hidden"])
+        # a signed-in user with no club in this event: hidden too
+        _, other_tok = _user("dr_outsider")
+        self.assertTrue(_get(f"/draws/{self.draw.draw_id}/board/", other_tok).json()["hidden"])
+        # a plain MEMBER of a registered club (not the captain) sees it
+        member_board = _get(f"/draws/{self.draw.draw_id}/board/", self.member_tok).json()
+        self.assertNotIn("hidden", member_board)
+        self.assertEqual(len(member_board["cards"]), 7)
+        # the captain and the organizer see it
+        self.assertEqual(len(_get(f"/draws/{self.draw.draw_id}/board/", self.tokens[0]).json()["cards"]), 7)
+        self.assertEqual(len(_get(f"/draws/{self.draw.draw_id}/board/", self.admin_tok).json()["cards"]), 7)
+        # back to everyone, in draft state (visibility is not tied to the window)
+        resp = _post(self.admin_tok, f"/draws/{self.draw.draw_id}/window/", {"visibility": "everyone"})
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertEqual(len(_get(f"/draws/{self.draw.draw_id}/board/").json()["cards"]), 7)
+        # nonsense is refused, and so is a plain member changing it
+        self.assertEqual(_post(self.admin_tok, f"/draws/{self.draw.draw_id}/window/", {"visibility": "nobody"}).status_code, 400)
+        self.assertEqual(_post(self.member_tok, f"/draws/{self.draw.draw_id}/window/", {"visibility": "participants"}).status_code, 403)
+
+    def test_close_time_still_needs_an_open_draw(self):
+        resp = _post(self.admin_tok, f"/draws/{self.draw.draw_id}/window/",
+                     {"closes_at": (timezone.now() + timedelta(hours=1)).isoformat()})
+        self.assertEqual(resp.status_code, 409, resp.content)
+
