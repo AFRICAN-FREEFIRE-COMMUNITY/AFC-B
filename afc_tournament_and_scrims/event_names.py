@@ -31,7 +31,7 @@ def name_events(events) -> str:
 
 def event_refs(events):
     """The same events as the small dicts a response body carries: [{event_id, event_name, slug}].
-    The frontend links them, so a player can open the event that is holding them."""
+    The slug is the event's address (R22), so a screen that wants to link the name already can."""
     return [
         {"event_id": e.event_id, "event_name": e.event_name, "slug": e.slug}
         for e in events

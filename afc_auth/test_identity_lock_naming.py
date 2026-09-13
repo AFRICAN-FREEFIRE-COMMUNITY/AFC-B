@@ -13,7 +13,7 @@ import datetime
 
 from django.test import Client, TestCase
 
-from afc_auth.models import SessionToken, User
+from afc_auth.models import Roles, SessionToken, User, UserRoles
 from afc_auth.views import _has_active_event_registration, _identity_locking_events
 from afc_team.models import Team
 from afc_tournament_and_scrims.models import (
@@ -133,3 +133,50 @@ class IdentityLockNamesTheEventTests(TestCase):
         self.assertEqual(r.status_code, 400)
         self.assertIn("CUP A", r.json()["message"])
         self.assertIn("CUP B", r.json()["message"])
+
+
+class AdminPanelNamesTheEventTests(TestCase):
+    """The head admin is the escape hatch for a mid-event rename (views_admin_identity), so the
+    panel they open has to say WHICH event the override would cut across, not merely that one
+    exists. Same source as the player's own note: _identity_locking_events + event_refs."""
+
+    def setUp(self):
+        self.admin = User.objects.create(username="headboss", email="hb@x.com",
+                                         full_name="Head Boss", password="x", role="admin")
+        role, _ = Roles.objects.get_or_create(role_name="head_admin",
+                                              defaults={"description": "head_admin"})
+        UserRoles.objects.create(user=self.admin, role=role)
+        self.token = SessionToken.objects.create(user=self.admin, token="tok_hb").token
+        self.auth = {"HTTP_AUTHORIZATION": f"Bearer {self.token}"}
+        self.player = User.objects.create(username="lockedplayer2", email="lp2@x.com",
+                                          full_name="Locked Player Two", password="x")
+        self.team = Team.objects.create(team_name="Holders Two", team_tag="HL2", country="NG",
+                                        join_settings="open", team_owner=self.player,
+                                        team_creator=self.player)
+        self.client = Client()
+
+    def _roster(self, event, waitlisted=False):
+        tt = TournamentTeam.objects.create(event=event, team=self.team, status="active",
+                                           is_waitlisted=waitlisted)
+        TournamentTeamMember.objects.create(tournament_team=tt, user=self.player, event=event)
+        return tt
+
+    def _panel(self):
+        return self.client.get(f"/auth/admin/user-identity/{self.player.user_id}/", **self.auth)
+
+    def test_the_panel_names_the_locking_event(self):
+        event = _event("FFWS AFRICA FINALS")
+        self._roster(event)
+        r = self._panel()
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        body = r.json()
+        self.assertTrue(body["identity_locked"])
+        self.assertEqual([e["event_name"] for e in body["identity_lock_events"]],
+                         ["FFWS AFRICA FINALS"])
+        self.assertEqual(body["identity_lock_events"][0]["event_id"], event.event_id)
+
+    def test_a_waitlisted_player_is_not_locked_in_the_panel(self):
+        self._roster(_event("OVERSUBSCRIBED CUP"), waitlisted=True)
+        body = self._panel().json()
+        self.assertFalse(body["identity_locked"])
+        self.assertEqual(body["identity_lock_events"], [])
