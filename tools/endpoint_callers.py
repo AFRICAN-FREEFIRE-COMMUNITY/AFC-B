@@ -143,27 +143,68 @@ def normalize_pattern(route: str) -> str:
     return PARAM_RE.sub(lambda m: f"<{m.group(1)}>", route)
 
 
-def backend_regex() -> set[str]:
-    root = io.open(os.path.join(BACKEND, "afc", "urls.py"), encoding="utf-8").read()
-    root = strip_py_comments(root)
-    found: set[str] = set()
-    for m in INCLUDE_RE.finditer(root):
-        prefix, module = m.group("prefix"), m.group("module")
-        path = os.path.join(BACKEND, *module.split(".")) + ".py"
-        if not os.path.exists(path):
-            continue
-        src = strip_py_comments(io.open(path, encoding="utf-8").read())
-        # the include line itself matches PATH_RE too; skip nested includes here (none in AFC)
-        for pm in PATH_RE.finditer(src):
-            route = pm.group("route")
-            if "include(" in src[pm.end(): pm.end() + 40]:
+def _matching_bracket(src: str, open_idx: int) -> int:
+    """Index of the `]` that closes the `[` at open_idx (strings skipped)."""
+    depth, i, in_s = 0, open_idx, None
+    while i < len(src):
+        ch = src[i]
+        if in_s:
+            if ch == "\\":
+                i += 2
                 continue
-            found.add(normalize_pattern(prefix + route))
-    # root-level non-include paths (django admin)
-    for pm in PATH_RE.finditer(root):
-        if "include(" in root[pm.end(): pm.end() + 40]:
+            if ch == in_s:
+                in_s = None
+        elif ch in "\"'":
+            in_s = ch
+        elif ch == "[":
+            depth += 1
+        elif ch == "]":
+            depth -= 1
+            if depth == 0:
+                return i
+        i += 1
+    return len(src)
+
+
+PATH_HEAD = re.compile(r"""\bpath\(\s*(["'])(?P<route>[^"']*)\1\s*,\s*""")
+MODULE_INCLUDE = re.compile(r"""include\(\s*(["'])(?P<module>[^"']+)\1""")
+
+
+def _routes_in(src: str, prefix: str, found: set[str]) -> None:
+    """Walk one urls source: a leaf `path(route, view)` is prefix + route; `path(route, include([...]))`
+    recurses into the list with the route added to the prefix; `path(route, include("pkg.urls"))`
+    loads that module and recurses. Nested inline includes are what afc_awards/urls.py uses."""
+    pos = 0
+    while True:
+        m = PATH_HEAD.search(src, pos)
+        if not m:
+            return
+        route = prefix + m.group("route")
+        after = src[m.end(): m.end() + 12]
+        if after.startswith("include(["):
+            open_idx = src.index("[", m.end())
+            close_idx = _matching_bracket(src, open_idx)
+            _routes_in(src[open_idx + 1: close_idx], route, found)
+            pos = close_idx
             continue
-        found.add(normalize_pattern(pm.group("route")))
+        if after.startswith("include("):
+            mi = MODULE_INCLUDE.match(src, m.end())
+            if mi:
+                path = os.path.join(BACKEND, *mi.group("module").split(".")) + ".py"
+                if os.path.exists(path):
+                    _routes_in(strip_py_comments(io.open(path, encoding="utf-8").read()), route, found)
+                else:
+                    found.add(normalize_pattern(route))  # a third-party include (oauth2_provider): one entry
+            pos = m.end()
+            continue
+        found.add(normalize_pattern(route))
+        pos = m.end()
+
+
+def backend_regex() -> set[str]:
+    root = strip_py_comments(io.open(os.path.join(BACKEND, "afc", "urls.py"), encoding="utf-8").read())
+    found: set[str] = set()
+    _routes_in(root, "", found)
     return found
 
 
@@ -185,8 +226,19 @@ def backend_django() -> set[str]:
                 found.add(normalize_pattern(prefix + str(p.pattern)))
 
     walk(get_resolver().url_patterns, "")
-    # the django admin mounts its own tree; the regex side records it as one entry
-    return {f for f in found if not f.startswith("admin/")} | ({"admin/"} if any(f.startswith("admin/") for f in found) else set())
+    # Third-party trees the regex side records as ONE entry (django admin, oauth2_provider under
+    # sso/), and the DEBUG-only `static()` media patterns (regexes starting with ^), are folded.
+    folded: set[str] = set()
+    for f in found:
+        if "^" in f:
+            continue
+        if f.startswith("admin/"):
+            folded.add("admin/")
+        elif f.startswith("sso/") and not any(f == r for r in found if r.count("/") <= 2) and f.count("/") > 2 and "/o/" in f or f.startswith("sso/o/"):
+            folded.add("sso/")
+        else:
+            folded.add(f)
+    return folded
 
 
 # ── the frontend side ────────────────────────────────────────────────────────────────────────
