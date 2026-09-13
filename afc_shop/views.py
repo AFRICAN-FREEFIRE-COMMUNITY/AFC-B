@@ -293,6 +293,7 @@ def view_all_products(request):
     for p in qs:
         data.append({
             "id": p.id,
+            "slug": p.slug or "",             # the public address /shop/<slug> (owner rule R22)
             "name": p.name,
             "type": p.product_type,           # legacy slug string (back-compat)
             "category": _serialize_category(p.category),  # structured category or None
@@ -374,6 +375,7 @@ def view_active_products(request):
     for p in qs:
         data.append({
             "id": p.id,
+            "slug": p.slug or "",             # the public address /shop/<slug> (owner rule R22)
             "name": p.name,
             "type": p.product_type,
             "category": _serialize_category(p.category),
@@ -938,15 +940,22 @@ def view_product_details(request):
     """
     # admin, err = require_admin(request)
     # if err: return err
-    product_id = request.GET.get("product_id")
-
-    product = get_object_or_404(
-        Product.objects.select_related("category").prefetch_related("variants", "media"),
-        id=product_id,
+    # Own address (owner rule R22, 2026-09-13): `ref` is the product's slug, a retired slug, or a
+    # legacy numeric id (`product_id` stays accepted for the older callers). A retired slug or an
+    # id answers the product PLUS `moved_to`, the current /shop/<slug> path, which the page follows
+    # with router.replace: a 200 on the envelope, never a 301 (fetch would chase it into the API).
+    from afc_auth.slugs import resolve_or_redirect
+    ref = request.GET.get("ref") or request.GET.get("product_id")
+    product, moved_to_slug = resolve_or_redirect(Product, ref)
+    if product is None:
+        return Response({"message": "Product not found."}, status=404)
+    product = (
+        Product.objects.select_related("category").prefetch_related("variants", "media").get(pk=product.pk)
     )
 
     data = {
         "id": product.id,
+        "slug": product.slug or "",
         "name": product.name,
         "type": product.product_type,                  # legacy slug string
         "category": _serialize_category(product.category),
@@ -969,7 +978,10 @@ def view_product_details(request):
             "meta": v.meta,
         } for v in product.variants.all()]
     }
-    return Response({"product": data}, status=200)
+    body = {"product": data}
+    if moved_to_slug:
+        body["moved_to"] = f"/shop/{moved_to_slug}"
+    return Response(body, status=200)
 
 
 @api_view(["POST"])

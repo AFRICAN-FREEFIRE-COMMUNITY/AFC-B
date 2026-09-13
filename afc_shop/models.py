@@ -307,6 +307,17 @@ class Product(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
+    def save(self, *args, **kwargs):
+        # The address follows the name (owner rule R22, 2026-09-13): afc_auth/slugs.py computes the
+        # slug from `name`, keeps it unique, and records the retired one in SlugHistory on a rename
+        # so /shop/<old-slug> still opens this product. A narrowed save (update_fields) gets "slug"
+        # added, or a rename would compute the new slug and silently drop it.
+        from afc_auth.slugs import sync_slug
+        kwargs["update_fields"] = sync_slug(self, "name", kwargs.get("update_fields"))
+        if kwargs["update_fields"] is None:
+            kwargs.pop("update_fields")
+        super().save(*args, **kwargs)
+
     def __str__(self):
         return f"{self.name} ({self.product_type})"
 

@@ -1769,3 +1769,30 @@ class ConnectedAccount(models.Model):
     # and would fail with "Specified key was too long" ON THE PRODUCTION BOX, because migrations in
     # this repo are gitignored and generated there. Discord snowflakes are under 20 characters and
     # Google `sub` values around 21, so 171 is generous.
+
+
+class SlugHistory(models.Model):
+    """Every address a thing has ever had (owner rule R22, 2026-09-13: slugs everywhere, and a
+    link shared in June opens the right page in December).
+
+    Written by afc_auth/slugs.py sync_slug when a model's slug changes (a rename): the RETIRED slug
+    is kept here against the object's pk. Read by resolve_or_redirect, which answers the current
+    object plus `moved_to` (its current slug) so the view can report the move on the envelope with
+    200 and the page rewrites its address. A retired slug is never reissued to another object.
+
+    First model on it: afc_shop.Product (the public /shop/<slug> page). Any model that gets a
+    `slug` field and calls sync_slug in save() joins without a schema change here.
+    """
+    app_label = models.CharField(max_length=60)
+    model = models.CharField(max_length=60)
+    old_slug = models.CharField(max_length=120)
+    object_pk = models.CharField(max_length=64)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        # One retired slug per model points at one object; the width stays under the utf8mb4
+        # index limit on the production box (see ConnectedAccount's note above).
+        unique_together = [("app_label", "model", "old_slug")]
+
+    def __str__(self):
+        return f"{self.app_label}.{self.model} {self.old_slug} -> {self.object_pk}"
