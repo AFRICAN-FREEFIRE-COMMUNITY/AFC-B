@@ -335,12 +335,15 @@ def media_upload(request, event_id):
         url = request.build_absolute_uri(team.team_logo.url)
     else:
         from afc_auth.models import UserProfile
-        # Face check on the admin/organizer player-image REPLACE path too (owner 2026-07-04): the
-        # self-serve user upload (afc_auth.upload_esport_image) already rejects non-face images, but
-        # this admin path saved anything - which is how a TEAM LOGO ended up in a player's esport-image
-        # slot ("how did this get past the face recognition"). Reject an image with no detectable face,
-        # UNLESS the operator explicitly passes force=true (a trusted admin may knowingly place a
-        # placeholder). Fail-open inside image_has_human_face keeps a broken detector from blocking.
+        # Picture check on the admin/organizer player-image REPLACE path too (owner 2026-07-04):
+        # this admin path saved anything - which is how a TEAM LOGO ended up in a player's
+        # esport-image slot ("how did this get past the face recognition"). Reject an image with no
+        # detectable face, UNLESS the operator explicitly passes force=true (a trusted admin may
+        # knowingly place a placeholder). Fail-open inside check_esport_image keeps a broken
+        # detector from blocking.
+        # CORRECTED 2026-09-13: this comment used to say the self-serve upload "already rejects
+        # non-face images". It has not since 2026-07-06 - it records a verdict and always saves.
+        # THIS is the only path that refuses, which is why the force flag lives here and nowhere else.
         # Organizer scope: a non-staff caller may only overwrite a player who is IN this event
         # (solo competitor or a roster member of one of this event's teams).
         if not is_staff:
