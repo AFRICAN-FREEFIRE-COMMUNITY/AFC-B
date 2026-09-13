@@ -2309,9 +2309,14 @@ def exit_team(request):
         # active event roster (or you were never a playing member, e.g. a coach), you are free to
         # leave. (Previously this was a BLANKET team-level lock that trapped everyone whenever the
         # team had any active registration; see _member_in_active_event_roster for the rationale.)
-        if _member_in_active_event_roster(team, user.user_id):
+        blockers = _active_event_roster_blockers(team, user.user_id)
+        if blockers:
             return Response(
-                {"message": "You are on your team's roster for an active tournament. You can leave once the event organizer removes you from the event roster, or the tournament is completed."},
+                {"message": f"You are on your team's roster for {_name_events(blockers)}. "
+                            "You can leave once the event organizer removes you from that roster, "
+                            "or the event is over.",
+                 "events": [{"event_id": e.event_id, "event_name": e.event_name, "slug": e.slug}
+                            for e in blockers]},
                 status=status.HTTP_403_FORBIDDEN,
             )
 
@@ -2586,9 +2591,43 @@ def get_team_details_based_on_invite(request, invite_id):
 # verbatim as the 'coach' entry in afc_team.permissions.DEFAULT_ROLE_CAPABILITIES.
 
 
+def _name_events(events) -> str:
+    """'the event "X"' / 'the events "X" and "Y"' / 'the events "X", "Y" and 2 more' - the phrase a
+    lock message drops into so the player can see WHICH event is holding them. Capped so a player on
+    a dozen rosters gets a sentence rather than a list.
+
+    WHY it exists (owner 2026-09-13): the refusal used to say only "an active tournament". A player
+    then looked at their team's event list and blamed the wrong one - the owner reported a CANCELLED
+    event as the thing trapping people when the real holders were a live tournament and a scrim that
+    had been reopened. Naming the event turns a support ticket into a thing the player can act on.
+    """
+    names = [f'"{e.event_name}"' for e in events]
+    if len(names) == 1:
+        return f"the event {names[0]}"
+    if len(names) == 2:
+        return f"the events {names[0]} and {names[1]}"
+    if len(names) == 3:
+        return f"the events {names[0]}, {names[1]} and {names[2]}"
+    return f"the events {names[0]}, {names[1]} and {len(names) - 2} more"
+
+
 def _member_in_active_event_roster(team, member_id) -> bool:
-    """True if `member_id` is CURRENTLY on `team`'s roster for a tournament that is still
-    upcoming/ongoing (not completed) and not a removed registration.
+    """True if `member_id` is CURRENTLY on `team`'s roster for a live tournament.
+
+    Thin wrapper over _active_event_roster_blockers, kept because "is this member locked" reads
+    better than "is the blocker list non-empty" at a call site that does not need the names.""" \
+    # (the full rationale lives on _active_event_roster_blockers below)
+    return bool(_active_event_roster_blockers(team, member_id))
+
+
+def _active_event_roster_blockers(team, member_id):
+    """The events that are CURRENTLY holding `member_id` on `team`'s roster: still upcoming or
+    ongoing, still playable, and not a removed registration. Empty list = free to leave.
+
+    Returns the EVENTS rather than a bool so the refusal can name them. It used to answer only
+    "locked", and the player then guessed which event it was - on 2026-09-13 the owner reported a
+    CANCELLED event (CAGE 26) as the thing trapping people, when the real holders were a live
+    tournament and a stale scrim. A lock nobody can see the reason for is a support ticket.
 
     WHY (owner 2026-06-21): the team-side "remove member" / "leave team" actions used to be
     blocked whenever the TEAM had ANY active tournament registration - a blanket lock that
@@ -2623,7 +2662,7 @@ def _member_in_active_event_roster(team, member_id) -> bool:
     from afc_tournament_and_scrims.models import TournamentTeamMember, StageCompetitor
     # Local import (heavy views module) keeps this lazy + avoids an import cycle, matching how this
     # helper already imports its models inline.
-    from afc_tournament_and_scrims.views import effective_event_status
+    from afc_tournament_and_scrims.views import effective_event_status, event_past_end
     live_rosters = (
         TournamentTeamMember.objects.filter(
             tournament_team__team=team,
@@ -2637,20 +2676,32 @@ def _member_in_active_event_roster(team, member_id) -> bool:
         .filter(tournament_team__event__event_status__in=["upcoming", "ongoing"])
         .select_related("tournament_team", "tournament_team__event")
     )
+    blockers, seen = [], set()
     for ttm in live_rosters:
         tt = ttm.tournament_team
         # Raw event_status said upcoming/ongoing, but a past-end scrim reads "completed" here even
         # with no cron. A finished event can never be played -> it must not lock the roster.
         if effective_event_status(tt.event) not in ("upcoming", "ongoing"):
             continue
+        # ...and neither can an event that is past its end instant but was REOPENED (owner
+        # 2026-09-13). reopen_event sets auto_complete_suppressed=True so the badge keeps saying
+        # "ongoing" while an organizer fixes results, which is right for the badge and wrong here:
+        # event 319 (LEGACY SCRIMS DAY 30) ended on 1 September and was still holding 25 players in
+        # their teams on the 13th. Reopening an event is for correcting its results, never for
+        # keeping a roster. event_past_end asks the clock, not the status field.
+        if event_past_end(tt.event):
+            continue
         stage_rows = StageCompetitor.objects.filter(stage__event=tt.event, tournament_team=tt)
-        if not stage_rows.exists():
-            return True  # no stage data -> safe default: treat as still on a live roster (locked)
-        # NOT-completed stage (upcoming/ongoing/paused) with an active row = still in. Only "completed"
-        # releases; a paused stage is in progress, not over.
-        if stage_rows.filter(status="active").exclude(stage__stage_status="completed").exists():
-            return True  # still in an active stage -> locked
-    return False  # off every active event roster (or all their stages are over) -> removable
+        locked = (
+            not stage_rows.exists()  # no stage data -> safe default: treat as still on a live roster
+            # NOT-completed stage (upcoming/ongoing/paused) with an active row = still in. Only
+            # "completed" releases; a paused stage is in progress, not over.
+            or stage_rows.filter(status="active").exclude(stage__stage_status="completed").exists()
+        )
+        if locked and tt.event.event_id not in seen:
+            seen.add(tt.event.event_id)
+            blockers.append(tt.event)
+    return blockers  # empty -> off every active event roster (or all their stages are over)
 
 
 def _transfer_window_open():
@@ -3021,9 +3072,14 @@ def kick_team_member(request):
         # remove them. (Previously this was a BLANKET team-level lock that blocked removing ANY
         # member - even a coach - whenever the team had an active registration, which is the bug
         # the owner reported. See _member_in_active_event_roster.)
-        if _member_in_active_event_roster(team, member_id):
+        blockers = _active_event_roster_blockers(team, member_id)
+        if blockers:
             return Response(
-                {"error": "This player is on the team's roster for an active tournament. Ask the event organizer to remove them from the event roster first, then you can remove them from the team."},
+                {"error": f"This player is on the team's roster for {_name_events(blockers)}. "
+                          "Ask the event organizer to remove them from that roster first, then you "
+                          "can remove them from the team.",
+                 "events": [{"event_id": e.event_id, "event_name": e.event_name, "slug": e.slug}
+                            for e in blockers]},
                 status=status.HTTP_403_FORBIDDEN,
             )
 
