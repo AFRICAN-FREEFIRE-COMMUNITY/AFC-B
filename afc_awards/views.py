@@ -232,19 +232,6 @@ def add_nominee_to_category(request):
             return Response({"error": "Category or Nominee not found"}, status=status.HTTP_404_NOT_FOUND)
 
 
-@api_view(['POST'])
-def view_nominee_in_category(request):
-    try:
-        category_id = request.data.get('category_id')
-        category = Category.objects.get(category_id=category_id)
-        nominees = category.categorynominee_set.all()
-
-        data = [{"id": nominee.nominee.nominee_id, "name": nominee.nominee.name} for nominee in nominees]
-        return Response(data, status=status.HTTP_200_OK)
-    except Category.DoesNotExist:
-        return Response({"error": "Category not found"}, status=status.HTTP_404_NOT_FOUND)
-    
-
 @api_view(['DELETE'])
 def remove_nominee_from_category(request):
     if request.method == 'DELETE':
@@ -317,127 +304,11 @@ def add_section(request):
         return Response({"id": section.id, "name": section.name, "max_votes": section.max_votes}, status=status.HTTP_201_CREATED)
 
 
-@api_view(['POST'])
-def submit_votes(request):
-    # --- Authenticate user ---
-    session_token = request.headers.get("Authorization")
-    if not session_token or not session_token.startswith("Bearer "):
-        return Response({"error": "Invalid or missing Authorization header"}, status=status.HTTP_400_BAD_REQUEST)
-
-    session_token = session_token.split(" ")[1]
-    # Prevents FieldError 500: resolve the bearer token via the SessionToken table
-    # instead of the non-existent User.session_token field. validate_token returns
-    # None on an invalid/expired token, which we surface as a clean 401.
-    user = validate_token(session_token)
-    if not user:
-        return Response({"error": "Invalid session token"}, status=status.HTTP_401_UNAUTHORIZED)
-
-    # --- Extract data ---
-    section_id = request.data.get("section_id")
-    votes_data = request.data.get("votes", [])  # list of {category_id, nominee_id}
-
-    if not section_id or not votes_data:
-        return Response({"error": "Section ID and votes are required"}, status=status.HTTP_400_BAD_REQUEST)
-
-    try:
-        section = Section.objects.get(id=section_id)
-    except Section.DoesNotExist:
-        return Response({"error": "Section not found"}, status=status.HTTP_404_NOT_FOUND)
-
-    # --- Check if already voted in this section ---
-    if Vote.objects.filter(user=user, section=section).exists():
-        return Response({"error": "You have already voted in this section"}, status=status.HTTP_403_FORBIDDEN)
-
-    # --- Validate number of votes ---
-    # if len(votes_data) != section.max_votes:
-    #     return Response(
-    #         {"error": f"You must submit exactly {section.max_votes} votes for {section.name}"},
-    #         status=status.HTTP_400_BAD_REQUEST
-    #     )
-
-    # --- Save votes in one transaction ---
-    from django.db import transaction
-    try:
-        with transaction.atomic():
-            for v in votes_data:
-                category_id = v.get("category_id")
-                nominee_id = v.get("nominee_id")
-                if not category_id or not nominee_id:
-                    raise ValueError("Each vote must include category_id and nominee_id")
-
-                category = Category.objects.get(category_id=category_id, section=section)
-                nominee = Nominee.objects.get(nominee_id=nominee_id)
-
-                Vote.objects.create(
-                    user=user,
-                    section=section,
-                    category=category,
-                    nominee=nominee
-                )
-
-        return Response({"message": "Votes submitted successfully"}, status=status.HTTP_201_CREATED)
-
-    except Exception as e:
-        return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
-
-
-@api_view(['GET'])
-def view_all_nominee_in_each_category(request):
-    sections = Section.objects.all()
-    data = []
-
-    for section in sections:
-        categories = section.category_set.all()
-        category_list = []
-
-        for category in categories:
-            nominees = category.categorynominee_set.all()
-            nominee_list = [
-                {
-                    "id": nominee.nominee.nominee_id,
-                    "name": nominee.nominee.name,
-                    "video_url": nominee.nominee.video_url
-                }
-                for nominee in nominees
-            ]
-
-            category_list.append({
-                "category_id": category.category_id,
-                "category_name": category.name,
-                "nominees": nominee_list
-            })
-
-        data.append({
-            "section_id": section.id,
-            "section_name": section.name,
-            "categories": category_list
-        })
-
-    return Response(data, status=status.HTTP_200_OK)
-
-
 @api_view(['GET'])
 def list_sections(request):
     sections = Section.objects.all()
     data = [{"id": section.id, "name": section.name} for section in sections]
     return Response(data, status=status.HTTP_200_OK)
-
-
-@api_view(['POST'])
-def get_section(request):
-    section_id = request.data.get("section_id")
-    if not section_id:
-        return Response({"error": "Section ID is required"}, status=status.HTTP_400_BAD_REQUEST)
-
-    try:
-        section = Section.objects.get(id=section_id)
-        data = {
-            "id": section.id,
-            "name": section.name
-        }
-        return Response(data, status=status.HTTP_200_OK)
-    except Section.DoesNotExist:
-        return Response({"error": "Section not found"}, status=status.HTTP_404_NOT_FOUND)
 
 
 @api_view(['GET'])

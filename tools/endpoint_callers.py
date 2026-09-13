@@ -218,27 +218,35 @@ def backend_django() -> set[str]:
 
     found: set[str] = set()
 
+    def third_party(resolver) -> bool:
+        """An include of a module that does not live in this repo (django admin, oauth2_provider):
+        the regex side records it as ONE entry, its mount prefix, so do the same here."""
+        name = getattr(resolver, "urlconf_name", None)
+        mod = name if hasattr(name, "__file__") else None
+        if mod is None and isinstance(name, str):
+            try:
+                import importlib
+                mod = importlib.import_module(name)
+            except Exception:  # noqa: BLE001
+                return False
+        if mod is None or not getattr(mod, "__file__", None):
+            return not isinstance(name, (list, tuple))  # admin.site.urls is a tuple of patterns
+        return not os.path.abspath(mod.__file__).startswith(os.path.abspath(BACKEND))
+
     def walk(patterns, prefix):
         for p in patterns:
             if isinstance(p, URLResolver):
-                walk(p.url_patterns, prefix + str(p.pattern))
+                mount = prefix + str(p.pattern)
+                if third_party(p):
+                    found.add(normalize_pattern(mount))
+                    continue
+                walk(p.url_patterns, mount)
             elif isinstance(p, URLPattern):
                 found.add(normalize_pattern(prefix + str(p.pattern)))
 
     walk(get_resolver().url_patterns, "")
-    # Third-party trees the regex side records as ONE entry (django admin, oauth2_provider under
-    # sso/), and the DEBUG-only `static()` media patterns (regexes starting with ^), are folded.
-    folded: set[str] = set()
-    for f in found:
-        if "^" in f:
-            continue
-        if f.startswith("admin/"):
-            folded.add("admin/")
-        elif f.startswith("sso/") and not any(f == r for r in found if r.count("/") <= 2) and f.count("/") > 2 and "/o/" in f or f.startswith("sso/o/"):
-            folded.add("sso/")
-        else:
-            folded.add(f)
-    return folded
+    # the DEBUG-only `static()` media patterns are regexes (they start with ^): not endpoints
+    return {f for f in found if "^" not in f}
 
 
 # ── the frontend side ────────────────────────────────────────────────────────────────────────
