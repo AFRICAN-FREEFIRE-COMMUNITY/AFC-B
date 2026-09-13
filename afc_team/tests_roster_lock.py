@@ -79,6 +79,30 @@ class RosterLockTests(TestCase):
         self.assertEqual([e["event_id"] for e in body["events"]], [live.event_id])
         self.assertTrue(TeamMembers.objects.filter(team=self.team, member=self.player).exists())
 
+    def test_a_waitlisted_team_holds_nobody(self):
+        # Queued, not playing (owner 2026-09-13). On production the same 29 players were held this
+        # way AND by the reopened-but-finished scrim they were queued for; either rule frees them.
+        live = _event(self.owner, "OVERSUBSCRIBED CUP", status="ongoing",
+                      start=date.today(), end=date.today() + timedelta(days=3))
+        tt = self._roster(live)
+        tt.is_waitlisted = True
+        tt.save(update_fields=["is_waitlisted"])
+        self.assertEqual(_active_event_roster_blockers(self.team, self.player.user_id), [])
+        r = self.client.post("/team/exit-team/", {}, content_type="application/json", **self.player_auth)
+        self.assertEqual(r.status_code, 200, r.content[:300])
+
+    def test_a_team_promoted_off_the_waitlist_holds_again(self):
+        live = _event(self.owner, "OVERSUBSCRIBED CUP", status="ongoing",
+                      start=date.today(), end=date.today() + timedelta(days=3))
+        tt = self._roster(live)
+        tt.is_waitlisted = True
+        tt.save(update_fields=["is_waitlisted"])
+        self.assertEqual(_active_event_roster_blockers(self.team, self.player.user_id), [])
+        tt.is_waitlisted = False
+        tt.save(update_fields=["is_waitlisted"])
+        self.assertEqual([e.event_id for e in _active_event_roster_blockers(self.team, self.player.user_id)],
+                         [live.event_id])
+
     def test_a_cancelled_event_holds_nobody(self):
         # What the owner thought was the culprit. It never was, and this keeps it that way.
         cancelled = _event(self.owner, "CAGE 26 NIGERIA ONLY", status="cancelled",
