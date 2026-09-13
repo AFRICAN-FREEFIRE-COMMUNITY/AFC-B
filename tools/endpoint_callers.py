@@ -230,7 +230,8 @@ def backend_django() -> set[str]:
             except Exception:  # noqa: BLE001
                 return False
         if mod is None or not getattr(mod, "__file__", None):
-            return not isinstance(name, (list, tuple))  # admin.site.urls is a tuple of patterns
+            # admin.site.urls hands over a tuple of patterns with app_name "admin": Django's own tree
+            return getattr(resolver, "app_name", None) == "admin"
         return not os.path.abspath(mod.__file__).startswith(os.path.abspath(BACKEND))
 
     def walk(patterns, prefix):
