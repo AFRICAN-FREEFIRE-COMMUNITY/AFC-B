@@ -2315,8 +2315,7 @@ def exit_team(request):
                 {"message": f"You are on your team's roster for {_name_events(blockers)}. "
                             "You can leave once the event organizer removes you from that roster, "
                             "or the event is over.",
-                 "events": [{"event_id": e.event_id, "event_name": e.event_name, "slug": e.slug}
-                            for e in blockers]},
+                 "events": _event_refs(blockers)},
                 status=status.HTTP_403_FORBIDDEN,
             )
 
@@ -2592,23 +2591,20 @@ def get_team_details_based_on_invite(request, invite_id):
 
 
 def _name_events(events) -> str:
-    """'the event "X"' / 'the events "X" and "Y"' / 'the events "X", "Y" and 2 more' - the phrase a
-    lock message drops into so the player can see WHICH event is holding them. Capped so a player on
-    a dozen rosters gets a sentence rather than a list.
+    """The phrase a lock message drops into so the player can see WHICH event is holding them.
 
-    WHY it exists (owner 2026-09-13): the refusal used to say only "an active tournament". A player
-    then looked at their team's event list and blamed the wrong one - the owner reported a CANCELLED
-    event as the thing trapping people when the real holders were a live tournament and a scrim that
-    had been reopened. Naming the event turns a support ticket into a thing the player can act on.
+    The wording lives in afc_tournament_and_scrims.event_names because the identity lock in
+    afc_auth says the same thing about the same events, and two copies would drift (owner
+    2026-09-13: "it should also tell people what event they are locked into").
     """
-    names = [f'"{e.event_name}"' for e in events]
-    if len(names) == 1:
-        return f"the event {names[0]}"
-    if len(names) == 2:
-        return f"the events {names[0]} and {names[1]}"
-    if len(names) == 3:
-        return f"the events {names[0]}, {names[1]} and {names[2]}"
-    return f"the events {names[0]}, {names[1]} and {len(names) - 2} more"
+    from afc_tournament_and_scrims.event_names import name_events
+    return name_events(events)
+
+
+def _event_refs(events):
+    """The blocking events as the response body carries them, so the page can link each one."""
+    from afc_tournament_and_scrims.event_names import event_refs
+    return event_refs(events)
 
 
 def _member_in_active_event_roster(team, member_id) -> bool:
@@ -2669,6 +2665,10 @@ def _active_event_roster_blockers(team, member_id):
             user_id=member_id,
         )
         .exclude(tournament_team__status__in=["disqualified", "withdrawn", "left"])
+        # A WAITLISTED entry is queued, not playing (owner 2026-09-13: "even being on waitlist and
+        # even if they did not get to play still holds teams"). It holds nobody. If the organizer
+        # later promotes them, is_waitlisted flips to False and the lock applies again by itself.
+        .exclude(tournament_team__is_waitlisted=True)
         # An OPEN-ROSTER event never locks a club roster (owner 2026-09-11: "roster lock won't
         # apply to this event"): whoever it fields did not have to be a club member, so being
         # fielded there says nothing about club membership.
@@ -3078,8 +3078,7 @@ def kick_team_member(request):
                 {"error": f"This player is on the team's roster for {_name_events(blockers)}. "
                           "Ask the event organizer to remove them from that roster first, then you "
                           "can remove them from the team.",
-                 "events": [{"event_id": e.event_id, "event_name": e.event_name, "slug": e.slug}
-                            for e in blockers]},
+                 "events": _event_refs(blockers)},
                 status=status.HTTP_403_FORBIDDEN,
             )
 
