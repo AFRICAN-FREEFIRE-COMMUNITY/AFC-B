@@ -12,7 +12,8 @@ vendor's connected Stripe account. AFC never holds the cash in its own bank and 
 not a money transmitter (same legal posture as the event escrow). This module owns
 the three Connect pieces:
 
-  1. ONBOARDING  (vendor_connect_onboard / vendor_connect_status)
+  1. ONBOARDING  (removed 2026-09-13: no screen ever called shop/connect/onboard or /status;
+     the live vendor bank flow is afc_shop/paystack_payout.py, owner rule R45)
      A vendor creates/refreshes a Stripe Connect EXPRESS account and completes
      Stripe's hosted onboarding. We store the resulting account id on
      Vendor.stripe_account_id and surface whether payouts are enabled.
@@ -142,134 +143,6 @@ def _require_active_vendor(request):
 
 # ═════════════════════════════════════════════════════════════════════════════
 # 1. ONBOARDING - vendor connects (or refreshes) their Stripe Connect account
-# ═════════════════════════════════════════════════════════════════════════════
-@api_view(["POST"])
-def vendor_connect_onboard(request):
-    """POST /shop/connect/onboard/
-
-    Create (or reuse) a Stripe Connect EXPRESS account for the caller's vendor and
-    return a Stripe-hosted ONBOARDING URL the vendor opens to finish KYC + add a
-    payout bank account. After they finish, payouts to them become possible.
-
-    Purpose:  A vendor links their bank so AFC can transfer their share out. Mirrors
-              the events Phase 3 organizer-transfer onboarding; the `transfers`
-              capability requested here is what lets settle_order_payout transfer to
-              this account later.
-    Auth:     Bearer -> _require_active_vendor (only a vendor can connect their OWN
-              account; a suspended vendor is blocked).
-    Request:  {} (no body needed; the vendor is resolved from the token).
-    Response: 200 { onboarding_url, account_id }  |  502 (Stripe error / not configured).
-    Consumed by: the vendor self-serve dashboard "Connect payouts" button (Phase B2 FE).
-
-    IDEMPOTENT: if the vendor already has a stripe_account_id we REUSE it (create only a
-    fresh account link), so re-clicking "Connect" never creates duplicate accounts.
-    """
-    user, vendor, err = _require_active_vendor(request)
-    if err:
-        return err
-
-    account_id = vendor.stripe_account_id
-
-    # ── 1a. Create the connected account once (reuse it on re-onboard) ──
-    # Express account in AFC's platform; request the `transfers` capability so AFC can
-    # push the vendor's share to them (the events Phase 3 transfer capability).
-    if not account_id:
-        create_data = {
-            "type": "express",
-            "email": vendor.contact_email or user.email or "",
-            "capabilities[transfers][requested]": "true",
-            # Tie the account back to this vendor for support/audit (Stripe metadata).
-            "metadata[vendor_id]": str(vendor.id),
-            "metadata[afc_user_id]": str(user.user_id),
-        }
-        ok, acct = _stripe("POST", "/accounts", create_data)
-        if not ok:
-            return Response(
-                {"message": "Could not start Stripe onboarding.",
-                 "detail": acct.get("error", {}).get("message", "")},
-                status=502,
-            )
-        account_id = acct.get("id", "")
-        # Persist the connected-account id immediately so a later onboarding refresh +
-        # settle_order_payout can find it even if the vendor abandons onboarding now.
-        vendor.stripe_account_id = account_id
-        vendor.save(update_fields=["stripe_account_id"])
-
-    # ── 1b. Create a one-time hosted onboarding link for this account ──
-    # The return/refresh URLs point back at the vendor dashboard; Stripe bounces the
-    # vendor there when they finish or the link expires.
-    base = getattr(settings, "FRONTEND_URL", "https://africanfreefirecommunity.com").rstrip("/")
-    link_data = {
-        "account": account_id,
-        "refresh_url": f"{base}/vendor/payouts?connect=refresh",
-        "return_url": f"{base}/vendor/payouts?connect=done",
-        "type": "account_onboarding",
-    }
-    ok, link = _stripe("POST", "/account_links", link_data)
-    if not ok:
-        return Response(
-            {"message": "Could not create onboarding link.",
-             "detail": link.get("error", {}).get("message", "")},
-            status=502,
-        )
-
-    return Response({"onboarding_url": link.get("url"), "account_id": account_id}, status=200)
-
-
-@api_view(["GET"])
-def vendor_connect_status(request):
-    """GET /shop/connect/status/
-
-    Report whether the caller-vendor's Stripe Connect account is fully onboarded and
-    can RECEIVE payouts. The vendor dashboard uses this to show "Connected / payouts
-    enabled" vs "Finish onboarding".
-
-    Auth:     Bearer -> _require_active_vendor.
-    Response: 200 { connected: bool, charges_enabled: bool, payouts_enabled: bool,
-                    details_submitted: bool, account_id }.
-    Consumed by: the vendor self-serve dashboard payouts panel (Phase B2 FE).
-
-    `connected` is False (with everything else False) when the vendor has not started
-    onboarding (no stripe_account_id). When an account exists we ask Stripe for the
-    live capability flags so a stale local copy never misreports payout-readiness.
-    """
-    user, vendor, err = _require_active_vendor(request)
-    if err:
-        return err
-
-    if not vendor.stripe_account_id:
-        return Response({
-            "connected": False,
-            "charges_enabled": False,
-            "payouts_enabled": False,
-            "details_submitted": False,
-            "account_id": "",
-        }, status=200)
-
-    ok, acct = _stripe("GET", f"/accounts/{vendor.stripe_account_id}")
-    if not ok:
-        # Account id stored but Stripe can't be reached / account gone: report not-ready
-        # rather than 500, so the dashboard degrades gracefully.
-        return Response({
-            "connected": True,
-            "charges_enabled": False,
-            "payouts_enabled": False,
-            "details_submitted": False,
-            "account_id": vendor.stripe_account_id,
-            "detail": acct.get("error", {}).get("message", ""),
-        }, status=200)
-
-    return Response({
-        "connected": True,
-        "charges_enabled": bool(acct.get("charges_enabled")),
-        "payouts_enabled": bool(acct.get("payouts_enabled")),
-        "details_submitted": bool(acct.get("details_submitted")),
-        "account_id": vendor.stripe_account_id,
-    }, status=200)
-
-
-# ═════════════════════════════════════════════════════════════════════════════
-# 2. PAYOUT - settle a completed order's vendor share (called from fulfilment.py)
 # ═════════════════════════════════════════════════════════════════════════════
 def settle_order_payout(order):
     """Create / record the VendorPayout for a JUST-COMPLETED marketplace order.

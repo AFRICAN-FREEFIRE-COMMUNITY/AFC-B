@@ -19,17 +19,11 @@ urlpatterns = [
     ])),
     path('category-nominee/', include([
         path('add/', add_nominee_to_category),
-        path('view/', view_nominee_in_category),
         path('remove/', remove_nominee_from_category),
-        path('all/', view_all_nominee_in_each_category),
-    ])),
-    path('votes/', include([
-        path('submit/', submit_votes),
     ])),
     path('sections/', include([
         path('add/', add_section),
         path('all/', list_sections),
-        path('view/', get_section),
     ])),
     path('get-total-votes-cast/', get_total_votes_cast),
     path('get-total-voters/', get_total_voters),

@@ -142,10 +142,6 @@ urlpatterns = [
     path("ghost-players/",
          _route(GET=admin_ghost.ghost_players_list, POST=admin_ghost.ghost_player_create_flat),
          name="rankings_ghost_players"),
-    path("ghost-players/<int:player_id>/",
-         _route(GET=admin_ghost.ghost_player_detail, PATCH=admin_ghost.ghost_player_update,
-                DELETE=admin_ghost.ghost_player_delete),
-         name="rankings_ghost_player_detail"),
     # ghost-player claim lifecycle (mirrors the ghost-team routes): user-facing self-request, then the
     # admin approve (re-attributes the ghost's solo history onto the user) / reject (a pending request).
     path("ghost-players/<int:player_id>/request-claim/", admin_ghost.ghost_player_request_claim,

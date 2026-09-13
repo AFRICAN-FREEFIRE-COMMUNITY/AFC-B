@@ -1,0 +1,298 @@
+{
+  "_about": "Endpoints that answer a stranger 2xx: public by design (owner rules R25 + R26, 2026-09-13). Read by afc_auth/tests_signed_out.py: a NEW entry fails the test until it is written here with the commit that opened it; a line whose endpoint got gated is reported stale. Regenerate deliberately with WRITE_ANON_BASELINE=1.",
+  "public": {
+    "GET auth/fx-rates/": {
+      "status": 200,
+      "reason": "public content, decided 2026-09-13"
+    },
+    "GET auth/get-active-players-count/": {
+      "status": 200,
+      "reason": "public content, decided 2026-09-13"
+    },
+    "GET auth/get-all-news/": {
+      "status": 200,
+      "reason": "public content, decided 2026-09-13"
+    },
+    "GET auth/get-average-total-kills-per-player/": {
+      "status": 200,
+      "reason": "public content, decided 2026-09-13"
+    },
+    "GET auth/get-banned-players-count/": {
+      "status": 200,
+      "reason": "public content, decided 2026-09-13"
+    },
+    "GET auth/get-new-players-count/": {
+      "status": 200,
+      "reason": "public content, decided 2026-09-13"
+    },
+    "GET auth/get-pinned-news/": {
+      "status": 200,
+      "reason": "public content, decided 2026-09-13"
+    },
+    "GET auth/get-total-number-of-users/": {
+      "status": 200,
+      "reason": "public content, decided 2026-09-13"
+    },
+    "GET auth/get-total-players-count/": {
+      "status": 200,
+      "reason": "public content, decided 2026-09-13"
+    },
+    "GET awards/categories/view/": {
+      "status": 200,
+      "reason": "public content, decided 2026-09-13"
+    },
+    "GET awards/get-total-voters/": {
+      "status": 200,
+      "reason": "public content, decided 2026-09-13"
+    },
+    "GET awards/get-total-votes-cast/": {
+      "status": 200,
+      "reason": "public content, decided 2026-09-13"
+    },
+    "GET awards/get-total-votes-per-nominee-per-category/": {
+      "status": 200,
+      "reason": "public content, decided 2026-09-13"
+    },
+    "GET awards/get-votes-per-category/": {
+      "status": 200,
+      "reason": "public content, decided 2026-09-13"
+    },
+    "GET awards/get-votes-per-nominee/": {
+      "status": 200,
+      "reason": "public content, decided 2026-09-13"
+    },
+    "GET awards/get-votes-per-section/": {
+      "status": 200,
+      "reason": "public content, decided 2026-09-13"
+    },
+    "GET awards/get-voting-timeline/": {
+      "status": 200,
+      "reason": "public content, decided 2026-09-13"
+    },
+    "GET awards/nominees/view/": {
+      "status": 200,
+      "reason": "public content, decided 2026-09-13"
+    },
+    "GET awards/sections/all/": {
+      "status": 200,
+      "reason": "public content, decided 2026-09-13"
+    },
+    "GET events/<int:event_id>/links/public/": {
+      "status": 200,
+      "reason": "public content, decided 2026-09-13"
+    },
+    "GET events/<int:event_id>/links/structure/": {
+      "status": 200,
+      "reason": "public content, decided 2026-09-13"
+    },
+    "GET events/capture/config/": {
+      "status": 200,
+      "reason": "public content, decided 2026-09-13"
+    },
+    "GET events/capture/version/": {
+      "status": 200,
+      "reason": "public content, decided 2026-09-13"
+    },
+    "GET events/cs-room-catalogue/": {
+      "status": 200,
+      "reason": "public content, decided 2026-09-13"
+    },
+    "GET events/get-all-events-paginated/": {
+      "status": 200,
+      "reason": "public content, decided 2026-09-13"
+    },
+    "GET events/get-all-events/": {
+      "status": 200,
+      "reason": "public content, decided 2026-09-13"
+    },
+    "GET events/get-all-tournaments-and-scrims-paginated/": {
+      "status": 200,
+      "reason": "public content, decided 2026-09-13"
+    },
+    "GET events/get-all-tournaments-and-scrims-separated-paginated/": {
+      "status": 200,
+      "reason": "public content, decided 2026-09-13"
+    },
+    "GET events/get-all-tournaments-and-scrims-separated/": {
+      "status": 200,
+      "reason": "public content, decided 2026-09-13"
+    },
+    "GET events/get-all-tournaments-and-scrims/": {
+      "status": 200,
+      "reason": "public content, decided 2026-09-13"
+    },
+    "GET events/get-average-participants-per-event/": {
+      "status": 200,
+      "reason": "public content, decided 2026-09-13"
+    },
+    "GET events/get-completed-events-count/": {
+      "status": 200,
+      "reason": "public content, decided 2026-09-13"
+    },
+    "GET events/get-most-popular-event-format/": {
+      "status": 200,
+      "reason": "public content, decided 2026-09-13"
+    },
+    "GET events/get-ongoing-events-count/": {
+      "status": 200,
+      "reason": "public content, decided 2026-09-13"
+    },
+    "GET events/get-total-events-count/": {
+      "status": 200,
+      "reason": "public content, decided 2026-09-13"
+    },
+    "GET events/get-total-kills/": {
+      "status": 200,
+      "reason": "public content, decided 2026-09-13"
+    },
+    "GET events/get-total-prize-pool/": {
+      "status": 200,
+      "reason": "public content, decided 2026-09-13"
+    },
+    "GET events/get-total-scrims-count/": {
+      "status": 200,
+      "reason": "public content, decided 2026-09-13"
+    },
+    "GET events/get-total-tournaments-count/": {
+      "status": 200,
+      "reason": "public content, decided 2026-09-13"
+    },
+    "GET events/get-upcoming-events-count/": {
+      "status": 200,
+      "reason": "public content, decided 2026-09-13"
+    },
+    "GET events/total-active-tournaments/": {
+      "status": 200,
+      "reason": "public content, decided 2026-09-13"
+    },
+    "GET events/total-members-this-month/": {
+      "status": 200,
+      "reason": "public content, decided 2026-09-13"
+    },
+    "GET events/total-published-news/": {
+      "status": 200,
+      "reason": "public content, decided 2026-09-13"
+    },
+    "GET events/total-team-this-month/": {
+      "status": 200,
+      "reason": "public content, decided 2026-09-13"
+    },
+    "GET organizers/events/<int:event_id>/rating/": {
+      "status": 200,
+      "reason": "public content, decided 2026-09-13"
+    },
+    "GET organizers/get-organizations-public/": {
+      "status": 200,
+      "reason": "public content, decided 2026-09-13"
+    },
+    "GET partner-apply/integration-guide/": {
+      "status": 200,
+      "reason": "public content, decided 2026-09-13"
+    },
+    "GET player-market/get-recruitment-posts/": {
+      "status": 200,
+      "reason": "public content, decided 2026-09-13"
+    },
+    "GET player-market/location-subdivisions/": {
+      "status": 200,
+      "reason": "public content, decided 2026-09-13"
+    },
+    "GET player-market/view-player-availability-posts/": {
+      "status": 200,
+      "reason": "public content, decided 2026-09-13"
+    },
+    "GET player-market/view-team-recruitment-posts/": {
+      "status": 200,
+      "reason": "public content, decided 2026-09-13"
+    },
+    "GET polls/": {
+      "status": 200,
+      "reason": "public content, decided 2026-09-13"
+    },
+    "GET polls/editions/": {
+      "status": 200,
+      "reason": "public content, decided 2026-09-13"
+    },
+    "GET rankings/players/<int:player_id>/score/": {
+      "status": 200,
+      "reason": "public content, decided 2026-09-13"
+    },
+    "GET rankings/players/annual/": {
+      "status": 200,
+      "reason": "public content, decided 2026-09-13"
+    },
+    "GET rankings/players/by-role/": {
+      "status": 200,
+      "reason": "public content, decided 2026-09-13"
+    },
+    "GET rankings/players/monthly/": {
+      "status": 200,
+      "reason": "public content, decided 2026-09-13"
+    },
+    "GET rankings/players/quarterly/": {
+      "status": 200,
+      "reason": "public content, decided 2026-09-13"
+    },
+    "GET rankings/seasons/": {
+      "status": 200,
+      "reason": "public content, decided 2026-09-13"
+    },
+    "GET rankings/seasons/current/": {
+      "status": 200,
+      "reason": "public content, decided 2026-09-13"
+    },
+    "GET rankings/teams/<int:team_id>/score/": {
+      "status": 200,
+      "reason": "public content, decided 2026-09-13"
+    },
+    "GET rankings/teams/annual/": {
+      "status": 200,
+      "reason": "public content, decided 2026-09-13"
+    },
+    "GET rankings/teams/monthly/": {
+      "status": 200,
+      "reason": "public content, decided 2026-09-13"
+    },
+    "GET rankings/teams/quarterly/": {
+      "status": 200,
+      "reason": "public content, decided 2026-09-13"
+    },
+    "GET shop/view-active-categories/": {
+      "status": 200,
+      "reason": "public content, decided 2026-09-13"
+    },
+    "GET shop/view-active-products/": {
+      "status": 200,
+      "reason": "public content, decided 2026-09-13"
+    },
+    "GET sponsors/for-event/<int:event_id>/": {
+      "status": 200,
+      "reason": "public content, decided 2026-09-13"
+    },
+    "GET sso/brand/": {
+      "status": 200,
+      "reason": "public content, decided 2026-09-13"
+    },
+    "GET sso/brand/logo.svg": {
+      "status": 200,
+      "reason": "public content, decided 2026-09-13"
+    },
+    "GET team/get-all-teams/": {
+      "status": 200,
+      "reason": "public content, decided 2026-09-13"
+    },
+    "GET team/transfers/": {
+      "status": 200,
+      "reason": "public content, decided 2026-09-13"
+    },
+    "POST auth/check-discord-membership-v2/": {
+      "status": 200,
+      "reason": "public content, decided 2026-09-13"
+    }
+  },
+  "errors_on_anonymous_call": [
+    "GET events/get-all-sponsors/: DoesNotExist",
+    "GET shop/test-brands/: JSONDecodeError",
+    "GET shop/test-denom/: JSONDecodeError"
+  ]
+}

@@ -49,6 +49,7 @@ def _serialize_wishlist_product(request, product):
     in_stock = any(v.is_in_stock() for v in variants)
     return {
         "id": product.id,
+        "slug": product.slug or "",  # the public address /shop/<slug> (owner rule R22)
         "name": product.name,
         "image": _abs_url(request, product.image),
         "category": product.category.name if product.category_id else (product.product_type or ""),
