@@ -58,7 +58,11 @@ class VerdictShapeTests(TestCase):
         self.assertFalse(face_check.is_certainly_not_a_person(out["verdict"]))
 
     def test_a_second_look_that_fails_never_refuses(self):
-        with patch.object(face_check, "_best_candidate", side_effect=RuntimeError("boom")):
+        # The second look is the only thing standing between a player and a refusal, so when IT
+        # breaks it must answer "unsure" (1.0), never "nobody there".
+        import cv2
+        self.assertEqual(face_check._best_candidate(cv2, None), 1.0)
+        with patch.object(face_check, "_best_candidate", return_value=1.0):
             out = face_check.check_esport_image(BytesIO(_jpeg()))
         self.assertEqual(out["verdict"], face_check.NO_FACE)
 
@@ -217,7 +221,7 @@ class CheckEsportImagesCommandTests(TestCase):
         call_command("check_esport_images")
         unchecked.refresh_from_db()
         cleared.refresh_from_db()
-        self.assertEqual(unchecked.esports_pic_check, face_check.NO_FACE)
+        self.assertEqual(unchecked.esports_pic_check, face_check.NOT_A_PERSON)
         self.assertIsNotNone(unchecked.esports_pic_checked_at)
         self.assertEqual(cleared.esports_pic_check, "cleared")  # a human settled it; nothing overrules that
 
