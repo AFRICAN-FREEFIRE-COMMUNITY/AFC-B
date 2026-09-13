@@ -92,6 +92,17 @@ def check_esport_image(image_file) -> dict:
     A verdict other than "ok" is a FLAG for a human, never grounds to refuse the
     upload: see the header on what a face detector cannot decide.
     """
+    # "Never raises" is the promise the upload path relies on, so it is kept HERE rather than
+    # assumed from the internals: a test that made the reader itself explode still has to leave the
+    # upload working (2026-09-13).
+    try:
+        return _check(image_file)
+    except Exception as exc:  # pragma: no cover - belt and braces around a promise
+        logger.warning("face_check: unexpected failure (%s); skipping", exc)
+        return _result(SKIPPED, "skipped:error")
+
+
+def _check(image_file) -> dict:
     data = _read(image_file)
     if data is None:
         return _result(SKIPPED, "skipped:read_error")
