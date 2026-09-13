@@ -183,6 +183,19 @@ class RecruitmentApplication(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
+    # The public address of this application, /player-markets/applications/<public_token> (owner
+    # rule R22, 2026-09-13): an application has no name, so it carries an opaque token such as
+    # a_7f3a9c2b instead of its row id. Filled once in save(); a legacy numeric link resolves
+    # through afc_auth.slugs.resolve_by_token and lands on the token.
+    public_token = models.CharField(max_length=24, unique=True, null=True, blank=True)
+
+    def save(self, *args, **kwargs):
+        from afc_auth.slugs import ensure_public_token
+        kwargs["update_fields"] = ensure_public_token(self, "a", update_fields=kwargs.get("update_fields"))
+        if kwargs["update_fields"] is None:
+            kwargs.pop("update_fields")
+        super().save(*args, **kwargs)
+
 
 class TrialInvite(models.Model):
     STATUS_CHOICES = [

@@ -1633,6 +1633,7 @@ def view_applications(request):
 
         data.append({
             "id": app.id,
+            "public_token": app.public_token or "",  # the address /player-markets/applications/<token>
             "player": player.username if player else None,
             "team": app.team.team_name if app.team else None,
             "post_id": app.recruitment_post.id,
@@ -1858,6 +1859,7 @@ def view_my_applications(request):
 
         data.append({
             "id": app.id,
+            "public_token": app.public_token or "",  # the address /player-markets/applications/<token>
             "player": player.username if player else None,
             "team": app.team.team_name if app.team else None,
             "post_id": app.recruitment_post.id,
@@ -2241,14 +2243,17 @@ def view_application_details(request):
     if not user:
         return Response({"message": "Invalid session."}, status=401)
 
-    application_id = request.query_params.get("application_id")
-
-    try:
-        app = RecruitmentApplication.objects.select_related(
-            "player", "team", "recruitment_post", "recruitment_post__country"
-        ).get(id=application_id)
-    except RecruitmentApplication.DoesNotExist:
+    # `ref` is the application's public token or a legacy numeric id (owner rule R22);
+    # `application_id` stays accepted for older callers. A legacy id answers the application PLUS
+    # `moved_to`, its token address, which the page follows with router.replace.
+    from afc_auth.slugs import resolve_by_token
+    ref = request.query_params.get("ref") or request.query_params.get("application_id")
+    resolved, moved_to_token = resolve_by_token(RecruitmentApplication, ref, "a")
+    if resolved is None:
         return Response({"message": "Application not found."}, status=404)
+    app = RecruitmentApplication.objects.select_related(
+        "player", "team", "recruitment_post", "recruitment_post__country"
+    ).get(pk=resolved.pk)
 
     if app.player != user and app.team.team_owner != user and not TeamMembers.objects.filter(
         team=app.team, member=user, management_role__in=['coach', 'manager']
@@ -2292,8 +2297,9 @@ def view_application_details(request):
     except Exception:
         pass
 
-    return Response({
+    body = {
         "id": app.id,
+        "public_token": app.public_token,
         "status": app.status,
         "applied_at": app.created_at,
         "updated_at": app.updated_at,
@@ -2330,12 +2336,15 @@ def view_application_details(request):
         },
 
         "chat_id": chat_id,
-    }, status=200)
+    }
+    if moved_to_token:
+        body["moved_to"] = f"/player-markets/applications/{moved_to_token}"
+    return Response(body, status=200)
 
 
 @api_view(["GET"])
 def get_post_details(request):
-    """Public endpoint â€” no auth required."""
+    """Public endpoint - no auth required."""
     post_id = request.query_params.get("post_id")
     if not post_id:
         return Response({"message": "post_id is required."}, status=400)
@@ -2817,6 +2826,7 @@ def view_all_trials_and_applications(request):
 
         data.append({
             "id": app.id,
+            "public_token": app.public_token or "",  # the address /player-markets/applications/<token>
             "status": app.status,
             "applied_at": app.created_at,
             "updated_at": app.updated_at,
