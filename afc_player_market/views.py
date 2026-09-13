@@ -765,7 +765,7 @@ def get_recruitment_posts(request):
 
             # Team fields
             "team": post.team.team_name if post.team else None,
-            "roles_needed": post.roles_needed,
+            "roles_needed": post.roles_needed or [],  # nullable column; a list field is never null on the wire
             "minimum_tier_required": post.minimum_tier_required,
             "commitment_type": post.commitment_type,
         })
@@ -807,7 +807,7 @@ def view_all_team_recruitment_post(request):
             "id": post.id,
             "team": post.team.team_name if post.team else None,
             "countries": list(post.countries.values("name", "code")),
-            "roles_needed": post.roles_needed,
+            "roles_needed": post.roles_needed or [],  # nullable column; a list field is never null on the wire
             "minimum_tier_required": post.minimum_tier_required,
             "commitment_type": post.commitment_type,
             "expiry": post.post_expiry_date,
@@ -2320,7 +2320,7 @@ def view_application_details(request):
 
         "post": {
             "id": app.recruitment_post.id,
-            "roles_needed": app.recruitment_post.roles_needed,
+            "roles_needed": app.recruitment_post.roles_needed or [],  # nullable column; never null on the wire
             "commitment_type": app.recruitment_post.commitment_type,
             "minimum_tier_required": app.recruitment_post.minimum_tier_required,
             "country": app.recruitment_post.country.name if app.recruitment_post.country else None,
@@ -2390,7 +2390,7 @@ def get_post_details(request):
         "team": post.team.team_name if post.team else None,
         # Absolute URL (API host) so the logo loads; bare .url is relative and 404s off the frontend origin.
         "team_logo": request.build_absolute_uri(post.team.team_logo.url) if post.team and post.team.team_logo else None,
-        "roles_needed": post.roles_needed,
+        "roles_needed": post.roles_needed or [],  # nullable column; a list field is never null on the wire
         "minimum_tier_required": post.minimum_tier_required,
         "commitment_type": post.commitment_type,
         "recruitment_criteria": post.recruitment_criteria,
@@ -2441,7 +2441,7 @@ def get_posts_related_to_me(request):
 
             # Team fields
             "team": post.team.team_name if post.team else None,
-            "roles_needed": post.roles_needed,
+            "roles_needed": post.roles_needed or [],  # nullable column; a list field is never null on the wire
             "minimum_tier_required": post.minimum_tier_required,
             "commitment_type": post.commitment_type,
             "recruitment_criteria": post.recruitment_criteria,
@@ -2853,7 +2853,7 @@ def view_all_trials_and_applications(request):
             "post": {
                 "id": app.recruitment_post.id,
                 "post_type": app.recruitment_post.post_type,
-                "roles_needed": app.recruitment_post.roles_needed,
+                "roles_needed": app.recruitment_post.roles_needed or [],  # nullable column; never null on the wire
                 "commitment_type": app.recruitment_post.commitment_type,
             },
         })
