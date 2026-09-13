@@ -3292,8 +3292,31 @@ def _competitor_in_active_stage(ev, tt, rc) -> bool:
     return base.filter(status="active").exclude(stage__stage_status="completed").exists()
 
 
+def _name_locking_events(events) -> str:
+    """The phrase a lock message drops into, so a player is told WHICH event is holding them.
+    Shared with the team roster lock (afc_team.views) through
+    afc_tournament_and_scrims.event_names, so both say it the same way."""
+    from afc_tournament_and_scrims.event_names import name_events
+    return name_events(events)
+
+
 def _has_active_event_registration(user) -> bool:
+    """True when `user` is currently signed up for an event that has not finished yet. Thin wrapper
+    over _identity_locking_events, kept because most callers only need the yes/no."""
+    return bool(_identity_locking_events(user))
+
+
+def _identity_locking_events(user):
     """
+    The events LOCKING this user's in-game name and Free Fire UID: the ones that have started,
+    are not over, still have them in an active stage, and have no roster-edit window open.
+    Empty list = the identity fields are editable.
+
+    Returns the EVENTS rather than a bool so every surface can say WHICH event is doing it (owner
+    2026-09-13: "it should also tell people what event they are locked into"). A player who is told
+    only "locked while you are registered for an event" cannot act on it, and on the same day the
+    owner chased a CANCELLED event that was locking nobody, precisely because no lock named itself.
+
     True when `user` is currently signed up for an event that has NOT finished yet
     (event_status "upcoming" or "ongoing", and not a draft).
 
@@ -3341,6 +3364,9 @@ def _has_active_event_registration(user) -> bool:
                 .filter(user=user, tournament_team__event__is_draft=False)
                 .exclude(status="rejected")
                 .exclude(tournament_team__status__in=["disqualified", "withdrawn", "left"])
+                # Waitlisted = queued, not playing: it locks nothing (owner 2026-09-13). Promotion
+                # clears is_waitlisted, and the lock comes back on its own.
+                .exclude(tournament_team__is_waitlisted=True)
                 # Open-roster events (owner 2026-09-11) never lock an identity: their results
                 # are entered per team, so no per-player row is ever matched against a name.
                 .exclude(tournament_team__event__open_roster=True)
@@ -3349,13 +3375,15 @@ def _has_active_event_registration(user) -> bool:
     for rc in (RegisteredCompetitors.objects
                .filter(user=user, event__is_draft=False)
                .exclude(status__in=["rejected", "withdrawn", "left", "disqualified"])
+               .exclude(is_waitlisted=True)  # queued, not playing (owner 2026-09-13)
                .select_related("event")):
         # Keep the RegisteredCompetitors (rc) so the stage-over check below can read the solo
         # entry's StageCompetitor rows (owner 2026-06-30).
         candidates.append((rc.event, None, rc))
 
+    locking, locking_ids = [], set()
     if not candidates:
-        return False
+        return locking
 
     # Events that already have an entered match result (one grouped query over all candidate events).
     cand_event_ids = {ev.event_id for ev, _, _ in candidates}
@@ -3390,8 +3418,12 @@ def _has_active_event_registration(user) -> bool:
         reg_open = bool(ev.registration_end_date) and today <= ev.registration_end_date
         if reg_open and ev.event_id not in events_with_results:
             continue
-        return True  # started, not released, still in an active stage, no window, reg closed/results -> LOCKED
-    return False
+        # started, not released, still in an active stage, no window, registration closed or results
+        # entered -> this event is locking them.
+        if ev.event_id not in locking_ids:
+            locking_ids.add(ev.event_id)
+            locking.append(ev)
+    return locking
 
 
 # ── LETTER AVATARS normalization (owner 2026-06-29) ─────────────────────────────────────────────
@@ -3482,14 +3514,19 @@ def edit_profile(request):
     # editable. The lock releases once all their events are completed (see
     # _has_active_event_registration). get_user_profile returns `identity_locked` so the frontend
     # disables + explains these two inputs; this is the authoritative server-side enforcement.
-    if _has_active_event_registration(user):
+    identity_lock_events = _identity_locking_events(user)
+    if identity_lock_events:
         new_ign = (in_game_name or "").strip()
         cur_ign = (user.username or "").strip()
         new_uid = (uid or "").strip()
         cur_uid = (user.uid or "").strip()
         if new_ign != cur_ign or new_uid != cur_uid:
             return Response(
-                {"message": "You can't change your in-game name or UID while you're registered for an event. You'll be able to edit them again once your events are over."},
+                {"message": "You can't change your in-game name or UID while you're playing "
+                            f"{_name_locking_events(identity_lock_events)}. You'll be able to edit "
+                            "them again once it is over.",
+                 "events": [{"event_id": e.event_id, "event_name": e.event_name, "slug": e.slug}
+                            for e in identity_lock_events]},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -3883,6 +3920,10 @@ def get_user_profile(request):
             _team_without_logo = _ot.team_name
             break
 
+    # Which events are locking the identity fields. Computed once: the payload reports both the
+    # boolean every existing reader uses and the events behind it (owner 2026-09-13).
+    _identity_lock_events = _identity_locking_events(user)
+
     return Response({
         "user_id": user.user_id,
         "full_name": user.full_name,
@@ -3908,7 +3949,13 @@ def get_user_profile(request):
         # (upcoming/ongoing). The frontend profile-edit form disables + explains the in-game name
         # and UID inputs when this is True; edit_profile enforces the same rule server-side. See
         # _has_active_event_registration. Releases once all their events are completed.
-        "identity_locked": _has_active_event_registration(user),
+        # identity_locked stays a boolean for every existing reader; identity_lock_events names
+        # the events behind it so the profile page can say which one (owner 2026-09-13).
+        "identity_locked": bool(_identity_lock_events),
+        "identity_lock_events": [
+            {"event_id": e.event_id, "event_name": e.event_name, "slug": e.slug}
+            for e in _identity_lock_events
+        ],
         # CURRENT team name from the live roster (resolved above), not the nonexistent user.team.
         "team": _current_team.team_name if _current_team else None,
         # Name of a team this user OWNS that has no logo (or null). Drives the team-logo half of the
