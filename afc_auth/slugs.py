@@ -146,21 +146,23 @@ def resolve_by_token(model, ref: str | None, prefix: str, field: str = "public_t
     return None, None
 
 
-def resolve_or_redirect(model, ref: str | None):
-    """(obj, moved_to): the object for a current slug (moved_to None), a retired slug or a legacy
-    numeric id (moved_to = the current slug), or (None, None) when nothing matches. Never raises."""
+def resolve_or_redirect(model, ref: str | None, field: str = "slug"):
+    """(obj, moved_to): the object for a current address (moved_to None), a retired address or a
+    legacy numeric id (moved_to = the current address), or (None, None) when nothing matches.
+    `field` is the address column: "slug" for the named things, "username" for a person (the
+    admin players page), and so on. Never raises."""
     if not ref:
         return None, None
     ref = str(ref).strip()
-    obj = model.objects.filter(slug=ref).first()
+    obj = model.objects.filter(**{field: ref}).first()
     if obj is not None:
         return obj, None
     if ref.isdigit():
         obj = model.objects.filter(pk=int(ref)).first()
         if obj is not None:
-            if not obj.slug:  # a row that predates slugs: give it one now, so the move has a target
-                obj.save(update_fields=["slug"])
-            return obj, obj.slug or None
+            if not getattr(obj, field):  # a row that predates slugs: give it one now, so the move has a target
+                obj.save(update_fields=[field])
+            return obj, getattr(obj, field) or None
         return None, None
     from afc_auth.models import SlugHistory
     hist = SlugHistory.objects.filter(app_label=model._meta.app_label, model=model._meta.model_name, old_slug=ref).first()
@@ -169,4 +171,4 @@ def resolve_or_redirect(model, ref: str | None):
     obj = model.objects.filter(pk=hist.object_pk).first()
     if obj is None:
         return None, None
-    return obj, obj.slug
+    return obj, getattr(obj, field)

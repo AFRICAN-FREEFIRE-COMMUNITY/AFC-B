@@ -698,6 +698,7 @@ def vendor_my_orders(request):
         # would be a decision rather than a tidy-up.
         results.append({
             "order_id": order.id,
+            "public_token": order.public_token or "",  # the address /vendor/orders/<token> (owner rule R22)
             "fulfilment_state": order.fulfilment_state,
             "ship_date": str(order.ship_date) if order.ship_date else None,
             "buyer_name": f"{order.first_name} {order.last_name}".strip(),
