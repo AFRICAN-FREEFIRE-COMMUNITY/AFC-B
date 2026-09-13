@@ -29,7 +29,7 @@ from .views import _broadcast_gate
 # (owner 2026-09-13). "" is a row that predates the check and is re-checked by
 # `manage.py check_esport_images`, not something to nag about here; "skipped" means the check
 # could not run, which is nobody's fault; "cleared" is a human who already said it is fine.
-NEEDS_REVIEW = {"no_face", "face_too_small"}
+NEEDS_REVIEW = {"no_face", "face_too_small", "not_a_person"}
 
 
 def _team_rows(event, request):
