@@ -11,5 +11,6 @@
   "events/live/push/": "the desktop live-capture agent pushes match results here",
   "sso/brand/": "AFC as an SSO provider: relying parties (v-ent.co) fetch the brand kit",
   "sso/logout/": "AFC as an SSO provider: relying parties send the browser here on sign-out",
-  "whatsapp/webhook/": "Meta WhatsApp Cloud API webhook (account recovery codes)"
+  "whatsapp/webhook/": "Meta WhatsApp Cloud API webhook (account recovery codes)",
+  "sso/": "the OAuth2 provider tree (oauth2_provider): relying parties such as v-ent.co, and the browser during Sign in with AFC"
 }
