@@ -61,7 +61,7 @@ class SlugSyncTests(TestCase):
         p.save()
         q = _product("Taken")
         self.assertEqual(q.slug, "taken-2", "the old address still points at the first product")
-        self.assertEqual(unique_slug(Product, "Taken"), "taken-2")
+        self.assertEqual(unique_slug(Product, "Taken"), "taken-3", "taken is retired, taken-2 is the second product")
 
 
 class ResolveTests(TestCase):
