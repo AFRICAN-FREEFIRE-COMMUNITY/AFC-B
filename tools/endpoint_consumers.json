@@ -1,0 +1,15 @@
+{
+  "_about": "Endpoints that have no caller in the frontend tree ON PURPOSE, each with who calls it. Read by tools/endpoint_callers.py (owner rule R45, 2026-09-13: an endpoint needs a caller). An entry that gains a frontend caller is reported as NAMED-BUT-CALLED and should be removed from here. Never add an entry to make the check pass: delete the endpoint or wire it instead.",
+  "auth/connect-discord/callback/": "OAuth callback: Discord sends the browser here, no frontend code builds the address",
+  "auth/discord/sso/callback/": "OAuth callback: Discord sign-in returns here",
+  "auth/vent/sso/callback/": "OAuth callback: v-ent.co sign-in returns here",
+  "events/capture/config/": "the desktop live-capture agent (FreeFire MatchResult log watcher), not the website",
+  "events/capture/context/": "the desktop live-capture agent",
+  "events/capture/releases/": "the desktop live-capture agent (update check)",
+  "events/capture/resolve/": "the desktop live-capture agent",
+  "events/capture/version/": "the desktop live-capture agent",
+  "events/live/push/": "the desktop live-capture agent pushes match results here",
+  "sso/brand/": "AFC as an SSO provider: relying parties (v-ent.co) fetch the brand kit",
+  "sso/logout/": "AFC as an SSO provider: relying parties send the browser here on sign-out",
+  "whatsapp/webhook/": "Meta WhatsApp Cloud API webhook (account recovery codes)"
+}

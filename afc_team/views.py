@@ -601,86 +601,6 @@ def invite_member(request):
 
 
 @api_view(["POST"])
-def review_invitation(request):
-    # Retrieve session token
-    session_token = request.headers.get("Authorization")
-
-    if not session_token:
-        return Response({'status': 'error', 'message': 'Authorization header is required'}, status=status.HTTP_400_BAD_REQUEST)
-
-    if not session_token.startswith("Bearer "):
-        return Response({'status': 'error', 'message': 'Invalid token format'}, status=status.HTTP_400_BAD_REQUEST)
-
-    session_token = session_token.split(" ")[1]
-    
-    invite_id = request.data.get("invite_id")
-    decision = request.data.get("decision")  # 'accepted' or 'declined'
-
-
-    if decision not in ['accepted', 'declined']:
-        return Response({'message': 'Invalid decision. Must be "accepted" or "declined".'}, status=status.HTTP_400_BAD_REQUEST)
-
-    try:
-        # Validate the user
-        user = validate_token(session_token)
-        if not user:
-            return Response(
-                {"message": "Invalid or expired session token."},
-                status=status.HTTP_401_UNAUTHORIZED
-            )
-
-        # Validate the invite
-        invite = Invite.objects.get(invite_id=invite_id, invitee=user)
-
-        if invite.status_of_invite == 'attended_to':
-            return Response({'message': 'This invitation has already been reviewed.'}, status=status.HTTP_400_BAD_REQUEST)
-
-        # Process the decision
-        if decision == 'accepted':
-            # Ensure the invitee is not part of another team
-            if TeamMembers.objects.filter(member=user).exists():
-                return Response({'message': 'You are already a member of a team.'}, status=status.HTTP_400_BAD_REQUEST)
-
-            # Total cap + 6-player cap + one-staff-each, all via the shared gate (owner 2026-08-04,
-            # item 33). This path previously checked only a hard-coded `>= 8` total, so it was the
-            # one door through which a team could end up with 7 or 8 PLAYERS.
-            incoming_role = invite.role_to_be_given_upon_acceptance or 'member'
-            capacity_error = _roster_capacity_error(invite.team, incoming_role)
-            if capacity_error:
-                return Response({'message': capacity_error}, status=status.HTTP_400_BAD_REQUEST)
-
-            # Add the user to the team in the role the INVITE named. This used to hard-code
-            # 'member' (+ a 'rusher' in-game role), which silently discarded a staff invite and
-            # turned every accepted invitee into a player. An in-game role is no longer assigned
-            # here: staff must not hold one at all, and a player's position is chosen deliberately
-            # on the Manage Roster page rather than defaulted to rusher.
-            TeamMembers.objects.create(team=invite.team, member=user, management_role=incoming_role)
-            invite.decision = 'accepted'
-        else:
-            invite.decision = 'declined'
-
-        # Mark the invite as attended
-        invite.status_of_invite = 'attended_to'
-        invite.save()
-
-        Report.objects.create(
-            team=invite.team,
-            user=user,
-            action="invitation_reviewed",
-            description=f"Invitation {invite.invite_id} was {decision} by {user.username}."
-        )
-
-        return Response({'message': f'Invitation {decision} successfully.'}, status=status.HTTP_200_OK)
-
-    except User.DoesNotExist:
-        return Response({'message': 'Invalid session token.'}, status=status.HTTP_401_UNAUTHORIZED)
-    except Invite.DoesNotExist:
-        return Response({'message': 'Invalid invitation ID or you are not authorized to review this invite.'}, status=status.HTTP_404_NOT_FOUND)
-    except Exception as e:
-        return Response({'message': 'An error occurred.', 'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-    
-
-@api_view(["POST"])
 def disband_team(request):
     # Retrieve session token
     session_token = request.headers.get("Authorization")
@@ -1028,65 +948,6 @@ def review_join_request(request):
         return Response({"message": "Invalid session token."}, status=status.HTTP_404_NOT_FOUND)
     except JoinRequest.DoesNotExist:
         return Response({"message": "Join request not found."}, status=status.HTTP_404_NOT_FOUND)
-    except Exception as e:
-        return Response({"message": "An error occurred.", "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-    
-
-@api_view(["GET"])
-def view_join_requests(request):
-    # Retrieve session token
-    session_token = request.headers.get("Authorization")
-
-    if not session_token:
-        return Response({'status': 'error', 'message': 'Authorization header is required'}, status=status.HTTP_400_BAD_REQUEST)
-
-    if not session_token.startswith("Bearer "):
-        return Response({'status': 'error', 'message': 'Invalid token format'}, status=status.HTTP_400_BAD_REQUEST)
-
-    session_token = session_token.split(" ")[1]
-
-    # Identify the logged-in user using the session token
-    user = validate_token(session_token)
-    if not user:
-        return Response(
-            {"message": "Invalid or expired session token."},
-            status=status.HTTP_401_UNAUTHORIZED
-        )
-
-    try:
-        # Find the team where the user is the owner.
-        # team_owner is a ForeignKey (related_name='owned_teams', models.py:25), so a user
-        # can own multiple teams -- .get() would raise MultipleObjectsReturned -> 500. Use
-        # .filter().first() (the repo convention, see lines 89/411/1277) + a guard instead.
-        team = Team.objects.filter(team_owner=user).first()
-        # Not the owner of any team? Fall back to the team this user is ON. An owner-granted
-        # can_manage_join_requests is useless without this: a captain has no owned team to resolve
-        # from, so the lookup above would 403 them before their capability was ever consulted.
-        if not team:
-            membership = TeamMembers.objects.filter(member=user).select_related("team").first()
-            team = membership.team if membership else None
-        if not team:
-            return Response({"message": "You do not own any team."}, status=status.HTTP_403_FORBIDDEN)
-        # Defaults to owner-only, so a plain member still gets a 403 here exactly as before - only
-        # the wording differs (afc_team/permissions.py).
-        if not team_role_can(user, team, "can_manage_join_requests"):
-            return Response({"message": "Your role on this team cannot review join requests."}, status=status.HTTP_403_FORBIDDEN)
-
-        # Fetch all pending join requests for the team
-        join_requests = JoinRequest.objects.filter(team=team, status_of_request="unattended_to")
-
-        requests_data = []
-        for req in join_requests:
-            requests_data.append({
-                "request_id": req.request_id,
-                "requester": req.requester.username,
-                "uid": req.requester.uid,
-                "message": req.message,
-                "request_date": req.created_at
-            })
-
-        return Response({"join_requests": requests_data}, status=status.HTTP_200_OK)
-
     except Exception as e:
         return Response({"message": "An error occurred.", "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
     
@@ -2391,60 +2252,6 @@ def get_user_current_team(request):
     
 
 @api_view(["POST"])
-def get_player_details(request):
-    # AUTH (2026-06-08): returns PII (user.email) + profile pics. Previously UNGATED - any
-    # caller could POST a player_ign and read that player's email. No current frontend caller
-    # (effectively orphaned), so we lock it to AFC staff (coarse role OR any granular UserRoles
-    # row). Mirrors the gate added to afc_player.get_player_details.
-    auth = request.headers.get("Authorization")
-    if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid token."}, status=status.HTTP_400_BAD_REQUEST)
-    caller = validate_token(auth.split(" ")[1])
-    if not caller:
-        return Response({"message": "Invalid session."}, status=status.HTTP_401_UNAUTHORIZED)
-    if caller.role not in ("admin", "moderator", "support") and not caller.userroles.exists():
-        return Response({"message": "Unauthorized."}, status=status.HTTP_403_FORBIDDEN)
-
-    player_ign = request.data.get("player_ign")
-
-    if not player_ign:
-        return Response({"message": "Player IGN is required."}, status=status.HTTP_400_BAD_REQUEST)
-
-    try:
-        user = User.objects.get(username=player_ign)
-    except User.DoesNotExist:
-        return Response({"message": "Player not found."}, status=status.HTTP_404_NOT_FOUND)
-    
-    # canonical_profile, NOT .get(): dup UserProfile rows exist in prod and .get()
-    # raises MultipleObjectsReturned there (500 instead of the player card, 2026-07-06).
-    from afc_auth.models import canonical_profile
-    profile = canonical_profile(user)
-    if profile is None:
-        return Response({"message": "User profile not found."}, status=status.HTTP_404_NOT_FOUND)
-    
-    
-    team_member = TeamMembers.objects.select_related("team").get(member=user)
-    team = team_member.team
-
-    player_data = {
-        "username": user.username,
-        "email": user.email,
-        "country": user.country,
-        "profile_picture": request.build_absolute_uri(profile.profile_pic.url) if profile.profile_pic else None,
-        "esports_picture": request.build_absolute_uri(profile.esports_pic.url) if profile.esports_pic else None,
-        "uid": user.uid,
-        "team_id": team.team_id,
-        "team_name": team.team_name,
-        "team_logo": request.build_absolute_uri(team.team_logo.url) if team.team_logo else None,
-        "management_role": team_member.management_role,
-        "in_game_role": team_member.in_game_role,
-        "join_date": team_member.join_date,
-    }
-
-    return Response({"player": player_data}, status=status.HTTP_200_OK)
-
-
-@api_view(["POST"])
 def exit_team(request):
     # Retrieve session token
     session_token = request.headers.get("Authorization")
@@ -3258,15 +3065,6 @@ def kick_team_member(request):
         return Response({"error": str(e)}, status=500)
 
 
-@api_view(["GET"])
-def get_number_of_teams(request):
-    try:
-        total_teams = Team.objects.count()
-        return Response({"total_teams": total_teams}, status=status.HTTP_200_OK)
-    except Exception as e:
-        return Response({"message": "An error occurred.", "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-
 @api_view(["POST"])
 def join_team(request):
     team_id = request.data.get("team_id")
@@ -3341,102 +3139,6 @@ def join_team(request):
     return Response({"message": f"You have successfully joined the team {team.team_name}.",
                      "assigned_role": join_role}, status=status.HTTP_200_OK)
 
-
-
-@api_view(["GET"])
-def get_total_teams_count(request):
-    try:
-        total_teams = Team.objects.count()
-        return Response({"total_teams": total_teams}, status=status.HTTP_200_OK)
-    except Exception as e:
-        return Response({"message": "An error occurred.", "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-    
-
-@api_view(["GET"])
-def get_current_active_teams_count(request):
-    try:
-        active_teams = Team.objects.filter(is_banned=False).count()
-        return Response({"active_teams": active_teams}, status=status.HTTP_200_OK)
-    except Exception as e:
-        return Response({"message": "An error occurred.", "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-    
-
-@api_view(["GET"])
-def get_banned_teams_count(request):
-    try:
-        banned_teams = Team.objects.filter(is_banned=True).count()
-        return Response({"banned_teams": banned_teams}, status=status.HTTP_200_OK)
-    except Exception as e:
-        return Response({"message": "An error occurred.", "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-    
-
-@api_view(["GET"])
-def get_new_teams_count(request):
-    try:
-        seven_days_ago = timezone.now() - timedelta(days=7)
-        new_teams = Team.objects.filter(creation_date__gte=seven_days_ago).count()
-        return Response({"new_teams_last_7_days": new_teams}, status=status.HTTP_200_OK)
-    except Exception as e:
-        return Response({"message": "An error occurred.", "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-    
-
-@api_view(["GET"])
-def get_average_members_per_team(request):
-    try:
-        total_teams = Team.objects.count()
-        if total_teams == 0:
-            average_members = 0
-        else:
-            total_members = TeamMembers.objects.count()
-            average_members = total_members / total_teams
-
-        return Response({"average_members_per_team": average_members}, status=status.HTTP_200_OK)
-    except Exception as e:
-        return Response({"message": "An error occurred.", "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-    
-
-@api_view(["GET"])
-def get_team_with_highest_wins(request):
-    top = (
-        TournamentTeamMatchStats.objects
-        .filter(placement=1)
-        .values(team_id=F("tournament_team__team__team_id"),
-                team_name=F("tournament_team__team__team_name"))
-        # Count by the model's real PK "team_stats_id" - TournamentTeamMatchStats has no auto "id" field (explicit AutoField PK), matching Count("team_stats_id") used elsewhere in this file
-        .annotate(total_wins=Count("team_stats_id"))
-        .order_by("-total_wins", "team_name")
-        .first()
-    )
-
-    if not top:
-        return Response({"message": "No team win records found."}, status=status.HTTP_404_NOT_FOUND)
-
-    return Response({"team_with_highest_wins": top}, status=status.HTTP_200_OK)
-
-    
-
-@api_view(["GET"])
-def get_top_earning_teams(request):
-    # total_earnings (owner 2026-06-24 fix): Team.total_earnings has NO writer, so ordering by it
-    # ranked every team at 0 (arbitrary order). Derive earnings LIVE via an annotation = the Sum of
-    # every EventPrizePayout across the team's TournamentTeam rows (same source as get_team_details),
-    # then order + return that. Teams with no payout sort last at 0.
-    # Reverse path: Team -> TournamentTeam (related_name "tournament_entries") -> EventPrizePayout
-    # (no related_name on its tournament_team FK, so the default reverse query name is "eventprizepayout").
-    qs = (
-        Team.objects.annotate(
-            earnings=Coalesce(
-                Sum("tournament_entries__eventprizepayout__amount"),
-                Value(0, output_field=DecimalField(max_digits=15, decimal_places=2)),
-            )
-        )
-        .order_by("-earnings")[:5]
-    )
-    data = [
-        {"team_id": t.team_id, "team_name": t.team_name, "total_earnings": str(t.earnings)}
-        for t in qs
-    ]
-    return Response({"top_earning_teams": data}, status=status.HTTP_200_OK)
 
 
 def _is_admin(user):
