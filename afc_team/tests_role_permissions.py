@@ -37,7 +37,10 @@ from afc_tournament_and_scrims.views import _user_can_register_team
 INVITE = "/team/invite-member/"
 GENERATE_LINK = "/team/generate-invite-link/"
 REVIEW_JOIN = "/team/review-join-request/"
-VIEW_JOIN = "/team/view-join-requests/"
+# view-join-requests/ (the viewer's own team, GET) was removed 2026-09-13 as an endpoint no screen
+# called (owner rule R45); the screen uses view-join-requests-for-a-team/ (POST {team_id}), which
+# holds the same can_manage_join_requests gate.
+VIEW_JOIN = "/team/view-join-requests-for-a-team/"
 EDIT_TEAM = "/team/edit-team/"
 MANAGE_ROSTER = "/team/manage-team-roster/"
 KICK = "/team/kick-team-member/"
@@ -134,7 +137,7 @@ class TeamPermissionTestBase(TestCase):
         return resp.status_code != 403, resp
 
     def _try_view_join_requests(self, actor):
-        resp = self.client.get(VIEW_JOIN, **self._auth(actor))
+        resp = self.client.post(VIEW_JOIN, data={"team_id": self.team.team_id}, **self._auth(actor))
         return resp.status_code != 403, resp
 
     def _try_edit_profile(self, actor):
@@ -268,7 +271,7 @@ class GrantingAndRevokingChangesWhatARoleCanDo(TeamPermissionTestBase):
         self._set(self.owner, {"manager": {"can_manage_join_requests": True}})
 
         self.assertTrue(self._try_review_join_request(manager)[0])
-        resp = self.client.get(VIEW_JOIN, **self._auth(manager))
+        resp = self.client.post(VIEW_JOIN, data={"team_id": self.team.team_id}, **self._auth(manager))
         self.assertEqual(resp.status_code, 200, resp.content)
 
     def test_granting_remove_lets_a_manager_actually_kick_somebody(self):
