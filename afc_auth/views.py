@@ -4152,13 +4152,18 @@ def upload_esport_image(request):
     # ALWAYS saves. Junk images stay catchable by admins on the broadcast media-audit
     # page (afc_tournament_and_scrims/views_media_audit.py), which is the human
     # backstop with the flag/owner-notify/force-replace tools.
-    from .face_check import image_has_human_face
-    has_face, why = image_has_human_face(esport_image)
-    if not has_face:
+    # The verdict is RECORDED as of 2026-09-13 instead of only logged: it lands on the profile and
+    # the per-event media audit lists the flagged players, so junk stops being invisible without
+    # anybody being locked out. The detector is YuNet now (see face_check.py for the measurement
+    # that replaced Haar); it still cannot tell whether the face is THIS player's, so a flag is a
+    # queue for a human, never a refusal.
+    from .face_check import check_esport_image
+    check = check_esport_image(esport_image)
+    if check["verdict"] != "ok":
         import logging
         logging.getLogger("afc_auth").warning(
-            "upload_esport_image: no face detected (%s) for user %s - saving anyway (advisory gate)",
-            why, user.pk,
+            "upload_esport_image: %s (%s, face %.3f) for user %s - saving anyway, flagged for review",
+            check["verdict"], check["detector"], check["face_share"], user.pk,
         )
 
     # canonical_profile, NOT get_or_create: dup UserProfile rows exist in prod, where
@@ -4167,7 +4172,11 @@ def upload_esport_image(request):
     # made uploads look like they silently failed (2026-07-06).
     profile = canonical_profile(user, create=True)
     profile.esports_pic = esport_image  # replace-only: the old file reference is overwritten
-    profile.save(update_fields=["esports_pic"])  # column-scoped write (see edit_profile note)
+    # A REPLACEMENT is a new picture, so the verdict is the new picture's - including when an admin
+    # had cleared the old one. Written in the same column-scoped save (see edit_profile note).
+    profile.esports_pic_check = check["verdict"]
+    profile.esports_pic_checked_at = timezone.now()
+    profile.save(update_fields=["esports_pic", "esports_pic_check", "esports_pic_checked_at"])
 
     return Response({
         "status": "ok",

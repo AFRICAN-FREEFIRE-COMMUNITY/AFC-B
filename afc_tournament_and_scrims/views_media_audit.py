@@ -18,11 +18,18 @@
 #
 # CONSUMED BY: components/overlay/MediaAuditCard.tsx inside EventOverlayStudio.
 
+from django.utils import timezone
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 
 from .models import Event, EventMediaOptOut, MediaFlag, TournamentTeam, TournamentTeamMember
 from .views import _broadcast_gate
+
+# What the esport-image picture check has to say before a human should look at the picture
+# (owner 2026-09-13). "" is a row that predates the check and is re-checked by
+# `manage.py check_esport_images`, not something to nag about here; "skipped" means the check
+# could not run, which is nobody's fault; "cleared" is a human who already said it is fine.
+NEEDS_REVIEW = {"no_face", "face_too_small"}
 
 
 def _team_rows(event, request):
@@ -62,10 +69,24 @@ def _player_rows(event, request):
         f.user_id: f for f in
         MediaFlag.objects.filter(event=event, kind="esports_image", resolved=False)
     }
+    members = list(
+        TournamentTeamMember.objects.filter(tournament_team__event=event)
+        .select_related("user", "tournament_team__team")
+    )
+    # What the picture check said about each player's esport image (owner 2026-09-13). Fetched in
+    # ONE query for the whole roster rather than per row: a 64-player event would otherwise make 64
+    # profile queries inside the loop. canonical_profile's rule applies here too - duplicate
+    # UserProfile rows exist in prod, so the LOWEST profile_id wins, matching every other reader.
+    checks = {}
+    from afc_auth.models import UserProfile
+    for pid, uid, verdict in (
+        UserProfile.objects.filter(user_id__in=[m.user_id for m in members if m.user_id])
+        .order_by("-profile_id")
+        .values_list("profile_id", "user_id", "esports_pic_check")
+    ):
+        checks[uid] = verdict or ""
     rows, seen = [], set()
-    for m in TournamentTeamMember.objects.filter(
-        tournament_team__event=event
-    ).select_related("user", "tournament_team__team"):
+    for m in members:
         u = m.user
         if u is None or u.user_id in seen:
             continue
@@ -73,6 +94,7 @@ def _player_rows(event, request):
         # esports_pic lives on UserProfile, not User (bug fix 2026-07-02).
         from afc_auth.models import esports_pic_url
         img_url = esports_pic_url(u, request)
+        check = checks.get(u.user_id, "")
         rows.append({
             "user_id": u.user_id,
             "username": u.username,
@@ -82,6 +104,11 @@ def _player_rows(event, request):
             "image_url": img_url,
             "suppressed": u.user_id in opt_user_ids,
             "flagged": u.user_id in flags,
+            # The picture check (afc_auth/face_check.py): "" never checked, "ok" fine,
+            # "cleared" a human said it is fine, anything else is for review. An image that is
+            # not there cannot be wrong about its content, so it never reads as needing review.
+            "image_check": check,
+            "image_needs_review": bool(img_url) and check in NEEDS_REVIEW,
         })
     return rows
 
@@ -97,9 +124,59 @@ def media_audit(request, event_id):
     return Response({
         "teams": teams,
         "players": players,
+        # How many rostered players carry an esport image the check flagged (owner 2026-09-13):
+        # logos, in-game screenshots and wallpapers used to sit here unseen until somebody built
+        # the broadcast graphics and noticed.
+        "players_image_needs_review": sum(1 for p in players if p.get("image_needs_review")),
         "teams_missing_logo": sum(1 for t in teams if not t["has_logo"]),
         "players_missing_image": sum(1 for p in players if not p["has_image"]),
     }, status=200)
+
+
+@api_view(["POST"])
+def media_image_check_clear(request, event_id):
+    """
+    POST events/<event_id>/media-image-check/clear/  { user_id }
+
+    "This picture is fine." The picture check flagged a player's esport image and a human looked at
+    it and disagreed - which happens, because a face detector cannot tell a photograph of the player
+    from a photograph of anybody else, and it reads a cartoon logo as a face.
+
+    The profile keeps "cleared", and `manage.py check_esport_images` never overwrites that, so the
+    same picture is never put back in the queue. Uploading a NEW picture replaces the verdict with
+    the new picture's, which is the point: a clear is about the image, not about the player.
+
+    AUTH: the same broadcast gate as the rest of this module (AFC event admin, or an organizer of
+    the event's owning org with can_upload_results). Response 200 {"message", "user_id"}.
+    CONSUMED BY components/overlay/MediaAuditCard.tsx ("Looks fine").
+    """
+    event, err = _broadcast_gate(request, event_id)
+    if err:
+        return err
+    from afc_auth.models import canonical_profile
+    try:
+        profile = canonical_profile(request.data.get("user_id"), create=False)
+    except (ValueError, TypeError):
+        return Response({"message": "Player not found."}, status=404)
+    if profile is None:
+        return Response({"message": "Player not found."}, status=404)
+    # Organizer scope: a non-staff caller may only clear a player who is IN this event, the same
+    # rule media_upload applies to a replacement.
+    from afc_auth.views import is_stats_admin, validate_token
+    auth = request.headers.get("Authorization", "")
+    viewer = validate_token(auth.split(" ")[1]) if " " in auth else None
+    if viewer is None:
+        return Response({"message": "Invalid or expired session token."}, status=401)
+    if not is_stats_admin(viewer):
+        from .models import RegisteredCompetitors, TournamentTeamMember
+        uid = profile.user_id
+        if not (RegisteredCompetitors.objects.filter(event=event, user_id=uid).exists()
+                or TournamentTeamMember.objects.filter(tournament_team__event=event, user_id=uid).exists()):
+            return Response({"message": "That player is not in this event."}, status=403)
+    profile.esports_pic_check = "cleared"
+    profile.esports_pic_checked_at = timezone.now()
+    profile.save(update_fields=["esports_pic_check", "esports_pic_checked_at"])
+    return Response({"message": "Marked as fine.", "user_id": profile.user_id}, status=200)
 
 
 @api_view(["POST"])
@@ -272,11 +349,13 @@ def media_upload(request, event_id):
             if not (RegisteredCompetitors.objects.filter(event=event, user_id=_uid).exists()
                     or TournamentTeamMember.objects.filter(tournament_team__event=event, user_id=_uid).exists()):
                 return Response({"message": "That player is not in this event."}, status=403)
+        # The verdict is recorded either way (owner 2026-09-13) so a forced placeholder still
+        # shows up in the review queue instead of looking clean.
+        from afc_auth.face_check import check_esport_image
+        check = check_esport_image(upload)
         force = str(request.data.get("force") or "").strip().lower() in ("1", "true", "yes")
         if not force:
-            from afc_auth.face_check import image_has_human_face
-            has_face, _reason = image_has_human_face(upload)
-            if not has_face:
+            if check["verdict"] not in ("ok", "skipped"):
                 return Response({
                     "message": "This image has no detectable face. A player esport image should be a "
                                "photo of the player, not a logo. Re-upload with force to override.",
@@ -291,7 +370,9 @@ def media_upload(request, event_id):
         except (ValueError, TypeError):
             return Response({"message": "Player not found."}, status=404)
         profile.esports_pic = upload
-        profile.save(update_fields=["esports_pic"])  # column-scoped write
+        profile.esports_pic_check = check["verdict"]
+        profile.esports_pic_checked_at = timezone.now()
+        profile.save(update_fields=["esports_pic", "esports_pic_check", "esports_pic_checked_at"])
         url = request.build_absolute_uri(profile.esports_pic.url)
 
     return Response({"message": "Media updated.", "url": url})
