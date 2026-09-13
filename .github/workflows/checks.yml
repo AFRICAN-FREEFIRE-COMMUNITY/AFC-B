@@ -21,3 +21,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Known-bug checker
         run: python3 tools/check_known_bugs.py
+      # An endpoint needs a caller (owner rule R45): the self-test proves the url enumeration and
+      # the matcher on fixtures. The full match against the frontend tree runs where both trees
+      # exist (the frontend's check-all, the pre-commit hook), since this job has no frontend.
+      - name: endpoint-callers self-test
+        run: python3 tools/endpoint_callers.py --self-test
