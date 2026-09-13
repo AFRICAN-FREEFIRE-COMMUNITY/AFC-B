@@ -48,6 +48,11 @@ PyOTP==2.10.0
 python-crontab==3.3.0
 python-dateutil==2.9.0.post0
 python-dotenv==1.2.2
+# RapidFuzz: the OCR name matcher (afc_ocr/services/matching.py) scores every read name with it and
+# degrades to exact-only matching without it. It was never on the AWS box, so production has been
+# matching names exact-only since 2026-08-03; found 2026-09-12 by the 15 matcher tests that fail
+# without it. Same pin as requirements.txt.
+RapidFuzz==3.13.0
 redis==8.0.0
 requests==2.34.2
 rsa==4.9.1

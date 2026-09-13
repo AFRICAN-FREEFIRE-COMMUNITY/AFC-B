@@ -1552,10 +1552,21 @@ def ocr_extract(request, lb_id):
     image_bytes = screenshot.read()
     mime_type = screenshot.content_type or "image/jpeg"
 
+    # Own-key OCR (owner 2026-09-12): the leaderboard's organization pays for an escalated read,
+    # or spends its free read, or the upload is refused with the connect-your-key sentence.
+    from afc_ocr.services.extract import OcrKeyRequired
+    from afc_ocr.services.providers import ProviderError
+    from afc_ocr.views import key_required_response
     try:
         raw_output, _engine = extract.extract_rows(
             image_bytes, mime_type, event_type, prompt_kind=prompt_kind,
+            org=lb.organization, actor=user, leaderboard=lb,
         )
+    except OcrKeyRequired as exc:
+        return key_required_response(exc)
+    except ProviderError as exc:
+        logger.warning("OCR provider refused for leaderboard %s: %s", lb_id, exc.message)
+        return Response({"message": exc.message, "code": "ocr_provider_error"}, status=503)
     except Exception:
         # A10: keep the real failure (which can carry the Gemini key / internal detail) in the server
         # log only; hand the client a generic, safe message. Same pattern as afc_ocr.views.
@@ -1573,7 +1584,11 @@ def ocr_extract(request, lb_id):
 
     # draft_id is a stateless correlation id for the FE only (we never persist an OCRSession here - 
     # the standalone flow has no Match to bind one to). The FE echoes it back on apply for tracing.
-    return Response({"draft_id": str(uuid.uuid4()), "format": lb.format, "rows": rows})
+    return Response({
+        "draft_id": str(uuid.uuid4()), "format": lb.format, "rows": rows,
+        # Whose key paid ("org" / "afc_free" / "afc"), so the FE can say when the free read went.
+        "paid_by": (raw_output or {}).get("_paid_by", ""),
+    })
 
 
 @api_view(["POST"])
@@ -1882,6 +1897,11 @@ def ocr_job_run(request, lb_id, job_id):
         return jnf
     if job.status == "processing":
         return Response({"job": _serialize_job(job)})  # already running; let the FE keep polling
+    # Own-key OCR (owner 2026-09-12): say no NOW, in words, rather than queue a job that fails.
+    from afc_ocr.services.extract import OcrKeyRequired, key_available
+    from afc_ocr.views import key_required_response
+    if not key_available(lb.organization, user):
+        return key_required_response(OcrKeyRequired(lb.organization))
     job.status = "pending"
     job.error = ""
     job.save(update_fields=["status", "error", "updated_at"])
@@ -1907,6 +1927,11 @@ def ocr_run_all(request, lb_id):
         return nf
     if not can_manage_standalone_lb(user, lb):
         return Response({"message": "You do not have permission to edit this leaderboard."}, status=403)
+    # Own-key OCR (owner 2026-09-12): the same up-front answer as run/ above.
+    from afc_ocr.services.extract import OcrKeyRequired, key_available
+    from afc_ocr.views import key_required_response
+    if not key_available(lb.organization, user):
+        return key_required_response(OcrKeyRequired(lb.organization))
 
     to_run = list(lb.ocr_jobs.filter(status__in=["pending", "failed"]))
     for j in to_run:
