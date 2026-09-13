@@ -431,6 +431,16 @@ class Coupon(models.Model):
     used_count = models.PositiveIntegerField(default=0)
     description = models.TextField(blank=True)
 
+    def save(self, *args, **kwargs):
+        # The admin address /a/shop/coupons/<slug> follows the code (owner rule R22, 2026-09-13);
+        # a code change retires the old slug into SlugHistory so the old link still opens. Before
+        # this hook nothing ever set `slug`, so a second coupon would have hit the unique index.
+        from afc_auth.slugs import sync_slug
+        kwargs["update_fields"] = sync_slug(self, "code", kwargs.get("update_fields"))
+        if kwargs["update_fields"] is None:
+            kwargs.pop("update_fields")
+        super().save(*args, **kwargs)
+
     def is_valid_now(self):
         if not self.is_active:
             return False

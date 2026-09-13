@@ -4855,6 +4855,29 @@ def _record_event_view(request, event, user):
         pass  # view tracking is best-effort; never break the response
 
 
+@api_view(["GET"])
+def resolve_event(request):
+    """
+    GET events/resolve/?ref=<slug or legacy id> -> {event_id, slug, event_name}.
+
+    The admin and organizer pages that work on one event (leaderboards, overlays) are addressed
+    by the event's slug (owner rule R22) but every endpoint they call takes the numeric event_id.
+    This answers the id for a slug, and the slug for an old numeric link so the page can rewrite
+    its address. Consumed by lib/eventRef.ts useEventRef on the frontend. Any signed-in user:
+    the same three fields are on every public event page.
+    """
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+    if not validate_token(auth.split(" ")[1]):
+        return Response({"message": "Invalid or expired session token."}, status=401)
+    from afc_auth.slugs import resolve_or_redirect
+    event, _moved = resolve_or_redirect(Event, request.GET.get("ref"))
+    if event is None:
+        return Response({"message": "Event not found."}, status=404)
+    return Response({"event_id": event.event_id, "slug": event.slug, "event_name": event.event_name}, status=200)
+
+
 @api_view(["POST"])
 def get_event_details(request):
     user = None
