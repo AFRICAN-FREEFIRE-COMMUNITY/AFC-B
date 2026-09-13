@@ -26,3 +26,8 @@ jobs:
       # exist (the frontend's check-all, the pre-commit hook), since this job has no frontend.
       - name: endpoint-callers self-test
         run: python3 tools/endpoint_callers.py --self-test
+      # A capability that must exist on both sides (owner rule R27). The backend-only rows are
+      # checked here; the frontend rows are skipped (never passed) without the frontend tree and
+      # run in the frontend's check-all where both trees exist.
+      - name: parity table (self-test, then the backend rows)
+        run: python3 tools/check_parity.py --self-test && python3 tools/check_parity.py

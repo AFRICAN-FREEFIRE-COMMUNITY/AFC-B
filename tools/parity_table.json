@@ -1,0 +1,88 @@
+{
+  "_about": "Capabilities that must exist on BOTH sides of a pair (owner rule R27, 2026-09-13: fix the model, not the reported record). Read by tools/check_parity.py: each side is a file plus a pattern that proves the capability is there; a row with one side missing fails. Pairs: the EVENT flow vs the STANDALONE leaderboard flow (backend), and the ADMIN vs the ORGANIZER leaderboard surface (frontend, `frontend:` paths). Add a row whenever something is built for one side alone.",
+  "rows": [
+    {
+      "capability": "OCR read on the organization's own key (or its free read): the extractor is told whose event it is",
+      "sides": {
+        "events": {"file": "afc_ocr/views.py", "pattern": "_extract_with_router\\(data, mime, aliases, team_notes, event_type,\\s*org="},
+        "standalone": {"file": "afc_leaderboard/views.py", "pattern": "extract\\.extract_rows\\([\\s\\S]{0,200}org=lb\\.organization"}
+      }
+    },
+    {
+      "capability": "OCR key gate: no key and no free read answers 402 with the connect-your-key sentence",
+      "sides": {
+        "events": {"file": "afc_ocr/views.py", "pattern": "except OcrKeyRequired as exc:\\s*\\n\\s*return key_required_response\\(exc\\)"},
+        "standalone": {"file": "afc_leaderboard/views.py", "pattern": "except OcrKeyRequired as exc:\\s*\\n\\s*return key_required_response\\(exc\\)"},
+        "bulk per-map upload": {"file": "afc_tournament_and_scrims/views.py", "pattern": "except OcrKeyRequired as exc:\\s*\\n\\s*return key_required_response\\(exc\\)"}
+      }
+    },
+    {
+      "capability": "OCR provider refusal answers 503 with the provider's own words under code ocr_provider_error",
+      "sides": {
+        "events": {"file": "afc_ocr/views.py", "pattern": "\"code\": \"ocr_provider_error\""},
+        "standalone": {"file": "afc_leaderboard/views.py", "pattern": "\"code\": \"ocr_provider_error\""},
+        "bulk per-map upload": {"file": "afc_tournament_and_scrims/views.py", "pattern": "\"code\": \"ocr_provider_error\""}
+      }
+    },
+    {
+      "capability": "OCR response says whose key paid (paid_by), so the screen can say when the free read went",
+      "sides": {
+        "events": {"file": "afc_ocr/views.py", "pattern": "\"paid_by\":"},
+        "standalone": {"file": "afc_leaderboard/views.py", "pattern": "\"paid_by\":"},
+        "bulk per-map upload": {"file": "afc_tournament_and_scrims/views.py", "pattern": "\"paid_by\": paid_by"}
+      }
+    },
+    {
+      "capability": "Results from a match-log file (the in-game export), not only screenshots",
+      "sides": {
+        "events": {"file": "afc_tournament_and_scrims/urls.py", "pattern": "path\\(\"upload-team-match-result/\""},
+        "standalone": {"file": "afc_leaderboard/urls.py", "pattern": "results-file/"}
+      }
+    },
+    {
+      "capability": "Manual results entry per match",
+      "sides": {
+        "events": {"file": "afc_tournament_and_scrims/urls.py", "pattern": "enter-team-match-result-manual/"},
+        "standalone": {"file": "afc_leaderboard/urls.py", "pattern": "standalone/matches/<int:mid>/results/"}
+      }
+    },
+    {
+      "capability": "The OCR screenshot step (pick a map, drop screenshots, review) on the leaderboard editor",
+      "sides": {
+        "admin": {"file": "frontend:app/(a)/a/leaderboards/[id]/edit/page.tsx", "pattern": "import \\{ MapSelectionStep \\}"},
+        "organizer": {"file": "frontend:app/(organizer)/organizer/events/[slug]/leaderboard/page.tsx", "pattern": "import \\{ MapSelectionStep \\}"}
+      }
+    },
+    {
+      "capability": "The 3D room / result file upload step on the leaderboard editor",
+      "sides": {
+        "admin": {"file": "frontend:app/(a)/a/leaderboards/[id]/edit/page.tsx", "pattern": "import \\{ FileUploadStep \\}"},
+        "organizer": {"file": "frontend:app/(organizer)/organizer/events/[slug]/leaderboard/page.tsx", "pattern": "import \\{ FileUploadStep \\}"}
+      }
+    },
+    {
+      "capability": "The OCR key gate toast (402 -> one sentence and a Connect a key button) on every upload path",
+      "sides": {
+        "map step": {"file": "frontend:app/(a)/a/leaderboards/_components/MapSelectionStep.tsx", "pattern": "toastOcrError\\("},
+        "stored image step": {"file": "frontend:app/(a)/a/leaderboards/_components/ImageUploadStep.tsx", "pattern": "toastOcrError\\("},
+        "whole-group bulk panel": {"file": "frontend:app/(a)/a/leaderboards/_components/GroupBulkUploadPanel.tsx", "pattern": "toastOcrError\\("},
+        "standalone batch dialog": {"file": "frontend:app/(a)/a/leaderboards/standalone/create/_components/OcrBatchDialog.tsx", "pattern": "toastOcrError\\("}
+      }
+    },
+    {
+      "capability": "The free-read notice after a read on AFC's allowance, on the synchronous upload paths",
+      "sides": {
+        "map step": {"file": "frontend:app/(a)/a/leaderboards/_components/MapSelectionStep.tsx", "pattern": "toastFreeReadSpent\\("},
+        "stored image step": {"file": "frontend:app/(a)/a/leaderboards/_components/ImageUploadStep.tsx", "pattern": "toastFreeReadSpent\\("},
+        "whole-group bulk panel": {"file": "frontend:app/(a)/a/leaderboards/_components/GroupBulkUploadPanel.tsx", "pattern": "toastFreeReadSpent\\("}
+      }
+    },
+    {
+      "capability": "Dates on the leaderboard editor through the timing model, not the device locale",
+      "sides": {
+        "admin": {"file": "frontend:components/leaderboards/MatchEvidencePanel.tsx", "pattern": "formatLocalTime\\("},
+        "organizer": {"file": "frontend:app/(organizer)/organizer/metrics/page.tsx", "pattern": "formatLocalTime\\("}
+      }
+    }
+  ]
+}
