@@ -4604,14 +4604,12 @@ def get_admin_info(request):
 
 
 @api_view(["GET"])
-def get_all_roles(request):
-    roles = Roles.objects.all()
-    roles_data = [{"role_id": role.role_id, "role_name": role.role_name, "description": role.description} for role in roles]
-    return Response({"roles": roles_data}, status=status.HTTP_200_OK)
-
-
-@api_view(["GET"])
 def get_all_user_and_user_roles(request):
+    # Admin only (owner rules R25/R26, found 2026-09-13 by afc_auth/tests_signed_out.py: this
+    # answered a stranger with a 200).
+    admin, err = require_admin(request)
+    if err:
+        return err
     # Admin Settings -> users + their granular roles (frontend app/(a)/a/settings/page.tsx).
     # PERFORMANCE: previously ran a UserRoles query PLUS a lazy ur.role load PER user inside the
     # loop -> ~10k+ queries for 6,316 users (~6s). Now: one grouped UserRoles fetch with the role
@@ -5206,6 +5204,11 @@ def delete_role(request):
 
 @api_view(["GET"])
 def get_all_roles(request):
+    # Admin only (owner rules R25/R26, found 2026-09-13 by afc_auth/tests_signed_out.py: this
+    # answered a stranger with a 200).
+    admin, err = require_admin(request)
+    if err:
+        return err
     roles = Roles.objects.all()
     roles_data = [{"role_id": role.role_id, "role_name": role.role_name, "description": role.description} for role in roles]
     return Response({"roles": roles_data}, status=status.HTTP_200_OK)
@@ -5223,6 +5226,11 @@ def get_admin_history(request):
     admin_user is a NULLABLE ForeignKey: reading .username off it directly crashes on a row whose
     admin was deleted, which is a real shape in this table.
     """
+    # Admin only (owner rules R25/R26, found 2026-09-13 by afc_auth/tests_signed_out.py: this
+    # answered a stranger with a 200).
+    admin, err = require_admin(request)
+    if err:
+        return err
     histories = list(AdminHistory.objects.select_related("admin_user").order_by("-timestamp"))
     names = event_names([h.description for h in histories])
     history_data = []
@@ -6481,6 +6489,11 @@ def discord_sso_exchange(request):
 
 @api_view(["GET"])
 def get_all_login_history(request):
+    # Admin only (owner rules R25/R26, found 2026-09-13 by afc_auth/tests_signed_out.py: this
+    # answered a stranger with a 200).
+    admin, err = require_admin(request)
+    if err:
+        return err
     # select_related('user') avoids an N+1 on history.user.username per row.
     histories = LoginHistory.objects.select_related("user").all().order_by('-created_at')
     history_data = []
@@ -7475,6 +7488,11 @@ def get_admin_activities(request):
     Same shape and the same plain-English treatment as get_admin_history above; see
     afc_auth/history_text.py for why the raw stored text is not what a reader should be shown.
     """
+    # Admin only (owner rules R25/R26, found 2026-09-13 by afc_auth/tests_signed_out.py: this
+    # answered a stranger with a 200).
+    admin, err = require_admin(request)
+    if err:
+        return err
     activities = list(
         AdminHistory.objects.select_related("admin_user").order_by("-timestamp")[:100]
     )
