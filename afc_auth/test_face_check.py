@@ -40,11 +40,27 @@ def _upload(name="shot.jpg", body=None):
 class VerdictShapeTests(TestCase):
     """What check_esport_image answers, for inputs whose verdict is not a matter of eyesight."""
 
-    def test_a_flat_colour_has_no_face(self):
+    def test_a_flat_colour_is_certainly_not_a_person(self):
+        # Nothing face-like at any threshold: the one verdict a caller may refuse over.
         out = face_check.check_esport_image(BytesIO(_jpeg()))
-        self.assertEqual(out["verdict"], face_check.NO_FACE)
+        self.assertEqual(out["verdict"], face_check.NOT_A_PERSON)
+        self.assertTrue(face_check.is_certainly_not_a_person(out["verdict"]))
         self.assertEqual(out["face_share"], 0.0)
         self.assertIn(out["detector"], ("yunet", "haar"))
+
+    def test_something_face_like_but_unsure_is_flagged_not_refused(self):
+        # The gap between "sure there is nobody" and "cannot see a face here" is the whole point:
+        # the worst real photographs on the site score 0.198 and up, logos score under 0.15.
+        self.assertLess(face_check.NOT_A_PERSON_SCORE, 0.198)
+        with patch.object(face_check, "_best_candidate", return_value=0.30):
+            out = face_check.check_esport_image(BytesIO(_jpeg()))
+        self.assertEqual(out["verdict"], face_check.NO_FACE)
+        self.assertFalse(face_check.is_certainly_not_a_person(out["verdict"]))
+
+    def test_a_second_look_that_fails_never_refuses(self):
+        with patch.object(face_check, "_best_candidate", side_effect=RuntimeError("boom")):
+            out = face_check.check_esport_image(BytesIO(_jpeg()))
+        self.assertEqual(out["verdict"], face_check.NO_FACE)
 
     def test_the_bundled_yunet_model_is_there_and_is_used(self):
         # The model is committed on purpose: the check must work on a box with no internet egress.
@@ -104,13 +120,51 @@ class UploadRecordsTheVerdictTests(TestCase):
     def _post(self, body=None):
         return self.client.post("/auth/upload-esport-image/", {"esport_image": _upload(body=body)}, **self.auth)
 
+    def _flagged(self, verdict=face_check.NO_FACE):
+        """Patch the check to the given verdict: the detector's eyesight is measured elsewhere, this
+        class is about what the endpoint DOES with each answer."""
+        return patch("afc_auth.face_check.check_esport_image",
+                     return_value={"verdict": verdict, "reason": verdict, "confidence": 0.3,
+                                   "face_share": 0.0, "detector": "yunet"})
+
+    def test_a_picture_with_nobody_in_it_is_REFUSED_with_a_clear_error(self):
+        r = self._post()  # a flat colour: nothing face-like at any threshold
+        self.assertEqual(r.status_code, 400, r.content[:200])
+        body = r.json()
+        self.assertEqual(body["code"], "not_a_person")
+        self.assertIn("photo of a person", body["message"])
+        self.assertIn("photo of yourself", body["message"])
+        # nothing was saved, and no verdict was recorded against them
+        profile = canonical_profile(self.user)
+        self.assertFalse(profile and profile.esports_pic)
+
     def test_a_flagged_image_still_uploads_and_is_recorded(self):
-        r = self._post()  # a flat colour: no face in it
+        with self._flagged():
+            r = self._post()
         self.assertEqual(r.status_code, 200, r.content[:200])
         profile = canonical_profile(self.user)
         self.assertEqual(profile.esports_pic_check, face_check.NO_FACE)
         self.assertIsNotNone(profile.esports_pic_checked_at)
         self.assertTrue(profile.esports_pic)
+
+    def test_a_flagged_upload_warns_about_the_ban_rule(self):
+        # Owner 2026-09-13: "for the ones it flags it should warn them that they can get banned for
+        # uploading images that are not their faces."
+        for verdict in (face_check.NO_FACE, face_check.FACE_TOO_SMALL):
+            with self._flagged(verdict):
+                r = self._post()
+            body = r.json()
+            self.assertEqual(r.status_code, 200, body)
+            self.assertEqual(body["code"], verdict)
+            self.assertIn("banned", body["warning"])
+            self.assertIn("review", body["warning"])
+
+    def test_a_clean_upload_carries_no_warning(self):
+        with self._flagged("ok"):
+            r = self._post()
+        self.assertEqual(r.status_code, 200)
+        self.assertNotIn("warning", r.json())
+        self.assertNotIn("code", r.json())
 
     def test_a_good_image_is_recorded_ok(self):
         with patch("afc_auth.face_check.check_esport_image",
@@ -125,7 +179,8 @@ class UploadRecordsTheVerdictTests(TestCase):
         profile = canonical_profile(self.user, create=True)
         profile.esports_pic_check = "cleared"
         profile.save(update_fields=["esports_pic_check"])
-        self.assertEqual(self._post().status_code, 200)
+        with self._flagged():
+            self.assertEqual(self._post().status_code, 200)
         profile.refresh_from_db()
         self.assertEqual(profile.esports_pic_check, face_check.NO_FACE)
 

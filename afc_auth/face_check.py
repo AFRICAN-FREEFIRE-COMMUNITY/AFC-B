@@ -29,7 +29,26 @@
 #   afc_auth/assets/) both misses fewer real players AND catches more junk. Haar stays
 #   as the fallback for an environment where the model or the API is missing.
 #
-# WHAT IT CANNOT DO, AND WHY THE VERDICT ONLY FLAGS
+# WHEN IT REFUSES (owner 2026-09-13: "a proper error if someone uploads an image that its very
+# sure is not a human")
+#   Refusing is reserved for the one case the detector can be SURE about: it looked again with the
+#   threshold wound right down and still found nothing face-like. The line is drawn from what the
+#   1,499 esport images already on the site actually score:
+#       every real bust shot on the 121-image roster        >= 0.867
+#       the worst real photos anybody has uploaded (a dark
+#       indoor selfie, a blurry one, a face behind a filter) 0.198 .. 0.352
+#       logos, in-game screenshots, anime, black cards       0.000 .. 0.150 (52 of the 1,499)
+#   NOT_A_PERSON_SCORE is 0.15: under the worst real photograph measured, over the whole logo and
+#   screenshot band. It refuses about 3.5% of what is on the site and, on this evidence, no real
+#   person except one screenshot of a nearly black selfie - which the message tells them to retake.
+#
+#   It is deliberately CAUTIOUS. Raising it to 0.45 would refuse 116 instead of 52 (it would catch
+#   the anime wallpapers and the stock football photo too), but it would also refuse about five real
+#   photographs, and false rejections are precisely what killed the first version of this gate on
+#   2026-07-06. Everything between this line and a clean pass still SAVES, is queued for a human,
+#   and is answered with the ban warning.
+#
+# WHAT IT CANNOT DO, AND WHY EVERYTHING ELSE ONLY FLAGS
 #   A face detector answers "is there a face here", never "is this YOU" and never
 #   "is this a photograph". On the same 2026-09-13 measurement YuNet still called an
 #   esport logo with a cartoon soldier, an anime avatar and a photo of somebody
@@ -74,6 +93,13 @@ OK = "ok"
 NO_FACE = "no_face"
 FACE_TOO_SMALL = "face_too_small"
 SKIPPED = "skipped"
+# The only verdict a caller may refuse an upload over: a second, far more forgiving look found
+# nothing face-like at all. See the measurement in the header.
+NOT_A_PERSON = "not_a_person"
+
+# The forgiving second look, and the score under which "there is no person here" is safe to assert.
+_YUNET_LOW_SCORE = 0.1
+NOT_A_PERSON_SCORE = 0.15
 
 
 def check_esport_image(image_file) -> dict:
@@ -83,7 +109,7 @@ def check_esport_image(image_file) -> dict:
     image_file : a Django UploadedFile / file-like with .read(), OR raw bytes.
 
     Returns a dict, always, never raises:
-        verdict    "ok" | "no_face" | "face_too_small" | "skipped"
+        verdict    "ok" | "not_a_person" | "no_face" | "face_too_small" | "skipped"
         reason     short machine tag, e.g. "no_face", "skipped:no_cv2"
         confidence detector score for the biggest face (0.0 when none)
         face_share biggest face height / image height (0.0 when none)
@@ -134,7 +160,13 @@ def _check(image_file) -> dict:
             return _result(SKIPPED, "skipped:no_detector")
 
         if not found:
-            return _result(NO_FACE, NO_FACE, detector=detector)
+            # Sure, or merely unsure? Look again with the threshold wound down: a dark selfie or a
+            # face behind a filter still scores something, a logo or a screenshot scores nothing.
+            # Only the second answer is safe to refuse an upload over.
+            best = _best_candidate(cv2, img) if detector == "yunet" else 1.0
+            if best < NOT_A_PERSON_SCORE:
+                return _result(NOT_A_PERSON, NOT_A_PERSON, best, 0.0, detector)
+            return _result(NO_FACE, NO_FACE, best, 0.0, detector)
         if share < MIN_FACE_SHARE:
             # A person IS in the picture, but as scenery: a full-body shot on a photo
             # set, a figure in a poster. Not the bust an organizer can put in a graphic.
@@ -143,6 +175,22 @@ def _check(image_file) -> dict:
     except Exception as exc:  # pragma: no cover - any detector hiccup => skip, never block
         logger.warning("face_check: detection error (%s); skipping", exc)
         return _result(SKIPPED, "skipped:error")
+
+
+def _best_candidate(cv2, img) -> float:
+    """The best face-candidate score when the detector is being generous. 0.0 when there is nothing
+    face-like in the picture at all. Only called when the normal pass found nothing, so it costs a
+    second detection on the images that are already the interesting ones."""
+    try:
+        h, w = img.shape[:2]
+        det = cv2.FaceDetectorYN.create(str(MODEL_PATH), "", (w, h), _YUNET_LOW_SCORE, _YUNET_NMS, 5000)
+        _rc, faces = det.detect(img)
+        if faces is None or len(faces) == 0:
+            return 0.0
+        return float(max(f[14] for f in faces))
+    except Exception as exc:  # pragma: no cover - never let the second look break the first
+        logger.warning("face_check: second look failed (%s); treating as unsure", exc)
+        return 1.0  # unsure -> flag, never refuse
 
 
 def image_has_human_face(image_file) -> tuple[bool, str]:
@@ -154,6 +202,12 @@ def image_has_human_face(image_file) -> tuple[bool, str]:
     """
     out = check_esport_image(image_file)
     return out["verdict"] in (OK, SKIPPED), out["reason"]
+
+
+def is_certainly_not_a_person(verdict: str) -> bool:
+    """Whether a verdict is the one a caller may REFUSE an upload over. One place, so a second
+    caller cannot quietly start refusing on a softer signal."""
+    return verdict == NOT_A_PERSON
 
 
 # ── internals ────────────────────────────────────────────────────────────────
