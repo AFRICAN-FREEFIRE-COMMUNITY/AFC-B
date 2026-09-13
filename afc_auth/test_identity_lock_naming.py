@@ -53,6 +53,15 @@ class IdentityLockNamesTheEventTests(TestCase):
                                         team_creator=self.user)
         self.client = Client()
 
+    def _try_rename(self, new_name):
+        """edit_profile is a full-form save: full_name + in_game_name + email are all required, so a
+        rename posts the whole form with only the in-game name changed."""
+        return self.client.post(
+            "/auth/edit-profile/",
+            {"full_name": self.user.full_name, "email": self.user.email, "in_game_name": new_name},
+            content_type="application/json", **self.auth,
+        )
+
     def _roster(self, event, waitlisted=False):
         tt = TournamentTeam.objects.create(event=event, team=self.team, status="active",
                                            is_waitlisted=waitlisted)
@@ -80,8 +89,7 @@ class IdentityLockNamesTheEventTests(TestCase):
     def test_the_refusal_names_the_event(self):
         event = _event("FFWS AFRICA FINALS")
         self._roster(event)
-        r = self.client.post("/auth/edit-profile/", {"in_game_name": "NewName"},
-                             content_type="application/json", **self.auth)
+        r = self._try_rename("NewName")
         self.assertEqual(r.status_code, 400, r.content[:300])
         body = r.json()
         self.assertIn("FFWS AFRICA FINALS", body["message"])
@@ -121,8 +129,7 @@ class IdentityLockNamesTheEventTests(TestCase):
         self._roster(b)
         names = {e.event_name for e in _identity_locking_events(self.user)}
         self.assertEqual(names, {"CUP A", "CUP B"})
-        r = self.client.post("/auth/edit-profile/", {"in_game_name": "NewName"},
-                             content_type="application/json", **self.auth)
+        r = self._try_rename("NewName")
         self.assertEqual(r.status_code, 400)
         self.assertIn("CUP A", r.json()["message"])
         self.assertIn("CUP B", r.json()["message"])
