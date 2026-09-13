@@ -51,8 +51,6 @@ from .vendors import (
 # explicitly (not via *) so the onboarding/status + admin payout-ledger endpoints are
 # clearly sourced.
 from .connect import (
-    vendor_connect_onboard,
-    vendor_connect_status,
     admin_list_vendor_payouts,
     admin_release_owed_payouts,
 )
@@ -210,8 +208,6 @@ urlpatterns = [
     # admin payouts ledger surface (require_admin) lists payouts + releases owed ones
     # once a vendor is onboarded. The actual transfer is fired automatically from the
     # shipped -> completed transition (fulfilment.order_mark_completed).
-    path("connect/onboard/", vendor_connect_onboard, name="vendor_connect_onboard"),
-    path("connect/status/", vendor_connect_status, name="vendor_connect_status"),
     path("admin/payouts/", admin_list_vendor_payouts, name="admin_list_vendor_payouts"),
     path("admin/payouts/release/", admin_release_owed_payouts, name="admin_release_owed_payouts"),
 
