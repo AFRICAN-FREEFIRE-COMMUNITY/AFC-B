@@ -2137,6 +2137,7 @@ def get_my_orders(request):
     for order in orders:
         data.append({
             "order_id": order.id,
+            "public_token": order.public_token or "",  # the address /orders/<token> (owner rule R22)
             "status": order.status,
             "subtotal": str(order.subtotal),
             "total": str(order.total),
@@ -2171,20 +2172,21 @@ def get_order_details(request):
     if not user:
         return Response({"message": "Invalid or expired session token."}, status=401)
 
-    order_id = request.GET.get("order_id")
-    if not order_id:
-        return Response({"message": "order_id is required."}, status=400)
-
-    try:
-        order = Order.objects.select_related("user").prefetch_related("items__variant__product").get(
-            id=order_id,
-            user=user
-        )
-    except Order.DoesNotExist:
+    # `ref` is the order's public token or a legacy numeric id (owner rule R22); `order_id` stays
+    # accepted for older callers. A legacy id answers the order PLUS `moved_to`, its token address,
+    # which the page follows with router.replace. Always the caller's own order.
+    from afc_auth.slugs import resolve_by_token
+    ref = request.GET.get("ref") or request.GET.get("order_id")
+    if not ref:
+        return Response({"message": "ref is required."}, status=400)
+    resolved, moved_to_token = resolve_by_token(Order, ref, "o", user=user)
+    if resolved is None:
         return Response({"message": "Order not found."}, status=404)
+    order = Order.objects.select_related("user").prefetch_related("items__variant__product").get(pk=resolved.pk)
 
     data = {
         "order_id": order.id,
+        "public_token": order.public_token,
         "status": order.status,
         "subtotal": str(order.subtotal),
         "total": str(order.total),
@@ -2205,7 +2207,10 @@ def get_order_details(request):
         } for item in order.items.all()]
     }
 
-    return Response({"order": data}, status=200)
+    body = {"order": data}
+    if moved_to_token:
+        body["moved_to"] = f"/orders/{moved_to_token}"
+    return Response(body, status=200)
 
 
 
