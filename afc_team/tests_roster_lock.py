@@ -76,6 +76,7 @@ class RosterLockTests(TestCase):
         self.assertEqual(r.status_code, 403, r.content[:200])
         body = r.json()
         self.assertIn("V-ENT X GROW INVITATIONALS", body["message"])
+        self.assertIn("that roster, or the event is over", body["message"])  # one event: singular
         self.assertEqual([e["event_id"] for e in body["events"]], [live.event_id])
         self.assertTrue(TeamMembers.objects.filter(team=self.team, member=self.player).exists())
 
@@ -142,6 +143,10 @@ class RosterLockTests(TestCase):
         self.assertIn("CUP A", phrase)
         self.assertIn("CUP B", phrase)
         self.assertTrue(phrase.startswith("the events "))
+        # The rest of the refusal follows the count (walk 2026-09-14 caught "once it is over" here).
+        r = self.client.post("/team/exit-team/", {}, content_type="application/json", **self.player_auth)
+        self.assertEqual(r.status_code, 403, r.content[:200])
+        self.assertIn("those rosters, or those events are over", r.json()["message"])
 
     def test_the_phrase_stays_a_sentence_when_there_are_many(self):
         class _E:

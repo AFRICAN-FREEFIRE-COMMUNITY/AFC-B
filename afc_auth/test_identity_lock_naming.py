@@ -93,6 +93,7 @@ class IdentityLockNamesTheEventTests(TestCase):
         self.assertEqual(r.status_code, 400, r.content[:300])
         body = r.json()
         self.assertIn("FFWS AFRICA FINALS", body["message"])
+        self.assertIn("once it is over", body["message"])  # one event: singular
         self.assertEqual([e["event_id"] for e in body["events"]], [event.event_id])
         self.user.refresh_from_db()
         self.assertEqual(self.user.username, "lockedplayer")  # unchanged
@@ -133,6 +134,8 @@ class IdentityLockNamesTheEventTests(TestCase):
         self.assertEqual(r.status_code, 400)
         self.assertIn("CUP A", r.json()["message"])
         self.assertIn("CUP B", r.json()["message"])
+        # Several events: the sentence goes plural (the walk of 2026-09-14 caught "once it is over").
+        self.assertIn("once they are over", r.json()["message"])
 
 
 class AdminPanelNamesTheEventTests(TestCase):

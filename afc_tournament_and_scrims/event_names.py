@@ -29,6 +29,12 @@ def name_events(events) -> str:
     return f"the events {names[0]}, {names[1]} and {len(names) - 2} more"
 
 
+def one_or_many(events, one: str, many: str) -> str:
+    """The singular or plural wording for the rest of a sentence about `events`, so a refusal that
+    names three events does not go on to say "once IT is over". `events` is a list."""
+    return one if len(events) == 1 else many
+
+
 def event_refs(events):
     """The same events as the small dicts a response body carries: [{event_id, event_name, slug}].
     The slug is the event's address (R22), so a screen that wants to link the name already can."""
