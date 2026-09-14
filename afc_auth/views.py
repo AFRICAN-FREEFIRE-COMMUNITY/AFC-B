@@ -4652,6 +4652,20 @@ def contact_us(request):
                          "code": "contact_email_invalid"},
                         status=status.HTTP_400_BAD_REQUEST)
 
+    # STORE IT FIRST (owner 2026-09-14). This endpoint is kept for any client still posting to
+    # the old address; the support desk is the thing that actually keeps the message, its files and
+    # its replies. Imported lazily so afc_auth does not depend on afc_support at import time.
+    ticket = None
+    try:
+        from afc_support.views import create_ticket_from_contact
+        from afc_support import notify as support_notify
+        ticket, _msg, _rejected = create_ticket_from_contact(name, email, message)
+        lang = (getattr(ticket.user, "language", "") or "en") if ticket.user_id else "en"
+        support_notify.email_ticket_received(ticket, lang=lang)
+        support_notify.dm_ticket_received(ticket)
+    except Exception as exc:  # never lose the email path because the desk had a problem
+        print(f"contact_us: could not open a support ticket: {exc}")
+
     # The visitor's own words, escaped: this is untrusted input on its way into an HTML email.
     # <br> keeps their line breaks, which the old plain-text body lost.
     safe_name = html_escape(name)
@@ -4682,7 +4696,9 @@ def contact_us(request):
                          "code": "contact_send_failed"},
                         status=status.HTTP_502_BAD_GATEWAY)
 
-    return Response({"message": "Your message has been sent successfully."}, status=status.HTTP_200_OK)
+    return Response({"message": "Your message has been sent successfully.",
+                     "ticket_number": ticket.ticket_number if ticket else ""},
+                    status=status.HTTP_200_OK)
 
 
 @api_view(["POST"])
