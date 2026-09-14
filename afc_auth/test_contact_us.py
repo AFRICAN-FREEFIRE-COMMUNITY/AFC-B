@@ -22,8 +22,9 @@ class ContactUsSendsTheMessageTests(TestCase):
         self.client = Client()
         self.sent = []
         p = patch("afc_auth.views.send_email",
-                  side_effect=lambda to, subject, body, language="en", prelocalized=False: (
-                      self.sent.append((to, subject, body)) or True))
+                  side_effect=lambda to, subject, body, language="en", prelocalized=False,
+                                    reply_to=None, from_name=None: (
+                      self.sent.append((to, subject, body, reply_to, from_name)) or True))
         p.start()
         self.addCleanup(p.stop)
 
@@ -37,7 +38,7 @@ class ContactUsSendsTheMessageTests(TestCase):
         r = self._post()
         self.assertEqual(r.status_code, 200, r.content[:200])
         self.assertEqual(len(self.sent), 1)
-        to, subject, mail_body = self.sent[0]
+        to, subject, mail_body = self.sent[0][:3]
         self.assertIn("does this actually work?", mail_body)
         self.assertNotIn("Valid email", mail_body)  # the bug, named
         self.assertIn("ladilawalt@gmail.com", mail_body)
@@ -57,12 +58,12 @@ class ContactUsSendsTheMessageTests(TestCase):
 
     def test_line_breaks_survive(self):
         self._post(message="line one\nline two")
-        _to, _s, mail_body = self.sent[0]
+        _to, _s, mail_body = self.sent[0][:3]
         self.assertIn("line one<br>line two", mail_body)
 
     def test_html_in_the_message_is_escaped_not_rendered(self):
         self._post(message="<script>alert(1)</script>")
-        _to, _s, mail_body = self.sent[0]
+        _to, _s, mail_body = self.sent[0][:3]
         self.assertNotIn("<script>", mail_body)
         self.assertIn("&lt;script&gt;", mail_body)
 
@@ -89,3 +90,20 @@ class ContactUsSendsTheMessageTests(TestCase):
             r = self._post()
         self.assertEqual(r.status_code, 502)
         self.assertEqual(r.json()["code"], "contact_send_failed")
+
+    def test_reply_goes_to_the_person_who_wrote(self):
+        # Owner 2026-09-14: "isnt this not supposed to show that it comes from their own email".
+        # From must stay the AFC mailbox (SPF/DMARC), so the person's name rides in the From
+        # display and their address in Reply-To, which is what the Reply button follows.
+        self._post()
+        _to, _subject, _body, reply_to, from_name = self.sent[0]
+        self.assertEqual(reply_to, "ladilawalt@gmail.com")
+        self.assertEqual(from_name, "Layo via AFC Contact Us")
+
+    def test_a_header_cannot_be_injected_through_the_name(self):
+        # A carriage return inside a typed name would start a new header; header_safe folds
+        # every run of whitespace into one space and caps the length.
+        from afc_auth.views import header_safe
+        injected = "Layo" + chr(13) + chr(10) + "Bcc: someone@example.com"
+        self.assertEqual(header_safe(injected), "Layo Bcc: someone@example.com")
+        self.assertEqual(len(header_safe("x" * 500)), 200)
