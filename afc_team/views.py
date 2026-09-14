@@ -2,6 +2,9 @@ from datetime import timedelta, timedelta
 from django.utils import timezone
 import uuid
 from collections import Counter
+# Singular or plural wording for a lock naming its events. event_names imports nothing, so a
+# module-level import here cannot cycle.
+from afc_tournament_and_scrims.event_names import one_or_many
 from django.shortcuts import render, get_object_or_404
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
@@ -2313,8 +2316,8 @@ def exit_team(request):
         if blockers:
             return Response(
                 {"message": f"You are on your team's roster for {_name_events(blockers)}. "
-                            "You can leave once the event organizer removes you from that roster, "
-                            "or the event is over.",
+                            "You can leave once the event organizer removes you from "
+                            f"{one_or_many(blockers, 'that roster, or the event is', 'those rosters, or those events are')} over.",
                  "events": _event_refs(blockers)},
                 status=status.HTTP_403_FORBIDDEN,
             )
@@ -3076,7 +3079,8 @@ def kick_team_member(request):
         if blockers:
             return Response(
                 {"error": f"This player is on the team's roster for {_name_events(blockers)}. "
-                          "Ask the event organizer to remove them from that roster first, then you "
+                          "Ask the event organizer to remove them from "
+                          f"{one_or_many(blockers, 'that roster', 'those rosters')} first, then you "
                           "can remove them from the team.",
                  "events": _event_refs(blockers)},
                 status=status.HTTP_403_FORBIDDEN,

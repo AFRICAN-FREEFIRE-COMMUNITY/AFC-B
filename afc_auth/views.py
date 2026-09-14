@@ -3,6 +3,9 @@ import json
 
 from django.shortcuts import redirect, render
 from django.contrib.auth import authenticate
+# Singular or plural wording for the identity lock refusal. event_names imports nothing, so a
+# module-level import here cannot cycle.
+from afc_tournament_and_scrims.event_names import one_or_many
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
@@ -3524,7 +3527,8 @@ def edit_profile(request):
             return Response(
                 {"message": "You can't change your in-game name or UID while you're playing "
                             f"{_name_locking_events(identity_lock_events)}. You'll be able to edit "
-                            "them again once it is over.",
+                            "them again once "
+                            f"{one_or_many(identity_lock_events, 'it is', 'they are')} over.",
                  "events": [{"event_id": e.event_id, "event_name": e.event_name, "slug": e.slug}
                             for e in identity_lock_events]},
                 status=status.HTTP_400_BAD_REQUEST,
