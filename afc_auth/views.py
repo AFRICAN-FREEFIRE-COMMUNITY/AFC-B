@@ -4633,7 +4633,11 @@ def contact_us(request):
     safe_email = html_escape(email)
     safe_message = html_escape(message).replace("\n", "<br>")
 
-    support_email = 'africanfreefirecommunity1@gmail.com'
+    # Where support mail lands. Owner 2026-09-14: it was hardcoded to a gmail nobody watches, so
+    # this is the address the Contact page itself publishes, and SUPPORT_EMAIL on the server can
+    # move it without a deploy. AFC's own domain is already allowed through send_email's recipient
+    # check (see ALLOWED_EMAIL_DOMAINS, which carries a scar from exactly that trap).
+    support_email = os.getenv("SUPPORT_EMAIL", "info@africanfreefirecommunity.com")
     email_subject = f"Contact Us Form Submission from {name}"
     email_body = (
         f"<p><b>Name:</b> {safe_name}</p>"

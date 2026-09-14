@@ -11,6 +11,7 @@ says, and the endpoint must not report success when the send was refused.
 
 Run: ../backend/.venv/Scripts/python.exe manage.py test afc_auth.test_contact_us
 """
+import os
 from unittest.mock import patch
 
 from django.test import Client, TestCase
@@ -41,6 +42,18 @@ class ContactUsSendsTheMessageTests(TestCase):
         self.assertNotIn("Valid email", mail_body)  # the bug, named
         self.assertIn("ladilawalt@gmail.com", mail_body)
         self.assertIn("Layo", subject)
+
+    def test_it_goes_to_the_published_support_address(self):
+        # Owner 2026-09-14: "i did not get the mail, instead it sent to
+        # africanfreefirecommunity1@gmail.com". The Contact page publishes info@, so that is where
+        # contact mail lands unless the server names another address.
+        self._post()
+        self.assertEqual(self.sent[0][0], "info@africanfreefirecommunity.com")
+
+    def test_the_server_can_move_the_support_address(self):
+        with patch.dict(os.environ, {"SUPPORT_EMAIL": "support@africanfreefirecommunity.com"}):
+            self._post()
+        self.assertEqual(self.sent[0][0], "support@africanfreefirecommunity.com")
 
     def test_line_breaks_survive(self):
         self._post(message="line one\nline two")
