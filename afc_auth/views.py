@@ -152,6 +152,18 @@ def _is_invited_address(email: str) -> bool:
         return False
 
 
+def header_safe(value: str, limit: int = 200) -> str:
+    """One line, fit to go in an email header.
+
+    A subject or a From display name built from something a stranger typed is a header-injection
+    hole: a carriage return in the middle of it starts a new header. The legacy email.Message does
+    not sanitise what you assign, so this does. Also caps the length, since a header is not a place
+    for an essay.
+    """
+    text = " ".join((value or "").split())
+    return text[:limit]
+
+
 def is_valid_email(email: str) -> tuple[bool, str]:
     if not email:
         return False, "Email is required."
@@ -369,11 +381,13 @@ def generate_session_token(length=16):
 import smtplib
 import os
 import traceback
+from email.utils import formataddr
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
 
-def send_email(to_address, subject, html_body, language="en", prelocalized=False):
+def send_email(to_address, subject, html_body, language="en", prelocalized=False,
+               reply_to=None, from_name=None):
     """Send a branded HTML email over Office365 SMTP. THE single email chokepoint for the whole
     backend: afc_auth account mail, afc_shop order mail, afc_sponsors / afc_tournament_and_scrims /
     afc_player_market notifications, and the broadcast sender all go through here.
@@ -386,6 +400,12 @@ def send_email(to_address, subject, html_body, language="en", prelocalized=False
     Centralizing the translation here means callers only have to thread the language through; they do
     NOT have to translate their own copy. Per the project failure-safe rule, any translation error
     returns the ORIGINAL English text and never blocks the send.
+
+    reply_to / from_name (owner 2026-09-14): for mail AFC sends ABOUT somebody, such as the Contact
+    Us form. From always stays the authenticated AFC mailbox, because that is what SPF and DMARC
+    cover; from_name puts the human's name in the inbox line ("Layo via AFC Contact Us") and
+    reply_to sends the Reply button to them instead of back to ourselves. Both are run through
+    header_safe first: they carry text a stranger typed.
 
     prelocalized (owner 2026-07-13): when True, the caller has ALREADY produced the subject + body in
     the recipient's language from the HAND-AUTHORED catalog (afc_auth.email_i18n), so we SKIP the
@@ -438,9 +458,14 @@ def send_email(to_address, subject, html_body, language="en", prelocalized=False
 
     try:
         msg = MIMEMultipart()
-        msg['From'] = from_address
+        # formataddr quotes and encodes the display name properly; header_safe has already taken
+        # any newline out of it, so no header can be injected through a typed name.
+        msg['From'] = formataddr((header_safe(from_name), from_address)) if from_name else from_address
         msg['To'] = to_address
-        msg['Subject'] = subject
+        msg['Subject'] = header_safe(subject, limit=400)
+        if reply_to:
+            # Where the Reply button goes. Only set when the caller names somebody.
+            msg['Reply-To'] = header_safe(reply_to, limit=320)
 
         msg.attach(MIMEText(html_body, 'html'))
 
@@ -4647,7 +4672,9 @@ def contact_us(request):
     )
     # prelocalized: this is a staff-facing copy of what a visitor wrote. Machine-translating it
     # would rewrite their words before anybody at AFC read them.
-    sent = send_email(support_email, email_subject, email_body, prelocalized=True)
+    # From stays info@ (SPF/DMARC), the display name says who wrote, and Reply goes to them.
+    sent = send_email(support_email, email_subject, email_body, prelocalized=True,
+                      reply_to=email, from_name=f"{name} via AFC Contact Us")
     if not sent:
         # Never tell somebody their message arrived when the send was refused. That is how a
         # support queue silently empties.
