@@ -81,6 +81,10 @@ INSTALLED_APPS = [
     # app's views module is already around 27,000 lines.
     'afc_results_import',
     'afc_organizers',
+    # The support desk (owner 2026-09-14): every message anybody sends AFC, with its files,
+    # its replies in both directions and its own audit. Replaces a contact form that stored
+    # nothing and emailed the words "Valid email." See afc_support/models.py.
+    'afc_support',
     'afc_partner_api',
     'afc_sponsors',
     # Group draw (owner 2026-09-12): teams turn over a sealed card to pick their own group for a

@@ -336,6 +336,18 @@ SUBJECTS = {
         "fr": "Votre équipe est invitée à {event}",
         "pt": "A sua equipa foi convidada para {event}",
     },
+
+    # -- afc_support: the desk --
+    "support_received": {
+        "en": "We have your message ({ticket})",
+        "fr": "Nous avons bien reçu votre message ({ticket})",
+        "pt": "Recebemos a sua mensagem ({ticket})",
+    },
+    "support_reply": {
+        "en": "AFC replied to your message ({ticket})",
+        "fr": "AFC a répondu à votre message ({ticket})",
+        "pt": "A AFC respondeu à sua mensagem ({ticket})",
+    },
 }
 
 
@@ -1469,6 +1481,62 @@ COPY = {
             "urgency_bulk": "Este é um convite aberto e não uma vaga reservada. As equipas ocupam as vagas à medida que aceitam, e fecha assim que o evento estiver cheio.",
             "how_to_answer": "Abra a página da sua equipa na AFC para aceitar ou recusar. Qualquer pessoa que dirija a equipa pode responder: o proprietário, o capitão, o vice-capitão, o manager ou o treinador. Aceitar inscreve a sua equipa, por isso as verificações habituais ao vosso roster continuam a aplicar-se.",
             "cta": "Abrir a página da equipa",
+        },
+    },
+
+    # -- afc_support: we have your message --
+    # Sent the moment a ticket is created. The ticket number is the thing people quote back, so it
+    # is in the subject AND the body. The Discord line is the owner's own instruction: email is
+    # exactly the channel that fails somebody locked out of the account tied to that address.
+    "support_received": {
+        "en": {
+            "heading": "We have your message",
+            "intro": "Thanks for writing to AFC. Your ticket number is {ticket}, and somebody on the team will get back to you.",
+            "thread": "You can read this conversation and add anything you forgot, including files, on your ticket page.",
+            "discord": "If you cannot get into your AFC account, email is the slowest way to fix it. Connect your Discord account on the site and join the AFC Discord server, and we can sort it out with you there.",
+            "cta": "Open my ticket",
+            "disclaimer": "You are getting this because somebody used the Contact Us form on africanfreefirecommunity.com with this address. If that was not you, ignore this email.",
+        },
+        "fr": {
+            "heading": "Nous avons votre message",
+            "intro": "Merci d'avoir écrit à AFC. Votre numéro de ticket est {ticket}, et quelqu'un de l'équipe va vous répondre.",
+            "thread": "Vous pouvez relire cette conversation et ajouter ce que vous avez oublié, fichiers compris, sur la page de votre ticket.",
+            "discord": "Si vous n'arrivez pas à entrer dans votre compte AFC, l'e-mail est le moyen le plus lent de régler cela. Connectez votre compte Discord sur le site et rejoignez le serveur Discord AFC : nous pourrons tout régler avec vous là-bas.",
+            "cta": "Ouvrir mon ticket",
+            "disclaimer": "Vous recevez ce message parce que quelqu'un a utilisé le formulaire de contact sur africanfreefirecommunity.com avec cette adresse. Si ce n'était pas vous, ignorez cet e-mail.",
+        },
+        "pt": {
+            "heading": "Recebemos a sua mensagem",
+            "intro": "Obrigado por escrever à AFC. O seu número de ticket é {ticket}, e alguém da equipa vai responder-lhe.",
+            "thread": "Pode reler esta conversa e acrescentar o que se esqueceu, incluindo ficheiros, na página do seu ticket.",
+            "discord": "Se não consegue entrar na sua conta AFC, o e-mail é a forma mais lenta de resolver isso. Ligue a sua conta Discord no site e entre no servidor Discord da AFC, e tratamos disso consigo por lá.",
+            "cta": "Abrir o meu ticket",
+            "disclaimer": "Está a receber isto porque alguém usou o formulário de contacto em africanfreefirecommunity.com com este endereço. Se não foi você, ignore este e-mail.",
+        },
+    },
+
+    # -- afc_support: a human answered --
+    "support_reply": {
+        "en": {
+            "heading": "AFC replied",
+            "intro": "Somebody on the AFC team has answered your message ({ticket}).",
+            "thread": "Read the full reply and answer back on your ticket page. Anything you add there reaches the same people.",
+            "cta": "Open my ticket",
+            "disclaimer": "Replying to this email will not reach us. Use the ticket page so your answer lands with the person handling it.",
+        },
+        "fr": {
+            "heading": "AFC a repondu",
+            "intro": "Quelqu'un de l'équipe AFC a répondu à votre message ({ticket}).",
+            "thread": "Lisez la réponse complète et répondez sur la page de votre ticket. Tout ce que vous y ajoutez arrive aux mêmes personnes.",
+            "cta": "Ouvrir mon ticket",
+            "disclaimer": "Répondre à cet e-mail ne nous parviendra pas. Utilisez la page du ticket pour que votre réponse arrive à la personne qui s'en occupe.",
+        },
+        "pt": {
+            "heading": "A AFC respondeu",
+            "intro": "Alguém da equipa da AFC respondeu à sua mensagem ({ticket}).",
+            "thread": "Leia a resposta completa e responda na página do seu ticket. Tudo o que acrescentar aí chega às mesmas pessoas.",
+            "cta": "Abrir o meu ticket",
+            "disclaimer": "Responder a este e-mail não chega até nós. Use a página do ticket para que a sua resposta chegue à pessoa que está a tratar do assunto.",
         },
     },
 }

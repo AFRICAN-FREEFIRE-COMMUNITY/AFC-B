@@ -12,5 +12,6 @@
   "sso/brand/": "AFC as an SSO provider: relying parties (v-ent.co) fetch the brand kit",
   "sso/logout/": "AFC as an SSO provider: relying parties send the browser here on sign-out",
   "whatsapp/webhook/": "Meta WhatsApp Cloud API webhook (account recovery codes)",
-  "sso/": "the OAuth2 provider tree (oauth2_provider): relying parties such as v-ent.co, and the browser during Sign in with AFC"
+  "sso/": "the OAuth2 provider tree (oauth2_provider): relying parties such as v-ent.co, and the browser during Sign in with AFC",
+  "support/attachments/<attachment_id>/": "Support attachments: the frontend never builds this path itself. Every payload carries the ready-made url (afc_support.views._attachment_dict) and lib/api/support.ts attachmentUrl() only appends the ticket token, so the address exists once, on the server."
 }
