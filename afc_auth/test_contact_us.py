@@ -38,7 +38,7 @@ class ContactUsSendsTheMessageTests(TestCase):
         r = self._post()
         self.assertEqual(r.status_code, 200, r.content[:200])
         self.assertEqual(len(self.sent), 1)
-        to, subject, mail_body = self.sent[0]
+        to, subject, mail_body = self.sent[0][:3]
         self.assertIn("does this actually work?", mail_body)
         self.assertNotIn("Valid email", mail_body)  # the bug, named
         self.assertIn("ladilawalt@gmail.com", mail_body)
@@ -58,12 +58,12 @@ class ContactUsSendsTheMessageTests(TestCase):
 
     def test_line_breaks_survive(self):
         self._post(message="line one\nline two")
-        _to, _s, mail_body = self.sent[0]
+        _to, _s, mail_body = self.sent[0][:3]
         self.assertIn("line one<br>line two", mail_body)
 
     def test_html_in_the_message_is_escaped_not_rendered(self):
         self._post(message="<script>alert(1)</script>")
-        _to, _s, mail_body = self.sent[0]
+        _to, _s, mail_body = self.sent[0][:3]
         self.assertNotIn("<script>", mail_body)
         self.assertIn("&lt;script&gt;", mail_body)
 
