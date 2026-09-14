@@ -25281,6 +25281,11 @@ def reopen_event(request):
     still work, so the event re-closes normally afterwards. No player notification is sent (this is an
     admin/organizer correction, not a player-facing milestone); an AdminHistory row records it.
 
+    Response: { message, event_status, roster_unlocked, code }. `roster_unlocked` is true when the
+    event is past its end instant, which is the case where reopening does NOT re-lock rosters:
+    players can still leave their team, be removed or be swapped while it is open (owner 2026-09-14,
+    after a reopened scrim held 85 people). The Actions tab warns before and after the click.
+
     Request: { event_id }. Consumed by the shared ActionsTab "Reopen" button on both the admin
     (app/(a)/a/events/[slug]/edit) and organizer (app/(organizer)/.../edit) event-edit pages."""
     auth = request.headers.get("Authorization")
@@ -25334,10 +25339,19 @@ def reopen_event(request):
     except Exception:
         pass
 
+    # What reopening does NOT do (owner 2026-09-14): it does not lock rosters again. The roster
+    # lock and the identity lock both ask the CLOCK (event_past_end), precisely because a reopened
+    # event never auto-completes and used to hold players forever. So an event reopened after its
+    # end date is editable by staff and still leaveable by players, and the organizer is told that
+    # rather than discovering it from a support ticket. `roster_unlocked` is the flag the event-edit
+    # Actions tab reads; the screen prints its own translated sentence, not this one.
+    roster_unlocked = event_past_end(event)
     return Response(
         {
             "message": f"Event '{event.event_name}' has been reopened.",
             "event_status": new_status,
+            "roster_unlocked": roster_unlocked,
+            "code": "reopened_roster_unlocked" if roster_unlocked else "reopened",
         },
         status=200,
     )
