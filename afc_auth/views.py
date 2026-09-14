@@ -14,6 +14,9 @@ import string
 from django.contrib.auth.tokens import default_token_generator
 from django.utils.http import urlsafe_base64_encode, urlsafe_base64_decode
 from django.utils.encoding import force_bytes, force_str
+# Escaping visitor text on its way into an HTML email (contact_us). Named html_escape so it cannot
+# be mistaken for anything to do with URL or shell escaping further down this very long module.
+from django.utils.html import escape as html_escape
 from django.core.mail import send_mail
 from django.urls import reverse
 from django.contrib.auth.models import User
@@ -393,9 +396,9 @@ def send_email(to_address, subject, html_body, language="en", prelocalized=False
     remaining callers that carry admin-typed free-text bodies (broadcast + sponsor DM), which cannot
     be pre-authored and must be translated on the fly."""
     try:
-        is_valid, message = is_valid_email(to_address)
+        is_valid, email_error = is_valid_email(to_address)
         if not is_valid:
-            print(f"Invalid email address: {to_address}. Error: {message}")
+            print(f"Invalid email address: {to_address}. Error: {email_error}")
             return False
     except Exception as e:
         print(f"Error validating email address: {to_address}. Exception: {e}")
@@ -1946,10 +1949,10 @@ def verify_code(request):
     email = request.data.get("email")
     code = request.data.get("code")
 
-    is_valid, message = is_valid_email(email)
+    is_valid, email_error = is_valid_email(email)
 
     if not is_valid:
-        return Response({"error": message}, status=400)
+        return Response({"error": email_error}, status=400)
 
     try:
         user = User.objects.get(email=email)
@@ -2007,10 +2010,10 @@ def resend_verification_code(request):
     if not email:
         return Response({"error": "Email is required."}, status=status.HTTP_400_BAD_REQUEST)
     
-    is_valid, message = is_valid_email(email)
+    is_valid, email_error = is_valid_email(email)
 
     if not is_valid:
-        return Response({"error": message}, status=400)
+        return Response({"error": email_error}, status=400)
 
     user = User.objects.filter(email=email).first()
 
@@ -3544,10 +3547,10 @@ def edit_profile(request):
     if User.objects.exclude(pk=user.pk).filter(email=email).exists():
         return Response({"message": "Email is already registered to another user."}, status=status.HTTP_400_BAD_REQUEST)
 
-    is_valid, message = is_valid_email(email)
+    is_valid, email_error = is_valid_email(email)
 
     if not is_valid:
-        return Response({"error": message}, status=400)
+        return Response({"error": email_error}, status=400)
 
     if User.objects.exclude(pk=user.pk).filter(username=in_game_name).exists():
         return Response({"message": "In-game name is already taken."}, status=status.HTTP_400_BAD_REQUEST)
@@ -4238,10 +4241,10 @@ def send_verification_token(request):
     
     else:
         if email:
-            is_valid, message = is_valid_email(email)
+            is_valid, email_error = is_valid_email(email)
 
             if not is_valid:
-                return Response({"error": message}, status=400)
+                return Response({"error": email_error}, status=400)
             pass
         elif not uid:
             return Response({"message": "UID is required."}, status=status.HTTP_400_BAD_REQUEST)
@@ -4365,10 +4368,10 @@ def resend_token(request):
     if not email:
         return Response({"message": "Email is required."}, status=status.HTTP_400_BAD_REQUEST)
     
-    is_valid, message = is_valid_email(email)
+    is_valid, email_error = is_valid_email(email)
 
     if not is_valid:
-        return Response({"error": message}, status=400)
+        return Response({"error": email_error}, status=400)
 
     try:
         user = User.objects.get(email=email)
@@ -4583,23 +4586,70 @@ def confirm_email_change(request):
 
 @api_view(["POST"])
 def contact_us(request):
-    name = request.data.get("name")
-    email = request.data.get("email")
-    message = request.data.get("message")
+    """The public Contact Us form (frontend app/(root)/contact). Sends what the visitor wrote to the
+    support inbox.
+
+    THE BUG THIS CARRIES A SCAR FROM (owner 2026-09-14: "the only email we get in our email is
+    'valid email'"): the line that validated the address was written
+    `is_valid, message = is_valid_email(email)`, which OVERWROTE the visitor's `message` before the
+    body was built. Every contact email AFC ever received read `Message: Valid email.` The visitor
+    was told their message had been sent, and it had, with the words thrown away. The validator's
+    result is now called `email_error` and cannot collide with anything.
+
+    Two more things were wrong on the same path and are fixed here:
+      - the body was plain text with \n, sent through send_email, which renders HTML. Newlines
+        collapse, so even an intact message arrived as one run-on line. It is HTML now, and the
+        visitor's text is escaped rather than trusted.
+      - the address was checked against ALLOWED_EMAIL_DOMAINS, the signup allowlist. Somebody
+        writing from a work or school address could not contact support AT ALL, which is exactly
+        the person most likely to be locked out of their account. The contact form now only checks
+        that the address is a well-formed one it could reply to.
+
+    Storing these messages, attachments, ticket numbers and replies is the separate support build
+    (inbox #15). This endpoint still only emails; it no longer loses what was written.
+
+    Request:  { name, email, message }
+    Response: 200 { message } · 400 { message, code } bad input · 502 { message, code } mail refused
+    """
+    name = (request.data.get("name") or "").strip()
+    email = (request.data.get("email") or "").strip()
+    message = (request.data.get("message") or "").strip()
 
     if not all([email, name, message]):
-        return Response({"message": "Email, name, and message are required."}, status=status.HTTP_400_BAD_REQUEST)
-    
-    is_valid, message = is_valid_email(email)
+        return Response({"message": "Email, name, and message are required.",
+                         "code": "contact_fields_required"},
+                        status=status.HTTP_400_BAD_REQUEST)
 
-    if not is_valid:
-        return Response({"error": message}, status=400)
+    # Format only. NOT is_valid_email: that one also enforces the signup provider allowlist, and a
+    # person who cannot get into their account may well be writing from an address we do not host.
+    if not re.match(r"^[\w\.-]+@[\w\.-]+\.\w+$", email):
+        return Response({"message": "Please enter an email address we can reply to.",
+                         "code": "contact_email_invalid"},
+                        status=status.HTTP_400_BAD_REQUEST)
 
-    # Send email to support
+    # The visitor's own words, escaped: this is untrusted input on its way into an HTML email.
+    # <br> keeps their line breaks, which the old plain-text body lost.
+    safe_name = html_escape(name)
+    safe_email = html_escape(email)
+    safe_message = html_escape(message).replace("\n", "<br>")
+
     support_email = 'africanfreefirecommunity1@gmail.com'
     email_subject = f"Contact Us Form Submission from {name}"
-    email_body = f"Name: {name}\nEmail: {email}\nMessage: {message}"
-    send_email(support_email, email_subject, email_body)
+    email_body = (
+        f"<p><b>Name:</b> {safe_name}</p>"
+        f'<p><b>Email:</b> <a href="mailto:{safe_email}">{safe_email}</a></p>'
+        f"<p><b>Message:</b></p>"
+        f"<p>{safe_message}</p>"
+    )
+    # prelocalized: this is a staff-facing copy of what a visitor wrote. Machine-translating it
+    # would rewrite their words before anybody at AFC read them.
+    sent = send_email(support_email, email_subject, email_body, prelocalized=True)
+    if not sent:
+        # Never tell somebody their message arrived when the send was refused. That is how a
+        # support queue silently empties.
+        return Response({"message": "We could not send your message just now. Please try again.",
+                         "code": "contact_send_failed"},
+                        status=status.HTTP_502_BAD_GATEWAY)
 
     return Response({"message": "Your message has been sent successfully."}, status=status.HTTP_200_OK)
 
