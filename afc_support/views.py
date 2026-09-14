@@ -56,7 +56,10 @@ from afc_support import notify
 # per-message count keeps one synchronous upload bounded. Both are deliberate, small numbers rather
 # than a global Django setting, because other endpoints (shop, design assets) have their own.
 MAX_FILES_PER_MESSAGE = 6
-MAX_FILE_BYTES = 40 * 1024 * 1024  # 40 MB per file
+# 20 MB per file. The ceiling is nginx, not us: the API server allows a 25M body
+# (deploy/vps nginx `client_max_body_size 25M`), and a file bigger than that is refused with a 413
+# before Django ever runs, which would look like a broken form. Raise nginx first if this grows.
+MAX_FILE_BYTES = 20 * 1024 * 1024
 ALLOWED_EXTENSIONS = {
     # pictures
     ".jpg", ".jpeg", ".png", ".gif", ".webp", ".heic", ".bmp",
@@ -269,7 +272,7 @@ def create_ticket_from_contact(name, email, body, files=None, request_user=None)
 def support_contact(request):
     """POST support/contact/ - the Contact Us form, with attachments.
 
-    REQUEST   multipart: name, email, message, files[] (repeatable, up to 6, 40 MB each)
+    REQUEST   multipart: name, email, message, files[] (repeatable, up to 6, 20 MB each)
     RESPONSE  200 { message, ticket_number, ticket_url, rejected_files[] }
               400 { message, code } missing fields or a malformed address
     AUTH      none. Somebody locked out of their account has to be able to reach us.
