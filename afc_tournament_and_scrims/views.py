@@ -459,6 +459,28 @@ def update_event_and_stage_statuses():
 # detail badge). The FE renders event_status directly (tournaments/page.tsx statusColors +
 # EventDetailsWrapper), so this makes the badge reflect reality without waiting on the sweep. Audit /
 # admin-edit surfaces (snapshot_event, get_event_details_for_admin) keep the raw stored value on purpose.
+def event_end_instant(event):
+    """The absolute moment this event is over, in the EVENT's own timezone, or None when it has no
+    end date. end_date + event_end_time, or end of day when the time is not set - the same
+    combination the auto-complete sweep and effective_event_status use, named once so a caller that
+    needs "can this still be played?" does not rebuild it and drift."""
+    from datetime import datetime as _dt, time as _time
+    if not event.end_date:
+        return None
+    return timezone.make_aware(
+        _dt.combine(event.end_date, event.event_end_time or _time.max),
+        _event_zone(event),
+    )
+
+
+def event_past_end(event) -> bool:
+    """True once the event's end instant has passed. Deliberately ignores event_status and
+    auto_complete_suppressed: this answers "can this event still be PLAYED", which is a fact about
+    the clock, not about what anybody stamped on the row."""
+    end = event_end_instant(event)
+    return bool(end and timezone.now() > end)
+
+
 def effective_event_status(event):
     from datetime import datetime as _dt, time as _time
     # A finished event stays finished - do not let a time comparison re-open it.
@@ -506,13 +528,10 @@ def effective_event_status(event):
     # and its END date + time instant (end_date + event_end_time, or end-of-day when the time is NULL,
     # combined in the current tz exactly like the sweep) has passed, the badge reads "completed". This
     # is a pure read-time comparison (no cron needed), so the badge is correct even before any sweep.
-    if event.event_status not in ("completed", "cancelled") and not getattr(event, "auto_complete_suppressed", False):
-        end_dt = timezone.make_aware(
-            _dt.combine(event.end_date, event.event_end_time or _time.max),
-            _tz,
-        )
-        if now > end_dt:
-            return "completed"
+    if (event.event_status not in ("completed", "cancelled")
+            and not getattr(event, "auto_complete_suppressed", False)
+            and event_past_end(event)):
+        return "completed"
     # Otherwise keep the existing upcoming -> ongoing convergence.
     return "ongoing" if now >= start_dt else "upcoming"
 
