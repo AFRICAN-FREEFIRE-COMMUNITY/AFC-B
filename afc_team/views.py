@@ -566,7 +566,7 @@ def invite_member(request):
         # respond_invite re-checks on acceptance because the roster can change in between.
         capacity_error = _roster_capacity_error(team, role_to_be_given_upon_acceptance)
         if capacity_error:
-            return Response({'message': capacity_error}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({'message': capacity_error, 'code': 'team_full'}, status=status.HTTP_400_BAD_REQUEST)
 
         # Create invitation
         invite = Invite.objects.create(
@@ -641,7 +641,7 @@ def disband_team(request):
         if active_season and not active_season.is_transfer_window_open():
             return Response(
                 {"message": "The transfer window is currently closed. Teams cannot be disbanded until it reopens."
-                            + _transfer_window_reopen_hint(active_season)},
+                            + _transfer_window_reopen_hint(active_season), "code": "transfer_window_closed"},
                 status=status.HTTP_403_FORBIDDEN,
             )
 
@@ -814,11 +814,11 @@ def send_join_request(request):
 
         # Ensure the user is not already in a team
         if TeamMembers.objects.filter(member=requester).exists():
-            return Response({"message": "You are already a member of a team."}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"message": "You are already a member of a team.", "code": "already_in_team"}, status=status.HTTP_400_BAD_REQUEST)
 
         # Ensure a request isn't already pending
         if JoinRequest.objects.filter(requester=requester, team=team, status_of_request="unattended_to").exists():
-            return Response({"message": "You already have a pending join request for this team."}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"message": "You already have a pending join request for this team.", "code": "join_request_pending"}, status=status.HTTP_400_BAD_REQUEST)
         
         # A join request asks for a seat, not specifically a PLAYING one: if the six playing places
         # are taken, approval seats the requester as staff rather than refusing them (owner
@@ -827,7 +827,7 @@ def send_join_request(request):
         # again at approval time, because the roster moves in between.
         _seat, capacity_error = _resolve_join_role(team, "member")
         if capacity_error:
-            return Response({'message': capacity_error}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({'message': capacity_error, 'code': 'team_full'}, status=status.HTTP_400_BAD_REQUEST)
 
         # Create a join request
         JoinRequest.objects.create(requester=requester, team=team, message=message)
@@ -909,7 +909,7 @@ def review_join_request(request):
             # in has to be decided against the roster as it is now.
             join_role, capacity_error = _resolve_join_role(team, "member")
             if capacity_error:
-                return Response({'message': capacity_error}, status=status.HTTP_400_BAD_REQUEST)
+                return Response({'message': capacity_error, 'code': 'team_full'}, status=status.HTTP_400_BAD_REQUEST)
 
             # Add the user to the team
             TeamMembers.objects.create(
@@ -2251,7 +2251,7 @@ def get_user_current_team(request):
         return Response({"team": team_data}, status=status.HTTP_200_OK)
 
     except TeamMembers.DoesNotExist:
-        return Response({"message": "You are not currently a member of any team."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "You are not currently a member of any team.", "code": "not_in_team"}, status=status.HTTP_404_NOT_FOUND)
     
 
 @api_view(["POST"])
@@ -2286,13 +2286,13 @@ def exit_team(request):
         # NOT be deleted when this fires, so it returns before team_member.delete().
         if _is_player_banned(user) or team.is_banned:
             return Response(
-                {"message": "You cannot leave your team while you or your team is banned."},
+                {"message": "You cannot leave your team while you or your team is banned.", "code": "team_or_player_banned"},
                 status=status.HTTP_403_FORBIDDEN,
             )
 
         # Prevent the team owner from exiting the team
         if team.team_owner == user:
-            return Response({"message": "Team owners cannot exit their own team. Please transfer ownership or disband the team."}, status=status.HTTP_403_FORBIDDEN)
+            return Response({"message": "Team owners cannot exit their own team. Please transfer ownership or disband the team.", "code": "owner_cannot_exit"}, status=status.HTTP_403_FORBIDDEN)
 
         # Roster moves are locked outside the transfer window - a player can only leave a
         # team while the window is OPEN. The window is defined on the active ranking season
@@ -2302,7 +2302,7 @@ def exit_team(request):
         if active_season and not active_season.is_transfer_window_open():
             return Response(
                 {"message": "The transfer window is currently closed. You cannot leave your team until it reopens."
-                            + _transfer_window_reopen_hint(active_season)},
+                            + _transfer_window_reopen_hint(active_season), "code": "transfer_window_closed"},
                 status=status.HTTP_403_FORBIDDEN,
             )
 
@@ -2318,7 +2318,7 @@ def exit_team(request):
                 {"message": f"You are on your team's roster for {_name_events(blockers)}. "
                             "You can leave once the event organizer removes you from "
                             f"{one_or_many(blockers, 'that roster, or the event is', 'those rosters, or those events are')} over.",
-                 "events": _event_refs(blockers)},
+                 "code": "roster_locked", "events": _event_refs(blockers)},
                 status=status.HTTP_403_FORBIDDEN,
             )
 
@@ -2343,7 +2343,7 @@ def exit_team(request):
         return Response({"message": "You have successfully exited the team."}, status=status.HTTP_200_OK)
 
     except TeamMembers.DoesNotExist:
-        return Response({"message": "You are not currently a member of any team."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "You are not currently a member of any team.", "code": "not_in_team"}, status=status.HTTP_404_NOT_FOUND)
     except Exception as e:
         return Response({"message": "An error occurred.", "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
@@ -2508,7 +2508,7 @@ def respond_invite(request, invite_id):
         incoming_role = invite.role_to_be_given_upon_acceptance
         capacity_error = _roster_capacity_error(invite.team, incoming_role)
         if capacity_error:
-            return Response({'message': capacity_error}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({'message': capacity_error, 'code': 'team_full'}, status=status.HTTP_400_BAD_REQUEST)
 
         # Every guard passed: consume ONE use and seat the member.
         #
@@ -3063,7 +3063,7 @@ def kick_team_member(request):
         if active_season and not active_season.is_transfer_window_open():
             return Response(
                 {"error": "The transfer window is currently closed. Members cannot be kicked until it reopens."
-                            + _transfer_window_reopen_hint(active_season)},
+                            + _transfer_window_reopen_hint(active_season), "code": "transfer_window_closed"},
                 status=status.HTTP_403_FORBIDDEN,
             )
 
@@ -3082,7 +3082,7 @@ def kick_team_member(request):
                           "Ask the event organizer to remove them from "
                           f"{one_or_many(blockers, 'that roster', 'those rosters')} first, then you "
                           "can remove them from the team.",
-                 "events": _event_refs(blockers)},
+                 "code": "roster_locked", "events": _event_refs(blockers)},
                 status=status.HTTP_403_FORBIDDEN,
             )
 
@@ -3151,7 +3151,7 @@ def join_team(request):
 
     # Check if user is already in a team
     if TeamMembers.objects.filter(member=user).exists():
-        return Response({"message": "You are already a member of a team."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "You are already a member of a team.", "code": "already_in_team"}, status=status.HTTP_400_BAD_REQUEST)
 
     # Check join settings
     if team.join_settings == "by_request":
