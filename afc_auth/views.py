@@ -35,7 +35,10 @@ from afc_auth.audit import set_audit
 # is what made a typed string ambiguous at sign-in. Used by register, edit_profile and
 # _unique_username_from_email below; the matching resolver lives in the same module and is consumed
 # by afc_auth/backends.py.
-from afc_auth.identifiers import anonymous_conflict_message, cross_field_conflict
+from afc_auth.identifiers import (
+    WHATSAPP_TAKEN_CODE, WHATSAPP_TAKEN_MESSAGE, anonymous_conflict_message, cross_field_conflict,
+    whatsapp_number_holder,
+)
 # i18n Phase 0 (owner 2026-06-15): map the login geo country to a default language for first-time users.
 # Used in login() (auto-detect) and read alongside User.language in the auth payloads below.
 from afc_auth.language_utils import language_for_country
@@ -1787,6 +1790,11 @@ def signup(request):
         whatsapp_e164, whatsapp_error = require_international(whatsapp_number)
         if whatsapp_error:
             return Response({"error": whatsapp_error}, status=status.HTTP_400_BAD_REQUEST)
+        # One account per WhatsApp number (owner 2026-09-14, inbox #21), same idea as the email
+        # and in-game name checks below. Never names the holder: this endpoint is public.
+        if whatsapp_e164 and whatsapp_number_holder(whatsapp_e164) is not None:
+            return Response({"message": WHATSAPP_TAKEN_MESSAGE, "code": WHATSAPP_TAKEN_CODE},
+                            status=status.HTTP_400_BAD_REQUEST)
 
         # ── Uniqueness pre-checks (return FRIENDLY 400s, never the raw DB 1062 error) ──
         #
@@ -3680,6 +3688,11 @@ def edit_profile(request):
         _wa_number, _wa_error = require_international(request.data.get("whatsapp_number"))
         if _wa_error:
             return Response({"message": _wa_error}, status=status.HTTP_400_BAD_REQUEST)
+        # One account per WhatsApp number (owner 2026-09-14, inbox #21). Re-saving your own
+        # number is not a clash (exclude_pk); the holder is never named to a player.
+        if _wa_number and whatsapp_number_holder(_wa_number, exclude_pk=user.pk) is not None:
+            return Response({"message": WHATSAPP_TAKEN_MESSAGE, "code": WHATSAPP_TAKEN_CODE},
+                            status=status.HTTP_400_BAD_REQUEST)
         # Stored NORMALISED (E.164), not as typed. Every other player number on the site is stored
         # raw and normalised at send time, and the result is 34 of 133 rows that cannot be resolved
         # without knowing the country. This field is a way back into an account, so it is cleaned
