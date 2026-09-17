@@ -38,6 +38,8 @@ venv/bin/pip install -q -r requirements-prod.txt
 venv/bin/python manage.py makemigrations --noinput
 venv/bin/python manage.py migrate --noinput
 venv/bin/python manage.py check
+# Django's own static files for /admin (STATIC_ROOT = ./static, served by nginx at /static/).
+venv/bin/python manage.py collectstatic --noinput --clear -v 0
 
 sudo systemctl reload django_app
 sudo systemctl restart celery-worker celery-beat celery-rankings afc-bot
