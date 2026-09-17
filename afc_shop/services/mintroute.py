@@ -91,7 +91,7 @@
 #             }
 #         # data = response.json()
 #     except Exception as e:
-#         return {"status": False, "error": str(e)}
+#         return {"status": False, "error": "request failed"}   # (commented-out sample; never echo str(e))
 
 #     if not data.get("status"):
 #         return {
