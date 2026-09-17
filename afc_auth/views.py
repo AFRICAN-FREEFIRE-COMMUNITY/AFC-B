@@ -55,6 +55,9 @@ from afc_auth import trusted_devices
 # load: afc_whatsapp.phone imports nothing from this app (only `logging` and an optional
 # `phonenumbers`), so no cycle can form.
 from afc_whatsapp.phone import require_international
+# The outbox is where send_email puts a message when this process must not send (the test
+# runner, the scratch server). It imports nothing from this module, so no cycle.
+from afc_auth import outbox
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -455,6 +458,12 @@ def send_email(to_address, subject, html_body, language="en", prelocalized=False
     from_address = os.getenv("EMAIL_FROM", "info@africanfreefirecommunity.com").strip()
     smtp_user = os.getenv("EMAIL_HOST_USER", from_address).strip()
     password = os.getenv("EMAIL_PASSWORD")
+
+    # Under the test runner and on the scratch server nothing leaves the process: the message is
+    # recorded in afc_auth.outbox and reported sent. See that module for the evening of bounces
+    # that made this necessary (owner, 2026-09-17).
+    if not outbox.is_live():
+        return outbox.record("email", to_address, subject, html_body)
 
     try:
         msg = MIMEMultipart()

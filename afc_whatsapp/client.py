@@ -38,10 +38,13 @@
 #     "retryable":     bool,                     see _is_retryable
 #   }
 # ──────────────────────────────────────────────────────────────────────────────
+import json
 import logging
 
 import requests
 from django.conf import settings
+
+from afc_auth import outbox
 
 logger = logging.getLogger(__name__)
 
@@ -157,6 +160,20 @@ def _post(payload):
     Shared by send_template and send_text so the auth, timeout, error parsing, and
     result shape exist exactly once. NEVER raises."""
     cfg = _config()
+    if not outbox.is_live():
+        # The test runner and the scratch server: recorded, never posted to Meta (afc_auth.outbox
+        # says why). The shape is the success shape, wamid included, so callers cannot tell.
+        outbox.record("whatsapp", payload.get("to"), payload.get("type"), json.dumps(payload, default=str))
+        return {
+            "ok": True,
+            "wamid": f"outbox.{len(outbox.SENT)}",
+            "raw": {"outbox": True},
+            "status_code": 200,
+            "error_code": None,
+            "error_title": None,
+            "error_detail": None,
+            "retryable": False,
+        }
     if not (cfg["phone_number_id"] and cfg["access_token"]):
         # Misconfiguration, not a Meta failure. Not retryable: a retry cannot
         # conjure an env var.
