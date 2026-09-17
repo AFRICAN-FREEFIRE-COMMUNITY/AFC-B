@@ -73,6 +73,28 @@
         "afc_*/**/*.py",
         "afc_*/*.py"
       ]
+    },
+    {
+      "id": "be-transport-outside-chokepoint",
+      "title": "A message transport (SMTP, WhatsApp messages, Discord DM) called outside its chokepoint",
+      "why": "afc_auth.outbox holds every outbound message when OUTBOUND_DELIVERY is not live (the test runner, the scratch server). The switch is honoured in exactly three places: send_email (afc_auth/views.py), afc_whatsapp.client._post, afc_support.notify.send_discord_dm. A transport called anywhere else bypasses it, and the suite mails real people again: on 2026-09-17 a rig test run sent seven real sign-in codes to a fixture address and the bounces reached the owner's inbox.",
+      "seen": [
+        "2026-09-17 19:29 a rig run of the auth suites mailed old@gmail.com (bounce in the owner's Outlook)",
+        "2026-09-17 23:43 to 23:55 the same, six more, from the refusal-codes run"
+      ],
+      "fix": "call send_email / afc_whatsapp.client.send_text|send_template / afc_support.notify.send_discord_dm instead; a NEW transport asks afc_auth.outbox.is_live() first and is added to `except` here",
+      "kind": "regex",
+      "pattern": "^(?!\\s*#).*(smtplib\\.SMTP(_SSL)?\\(|/users/@me/channels|graph\\.facebook\\.com/[^\"']*/messages)",
+      "globs": [
+        "afc/**/*.py",
+        "afc_*/**/*.py",
+        "afcbot/**/*.py"
+      ],
+      "except": [
+        "afc_auth/views.py",
+        "afc_whatsapp/client.py",
+        "afc_support/notify.py"
+      ]
     }
   ]
 }
