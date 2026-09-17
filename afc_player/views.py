@@ -492,7 +492,9 @@ def get_public_player_stats(request):
         return Response({"message": "player_ign is required."}, status=400)
 
     try:
-        player = User.objects.get(username=player_ign)
+        # A soft-deleted account (afc_auth/account_deletion.py) is gone from the public site;
+        # its username is a tombstone anyway, so this mostly guards the "deleted-<id>" address.
+        player = User.objects.exclude(status="deleted").get(username=player_ign)
     except User.DoesNotExist:
         return Response({"message": "Player not found."}, status=404)
 
