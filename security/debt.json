@@ -1,0 +1,47 @@
+{
+  "updated": "2026-09-17",
+  "rules": {
+    "R55": {
+      "high": 0,
+      "medium": 0,
+      "since": "2026-09-17",
+      "lastMoved": "2026-09-17"
+    },
+    "R56": {
+      "high": 0,
+      "medium": 0,
+      "since": "2026-09-17",
+      "lastMoved": "2026-09-17"
+    },
+    "R57": {
+      "high": 0,
+      "medium": 0,
+      "since": "2026-09-17",
+      "lastMoved": "2026-09-17"
+    },
+    "R58": {
+      "high": 0,
+      "medium": 0,
+      "since": "2026-09-17",
+      "lastMoved": "2026-09-17"
+    },
+    "R59": {
+      "high": 0,
+      "medium": 0,
+      "since": "2026-09-17",
+      "lastMoved": "2026-09-17"
+    },
+    "R60": {
+      "high": 1,
+      "medium": 0,
+      "since": "2026-09-17",
+      "lastMoved": "2026-09-17"
+    },
+    "R61": {
+      "high": 0,
+      "medium": 0,
+      "since": "2026-09-17",
+      "lastMoved": "2026-09-17"
+    }
+  }
+}
