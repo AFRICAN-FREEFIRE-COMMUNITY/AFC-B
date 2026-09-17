@@ -119,12 +119,12 @@ class CoOrganizerInviteTests(TestCase):
         # the event details tell a member of the co-org what it was granted
         r = self.client.post("/events/get-event-details/", {"slug": self.event.slug}, content_type="application/json", **self.beta_auth)
         self.assertEqual(r.status_code, 200, r.content[:300])
-        grants = r.json()["my_co_organizer_grants"]
+        grants = r.json()["event_details"]["my_co_organizer_grants"]   # the reader wraps its payload
         self.assertEqual([g["organization_slug"] for g in grants], ["beta"])
         self.assertTrue(grants[0]["can_upload_results"])
         self.assertFalse(grants[0]["can_edit_events"])
         r = self.client.post("/events/get-event-details/", {"slug": self.event.slug}, content_type="application/json", **self.gamma_auth)
-        self.assertEqual(r.json()["my_co_organizer_grants"], [])
+        self.assertEqual(r.json()["event_details"]["my_co_organizer_grants"], [])
 
         # scope, enforced by the backend: results yes, edit no
         r = self.client.post("/events/get-all-leaderboard-details-for-event/", {"event_id": self.event.event_id},
