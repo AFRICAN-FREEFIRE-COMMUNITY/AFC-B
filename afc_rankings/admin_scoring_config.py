@@ -46,6 +46,17 @@ ROUTES (mounted by urls.py under the ``rankings/`` prefix)
     GET  scoring-config/versions/<int:>/ -> scoring_config_version   (read, ranking admins)
     POST scoring-config/validate/        -> scoring_config_validate  (read-only check, head admin)
     POST scoring-config/                 -> scoring_config_save      (write, head admin)
+    GET  scoring-config/rebuild/         -> scoring_config_rebuild_status (the polled state, ranking admins)
+    POST scoring-config/rebuild/         -> scoring_config_rebuild   (re-run the score rebuild, head admin)
+
+THE REBUILD IS A TASK, NOT PART OF THE REQUEST (2026-09-17)
+    A save re-scores every season in scope, and that takes minutes on production. On
+    14 September it ran inside the request, past gunicorn's 120 s timeout; the worker was
+    aborted, the editor reported a failed save, and the version had in fact committed two
+    minutes earlier. So the save now answers 201 as soon as the write commits, with
+    ``recalculated.state`` = ``queued``, and ``tasks.rebuild_scoring_config`` does the work.
+    Its state is stored on the ScoringConfig row and returned as ``rebuild`` on every read, so
+    the editor polls it and shows queued / running / done / failed with a Run again button.
 """
 import datetime
 
@@ -69,6 +80,37 @@ CONFIG_WRITE_ROLES = ("head_admin",)
 
 
 # ───────────────────────── serialization ─────────────────────────
+def serialize_rebuild(cfg):
+    """The state of the score rebuild that followed this version's save.
+
+    Read by the editor on every scoring-config load (it polls while ``queued`` or ``running``)
+    and returned by the save and Run again endpoints as ``recalculated``. ``is_stale`` is
+    True when a run has been "running" longer than tasks.REBUILD_STALE_AFTER: a worker
+    restarted by a deploy never writes "failed", so past that the UI offers Run again.
+    ``seasons`` / ``months`` are the planned counts until the run finishes, then the actual.
+    """
+    from .tasks import REBUILD_STALE_AFTER
+    summary = dict(cfg.rebuild_summary or {})
+    stale = (
+        cfg.rebuild_state == ScoringConfig.REBUILD_RUNNING
+        and cfg.rebuild_started_at is not None
+        and timezone.now() - cfg.rebuild_started_at > REBUILD_STALE_AFTER
+    )
+    return {
+        "state": cfg.rebuild_state,
+        "season_ids": list(cfg.rebuild_season_ids or []),
+        "seasons": summary.get("seasons", 0),
+        "months": summary.get("months", 0),
+        "ghost_teams": summary.get("ghost_teams"),
+        "ghost_players": summary.get("ghost_players"),
+        "error": summary.get("error"),
+        "task_id": cfg.rebuild_task_id or None,
+        "started_at": cfg.rebuild_started_at.isoformat() if cfg.rebuild_started_at else None,
+        "finished_at": cfg.rebuild_finished_at.isoformat() if cfg.rebuild_finished_at else None,
+        "is_stale": stale,
+    }
+
+
 def serialize_scoring_config(cfg):
     """Manual-dict serialization of one ``ScoringConfig`` row (matches serializers.py)."""
     return {
@@ -80,6 +122,7 @@ def serialize_scoring_config(cfg):
         # created_by is nullable (SET_NULL) - guard the username lookup.
         "created_by": cfg.created_by.username if cfg.created_by_id else None,
         "created_at": cfg.created_at.isoformat(),
+        "rebuild": serialize_rebuild(cfg),
     }
 
 
@@ -232,11 +275,12 @@ def _months_in(season):
 def _recalculate(seasons):
     """Rebuild the scores of every season in scope, monthly rows and ghost rows included.
 
-    Run synchronously and OUTSIDE the write transaction, exactly like
-    ``recalc.run_evaluation`` does its pre-tiering recompute: this is a deliberate admin
-    batch action, not the live edit hot path the "recalc is never inline" rule guards, and
-    the admin needs to see the result of their own change immediately. Imported locally to
-    keep this module free of a load-order cycle with recalc -> aggregation -> models.
+    Runs INSIDE tasks.rebuild_scoring_config, never in a request: on production this is
+    minutes of work (every month of every season, every ghost team and player per month), and
+    on 14 September it ran past gunicorn's request timeout and made a committed save look
+    failed. In dev and tests (RANKINGS_RECALC_SYNC) the task runs inline, so the effect is
+    still visible in the same call. Imported locally to keep this module free of a load-order
+    cycle with recalc -> aggregation -> models.
 
     Ghost teams and ghost players are swept too. They are ranked interleaved with the real
     ones, so leaving them on the old rules would put freshly rescored teams next to stale
@@ -552,7 +596,8 @@ def scoring_config_save(request):
          "contradictions": [ ...advisory, the save still happened... ],
          "applied_seasons":  [ ...season rows, each with is_closed / rankings_published... ],
          "frozen_seasons":   [ {"season_id","name","config_version"} ],
-         "recalculated": {"seasons": 1, "months": 3},
+         "recalculated": {"state": "queued" | "done" | "failed" | "none",
+                          "seasons": 1, "months": 3, "error": null, ...see serialize_rebuild},
          "audit_id": 88}
 
     Response 400 ``{"message": ..., "errors": [...]}`` when the config would corrupt scoring,
@@ -570,8 +615,10 @@ def scoring_config_save(request):
       3. Pins the seasons in scope to the new version.
       4. Writes one audit row recording who, why, the version moved from and to, and every
          season the change was applied to.
-    Then, outside the transaction, it recalculates the seasons in scope (monthly rows and
-    the quarterly rows), so the current season is never left half on the old rules.
+    Then, outside the transaction, it QUEUES the rebuild of the seasons in scope (monthly rows
+    and the quarterly rows) on the rankings worker, so the current season is never left half
+    on the old rules. The answer is 201 the moment the write has committed; ``recalculated``
+    reports the rebuild's state, and the editor polls scoring-config/ until it is done.
 
     Consumed by: the admin Scoring Config page's Save action.
     """
@@ -704,11 +751,14 @@ def scoring_config_save(request):
             object_ref=new_cfg.id, before=before, after=after, season=current,
         )
 
-    # (6) rebuild the scores of every season in scope, outside the transaction. This is what
-    #     stops the current season being half old rules and half new.
-    recalculated = {"seasons": 0, "months": 0}
+    # (6) rebuild the scores of every season in scope, on the rankings worker, outside the
+    #     transaction. This is what stops the current season being half old rules and half
+    #     new. The write above has committed whatever happens here: queue_rebuild never
+    #     raises, a broker that is down is recorded as a failed rebuild on the row, and the
+    #     answer below is still "saved", because it was.
     if request.data.get("recalculate", True):
-        recalculated = _recalculate(seasons)
+        from .tasks import queue_rebuild
+        new_cfg = queue_rebuild(new_cfg, seasons)
 
     body = serialize_scoring_config(new_cfg)
     body["contradictions"] = checked["contradictions"]
@@ -716,6 +766,83 @@ def scoring_config_save(request):
     # season identity and the published flags are the same either way.
     body["applied_seasons"] = _impact(seasons)["seasons"]
     body["frozen_seasons"] = frozen
-    body["recalculated"] = recalculated
+    body["recalculated"] = body["rebuild"]
     body["audit_id"] = entry.audit_id
     return Response(body, status=status.HTTP_201_CREATED)
+
+
+@api_view(["GET"])
+def scoring_config_rebuild_status(request):
+    """The rebuild state of the ACTIVE version, and nothing else.
+
+    Purpose:  what the editor polls every few seconds while a rebuild is queued or running.
+              The full scoring-config/ read carries the blob, every version and every season;
+              polling that would be wasteful and, worse, tempt the page to reload the blob
+              under the admin's unsaved edits.
+    Auth:     Bearer SessionToken, head_admin or metrics_admin (the read gate).
+    Response 200 ``{"version": 5 | null, "rebuild": {...serialize_rebuild} | null}``.
+
+    Consumed by: the admin Scoring Config page's rebuild status strip.
+    """
+    user, err = _auth(request)
+    if err:
+        return err
+    active = ScoringConfig.objects.filter(is_active=True).order_by("-version").first()
+    if active is None:
+        return Response({"version": None, "rebuild": None})
+    return Response({"version": active.version, "rebuild": serialize_rebuild(active)})
+
+
+@api_view(["POST"])
+def scoring_config_rebuild(request):
+    """Run the score rebuild for the ACTIVE version again.
+
+    Purpose:  the Run again button. Needed when a rebuild failed, or was cut off by a deploy
+              (a worker restart never writes "failed"; the row goes stale instead), or when a
+              save was made with ``recalculate: false`` and the admin now wants the scores.
+    Auth:     Bearer SessionToken, head_admin ONLY (same gate as the save).
+    Request:: {"season_ids": [3, 9]}   # optional; default = the seasons of the last rebuild,
+                                       # or the current season when there was none
+    Response 202 ``{"version": 5, "recalculated": {...serialize_rebuild}, "audit_id": 91}``.
+    Response 400 when a season id is unknown; 404 when no version has been saved yet;
+             409 ``{"message", "recalculated"}`` while a rebuild is queued or running and not
+             stale, so two workers never rebuild the same season at once.
+
+    Audited as ``scoring_config`` / ``rebuild`` so "who re-scored the season on Tuesday" has an
+    answer. Consumed by: the admin Scoring Config page's rebuild status strip.
+    """
+    user, err = _auth(request, roles=CONFIG_WRITE_ROLES)
+    if err:
+        return err
+
+    active = ScoringConfig.objects.filter(is_active=True).order_by("-version").first()
+    if active is None:
+        return Response({"message": "No scoring configuration has been saved yet.",
+                         "code": "scoring_config_missing"},
+                        status=status.HTTP_404_NOT_FOUND)
+
+    current = serialize_rebuild(active)
+    busy = current["state"] in (ScoringConfig.REBUILD_QUEUED, ScoringConfig.REBUILD_RUNNING)
+    if busy and not current["is_stale"]:
+        return Response({"message": "A rebuild is already running for this version.",
+                         "code": "scoring_config_rebuild_busy", "recalculated": current},
+                        status=status.HTTP_409_CONFLICT)
+
+    requested = request.data.get("season_ids")
+    if requested is None:
+        requested = list(active.rebuild_season_ids or [])
+    seasons, unknown = _resolve_scope(requested)
+    if unknown:
+        return Response({"message": f"Unknown season ids: {unknown}.", "unknown_season_ids": unknown},
+                        status=status.HTTP_400_BAD_REQUEST)
+
+    from .tasks import queue_rebuild
+    active = queue_rebuild(active, seasons)
+    entry = _audit(
+        user, "scoring_config", "rebuild",
+        "Score rebuild run again from the Scoring Config page.",
+        object_ref=active.id, before=current, after=serialize_rebuild(active),
+        season=_current_season(),
+    )
+    return Response({"version": active.version, "recalculated": serialize_rebuild(active),
+                     "audit_id": entry.audit_id}, status=status.HTTP_202_ACCEPTED)
