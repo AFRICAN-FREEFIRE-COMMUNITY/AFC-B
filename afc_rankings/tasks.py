@@ -9,12 +9,16 @@ Dedup: a short Redis lock (recalc_lock:{key}) collapses bursts of edits to one
 recalc per (entity, period) at a time; the run reads the latest committed state.
 """
 import datetime
+import logging
 
 from celery import shared_task
 from django.conf import settings
 from django.core.cache import cache
+from django.utils import timezone
 
 from . import recalc
+
+logger = logging.getLogger(__name__)
 
 _LOCK_TTL = 120  # seconds
 _DIRTY_TTL = 300  # seconds; outlives _LOCK_TTL so a marker can never expire mid-run
@@ -177,6 +181,95 @@ def enqueue_ghost_player(ghost_player_id, month: datetime.date, season_id=None):
     _dispatch(recalculate_ghost_player_monthly, ghost_player_id, month.replace(day=1).isoformat())
     if season_id:
         _dispatch(recalculate_ghost_player_quarterly, ghost_player_id, season_id)
+
+
+# ───────────────────────── scoring-config rebuild (2026-09-17) ─────────────────────────
+# WHY A TASK. Saving a scoring-config version re-scores every season in scope: every month of
+# each season, every ghost team and ghost player per month, then the season itself. On
+# 14 September that ran past gunicorn's 120 s request timeout inside scoring_config_save; the
+# arbiter aborted the worker (SystemExit mid bulk_update), nginx answered an error, the editor
+# toasted "failed" and kept the edits dirty, while the version had committed two minutes
+# earlier. A rebuild that takes minutes cannot live in a request. It lives here, on the
+# rankings_recalc queue that already drains the per-entity recalculations, and its state lives
+# on the ScoringConfig row (rebuild_state and friends) so the editor can show it.
+#
+# Consumed by: admin_scoring_config.scoring_config_save (step 6) and scoring_config_rebuild
+# (the Run again endpoint), both through queue_rebuild below; the state is read back by
+# admin_scoring_config.serialize_rebuild on every scoring-config read.
+# How long a "running" state is believed before the UI offers Run again. A deploy restarts the
+# workers, and a task cut off that way never writes "failed"; after this long the row is stale.
+REBUILD_STALE_AFTER = datetime.timedelta(minutes=30)
+
+
+def _set_rebuild(cfg, **fields):
+    """Write only the rebuild_* columns, so a concurrent save of the same row is never clobbered."""
+    for key, value in fields.items():
+        setattr(cfg, key, value)
+    cfg.save(update_fields=list(fields))
+
+
+@shared_task(queue="rankings_recalc")
+def rebuild_scoring_config(config_id):
+    """Re-score the seasons recorded on the version, and record how it went on the same row.
+
+    Reads ScoringConfig.rebuild_season_ids (set by queue_rebuild), marks the row running, runs
+    admin_scoring_config._recalculate, then marks it done with the summary or failed with the
+    error. Idempotent: a re-run recomputes the same rows from the same source data. Imported
+    lazily because admin_scoring_config imports the models this module must stay light on.
+    """
+    from .admin_scoring_config import _recalculate
+    from .models import ScoringConfig, Season
+
+    cfg = ScoringConfig.objects.filter(pk=config_id).first()
+    if cfg is None:
+        logger.warning("rebuild_scoring_config: config %s no longer exists", config_id)
+        return {"state": "missing"}
+    _set_rebuild(cfg, rebuild_state=ScoringConfig.REBUILD_RUNNING,
+                 rebuild_started_at=timezone.now(), rebuild_finished_at=None)
+    try:
+        seasons = list(Season.objects.filter(season_id__in=cfg.rebuild_season_ids or []))
+        summary = _recalculate(seasons)
+    except Exception as exc:  # the worker must record the failure, not just die with it
+        logger.exception("rebuild_scoring_config: version %s failed", cfg.version)
+        summary = dict(cfg.rebuild_summary or {})
+        summary["error"] = f"{type(exc).__name__}: {exc}"[:500]
+        _set_rebuild(cfg, rebuild_state=ScoringConfig.REBUILD_FAILED,
+                     rebuild_summary=summary, rebuild_finished_at=timezone.now())
+        return summary
+    _set_rebuild(cfg, rebuild_state=ScoringConfig.REBUILD_DONE,
+                 rebuild_summary=summary, rebuild_finished_at=timezone.now())
+    return summary
+
+
+def queue_rebuild(cfg, seasons):
+    """Record the scope on the version and start the rebuild: inline in dev, queued in prod.
+
+    Returns the row, updated, so the caller can serialize it. The enqueue itself can fail
+    (broker down): that is recorded as a FAILED rebuild with the reason, and the caller still
+    answers that the save happened, because it did. Nothing here raises to the request.
+    """
+    from .admin_scoring_config import _months_in
+    from .models import ScoringConfig
+
+    season_ids = [s.season_id for s in seasons]
+    planned = {"seasons": len(seasons), "months": sum(len(_months_in(s)) for s in seasons)}
+    _set_rebuild(cfg, rebuild_state=ScoringConfig.REBUILD_QUEUED, rebuild_season_ids=season_ids,
+                 rebuild_summary=planned, rebuild_task_id="", rebuild_started_at=None,
+                 rebuild_finished_at=None)
+    if _sync():
+        rebuild_scoring_config.run(cfg.pk)
+    else:
+        try:
+            result = rebuild_scoring_config.delay(cfg.pk)
+        except Exception as exc:  # kombu OperationalError and friends: the broker is down
+            logger.exception("queue_rebuild: could not enqueue for version %s", cfg.version)
+            planned["error"] = f"Could not queue the rebuild: {type(exc).__name__}"
+            _set_rebuild(cfg, rebuild_state=ScoringConfig.REBUILD_FAILED,
+                         rebuild_summary=planned, rebuild_finished_at=timezone.now())
+        else:
+            _set_rebuild(cfg, rebuild_task_id=str(result.id or "")[:64])
+    cfg.refresh_from_db()
+    return cfg
 
 
 # ───────────────────────── nightly backstop (§18, worker-down insurance) ─────────────────────────
