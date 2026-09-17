@@ -13,7 +13,7 @@ THE THREE PROMISES, and how each is kept here
                password is made unusable and the outside accounts are unlinked, so nobody can
                sign in as it or through it.
     RELEASED   The unique identity columns are copied to a DeletedAccount row and replaced by
-               tombstones on the User row: username "deleted-<id>", email
+               tombstones on the User row: username "Deleted player <id>", email
                "deleted-<id>@deleted.invalid", uid and discord_id NULL, the profile's WhatsApp
                number blank, ConnectedAccount rows deleted (archived as JSON). A fresh signup with
                the same in-game name, email, UID, Discord or WhatsApp then passes the ordinary
@@ -58,7 +58,14 @@ TOMBSTONE_EMAIL_DOMAIN = "deleted.invalid"   # RFC 2606 reserved: can never rece
 
 
 def tombstone_username(user_id: int) -> str:
-    return f"deleted-{user_id}"
+    """What every leaderboard, result table and history row prints for a deleted account.
+
+    82 backend sites and 83 frontend files print `.username` as it is, so the name itself has to
+    read as what it is rather than every site learning about deletion: "Deleted player 145"
+    (owner follow-up 2026-09-17). The number keeps it unique (the column is) and lets a head admin
+    find the archive row; the old address /players/deleted-145 was already a 404.
+    """
+    return f"Deleted player {user_id}"
 
 
 def tombstone_email(user_id: int) -> str:
