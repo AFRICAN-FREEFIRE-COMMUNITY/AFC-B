@@ -251,6 +251,21 @@ CALLER_PLACEHOLDERS = {
          "how_to_answer", "cta"),
         {"team", "event", "name"},
     ),
+    # The support desk (afc_support.notify, 2026-09-14): only the intro carries the ticket number,
+    # the other sentences stand on their own.
+    "support_received": {
+        "heading": set(), "intro": {"ticket"}, "thread": set(), "discord": set(), "cta": set(),
+        "disclaimer": set(),
+    },
+    "support_reply": {
+        "heading": set(), "intro": {"ticket"}, "thread": set(), "cta": set(), "disclaimer": set(),
+    },
+    # Account deletion and restore (afc_auth.account_deletion, 2026-09-17). The deleted mail names
+    # nobody (the address it goes to is the released one); the restore mail greets by name.
+    "account_deleted": dict.fromkeys(("heading", "intro", "restore", "reuse", "cta", "disclaimer"), set()),
+    "account_restored": {
+        "heading": set(), "intro": {"username"}, "password": set(), "cta": set(), "disclaimer": set(),
+    },
 }
 
 # What each subject_for() call site passes. Mirrors the grep of every subject_for( in the backend.
@@ -302,6 +317,10 @@ CALLER_SUBJECT_PLACEHOLDERS = {
     "partner_apply_approved": {"reference", "organisation"},
     "partner_apply_rejected": {"reference", "organisation"},
     "event_team_invitation": {"event"},
+    "support_received": {"ticket"},
+    "support_reply": {"ticket"},
+    "account_deleted": set(),
+    "account_restored": set(),
 }
 
 

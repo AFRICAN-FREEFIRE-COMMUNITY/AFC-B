@@ -12,6 +12,8 @@ step of the deploy workflow and of checks.yml, and it can run by hand:
 Check kinds:
     regex   a pattern (Python re, unicode) that must not appear in the listed globs
     crlf    the file must not contain a carriage return anywhere
+An entry may name `except`: files (repo-relative) the pattern is ALLOWED in, for a rule of the
+shape "this call exists in exactly these chokepoints and nowhere else".
 
 Output on failure, one line per hit, greppable, then the prescribed fix:
     KNOWN-BUG <id> <file>:<line>  <title>
@@ -29,11 +31,12 @@ REGISTRY = ROOT / "tools" / "known_bugs.json"
 SKIP_DIRS = {"venv", ".venv", "node_modules", ".git", "__pycache__", "media", "static", "staticfiles"}
 
 
-def files_for(globs: list[str]) -> list[Path]:
+def files_for(globs: list[str], allowed: list[str] | None = None) -> list[Path]:
     out: set[Path] = set()
+    skip = {ROOT / a for a in (allowed or [])}
     for g in globs:
         for p in ROOT.glob(g):
-            if p.is_file() and not any(part in SKIP_DIRS for part in p.relative_to(ROOT).parts):
+            if p.is_file() and p not in skip and not any(part in SKIP_DIRS for part in p.relative_to(ROOT).parts):
                 out.add(p)
     return sorted(out)
 
@@ -44,7 +47,7 @@ def rel(p: Path) -> str:
 
 def check_regex(bug: dict, hits: list) -> None:
     pat = re.compile(bug["pattern"])
-    for p in files_for(bug["globs"]):
+    for p in files_for(bug["globs"], bug.get("except")):
         try:
             text = p.read_text(encoding="utf-8")
         except UnicodeDecodeError:

@@ -24,6 +24,7 @@ import os
 import requests
 from django.conf import settings
 
+from afc_auth import outbox
 from afc_auth.email_i18n import copy_for, subject_for
 from afc_auth.views import SITE_URL, _email_shell, send_email
 
@@ -168,6 +169,9 @@ def send_discord_dm(discord_id: str, content: str) -> bool:
     token = getattr(settings, "DISCORD_BOT_TOKEN", None)
     if not token or not discord_id:
         return False
+    if not outbox.is_live():
+        # The test runner and the scratch server: recorded, never posted (afc_auth.outbox says why).
+        return outbox.record("discord_dm", str(discord_id), None, content)
     headers = {"Authorization": f"Bot {token}", "Content-Type": "application/json"}
     try:
         channel = requests.post(
