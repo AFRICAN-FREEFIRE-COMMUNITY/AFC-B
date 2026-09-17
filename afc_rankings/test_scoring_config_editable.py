@@ -18,6 +18,11 @@ silent regression:
   * AuditTests                 - the audit entry records which seasons the change was applied to.
   * ConfigReachesScoringTests  - the saved numbers actually change what a team scores, and each
                                  season is scored under its own version.
+  * RebuildTaskTests            - the score rebuild after a save runs in a Celery task, never in
+                                 the request (2026-09-17: it ran past gunicorn's timeout and made
+                                 a committed save look failed). The save answers "saved" the
+                                 moment the write commits, whatever the rebuild does; the row
+                                 carries the rebuild's state; Run again re-queues it.
 
 HOW IT CONNECTS
     Drives afc_rankings.admin_scoring_config and afc_rankings.admin_tournament_tiers through the
@@ -29,8 +34,10 @@ HOW IT CONNECTS
 import copy
 import datetime
 
+from unittest import mock
+
 from django.contrib.auth import get_user_model
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 
@@ -92,11 +99,16 @@ def _current_season_dates():
     return quarter, start, end
 
 
+@override_settings(RANKINGS_RECALC_SYNC=True)
 class _ScoredFixture(TestCase):
     """One team with a real tournament result in a CLOSED season and in the CURRENT season.
 
     Both seasons are scored before each test, so an assertion that a season did or did not
     change is comparing two real numbers rather than the presence of a row.
+
+    RANKINGS_RECALC_SYNC=True: the rebuild after a save runs in a Celery task since
+    2026-09-17, and the inline dispatch path is what lets these tests read the effect of a
+    save back in the same call. The rig runs production settings, where the flag is off.
     """
 
     def setUp(self):
@@ -810,3 +822,165 @@ class ConfigReachesScoringTests(_ScoredFixture):
         multipliers = {t["key"]: t["multiplier"] for t in body["config"]["tiers"]}
         self.assertEqual(multipliers["tier_3"], 5.0)
         self.assertIn(self.current.season_id, [s["season_id"] for s in body["seasons"]])
+
+
+# ═════════════════════════ the rebuild is a task, and the save is honest ═════════════════════════
+class RebuildTaskTests(_ScoredFixture):
+    """Pins the 2026-09-17 fix: scoring_config_save never waits for the score rebuild.
+
+    On 14 September the rebuild ran inside the request for longer than gunicorn's 120 s
+    timeout; the worker was aborted, the editor toasted "failed", and the version had been
+    saved two minutes earlier. Every test here holds one piece of the replacement: the save
+    answers 201 with the rebuild QUEUED, the task does the rebuild and records its state on
+    the row, a broker that is down is a failed rebuild and still a saved config, a rebuild
+    that throws is recorded rather than lost, and Run again re-queues (but never twice at
+    once).
+    """
+
+    def _rebuild(self, **body):
+        return self.client.post(
+            reverse("rankings_scoring_config_rebuild"), body,
+            content_type="application/json", **_bearer(self.admin_token),
+        )
+
+    def _read(self):
+        return self.client.get(reverse("rankings_scoring_config"), **_bearer(self.admin_token))
+
+    # ── async: the save queues, the task rebuilds ──
+    @override_settings(RANKINGS_RECALC_SYNC=False)
+    def test_the_save_answers_saved_with_the_rebuild_queued_and_the_task_does_the_work(self):
+        from afc_rankings.tasks import rebuild_scoring_config
+
+        before = self._score(self.current)
+        fake = mock.Mock(id="celery-task-42")
+        with mock.patch.object(rebuild_scoring_config, "delay", return_value=fake) as delay:
+            response = self._save()
+        self.assertEqual(response.status_code, 201, response.content)
+        body = response.json()
+        # The write is done and reported: the new version is active before any rebuild.
+        self.assertTrue(ScoringConfig.objects.get(pk=body["id"]).is_active)
+        self.assertEqual(body["recalculated"]["state"], "queued")
+        self.assertEqual(body["recalculated"]["task_id"], "celery-task-42")
+        self.assertEqual(body["recalculated"]["season_ids"], [self.current.season_id])
+        self.assertGreaterEqual(body["recalculated"]["seasons"], 1)
+        delay.assert_called_once_with(body["id"])
+        # Nothing has been re-scored yet: that is the worker's job.
+        self.assertEqual(self._score(self.current), before)
+
+        # The worker runs the task: the score moves and the row says done, with the counts.
+        rebuild_scoring_config.run(body["id"])
+        self.assertGreater(self._score(self.current), before)
+        state = self._read().json()["rebuild"]
+        self.assertEqual(state["state"], "done")
+        self.assertIsNotNone(state["started_at"])
+        self.assertIsNotNone(state["finished_at"])
+        self.assertGreaterEqual(state["seasons"], 1)
+        self.assertIsNone(state["error"])
+        self.assertFalse(state["is_stale"])
+
+    @override_settings(RANKINGS_RECALC_SYNC=False)
+    def test_a_broker_that_is_down_is_a_failed_rebuild_and_still_a_saved_config(self):
+        from afc_rankings.tasks import rebuild_scoring_config
+
+        with mock.patch.object(rebuild_scoring_config, "delay", side_effect=OSError("redis down")):
+            response = self._save()
+        self.assertEqual(response.status_code, 201, response.content)
+        body = response.json()
+        self.assertTrue(ScoringConfig.objects.get(pk=body["id"]).is_active)
+        self.assertEqual(body["recalculated"]["state"], "failed")
+        self.assertIn("Could not queue", body["recalculated"]["error"])
+        # And the admin can try again once the broker is back.
+        with mock.patch.object(rebuild_scoring_config, "delay", return_value=mock.Mock(id="t2")):
+            again = self._rebuild()
+        self.assertEqual(again.status_code, 202, again.content)
+        self.assertEqual(again.json()["recalculated"]["state"], "queued")
+
+    def test_a_rebuild_that_throws_is_recorded_as_failed_not_lost(self):
+        from afc_rankings.tasks import rebuild_scoring_config
+
+        response = self._save(recalculate=False)
+        self.assertEqual(response.status_code, 201, response.content)
+        cfg_id = response.json()["id"]
+        self.assertEqual(response.json()["recalculated"]["state"], "none")
+
+        ScoringConfig.objects.filter(pk=cfg_id).update(rebuild_season_ids=[self.current.season_id])
+        with mock.patch("afc_rankings.admin_scoring_config._recalculate",
+                        side_effect=RuntimeError("ladder exploded")):
+            summary = rebuild_scoring_config.run(cfg_id)   # must not raise
+        self.assertIn("ladder exploded", summary["error"])
+        state = self._read().json()["rebuild"]
+        self.assertEqual(state["state"], "failed")
+        self.assertIn("RuntimeError", state["error"])
+        self.assertIsNotNone(state["finished_at"])
+
+    # ── sync (dev and these tests): the same call carries the finished rebuild ──
+    def test_inline_dispatch_reports_done_in_the_same_response(self):
+        before = self._score(self.current)
+        response = self._save()
+        self.assertEqual(response.status_code, 201, response.content)
+        self.assertEqual(response.json()["recalculated"]["state"], "done")
+        self.assertGreater(self._score(self.current), before)
+
+    # ── Run again ──
+    def test_run_again_rescores_the_seasons_of_the_last_rebuild_and_is_audited(self):
+        self._save()
+        version_id = ScoringConfig.objects.get(is_active=True).pk
+        # Knock the score out from under the config, the way a stale row would be.
+        TeamQuarterlyScore.objects.filter(team=self.team, season=self.current).update(total_score=0)
+
+        response = self._rebuild()
+        self.assertEqual(response.status_code, 202, response.content)
+        self.assertEqual(response.json()["recalculated"]["state"], "done")
+        self.assertGreater(self._score(self.current), 0)
+        entry = RankingAuditLog.objects.filter(object_type="scoring_config", action="rebuild").latest("audit_id")
+        self.assertEqual(entry.object_ref, str(version_id))
+
+    def test_run_again_refuses_while_a_rebuild_is_running_unless_it_is_stale(self):
+        self._save()
+        cfg = ScoringConfig.objects.get(is_active=True)
+        ScoringConfig.objects.filter(pk=cfg.pk).update(
+            rebuild_state=ScoringConfig.REBUILD_RUNNING, rebuild_started_at=timezone.now(),
+        )
+        busy = self._rebuild()
+        self.assertEqual(busy.status_code, 409, busy.content)
+        self.assertEqual(busy.json()["code"], "scoring_config_rebuild_busy")
+
+        # A worker restarted by a deploy never writes "failed": after the stale window the
+        # row is treated as abandoned and Run again is allowed.
+        ScoringConfig.objects.filter(pk=cfg.pk).update(
+            rebuild_started_at=timezone.now() - datetime.timedelta(minutes=31),
+        )
+        self.assertTrue(self._read().json()["rebuild"]["is_stale"])
+        again = self._rebuild()
+        self.assertEqual(again.status_code, 202, again.content)
+
+    def test_the_polled_status_read_carries_the_rebuild_and_nothing_else(self):
+        # Before any save there is nothing to report, and the read still answers.
+        empty = self.client.get(reverse("rankings_scoring_config_rebuild"), **_bearer(self.admin_token))
+        self.assertEqual(empty.status_code, 200, empty.content)
+        self.assertEqual(empty.json(), {"version": None, "rebuild": None})
+
+        self._save()
+        polled = self.client.get(reverse("rankings_scoring_config_rebuild"), **_bearer(self.admin_token))
+        self.assertEqual(polled.status_code, 200, polled.content)
+        body = polled.json()
+        self.assertEqual(set(body), {"version", "rebuild"})   # no blob, no versions, no seasons
+        self.assertEqual(body["rebuild"]["state"], "done")
+        # The read gate, not the write gate: a metrics admin may watch the rebuild.
+        _, metrics_token = _user_with_role("cfg_metrics_poll", "metrics_admin")
+        watched = self.client.get(reverse("rankings_scoring_config_rebuild"), **_bearer(metrics_token))
+        self.assertEqual(watched.status_code, 200, watched.content)
+
+    def test_run_again_is_head_admin_only_and_needs_a_saved_version(self):
+        _, metrics_token = _user_with_role("cfg_metrics_rb", "metrics_admin")
+        refused = self.client.post(
+            reverse("rankings_scoring_config_rebuild"), {},
+            content_type="application/json", **_bearer(metrics_token),
+        )
+        self.assertEqual(refused.status_code, 403, refused.content)
+        # No version saved yet: nothing to rebuild against.
+        self.assertFalse(ScoringConfig.objects.exists())
+        missing = self._rebuild()
+        self.assertEqual(missing.status_code, 404, missing.content)
+        self.assertEqual(missing.json()["code"], "scoring_config_missing")
+
