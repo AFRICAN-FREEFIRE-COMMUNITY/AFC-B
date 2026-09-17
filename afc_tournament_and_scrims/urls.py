@@ -324,6 +324,7 @@ urlpatterns = [
     # path('create-leaderboard/', create_leaderboard, name='create_leaderboard'),
     path('get-all-events/', get_all_events, name='get_all_events'),
     path('get-event-details/', get_event_details, name='get_event_details'),
+    path('resolve/', resolve_event, name='resolve_event'),  # slug <-> id for the admin/organizer pages (R22)
     path('get-all-events-paginated/', get_all_events_paginated, name='get_all_events_paginated'),
     path('get-all-tournaments-and-scrims/', get_all_tournaments_and_scrims, name='get_all_tournaments_and_scrims'),
     path('get-all-tournaments-and-scrims-paginated/', get_all_tournaments_and_scrims_paginated, name='get_all_tournaments_and_scrims_paginated'),

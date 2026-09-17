@@ -24,6 +24,8 @@ HOW IT CONNECTS
 """
 from __future__ import annotations
 
+import secrets
+
 from django.utils.text import slugify
 
 # A slug never collides with a legacy numeric id: "12" would be ambiguous in resolve_or_redirect,
@@ -98,21 +100,69 @@ def _derived_from(slug: str, name: str) -> bool:
     return bool(tail) and tail.startswith("-") and tail[1:].isdigit()
 
 
-def resolve_or_redirect(model, ref: str | None):
-    """(obj, moved_to): the object for a current slug (moved_to None), a retired slug or a legacy
-    numeric id (moved_to = the current slug), or (None, None) when nothing matches. Never raises."""
+# ── opaque public tokens, for things that have no name ───────────────────────────────────────
+# An order and a market application cannot be named, so their address carries a token such as
+# `o_7f3a9c2b`: stable, not enumerable, not the database key (sequential ids in URLs let anybody
+# walk the whole table by counting). The prefix says what it is; ten hex characters is 40 bits.
+
+def new_public_token(prefix: str) -> str:
+    return f"{prefix}_{secrets.token_hex(5)}"
+
+
+def ensure_public_token(instance, prefix: str, field: str = "public_token", update_fields=None):
+    """Called from save() before super().save(): fills the token once, never changes it. Returns
+    the update_fields to pass on (with the field added when the caller narrowed the save)."""
+    if getattr(instance, field, None):
+        return update_fields
+    model = type(instance)
+    for _ in range(20):
+        token = new_public_token(prefix)
+        if not model.objects.filter(**{field: token}).exists():
+            break
+    else:  # pragma: no cover - 40 bits colliding twenty times in a row
+        raise RuntimeError(f"could not mint a public token for {model.__name__}")
+    setattr(instance, field, token)
+    if update_fields is not None and field not in update_fields:
+        update_fields = list(update_fields) + [field]
+    return update_fields
+
+
+def resolve_by_token(model, ref: str | None, prefix: str, field: str = "public_token", **filters):
+    """(obj, moved_to_token): the object for its token (moved_to None) or for a legacy numeric id
+    (moved_to = its token, minted on the spot for a row that predates tokens). `filters` narrow the
+    lookup (an order is only ever resolved for its own buyer). (None, None) when nothing matches."""
     if not ref:
         return None, None
     ref = str(ref).strip()
-    obj = model.objects.filter(slug=ref).first()
+    if ref.startswith(prefix + "_"):
+        return model.objects.filter(**{field: ref}, **filters).first(), None
+    if ref.isdigit():
+        obj = model.objects.filter(pk=int(ref), **filters).first()
+        if obj is None:
+            return None, None
+        if not getattr(obj, field, None):
+            obj.save(update_fields=[field])
+        return obj, getattr(obj, field)
+    return None, None
+
+
+def resolve_or_redirect(model, ref: str | None, field: str = "slug"):
+    """(obj, moved_to): the object for a current address (moved_to None), a retired address or a
+    legacy numeric id (moved_to = the current address), or (None, None) when nothing matches.
+    `field` is the address column: "slug" for the named things, "username" for a person (the
+    admin players page), and so on. Never raises."""
+    if not ref:
+        return None, None
+    ref = str(ref).strip()
+    obj = model.objects.filter(**{field: ref}).first()
     if obj is not None:
         return obj, None
     if ref.isdigit():
         obj = model.objects.filter(pk=int(ref)).first()
         if obj is not None:
-            if not obj.slug:  # a row that predates slugs: give it one now, so the move has a target
-                obj.save(update_fields=["slug"])
-            return obj, obj.slug or None
+            if not getattr(obj, field):  # a row that predates slugs: give it one now, so the move has a target
+                obj.save(update_fields=[field])
+            return obj, getattr(obj, field) or None
         return None, None
     from afc_auth.models import SlugHistory
     hist = SlugHistory.objects.filter(app_label=model._meta.app_label, model=model._meta.model_name, old_slug=ref).first()
@@ -121,4 +171,4 @@ def resolve_or_redirect(model, ref: str | None):
     obj = model.objects.filter(pk=hist.object_pk).first()
     if obj is None:
         return None, None
-    return obj, obj.slug
+    return obj, getattr(obj, field)
