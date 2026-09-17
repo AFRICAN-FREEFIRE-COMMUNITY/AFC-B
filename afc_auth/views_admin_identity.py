@@ -1001,6 +1001,15 @@ def admin_set_user_whatsapp(request):
         if new_number == previous_number:
             return Response({"message": "That is already this user's WhatsApp number."},
                             status=status.HTTP_400_BAD_REQUEST)
+        # One account per WhatsApp number (owner 2026-09-14, inbox #21). An admin IS told whose
+        # it is, because they need to know where to go; a player is not (identifiers.py §4).
+        from .identifiers import WHATSAPP_TAKEN_CODE, whatsapp_number_holder
+        holder = whatsapp_number_holder(new_number, exclude_pk=target.pk)
+        if holder is not None:
+            return Response({"message": f"That WhatsApp number is already on {holder.username}'s "
+                                        f"account (ID: {holder.user_id}). Remove it there first.",
+                             "code": WHATSAPP_TAKEN_CODE, "holder_user_id": holder.user_id},
+                            status=status.HTTP_400_BAD_REQUEST)
     else:
         new_number = ""
         if not previous_number:
