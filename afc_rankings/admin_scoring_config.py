@@ -46,6 +46,7 @@ ROUTES (mounted by urls.py under the ``rankings/`` prefix)
     GET  scoring-config/versions/<int:>/ -> scoring_config_version   (read, ranking admins)
     POST scoring-config/validate/        -> scoring_config_validate  (read-only check, head admin)
     POST scoring-config/                 -> scoring_config_save      (write, head admin)
+    GET  scoring-config/rebuild/         -> scoring_config_rebuild_status (the polled state, ranking admins)
     POST scoring-config/rebuild/         -> scoring_config_rebuild   (re-run the score rebuild, head admin)
 
 THE REBUILD IS A TASK, NOT PART OF THE REQUEST (2026-09-17)
@@ -768,6 +769,28 @@ def scoring_config_save(request):
     body["recalculated"] = body["rebuild"]
     body["audit_id"] = entry.audit_id
     return Response(body, status=status.HTTP_201_CREATED)
+
+
+@api_view(["GET"])
+def scoring_config_rebuild_status(request):
+    """The rebuild state of the ACTIVE version, and nothing else.
+
+    Purpose:  what the editor polls every few seconds while a rebuild is queued or running.
+              The full scoring-config/ read carries the blob, every version and every season;
+              polling that would be wasteful and, worse, tempt the page to reload the blob
+              under the admin's unsaved edits.
+    Auth:     Bearer SessionToken, head_admin or metrics_admin (the read gate).
+    Response 200 ``{"version": 5 | null, "rebuild": {...serialize_rebuild} | null}``.
+
+    Consumed by: the admin Scoring Config page's rebuild status strip.
+    """
+    user, err = _auth(request)
+    if err:
+        return err
+    active = ScoringConfig.objects.filter(is_active=True).order_by("-version").first()
+    if active is None:
+        return Response({"version": None, "rebuild": None})
+    return Response({"version": active.version, "rebuild": serialize_rebuild(active)})
 
 
 @api_view(["POST"])
