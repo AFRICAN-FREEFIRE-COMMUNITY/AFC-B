@@ -11,6 +11,7 @@ https://docs.djangoproject.com/en/5.0/ref/settings/
 """
 
 import os
+import sys
 from pathlib import Path
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
@@ -712,6 +713,21 @@ WHATSAPP_APP_SECRET = os.getenv("WHATSAPP_APP_SECRET", "")
 WHATSAPP_BUSINESS_ACCOUNT_ID = os.getenv("WHATSAPP_BUSINESS_ACCOUNT_ID", "")
 WHATSAPP_API_VERSION = os.getenv("WHATSAPP_API_VERSION", "v21.0")
 WHATSAPP_WEBHOOK_VERIFY_TOKEN = os.getenv("WHATSAPP_WEBHOOK_VERIFY_TOKEN", "")
+
+# ── Outbound messages: live, or held in an outbox ─────────────────────────────────────────────
+# "live" hands email, WhatsApp and Discord DMs to real people. "outbox" records them in
+# afc_auth.outbox instead (and to OUTBOUND_OUTBOX_FILE when set) and reports them sent.
+#
+# WHY (owner 2026-09-17): the test suite run on the VPS rig, which carries this same .env, mailed
+# seven real "Your AFC sign-in code" emails to a fixture address (old@gmail.com) and the bounces
+# landed in the owner's inbox. Django's test runner only captures ITS OWN mail backend; our
+# chokepoints use smtplib and requests directly. So the test runner is forced to "outbox" here,
+# by the argv it was started with, and no .env can put it back. The scratch server sets "outbox"
+# in afc/settings_scratch.py. Production leaves the env unset and is live.
+OUTBOUND_DELIVERY = os.getenv("OUTBOUND_DELIVERY", "live").strip().lower()
+OUTBOUND_OUTBOX_FILE = os.getenv("OUTBOUND_OUTBOX_FILE", "")
+if len(sys.argv) > 1 and sys.argv[1] == "test":
+    OUTBOUND_DELIVERY = "outbox"
 
 # ── The room template ─────────────────────────────────────────────────────────────────────────
 # WHATSAPP_ROOM_TEMPLATE -> the room id and password message, and the ONLY thing AFC sends a player
