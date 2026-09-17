@@ -4196,9 +4196,11 @@ def upload_esport_image(request):
     AUTH     : Bearer SessionToken (same validate_token pattern as edit_profile).
     REQUEST  : POST /auth/upload-esport-image/  multipart, field `esport_image` (required).
     RESPONSE : 200 {"status": "ok", "esport_image_url": <absolute url>}
+                   plus {"code", "warning"} when the picture check could not see a clear face: the
+                   image IS saved and queued for review, and the warning says the ban rule out loud.
                400 missing file / too large / missing or malformed Authorization header
+               400 {"code": "not_a_person"} when the check is SURE there is no person in the picture
                401 invalid/expired session token
-               (The face check no longer 400s - see the advisory-gate note below.)
 
     FRONTEND CONSUMER
         app/(user)/profile/edit/page.tsx ("Esport Image" section: preview + replace button +
@@ -4244,13 +4246,30 @@ def upload_esport_image(request):
     # ALWAYS saves. Junk images stay catchable by admins on the broadcast media-audit
     # page (afc_tournament_and_scrims/views_media_audit.py), which is the human
     # backstop with the flag/owner-notify/force-replace tools.
-    from .face_check import image_has_human_face
-    has_face, why = image_has_human_face(esport_image)
-    if not has_face:
+    # The verdict is RECORDED as of 2026-09-13 instead of only logged: it lands on the profile and
+    # the per-event media audit lists the flagged players, so junk stops being invisible without
+    # anybody being locked out. The detector is YuNet now (see face_check.py for the measurement
+    # that replaced Haar); it still cannot tell whether the face is THIS player's, so a flag is a
+    # queue for a human, never a refusal.
+    from .face_check import check_esport_image, is_certainly_not_a_person
+    check = check_esport_image(esport_image)
+    if is_certainly_not_a_person(check["verdict"]):
+        # The ONE case worth refusing (owner 2026-09-13): a second, far more forgiving look found
+        # nothing face-like at all, which is what a logo, an in-game screenshot or a wallpaper looks
+        # like. Everything softer than that still saves - the 2026-07-06 demotion happened because a
+        # weaker detector was rejecting real players, and that must not come back.
+        return Response({
+            "message": "That picture does not look like a photo of a person. Your esport image has "
+                       "to be a photo of YOU, head and shoulders, with your face clearly visible - "
+                       "not a logo, a game screenshot or a wallpaper. Please upload a photo of "
+                       "yourself.",
+            "code": "not_a_person",
+        }, status=status.HTTP_400_BAD_REQUEST)
+    if check["verdict"] != "ok":
         import logging
         logging.getLogger("afc_auth").warning(
-            "upload_esport_image: no face detected (%s) for user %s - saving anyway (advisory gate)",
-            why, user.pk,
+            "upload_esport_image: %s (%s, face %.3f) for user %s - saving anyway, flagged for review",
+            check["verdict"], check["detector"], check["face_share"], user.pk,
         )
 
     # canonical_profile, NOT get_or_create: dup UserProfile rows exist in prod, where
@@ -4259,12 +4278,28 @@ def upload_esport_image(request):
     # made uploads look like they silently failed (2026-07-06).
     profile = canonical_profile(user, create=True)
     profile.esports_pic = esport_image  # replace-only: the old file reference is overwritten
-    profile.save(update_fields=["esports_pic"])  # column-scoped write (see edit_profile note)
+    # A REPLACEMENT is a new picture, so the verdict is the new picture's - including when an admin
+    # had cleared the old one. Written in the same column-scoped save (see edit_profile note).
+    profile.esports_pic_check = check["verdict"]
+    profile.esports_pic_checked_at = timezone.now()
+    profile.save(update_fields=["esports_pic", "esports_pic_check", "esports_pic_checked_at"])
 
-    return Response({
+    body = {
         "status": "ok",
         "esport_image_url": request.build_absolute_uri(profile.esports_pic.url),
-    }, status=status.HTTP_200_OK)
+    }
+    if check["verdict"] != "ok":
+        # Saved, but the check could not see a proper bust shot. The owner asked for the ban rule to
+        # be said out loud at this exact moment (2026-09-13): the image goes into the organizers'
+        # review queue, and an image that is not the player's own face can get them and their team
+        # banned. `code` lets the page translate it; `warning` is the fallback sentence.
+        body["code"] = check["verdict"]
+        body["warning"] = (
+            "Saved, but we could not see a clear photo of your face in it. An organizer will review "
+            "this image. It must be a photo of YOU - uploading somebody else's picture, a logo or "
+            "any image that is not your own face can get you and your team banned."
+        )
+    return Response(body, status=status.HTTP_200_OK)
 
 
 @api_view(["POST"])

@@ -17,6 +17,7 @@ urlpatterns = [
     # ── collection ── (verb-suffixed paths, matching the repo's create-team/ edit-team/ idiom) ──
     path("standalone/", views.list_leaderboards, name="standalone_list"),            # GET (paginated)
     path("standalone/create/", views.create_leaderboard, name="standalone_create"),  # POST
+    path("standalone/resolve/", views.resolve_leaderboard, name="standalone_resolve"),  # GET ?ref= slug <-> id (R22)
 
     # ── ghost typeahead search ── literal paths, declared before <int:lb_id> by convention (an int
     # pattern can never swallow them anyway). Mirrors /team/search-teams/ + /auth/search-users/ so

@@ -153,11 +153,34 @@ def _auth_user(request):
     return user, None
 
 
+# ── the address: slug <-> id ─────────────────────────────────────────────────────────────────
+@api_view(["GET"])
+def resolve_leaderboard(request):
+    """
+    GET leaderboards/standalone/resolve/?ref=<slug, retired slug or legacy id> -> {id, slug, name}.
+
+    The standalone leaderboard pages are addressed by slug (owner rule R22) while every endpoint
+    under standalone/<lb_id>/ takes the numeric id. This answers the id for a slug, and the
+    current slug for an old link so the page rewrites its address. Consumed by
+    lib/standaloneRef.ts useStandaloneRef. Any signed-in user; the detail endpoint still applies
+    its own visibility rules.
+    """
+    _user, err = _auth_user(request)
+    if err:
+        return err
+    from afc_auth.slugs import resolve_or_redirect
+    lb, _moved = resolve_or_redirect(StandaloneLeaderboard, request.GET.get("ref"))
+    if lb is None:
+        return Response({"message": "Leaderboard not found."}, status=404)
+    return Response({"id": lb.id, "slug": lb.slug, "name": lb.name}, status=200)
+
+
 # ── serialization helpers ────────────────────────────────────────────────────────────────────
 def _serialize_lb(lb):
     """Compact header dict for list rows + the top of the detail payload."""
     return {
         "id": lb.id,
+        "slug": lb.slug,  # the address /a/leaderboards/standalone/<slug> (owner rule R22)
         "name": lb.name,
         "format": lb.format,
         "organization_id": lb.organization_id,
