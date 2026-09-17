@@ -143,7 +143,7 @@ from .views_mvp import (event_mvp, event_tie_breakers,
 # revives/survival) from the 3D-room client's persisted debugger-*.log. See debugger_ingest.py.
 from .debugger_ingest import debugger_backfill
 # Media audit/flags/opt-outs (owner 2026-07-02): broadcast-media hygiene. See views_media_audit.py.
-from .views_media_audit import media_audit, media_flag, media_flag_resolve, media_opt_out, media_upload
+from .views_media_audit import media_audit, media_flag, media_flag_resolve, media_image_check_clear, media_opt_out, media_upload
 from .views_broadcast_kit import broadcast_kit_summary, broadcast_kit_download
 from .views_overlays import (
     list_overlays, create_overlay, update_overlay,
@@ -252,6 +252,7 @@ urlpatterns = [
     # Broadcast Kit (owner 2026-07-03): download the FF PC client-side broadcast files, customized.
     path('<int:event_id>/broadcast-kit/', broadcast_kit_summary, name='broadcast_kit_summary'),
     path('<int:event_id>/broadcast-kit/download/', broadcast_kit_download, name='broadcast_kit_download'),
+    path('<int:event_id>/media-image-check/clear/', media_image_check_clear, name='media_image_check_clear'),  # "this picture is fine" (2026-09-13)
     path('<int:event_id>/media-flags/', media_flag, name='media_flag'),
     path('<int:event_id>/media-flags/<int:flag_id>/resolve/', media_flag_resolve, name='media_flag_resolve'),
     path('<int:event_id>/media-opt-outs/', media_opt_out, name='media_opt_out'),
