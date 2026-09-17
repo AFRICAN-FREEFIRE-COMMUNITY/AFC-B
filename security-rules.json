@@ -1,0 +1,64 @@
+{
+  "$comment": "How AFC-B meets owner rules R55 to R61 (2026-09-17). Read by ~/.claude/skills/security-rules/scripts/check-security.mjs. Stack: Django + DRF on MySQL, one database role, access decided in views. Rule text: ~/.claude/OWNER-RULES.md section D; the mapping table is in WEBSITE/CLAUDE.md.",
+  "frontend": [],
+  "server": [
+    "afc/",
+    "afc_*/",
+    "afcbot/",
+    "deploy/",
+    "tools/"
+  ],
+  "ignore": [
+    ".venv-train/",
+    ".superpowers/",
+    ".claude/",
+    "media/",
+    "static/"
+  ],
+  "db": "mysql",
+  "migrations": [],
+  "rls": {
+    "na": "MySQL through one Django role: the database has no row-level security to declare. Every row a handler touches is scoped in the view (validate_token for the session, org_can_event / _is_event_admin / role gates for who may act, canonical_profile for the user's own row). The runtime proof of that scoping is security/idor-cases.json."
+  },
+  "rateLimit": {
+    "middleware": [
+      "afc_auth/broadcast_ratelimit.py",
+      "afc_partner_api/ratelimit.py"
+    ],
+    "edge": [],
+    "live": null
+  },
+  "ownership": {
+    "markers": [
+      "validate_token(",
+      "org_can_event(",
+      "_is_event_admin(",
+      "_require_staff(",
+      "_require_head_admin(",
+      "_require_user(",
+      "_auth(request",
+      "require_admin(",
+      "canonical_profile(",
+      "team_role_can(",
+      "_is_head_admin(",
+      "_broadcast_gate("
+    ],
+    "cases": "security/idor-cases.json"
+  },
+  "billing": {
+    "register": "security/billing-caps.md",
+    "maxAgeDays": 90
+  },
+  "allow": [
+    {
+      "rule": "R58",
+      "path": "afc_rankings/views.py",
+      "reason": "the public rankings ladders: the flagged line is the season resolver for reads that are public by design (owner rule R25); publishing is gated per season by rankings_published / tiers_published, checked by the reads themselves"
+    },
+    {
+      "rule": "R58",
+      "path": "afc_team/views_transfers.py",
+      "reason": "the public transfer feed (/teams transfers tab): public by design, team_id only narrows a public list; writes to TeamTransfer happen elsewhere behind the team gates"
+    }
+  ]
+}
