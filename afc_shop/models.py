@@ -431,6 +431,16 @@ class Coupon(models.Model):
     used_count = models.PositiveIntegerField(default=0)
     description = models.TextField(blank=True)
 
+    def save(self, *args, **kwargs):
+        # The admin address /a/shop/coupons/<slug> follows the code (owner rule R22, 2026-09-13).
+        # The slug used to be set once from the code and never moved; sync_slug recomputes it on
+        # a code change and retires the old slug into SlugHistory so the old link still opens.
+        from afc_auth.slugs import sync_slug
+        kwargs["update_fields"] = sync_slug(self, "code", kwargs.get("update_fields"))
+        if kwargs["update_fields"] is None:
+            kwargs.pop("update_fields")
+        super().save(*args, **kwargs)
+
     def is_valid_now(self):
         if not self.is_active:
             return False
@@ -444,17 +454,6 @@ class Coupon(models.Model):
         return True
 
     
-    def save(self, *args, **kwargs):
-        if not self.slug:
-            base = slugify(self.code)
-            slug = base
-            i = 2
-            while Coupon.objects.filter(slug=slug).exclude(pk=self.pk).exists():
-                slug = f"{base}-{i}"
-                i += 1
-            self.slug = slug
-        super().save(*args, **kwargs)
-
 
     def __str__(self):
         return self.code
@@ -586,6 +585,18 @@ class Order(models.Model):
     # simply never replies, so it means "confirmed" and never "not delivered".
     buyer_confirmed_at = models.DateTimeField(null=True, blank=True)
 
+    # The public address of this order, /orders/<public_token> (owner rule R22, 2026-09-13): an
+    # order has no name, so it carries an opaque token such as o_7f3a9c2b instead of its row id,
+    # which would let anybody walk the table by counting. Filled once in save(); a legacy /orders/<id>
+    # link resolves through afc_auth.slugs.resolve_by_token and lands on the token.
+    public_token = models.CharField(max_length=24, unique=True, null=True, blank=True)
+
+    def save(self, *args, **kwargs):
+        from afc_auth.slugs import ensure_public_token
+        kwargs["update_fields"] = ensure_public_token(self, "o", update_fields=kwargs.get("update_fields"))
+        if kwargs["update_fields"] is None:
+            kwargs.pop("update_fields")
+        super().save(*args, **kwargs)
 
     def __str__(self):
         return f"Order #{self.id} - {self.user.username} - {self.status}"
