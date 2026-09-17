@@ -54,10 +54,14 @@ REJECTED = {
 }
 
 
+# These classes test the TRANSPORT (what reaches Meta, what its answers do to the row), so they
+# name it: OUTBOUND_DELIVERY="live" with requests.post mocked at the boundary. Every other test in
+# the suite runs in the runner's "outbox" mode, where the client never posts (afc_auth.outbox).
 @override_settings(
     WHATSAPP_PHONE_NUMBER_ID="1234567890",
     WHATSAPP_ACCESS_TOKEN="test-token",
     WHATSAPP_SYNC=True,          # run the task inline, no Celery worker in tests
+    OUTBOUND_DELIVERY="live",
 )
 class TemplateSendTests(TestCase):
     def setUp(self):
@@ -173,6 +177,7 @@ class TemplateSendTests(TestCase):
     WHATSAPP_SYNC=True,
     WHATSAPP_LOGIN_CODE_TEMPLATE="login_code",
     WHATSAPP_LOGIN_CODE_LANG="en",
+    OUTBOUND_DELIVERY="live",
 )
 class RecoveryCodeSendTests(TestCase):
     """The account-recovery code, driven through the REAL chokepoint.
@@ -229,7 +234,8 @@ class RecoveryCodeSendTests(TestCase):
         self.assertEqual(WhatsAppMessage.objects.get(id=message_id).variables["body"], ["redacted"])
 
 
-@override_settings(WHATSAPP_PHONE_NUMBER_ID="", WHATSAPP_ACCESS_TOKEN="", WHATSAPP_SYNC=True)
+@override_settings(WHATSAPP_PHONE_NUMBER_ID="", WHATSAPP_ACCESS_TOKEN="", WHATSAPP_SYNC=True,
+                   OUTBOUND_DELIVERY="live")
 class UnconfiguredTests(TestCase):
     @patch("afc_whatsapp.client.requests.post")
     def test_missing_credentials_fail_the_row_without_calling_meta(self, mock_post):
