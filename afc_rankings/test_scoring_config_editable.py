@@ -954,6 +954,23 @@ class RebuildTaskTests(_ScoredFixture):
         again = self._rebuild()
         self.assertEqual(again.status_code, 202, again.content)
 
+    def test_the_polled_status_read_carries_the_rebuild_and_nothing_else(self):
+        # Before any save there is nothing to report, and the read still answers.
+        empty = self.client.get(reverse("rankings_scoring_config_rebuild"), **_bearer(self.admin_token))
+        self.assertEqual(empty.status_code, 200, empty.content)
+        self.assertEqual(empty.json(), {"version": None, "rebuild": None})
+
+        self._save()
+        polled = self.client.get(reverse("rankings_scoring_config_rebuild"), **_bearer(self.admin_token))
+        self.assertEqual(polled.status_code, 200, polled.content)
+        body = polled.json()
+        self.assertEqual(set(body), {"version", "rebuild"})   # no blob, no versions, no seasons
+        self.assertEqual(body["rebuild"]["state"], "done")
+        # The read gate, not the write gate: a metrics admin may watch the rebuild.
+        _, metrics_token = _user_with_role("cfg_metrics_poll", "metrics_admin")
+        watched = self.client.get(reverse("rankings_scoring_config_rebuild"), **_bearer(metrics_token))
+        self.assertEqual(watched.status_code, 200, watched.content)
+
     def test_run_again_is_head_admin_only_and_needs_a_saved_version(self):
         _, metrics_token = _user_with_role("cfg_metrics_rb", "metrics_admin")
         refused = self.client.post(
