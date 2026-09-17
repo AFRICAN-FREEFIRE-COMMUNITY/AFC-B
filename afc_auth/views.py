@@ -1532,7 +1532,8 @@ def login(request):
         # Check if the user's account is active
         if not user.is_active:
             return Response({
-                'message': 'Your account is not confirmed. Please verify your email address.'
+                'message': 'Your account is not confirmed. Please verify your email address.',
+                'code': 'email_unconfirmed',
             }, status=status.HTTP_403_FORBIDDEN)
 
         # Two-factor gate. Shared with google_auth + discord_sso_callback (see login_or_challenge
@@ -1556,7 +1557,8 @@ def login(request):
             }, status=status.HTTP_403_FORBIDDEN)
         # Authentication failed, return error response
         return Response({
-            'message': 'Invalid username/email or password'
+            'message': 'Invalid username/email or password',
+            'code': 'invalid_credentials',
         }, status=status.HTTP_401_UNAUTHORIZED)
 
 
@@ -1828,7 +1830,8 @@ def signup(request):
         if username_clash and username_clash.is_active:
             # Owned by a real, verified account → always reject, never take over.
             return Response(
-                {"message": "That in-game name is already taken. Please choose another."},
+                {"message": "That in-game name is already taken. Please choose another.",
+                 "code": "username_taken"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -1837,7 +1840,8 @@ def signup(request):
         if email_clash and email_clash.is_active:
             # Owned by a real, verified account → always reject, never take over.
             return Response(
-                {"message": "That email is already registered. Try logging in or resetting your password."},
+                {"message": "That email is already registered. Try logging in or resetting your password.",
+                 "code": "email_taken"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -1846,7 +1850,8 @@ def signup(request):
             uid_clash = User.objects.filter(uid=uid).first()
             if uid_clash and uid_clash.is_active:
                 return Response(
-                    {"message": "That UID is already in use. Please use a different one."},
+                    {"message": "That UID is already in use. Please use a different one.",
+                     "code": "uid_taken"},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
@@ -1865,7 +1870,8 @@ def signup(request):
                 # Never names the holder: this endpoint is public, so saying whose account it is
                 # would confirm an account's existence to anyone who cares to probe.
                 return Response(
-                    {"message": anonymous_conflict_message(_field, _held_as)},
+                    {"message": anonymous_conflict_message(_field, _held_as),
+                     "code": "identifier_conflict", "field": _field, "held_as": _held_as},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
@@ -1942,11 +1948,13 @@ def signup(request):
             # the friendly messages and NEVER leak the raw MySQL (1062, "Duplicate entry ...").
             if User.objects.filter(username=in_game_name).exists():
                 return Response(
-                    {"message": "That in-game name is already taken. Please choose another."},
+                    {"message": "That in-game name is already taken. Please choose another.",
+                     "code": "username_taken"},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
             return Response(
-                {"message": "That email is already registered. Try logging in or resetting your password."},
+                {"message": "That email is already registered. Try logging in or resetting your password.",
+                 "code": "email_taken"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
