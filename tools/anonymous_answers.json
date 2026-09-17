@@ -277,6 +277,10 @@
       "status": 200,
       "reason": "public content, decided 2026-09-13"
     },
+    "GET support/access/": {
+      "status": 200,
+      "reason": "answers {can_work_tickets: false, can_read_audit: false} to a stranger: a capability read with nothing to leak, opened by AFC-B #65 (support desk, 2026-09-14); recorded 2026-09-17"
+    },
     "GET team/get-all-teams/": {
       "status": 200,
       "reason": "public content, decided 2026-09-13"
