@@ -11,6 +11,7 @@ from .views_room_release import release_room_details_to_waitlist
 # targets ONLY the failures. Consumed by EditMatchModal. See views_room_delivery.py.
 from .views_room_delivery import match_room_delivery, resend_room_details
 from .views_autoseed import auto_seed_now
+from .views_discord_reminders import discord_reminders_view
 # Public (display-only) sponsors of an event: logos + links every visitor sees, with no
 # registration gate attached (owner 2026-08-05, backlog item 26). Deliberately separate from the
 # afc_sponsors engagement system, which exists to gate registration. See views_public_sponsors.py.
@@ -325,6 +326,9 @@ urlpatterns = [
     # path('create-leaderboard/', create_leaderboard, name='create_leaderboard'),
     path('get-all-events/', get_all_events, name='get_all_events'),
     path('get-event-details/', get_event_details, name='get_event_details'),
+    # Discord reminders the organizer sets (owner 2026-09-14, inbox #22): GET = settings + plan +
+    # history, POST = save the cadence and note. See views_discord_reminders.py.
+    path('<int:event_id>/discord-reminders/', discord_reminders_view, name='event_discord_reminders'),
     path('resolve/', resolve_event, name='resolve_event'),  # slug <-> id for the admin/organizer pages (R22)
     path('get-all-events-paginated/', get_all_events_paginated, name='get_all_events_paginated'),
     path('get-all-tournaments-and-scrims/', get_all_tournaments_and_scrims, name='get_all_tournaments_and_scrims'),

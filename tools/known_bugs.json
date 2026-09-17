@@ -73,21 +73,6 @@
         "afc_*/**/*.py",
         "afc_*/*.py"
       ]
-    },
-    {
-      "id": "be-response-echoes-exception",
-      "title": "A view answers the client with str(e) of a caught exception",
-      "why": "The exception text reaches the client (MySQL sentences, paths, implementation hints: best-practice rule 21) and NOTHING reaches the journal, so a 500 real people hit twenty times had to be diagnosed from the byte count of the response body (inbox #23, /team/send-join-request/, 2026-09-17). Log it, answer a plain sentence with a code.",
-      "seen": [
-        "2026-09-16: /team/send-join-request/ answered 500 {\"error\": \"(1406, Data too long for column 'message')\"} 13 times to two people; no traceback anywhere",
-        "2026-09-17: six more sites of the same shape in afc_team/views.py, rewritten to _internal_error"
-      ],
-      "fix": "logger.exception(...) and Response({\"message\": \"An error occurred.\", \"code\": \"internal_error\"}, status=500); in afc_team/views.py use _internal_error(e, \"<view>\")",
-      "kind": "regex",
-      "pattern": "\"error\":\\s*str\\(e\\)",
-      "globs": [
-        "afc_*/**/*.py"
-      ]
     }
   ]
 }

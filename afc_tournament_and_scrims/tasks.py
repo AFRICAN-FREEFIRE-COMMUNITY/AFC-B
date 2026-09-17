@@ -56,3 +56,14 @@ def close_finished_events():
             # Never let one event's completion (e.g. a linking hiccup) abort the whole sweep.
             continue
     return completed
+
+
+# ───────────────────────── Discord reminders (owner 2026-09-14, inbox #22) ─────────────────────────
+@shared_task
+def discord_reminder_sweep():
+    """Send every Discord reminder whose moment has come. Scheduled every 10 minutes from
+    afc/celery_config.py (discord_reminder_sweep_every_10m); the logic and the idempotency live in
+    discord_reminders.send_due_reminders so a shell can run the same sweep by hand."""
+    from .discord_reminders import send_due_reminders
+    return send_due_reminders()
+

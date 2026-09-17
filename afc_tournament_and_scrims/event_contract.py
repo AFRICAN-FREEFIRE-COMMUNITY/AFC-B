@@ -178,6 +178,16 @@ def _clean_optional_str(raw):
     return raw or None
 
 
+def _clean_reminder_frequency(raw):
+    from .discord_reminders import clean_frequency
+    return clean_frequency(raw)
+
+
+def _clean_reminder_note(raw):
+    from .discord_reminders import clean_note
+    return clean_note(raw)
+
+
 def _clean_stripped_or_none(raw):
     return (raw or "").strip() or None
 
@@ -355,6 +365,11 @@ EVENT_FIELDS = [
     Field("require_discord", read=PUBLIC, write=ORGANIZER, clean=_clean_bool),
     Field("discord_server_id", read=PUBLIC, write=ORGANIZER, clean=_clean_stripped_or_none),
     Field("discord_invite_link", read=PUBLIC, write=ORGANIZER, clean=_clean_stripped_or_none),
+    # Discord reminders (owner 2026-09-14, inbox #22): the organizer's cadence and note. Read at
+    # ORGANIZER, not PUBLIC: a player has no use for the organizer's reminder plan, and the note
+    # reaches them inside the DM itself. Cleaners live with the feature (discord_reminders.py).
+    Field("discord_reminder_frequency", read=ORGANIZER, write=ORGANIZER, clean=_clean_reminder_frequency),
+    Field("discord_reminder_note", read=ORGANIZER, write=ORGANIZER, clean=_clean_reminder_note),
 
     # ── sponsorship ──
     Field("is_sponsored", read=PUBLIC),

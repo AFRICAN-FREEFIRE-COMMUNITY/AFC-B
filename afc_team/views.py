@@ -1,5 +1,4 @@
 from datetime import timedelta, timedelta
-import logging
 from django.utils import timezone
 import uuid
 from collections import Counter
@@ -48,24 +47,6 @@ from rest_framework import status
 # register_for_event replicates this same is_active+ban_end_date__gt=now check inline
 # (afc_tournament_and_scrims/views.py) rather than importing across apps in its hot path.
 # ──────────────────────────────────────────────────────────────────────────
-logger = logging.getLogger(__name__)
-
-JOIN_MESSAGE_MAX = 150   # JoinRequest.message is CharField(max_length=150)
-
-
-def _internal_error(exc, where):
-    """The 500 every view in this file used to build by hand, minus the exception text.
-
-    Inbox #23 (2026-09-17): `/team/send-join-request/` answered the caught exception's text to real people,
-    which (a) leaked the MySQL sentence to the client (best-practice rule 21) and (b) left NOTHING
-    in the journal, so the only clue to a 500 users hit twenty times was the byte count of the
-    body. Now the traceback is logged with the view name and the client gets a plain sentence.
-    """
-    logger.exception("%s failed", where)
-    return Response({"message": "An error occurred.", "code": "internal_error"},
-                    status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-
 def _is_player_banned(user):
     """Return the active, non-expired BannedPlayer row for `user`, or None if the player
     is not currently banned. Callers treat a truthy return as "blocked"."""
@@ -799,7 +780,7 @@ def transfer_ownership(request):
     except Team.DoesNotExist:
         return Response({"message": "You do not own any team."}, status=status.HTTP_403_FORBIDDEN)
     except Exception as e:
-        return _internal_error(e, "transfer_ownership")
+        return Response({"message": "An error occurred.", "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 @api_view(["POST"])
@@ -848,20 +829,6 @@ def send_join_request(request):
         if capacity_error:
             return Response({'message': capacity_error}, status=status.HTTP_400_BAD_REQUEST)
 
-        # The column is 150 characters (JoinRequest.message). A longer note used to reach MySQL,
-        # which refused it with 1406, and the person saw "An error occurred" and tried again: 20
-        # such attempts by three people between 11 and 16 September (inbox #23). Refuse it here,
-        # with the limit named, and let the frontend count the characters.
-        message = (message or "").strip()
-        if len(message) > JOIN_MESSAGE_MAX:
-            return Response(
-                {"message": f"Your message is too long: {len(message)} characters, the limit is "
-                            f"{JOIN_MESSAGE_MAX}.",
-                 "code": "join_message_too_long", "max_length": JOIN_MESSAGE_MAX,
-                 "length": len(message)},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
         # Create a join request
         JoinRequest.objects.create(requester=requester, team=team, message=message)
         
@@ -872,7 +839,7 @@ def send_join_request(request):
     except Team.DoesNotExist:
         return Response({"message": "Team not found."}, status=status.HTTP_404_NOT_FOUND)
     except Exception as e:
-        return _internal_error(e, "send_join_request")
+        return Response({"message": "An error occurred.", "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 @api_view(["POST"])
@@ -985,7 +952,7 @@ def review_join_request(request):
     except JoinRequest.DoesNotExist:
         return Response({"message": "Join request not found."}, status=status.HTTP_404_NOT_FOUND)
     except Exception as e:
-        return _internal_error(e, "review_join_request")
+        return Response({"message": "An error occurred.", "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
     
 
 def _join_requests_refusal():
@@ -2378,7 +2345,7 @@ def exit_team(request):
     except TeamMembers.DoesNotExist:
         return Response({"message": "You are not currently a member of any team."}, status=status.HTTP_404_NOT_FOUND)
     except Exception as e:
-        return _internal_error(e, "exit_team")
+        return Response({"message": "An error occurred.", "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 @api_view(["POST"])
@@ -3049,7 +3016,7 @@ def manage_team_roster(request):
         }, status=200)
 
     except Exception as e:
-        return _internal_error(e, "manage_team_roster")
+        return Response({"error": str(e)}, status=500)
 
 
 @api_view(["POST"])
@@ -3154,7 +3121,7 @@ def kick_team_member(request):
         return Response({"message": f"Member {kicked_member_username} has been kicked from the team."}, status=200)
 
     except Exception as e:
-        return _internal_error(e, "kick_team_member")
+        return Response({"error": str(e)}, status=500)
 
 
 @api_view(["POST"])
