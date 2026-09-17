@@ -3,6 +3,9 @@ import json
 
 from django.shortcuts import redirect, render
 from django.contrib.auth import authenticate
+# Singular or plural wording for the identity lock refusal. event_names imports nothing, so a
+# module-level import here cannot cycle.
+from afc_tournament_and_scrims.event_names import one_or_many
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
@@ -11,6 +14,9 @@ import string
 from django.contrib.auth.tokens import default_token_generator
 from django.utils.http import urlsafe_base64_encode, urlsafe_base64_decode
 from django.utils.encoding import force_bytes, force_str
+# Escaping visitor text on its way into an HTML email (contact_us). Named html_escape so it cannot
+# be mistaken for anything to do with URL or shell escaping further down this very long module.
+from django.utils.html import escape as html_escape
 from django.core.mail import send_mail
 from django.urls import reverse
 from django.contrib.auth.models import User
@@ -144,6 +150,18 @@ def _is_invited_address(email: str) -> bool:
         ).exists()
     except Exception:  # noqa: BLE001 - a lookup problem must never widen access
         return False
+
+
+def header_safe(value: str, limit: int = 200) -> str:
+    """One line, fit to go in an email header.
+
+    A subject or a From display name built from something a stranger typed is a header-injection
+    hole: a carriage return in the middle of it starts a new header. The legacy email.Message does
+    not sanitise what you assign, so this does. Also caps the length, since a header is not a place
+    for an essay.
+    """
+    text = " ".join((value or "").split())
+    return text[:limit]
 
 
 def is_valid_email(email: str) -> tuple[bool, str]:
@@ -363,11 +381,13 @@ def generate_session_token(length=16):
 import smtplib
 import os
 import traceback
+from email.utils import formataddr
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
 
-def send_email(to_address, subject, html_body, language="en", prelocalized=False):
+def send_email(to_address, subject, html_body, language="en", prelocalized=False,
+               reply_to=None, from_name=None):
     """Send a branded HTML email over Office365 SMTP. THE single email chokepoint for the whole
     backend: afc_auth account mail, afc_shop order mail, afc_sponsors / afc_tournament_and_scrims /
     afc_player_market notifications, and the broadcast sender all go through here.
@@ -381,6 +401,12 @@ def send_email(to_address, subject, html_body, language="en", prelocalized=False
     NOT have to translate their own copy. Per the project failure-safe rule, any translation error
     returns the ORIGINAL English text and never blocks the send.
 
+    reply_to / from_name (owner 2026-09-14): for mail AFC sends ABOUT somebody, such as the Contact
+    Us form. From always stays the authenticated AFC mailbox, because that is what SPF and DMARC
+    cover; from_name puts the human's name in the inbox line ("Layo via AFC Contact Us") and
+    reply_to sends the Reply button to them instead of back to ourselves. Both are run through
+    header_safe first: they carry text a stranger typed.
+
     prelocalized (owner 2026-07-13): when True, the caller has ALREADY produced the subject + body in
     the recipient's language from the HAND-AUTHORED catalog (afc_auth.email_i18n), so we SKIP the
     machine-translation block entirely. This is how every FIXED transactional email (verification,
@@ -390,9 +416,9 @@ def send_email(to_address, subject, html_body, language="en", prelocalized=False
     remaining callers that carry admin-typed free-text bodies (broadcast + sponsor DM), which cannot
     be pre-authored and must be translated on the fly."""
     try:
-        is_valid, message = is_valid_email(to_address)
+        is_valid, email_error = is_valid_email(to_address)
         if not is_valid:
-            print(f"Invalid email address: {to_address}. Error: {message}")
+            print(f"Invalid email address: {to_address}. Error: {email_error}")
             return False
     except Exception as e:
         print(f"Error validating email address: {to_address}. Exception: {e}")
@@ -432,9 +458,14 @@ def send_email(to_address, subject, html_body, language="en", prelocalized=False
 
     try:
         msg = MIMEMultipart()
-        msg['From'] = from_address
+        # formataddr quotes and encodes the display name properly; header_safe has already taken
+        # any newline out of it, so no header can be injected through a typed name.
+        msg['From'] = formataddr((header_safe(from_name), from_address)) if from_name else from_address
         msg['To'] = to_address
-        msg['Subject'] = subject
+        msg['Subject'] = header_safe(subject, limit=400)
+        if reply_to:
+            # Where the Reply button goes. Only set when the caller names somebody.
+            msg['Reply-To'] = header_safe(reply_to, limit=320)
 
         msg.attach(MIMEText(html_body, 'html'))
 
@@ -1943,10 +1974,10 @@ def verify_code(request):
     email = request.data.get("email")
     code = request.data.get("code")
 
-    is_valid, message = is_valid_email(email)
+    is_valid, email_error = is_valid_email(email)
 
     if not is_valid:
-        return Response({"error": message}, status=400)
+        return Response({"error": email_error}, status=400)
 
     try:
         user = User.objects.get(email=email)
@@ -2004,10 +2035,10 @@ def resend_verification_code(request):
     if not email:
         return Response({"error": "Email is required."}, status=status.HTTP_400_BAD_REQUEST)
     
-    is_valid, message = is_valid_email(email)
+    is_valid, email_error = is_valid_email(email)
 
     if not is_valid:
-        return Response({"error": message}, status=400)
+        return Response({"error": email_error}, status=400)
 
     user = User.objects.filter(email=email).first()
 
@@ -3292,8 +3323,31 @@ def _competitor_in_active_stage(ev, tt, rc) -> bool:
     return base.filter(status="active").exclude(stage__stage_status="completed").exists()
 
 
+def _name_locking_events(events) -> str:
+    """The phrase a lock message drops into, so a player is told WHICH event is holding them.
+    Shared with the team roster lock (afc_team.views) through
+    afc_tournament_and_scrims.event_names, so both say it the same way."""
+    from afc_tournament_and_scrims.event_names import name_events
+    return name_events(events)
+
+
 def _has_active_event_registration(user) -> bool:
+    """True when `user` is currently signed up for an event that has not finished yet. Thin wrapper
+    over _identity_locking_events, kept because most callers only need the yes/no."""
+    return bool(_identity_locking_events(user))
+
+
+def _identity_locking_events(user):
     """
+    The events LOCKING this user's in-game name and Free Fire UID: the ones that have started,
+    are not over, still have them in an active stage, and have no roster-edit window open.
+    Empty list = the identity fields are editable.
+
+    Returns the EVENTS rather than a bool so every surface can say WHICH event is doing it (owner
+    2026-09-13: "it should also tell people what event they are locked into"). A player who is told
+    only "locked while you are registered for an event" cannot act on it, and on the same day the
+    owner chased a CANCELLED event that was locking nobody, precisely because no lock named itself.
+
     True when `user` is currently signed up for an event that has NOT finished yet
     (event_status "upcoming" or "ongoing", and not a draft).
 
@@ -3341,6 +3395,9 @@ def _has_active_event_registration(user) -> bool:
                 .filter(user=user, tournament_team__event__is_draft=False)
                 .exclude(status="rejected")
                 .exclude(tournament_team__status__in=["disqualified", "withdrawn", "left"])
+                # Waitlisted = queued, not playing: it locks nothing (owner 2026-09-13). Promotion
+                # clears is_waitlisted, and the lock comes back on its own.
+                .exclude(tournament_team__is_waitlisted=True)
                 # Open-roster events (owner 2026-09-11) never lock an identity: their results
                 # are entered per team, so no per-player row is ever matched against a name.
                 .exclude(tournament_team__event__open_roster=True)
@@ -3349,13 +3406,15 @@ def _has_active_event_registration(user) -> bool:
     for rc in (RegisteredCompetitors.objects
                .filter(user=user, event__is_draft=False)
                .exclude(status__in=["rejected", "withdrawn", "left", "disqualified"])
+               .exclude(is_waitlisted=True)  # queued, not playing (owner 2026-09-13)
                .select_related("event")):
         # Keep the RegisteredCompetitors (rc) so the stage-over check below can read the solo
         # entry's StageCompetitor rows (owner 2026-06-30).
         candidates.append((rc.event, None, rc))
 
+    locking, locking_ids = [], set()
     if not candidates:
-        return False
+        return locking
 
     # Events that already have an entered match result (one grouped query over all candidate events).
     cand_event_ids = {ev.event_id for ev, _, _ in candidates}
@@ -3390,8 +3449,12 @@ def _has_active_event_registration(user) -> bool:
         reg_open = bool(ev.registration_end_date) and today <= ev.registration_end_date
         if reg_open and ev.event_id not in events_with_results:
             continue
-        return True  # started, not released, still in an active stage, no window, reg closed/results -> LOCKED
-    return False
+        # started, not released, still in an active stage, no window, registration closed or results
+        # entered -> this event is locking them.
+        if ev.event_id not in locking_ids:
+            locking_ids.add(ev.event_id)
+            locking.append(ev)
+    return locking
 
 
 # ── LETTER AVATARS normalization (owner 2026-06-29) ─────────────────────────────────────────────
@@ -3482,14 +3545,20 @@ def edit_profile(request):
     # editable. The lock releases once all their events are completed (see
     # _has_active_event_registration). get_user_profile returns `identity_locked` so the frontend
     # disables + explains these two inputs; this is the authoritative server-side enforcement.
-    if _has_active_event_registration(user):
+    identity_lock_events = _identity_locking_events(user)
+    if identity_lock_events:
         new_ign = (in_game_name or "").strip()
         cur_ign = (user.username or "").strip()
         new_uid = (uid or "").strip()
         cur_uid = (user.uid or "").strip()
         if new_ign != cur_ign or new_uid != cur_uid:
             return Response(
-                {"message": "You can't change your in-game name or UID while you're registered for an event. You'll be able to edit them again once your events are over."},
+                {"message": "You can't change your in-game name or UID while you're playing "
+                            f"{_name_locking_events(identity_lock_events)}. You'll be able to edit "
+                            "them again once "
+                            f"{one_or_many(identity_lock_events, 'it is', 'they are')} over.",
+                 "events": [{"event_id": e.event_id, "event_name": e.event_name, "slug": e.slug}
+                            for e in identity_lock_events]},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -3503,10 +3572,10 @@ def edit_profile(request):
     if User.objects.exclude(pk=user.pk).filter(email=email).exists():
         return Response({"message": "Email is already registered to another user."}, status=status.HTTP_400_BAD_REQUEST)
 
-    is_valid, message = is_valid_email(email)
+    is_valid, email_error = is_valid_email(email)
 
     if not is_valid:
-        return Response({"error": message}, status=400)
+        return Response({"error": email_error}, status=400)
 
     if User.objects.exclude(pk=user.pk).filter(username=in_game_name).exists():
         return Response({"message": "In-game name is already taken."}, status=status.HTTP_400_BAD_REQUEST)
@@ -3883,6 +3952,10 @@ def get_user_profile(request):
             _team_without_logo = _ot.team_name
             break
 
+    # Which events are locking the identity fields. Computed once: the payload reports both the
+    # boolean every existing reader uses and the events behind it (owner 2026-09-13).
+    _identity_lock_events = _identity_locking_events(user)
+
     return Response({
         "user_id": user.user_id,
         "full_name": user.full_name,
@@ -3908,7 +3981,13 @@ def get_user_profile(request):
         # (upcoming/ongoing). The frontend profile-edit form disables + explains the in-game name
         # and UID inputs when this is True; edit_profile enforces the same rule server-side. See
         # _has_active_event_registration. Releases once all their events are completed.
-        "identity_locked": _has_active_event_registration(user),
+        # identity_locked stays a boolean for every existing reader; identity_lock_events names
+        # the events behind it so the profile page can say which one (owner 2026-09-13).
+        "identity_locked": bool(_identity_lock_events),
+        "identity_lock_events": [
+            {"event_id": e.event_id, "event_name": e.event_name, "slug": e.slug}
+            for e in _identity_lock_events
+        ],
         # CURRENT team name from the live roster (resolved above), not the nonexistent user.team.
         "team": _current_team.team_name if _current_team else None,
         # Name of a team this user OWNS that has no logo (or null). Drives the team-logo half of the
@@ -4187,10 +4266,10 @@ def send_verification_token(request):
     
     else:
         if email:
-            is_valid, message = is_valid_email(email)
+            is_valid, email_error = is_valid_email(email)
 
             if not is_valid:
-                return Response({"error": message}, status=400)
+                return Response({"error": email_error}, status=400)
             pass
         elif not uid:
             return Response({"message": "UID is required."}, status=status.HTTP_400_BAD_REQUEST)
@@ -4314,10 +4393,10 @@ def resend_token(request):
     if not email:
         return Response({"message": "Email is required."}, status=status.HTTP_400_BAD_REQUEST)
     
-    is_valid, message = is_valid_email(email)
+    is_valid, email_error = is_valid_email(email)
 
     if not is_valid:
-        return Response({"error": message}, status=400)
+        return Response({"error": email_error}, status=400)
 
     try:
         user = User.objects.get(email=email)
@@ -4532,25 +4611,94 @@ def confirm_email_change(request):
 
 @api_view(["POST"])
 def contact_us(request):
-    name = request.data.get("name")
-    email = request.data.get("email")
-    message = request.data.get("message")
+    """The public Contact Us form (frontend app/(root)/contact). Sends what the visitor wrote to the
+    support inbox.
+
+    THE BUG THIS CARRIES A SCAR FROM (owner 2026-09-14: "the only email we get in our email is
+    'valid email'"): the line that validated the address was written
+    `is_valid, message = is_valid_email(email)`, which OVERWROTE the visitor's `message` before the
+    body was built. Every contact email AFC ever received read `Message: Valid email.` The visitor
+    was told their message had been sent, and it had, with the words thrown away. The validator's
+    result is now called `email_error` and cannot collide with anything.
+
+    Two more things were wrong on the same path and are fixed here:
+      - the body was plain text with \n, sent through send_email, which renders HTML. Newlines
+        collapse, so even an intact message arrived as one run-on line. It is HTML now, and the
+        visitor's text is escaped rather than trusted.
+      - the address was checked against ALLOWED_EMAIL_DOMAINS, the signup allowlist. Somebody
+        writing from a work or school address could not contact support AT ALL, which is exactly
+        the person most likely to be locked out of their account. The contact form now only checks
+        that the address is a well-formed one it could reply to.
+
+    Storing these messages, attachments, ticket numbers and replies is the separate support build
+    (inbox #15). This endpoint still only emails; it no longer loses what was written.
+
+    Request:  { name, email, message }
+    Response: 200 { message } · 400 { message, code } bad input · 502 { message, code } mail refused
+    """
+    name = (request.data.get("name") or "").strip()
+    email = (request.data.get("email") or "").strip()
+    message = (request.data.get("message") or "").strip()
 
     if not all([email, name, message]):
-        return Response({"message": "Email, name, and message are required."}, status=status.HTTP_400_BAD_REQUEST)
-    
-    is_valid, message = is_valid_email(email)
+        return Response({"message": "Email, name, and message are required.",
+                         "code": "contact_fields_required"},
+                        status=status.HTTP_400_BAD_REQUEST)
 
-    if not is_valid:
-        return Response({"error": message}, status=400)
+    # Format only. NOT is_valid_email: that one also enforces the signup provider allowlist, and a
+    # person who cannot get into their account may well be writing from an address we do not host.
+    if not re.match(r"^[\w\.-]+@[\w\.-]+\.\w+$", email):
+        return Response({"message": "Please enter an email address we can reply to.",
+                         "code": "contact_email_invalid"},
+                        status=status.HTTP_400_BAD_REQUEST)
 
-    # Send email to support
-    support_email = 'africanfreefirecommunity1@gmail.com'
+    # STORE IT FIRST (owner 2026-09-14). This endpoint is kept for any client still posting to
+    # the old address; the support desk is the thing that actually keeps the message, its files and
+    # its replies. Imported lazily so afc_auth does not depend on afc_support at import time.
+    ticket = None
+    try:
+        from afc_support.views import create_ticket_from_contact
+        from afc_support import notify as support_notify
+        ticket, _msg, _rejected = create_ticket_from_contact(name, email, message)
+        lang = (getattr(ticket.user, "language", "") or "en") if ticket.user_id else "en"
+        support_notify.email_ticket_received(ticket, lang=lang)
+        support_notify.dm_ticket_received(ticket)
+    except Exception as exc:  # never lose the email path because the desk had a problem
+        print(f"contact_us: could not open a support ticket: {exc}")
+
+    # The visitor's own words, escaped: this is untrusted input on its way into an HTML email.
+    # <br> keeps their line breaks, which the old plain-text body lost.
+    safe_name = html_escape(name)
+    safe_email = html_escape(email)
+    safe_message = html_escape(message).replace("\n", "<br>")
+
+    # Where support mail lands. Owner 2026-09-14: it was hardcoded to a gmail nobody watches, so
+    # this is the address the Contact page itself publishes, and SUPPORT_EMAIL on the server can
+    # move it without a deploy. AFC's own domain is already allowed through send_email's recipient
+    # check (see ALLOWED_EMAIL_DOMAINS, which carries a scar from exactly that trap).
+    support_email = os.getenv("SUPPORT_EMAIL", "info@africanfreefirecommunity.com")
     email_subject = f"Contact Us Form Submission from {name}"
-    email_body = f"Name: {name}\nEmail: {email}\nMessage: {message}"
-    send_email(support_email, email_subject, email_body)
+    email_body = (
+        f"<p><b>Name:</b> {safe_name}</p>"
+        f'<p><b>Email:</b> <a href="mailto:{safe_email}">{safe_email}</a></p>'
+        f"<p><b>Message:</b></p>"
+        f"<p>{safe_message}</p>"
+    )
+    # prelocalized: this is a staff-facing copy of what a visitor wrote. Machine-translating it
+    # would rewrite their words before anybody at AFC read them.
+    # From stays info@ (SPF/DMARC), the display name says who wrote, and Reply goes to them.
+    sent = send_email(support_email, email_subject, email_body, prelocalized=True,
+                      reply_to=email, from_name=f"{name} via AFC Contact Us")
+    if not sent:
+        # Never tell somebody their message arrived when the send was refused. That is how a
+        # support queue silently empties.
+        return Response({"message": "We could not send your message just now. Please try again.",
+                         "code": "contact_send_failed"},
+                        status=status.HTTP_502_BAD_GATEWAY)
 
-    return Response({"message": "Your message has been sent successfully."}, status=status.HTTP_200_OK)
+    return Response({"message": "Your message has been sent successfully.",
+                     "ticket_number": ticket.ticket_number if ticket else ""},
+                    status=status.HTTP_200_OK)
 
 
 @api_view(["POST"])
