@@ -465,6 +465,10 @@ USE_TZ = True
 # https://docs.djangoproject.com/en/5.0/howto/static-files/
 
 STATIC_URL = 'static/'
+# Where collectstatic gathers Django's own static files (the /admin CSS and JS). nginx on the VPS
+# serves this folder at /static/ (deploy/vps/nginx-afc.conf); deploy-backend.sh runs collectstatic
+# on every deploy. Runbook trap 4 (2026-08-03): without this the admin rendered unstyled.
+STATIC_ROOT = os.path.join(BASE_DIR, 'static')
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.0/ref/settings/#default-auto-field
