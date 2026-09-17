@@ -60,6 +60,7 @@
   "registration_is_open": false,
   "is_waitlist_enabled": true,
   "waitlist_mode": "first_registered",
+  "open_roster": false,
   "require_team_logo": false,
   "require_esport_images": false,
   "require_player_uid": true,
