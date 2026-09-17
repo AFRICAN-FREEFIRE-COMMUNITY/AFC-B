@@ -32,6 +32,7 @@ def _event(org, creator, name="Shared Cup"):
         registration_open_date=date.today() - timedelta(days=1),
         registration_end_date=date.today() + timedelta(days=5),
         number_of_stages=1, creator=creator, organization=org,
+        is_draft=False,   # the model defaults to a draft, and get-all-events lists only published events
     )
 
 
@@ -81,7 +82,7 @@ class CoOrganizerInviteTests(TestCase):
 
     def test_the_notification_opens_the_invites_page(self):
         self._invite(can_view_metrics=True)
-        note = Notifications.objects.filter(user=self.beta_owner).order_by("-id").first()
+        note = Notifications.objects.filter(user=self.beta_owner).order_by("-notification_id").first()
         self.assertIsNotNone(note)
         self.assertEqual((note.target_type, note.target_id), ("custom", "/organizer/invites"))
 
