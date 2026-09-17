@@ -188,7 +188,9 @@ class RuleB_TournamentMembershipLockTests(TestCase):
         self._roster(tt, self.member)
         res = self._exit(self.member_tok)
         self.assertEqual(res.status_code, 403)
-        self.assertIn("active tournament", res.json()["message"])
+        # Since 3defac9c the lock names its event (and carries a code the screen translates).
+        self.assertEqual(res.json()["code"], "roster_locked")
+        self.assertIn("Roster Lock Cup", res.json()["message"])
         self.assertTrue(TeamMembers.objects.filter(pk=self.membership.pk).exists())
 
     def test_kick_blocked_while_on_active_event_roster(self):
@@ -197,7 +199,7 @@ class RuleB_TournamentMembershipLockTests(TestCase):
         self._roster(tt, self.member)
         res = self._kick(self.owner_tok, self.member.user_id)
         self.assertEqual(res.status_code, 403)
-        self.assertIn("active tournament", res.json()["error"])
+        self.assertIn("roster for the event", res.json()["error"])
         self.assertTrue(TeamMembers.objects.filter(pk=self.membership.pk).exists())
 
     def test_kick_allowed_when_off_active_roster(self):
