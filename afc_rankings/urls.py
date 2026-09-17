@@ -167,6 +167,10 @@ urlpatterns = [
     # One historical version in full - the rules a past season was scored under.
     path("scoring-config/versions/<int:version>/", admin_scoring_config.scoring_config_version,
          name="rankings_scoring_config_version"),
+    # Run the score rebuild for the active version again (it runs on the rankings worker since
+    # 2026-09-17; the save only queues it). The editor's Run again button.
+    path("scoring-config/rebuild/", admin_scoring_config.scoring_config_rebuild,
+         name="rankings_scoring_config_rebuild"),
     path("scoring-config/",
          _route(GET=admin_scoring_config.scoring_config, POST=admin_scoring_config.scoring_config_save),
          name="rankings_scoring_config"),
