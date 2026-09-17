@@ -174,7 +174,7 @@ class BlockerTests(_Base):
         owner, _ = _user("captain")
         team = Team.objects.create(team_name="Ghosts", join_settings="open", team_creator=owner,
                                    team_owner=owner, country="NG")
-        TeamMembers.objects.create(team=team, member=self.player, role="member")
+        TeamMembers.objects.create(team=team, member=self.player, management_role="member")
         r = self._delete()
         self.assertEqual(r.status_code, 409, r.content)
         self.assertEqual(r.json()["code"], "deletion_blocked")
