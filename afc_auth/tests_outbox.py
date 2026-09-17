@@ -72,7 +72,8 @@ class OutboxWhenLive(SimpleTestCase):
         with patch("afc_auth.views.smtplib.SMTP") as smtp:
             server = Mock()
             smtp.return_value = server
-            ok = send_email("someone@example.com", "Subject", "<p>body</p>")
+            # a gmail address: send_email refuses providers it does not know before it sends
+            ok = send_email("someone@gmail.com", "Subject", "<p>body</p>")
         self.assertTrue(ok)
         smtp.assert_called_once()
         server.sendmail.assert_called_once()
