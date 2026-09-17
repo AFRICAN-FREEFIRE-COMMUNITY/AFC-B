@@ -725,6 +725,31 @@ class ScoringConfig(models.Model):
     )
     created_at = models.DateTimeField(auto_now_add=True)
 
+    # ── the score rebuild that follows a save (2026-09-17) ──
+    # Saving a version re-scores every season in scope. That rebuild walks every month of every
+    # season plus every ghost team and player, and on 14 September it ran past gunicorn's 120 s
+    # request timeout: the worker was aborted, the client saw "failed", and the version had in
+    # fact been saved two minutes earlier. So the rebuild now runs in a Celery task
+    # (afc_rankings.tasks.rebuild_scoring_config) and its state lives HERE, on the version it
+    # belongs to, so the editor can show "rebuilding" and then "done" (or "failed" with a Run
+    # again button) instead of guessing from a request that may never return. One state per
+    # version: a re-run overwrites these fields, it never adds a row.
+    REBUILD_NONE, REBUILD_QUEUED, REBUILD_RUNNING = "none", "queued", "running"
+    REBUILD_DONE, REBUILD_FAILED = "done", "failed"
+    REBUILD_STATES = [
+        (REBUILD_NONE, "No rebuild requested"),
+        (REBUILD_QUEUED, "Queued"),
+        (REBUILD_RUNNING, "Running"),
+        (REBUILD_DONE, "Done"),
+        (REBUILD_FAILED, "Failed"),
+    ]
+    rebuild_state = models.CharField(max_length=10, choices=REBUILD_STATES, default=REBUILD_NONE)
+    rebuild_season_ids = models.JSONField(default=list, blank=True)   # the seasons the rebuild covers
+    rebuild_summary = models.JSONField(default=dict, blank=True)      # counts, and "error" when failed
+    rebuild_task_id = models.CharField(max_length=64, blank=True, default="")
+    rebuild_started_at = models.DateTimeField(null=True, blank=True)
+    rebuild_finished_at = models.DateTimeField(null=True, blank=True)
+
     class Meta:
         ordering = ["-version"]
         indexes = [models.Index(fields=["is_active"])]

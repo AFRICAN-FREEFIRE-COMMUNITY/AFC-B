@@ -98,8 +98,12 @@ from .models import (
     User,
     canonical_profile,
 )
+# The shared lock wording, so the admin panel names an event exactly the way the player's own
+# refusal does (afc_tournament_and_scrims/event_names.py, no imports of its own on purpose).
+from afc_tournament_and_scrims.event_names import event_refs
 from .views import (
     _has_active_event_registration,
+    _identity_locking_events,
     _is_super_admin,
     _user_role_names,
     email_admin_email_changed,
@@ -242,6 +246,7 @@ def admin_user_identity(request, user_id):
                 two_factor_enabled,   # True -> set-user-email needs disable_two_factor: true
                 active_sessions,      # how many logins would be ended by an email change
                 identity_locked,      # player is registered for a live event
+                identity_lock_events, # WHICH events those are: [{event_id, event_name, slug}]
                 is_super_admin        # target holds super_admin (only a super_admin may act on them)
               }
               400/401 bad or missing token · 403 not a head admin · 404 unknown user.
@@ -258,6 +263,7 @@ def admin_user_identity(request, user_id):
     if err:
         return err
 
+    _identity_lock_events = _identity_locking_events(target)
     two_factor_on, _row = _two_factor_state(target)
     profile = canonical_profile(target)
     raw_number = (getattr(profile, "whatsapp_number", "") or "").strip()
@@ -277,7 +283,11 @@ def admin_user_identity(request, user_id):
             "two_factor_enabled": two_factor_on,
             "active_sessions": SessionToken.objects.filter(
                 user=target, expires_at__gt=timezone.now()).count(),
-            "identity_locked": _has_active_event_registration(target),
+            # identity_locked stays the boolean every existing reader gates on;
+            # identity_lock_events names the events behind it so the UID and username dialogs can
+            # tell the admin which event their override would cut across (owner 2026-09-13).
+            "identity_locked": bool(_identity_lock_events),
+            "identity_lock_events": event_refs(_identity_lock_events),
             "is_super_admin": "super_admin" in _user_role_names(target),
         },
         status=status.HTTP_200_OK,
