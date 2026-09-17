@@ -290,6 +290,19 @@ class UserProfile(models.Model):
     state = models.CharField(max_length=40, null=True)
     profile_pic = models.ImageField(upload_to='profile_pictures/', null=True)
     esports_pic = models.ImageField(upload_to='esports_pictures/', null=True)
+    # ── What the picture check saw in esports_pic (owner 2026-09-13) ───────────────────────────
+    # "" (never checked) / "ok" / "no_face" / "face_too_small" / "skipped" / "cleared".
+    # WRITTEN BY afc_auth.face_check via upload_esport_image, the admin media-upload replace path,
+    # and `manage.py check_esport_images`. "cleared" is a HUMAN verdict: an admin looked at a
+    # flagged image on the per-event media audit and said it is fine, which takes it out of the
+    # queue for good (a re-check never overwrites it, so the same picture is never re-litigated).
+    # READ BY afc_tournament_and_scrims.views_media_audit.media_audit, which lists the flagged
+    # players of an event so somebody can replace the image before a broadcast.
+    # It is a QUEUE, not a gate: the upload has never been refused on this verdict and still is
+    # not. A face detector cannot tell whether the face is the account holder's, and it calls a
+    # cartoon logo a face, so only a person can settle it.
+    esports_pic_check = models.CharField(max_length=20, blank=True, default="")
+    esports_pic_checked_at = models.DateTimeField(null=True, blank=True)
     # ── WhatsApp notifications (owner 2026-07-02, Zernio integration): the number room details are
     #    sent to (E.164, e.g. +2348012345678) + explicit OPT-IN (Meta policy requires consent).
     #    Set on the profile settings page; consumed by whatsapp_zernio.send_room_details. ──

@@ -379,12 +379,16 @@ def get_player_details(request):
     if caller.role not in ("admin", "moderator", "support") and not caller.userroles.exists():
         return Response({"message": "Unauthorized."}, status=403)
 
-    player_id = request.data.get("player_id")
-
-    if not player_id:
-        return Response({"message": "player_id is required"}, status=400)
-
-    player = get_object_or_404(User, user_id=player_id)
+    # `ref` is the player's username or a legacy numeric id (owner rule R22: the admin address
+    # is /a/players/<username>); `player_id` stays accepted for older callers. A legacy id
+    # answers the player PLUS `moved_to`.
+    from afc_auth.slugs import resolve_or_redirect
+    ref = request.data.get("ref") or request.data.get("player_id")
+    if not ref:
+        return Response({"message": "ref is required"}, status=400)
+    player, moved_to_username = resolve_or_redirect(User, ref, field="username")
+    if player is None:
+        return Response({"message": "Player not found."}, status=404)
 
     # Shared aggregation (kills/wins/mvps/kdr/avg_damage/win_rate + scrim/tournament splits
     # + booyahs + per_event[] + recent_matches[]). Defensive against null leaderboards.
@@ -400,7 +404,7 @@ def get_player_details(request):
     in_game_role = member.in_game_role if member else None
     management_role = member.management_role if member else None
 
-    return Response({
+    body = {
         "player_id": player.user_id,
         "name": player.username,
         "team": team_name,
@@ -448,7 +452,10 @@ def get_player_details(request):
         "total_matches": agg["total_matches"],
         "per_event": agg["per_event"],
         "recent_matches": agg["recent_matches"],
-    })
+    }
+    if moved_to_username:
+        body["moved_to"] = f"/a/players/{moved_to_username}"
+    return Response(body, status=200)
 
 
 @api_view(["POST"])
