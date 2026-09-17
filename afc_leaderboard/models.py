@@ -50,6 +50,9 @@ class StandaloneLeaderboard(models.Model):
 
     id = models.AutoField(primary_key=True)
     name = models.CharField(max_length=120)
+    # The address /a/leaderboards/standalone/<slug> (owner rule R22, 2026-09-13): follows the
+    # name through afc_auth.slugs.sync_slug in save(); a rename keeps the old slug working.
+    slug = models.SlugField(max_length=90, unique=True, null=True, blank=True)
     format = models.CharField(max_length=10, choices=FORMAT)
     # null organization = AFC-native owner. SET_NULL so deleting an org re-homes its leaderboards to AFC.
     organization = models.ForeignKey(
@@ -97,6 +100,13 @@ class StandaloneLeaderboard(models.Model):
         this leaderboard contributes its TournamentInput/PlayerTournamentInput to.
         """
         return self.played_on or (self.created_at.date() if self.created_at else None)
+
+    def save(self, *args, **kwargs):
+        from afc_auth.slugs import sync_slug
+        kwargs["update_fields"] = sync_slug(self, "name", kwargs.get("update_fields"))
+        if kwargs["update_fields"] is None:
+            kwargs.pop("update_fields")
+        super().save(*args, **kwargs)
 
     def __str__(self):
         return f"{self.name} ({self.format})"

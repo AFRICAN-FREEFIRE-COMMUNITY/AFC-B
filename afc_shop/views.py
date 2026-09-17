@@ -773,6 +773,7 @@ def view_all_orders(request):
 
         data.append({
             "order_id": o.id,
+            "public_token": o.public_token or "",  # the address /a/shop/orders/<token> (owner rule R22)
             "user_id": o.user_id,
             "username": username,
             "status": o.status,
@@ -825,6 +826,7 @@ def _serialize_order_summary(o):
 
     return {
         "order_id": o.id,
+        "public_token": o.public_token or "",  # the address /a/shop/orders/<token> (owner rule R22)
         "user_id": o.user_id,
         "username": username,
         "status": o.status,
@@ -883,6 +885,7 @@ def view_all_coupons(request):
     qs = Coupon.objects.all().order_by("-id")
     data = [{
         "id": c.id,
+        "slug": c.slug,  # the address /a/shop/coupons/<slug> (owner rule R22)
         "code": c.code,
         "discount_type": c.discount_type,
         "discount_value": str(c.discount_value),
@@ -2137,6 +2140,7 @@ def get_my_orders(request):
     for order in orders:
         data.append({
             "order_id": order.id,
+            "public_token": order.public_token or "",  # the address /orders/<token> (owner rule R22)
             "status": order.status,
             "subtotal": str(order.subtotal),
             "total": str(order.total),
@@ -2171,20 +2175,21 @@ def get_order_details(request):
     if not user:
         return Response({"message": "Invalid or expired session token."}, status=401)
 
-    order_id = request.GET.get("order_id")
-    if not order_id:
-        return Response({"message": "order_id is required."}, status=400)
-
-    try:
-        order = Order.objects.select_related("user").prefetch_related("items__variant__product").get(
-            id=order_id,
-            user=user
-        )
-    except Order.DoesNotExist:
+    # `ref` is the order's public token or a legacy numeric id (owner rule R22); `order_id` stays
+    # accepted for older callers. A legacy id answers the order PLUS `moved_to`, its token address,
+    # which the page follows with router.replace. Always the caller's own order.
+    from afc_auth.slugs import resolve_by_token
+    ref = request.GET.get("ref") or request.GET.get("order_id")
+    if not ref:
+        return Response({"message": "ref is required."}, status=400)
+    resolved, moved_to_token = resolve_by_token(Order, ref, "o", user=user)
+    if resolved is None:
         return Response({"message": "Order not found."}, status=404)
+    order = Order.objects.select_related("user").prefetch_related("items__variant__product").get(pk=resolved.pk)
 
     data = {
         "order_id": order.id,
+        "public_token": order.public_token,
         "status": order.status,
         "subtotal": str(order.subtotal),
         "total": str(order.total),
@@ -2205,7 +2210,10 @@ def get_order_details(request):
         } for item in order.items.all()]
     }
 
-    return Response({"order": data}, status=200)
+    body = {"order": data}
+    if moved_to_token:
+        body["moved_to"] = f"/orders/{moved_to_token}"
+    return Response(body, status=200)
 
 
 
@@ -2219,19 +2227,20 @@ def get_order_details_for_admin(request):
     if not user or not user.role == "admin":
         return Response({"message": "Unauthorized access."}, status=403)
 
-    order_id = request.GET.get("order_id")
-    if not order_id:
-        return Response({"message": "order_id is required."}, status=400)
-
-    try:
-        order = Order.objects.select_related("user").prefetch_related("items__variant__product").get(
-            id=order_id
-        )
-    except Order.DoesNotExist:
+    # `ref` is the order's public token or a legacy numeric id (owner rule R22); `order_id`
+    # stays accepted for older callers. A legacy id answers the order PLUS `moved_to`.
+    from afc_auth.slugs import resolve_by_token
+    ref = request.GET.get("ref") or request.GET.get("order_id")
+    if not ref:
+        return Response({"message": "ref is required."}, status=400)
+    resolved, moved_to_token = resolve_by_token(Order, ref, "o")
+    if resolved is None:
         return Response({"message": "Order not found."}, status=404)
+    order = Order.objects.select_related("user").prefetch_related("items__variant__product").get(pk=resolved.pk)
 
     data = {
         "order_id": order.id,
+        "public_token": order.public_token,
         "user_id": order.user.user_id,
         "username": order.user.username if order.user else None,
         "status": order.status,
@@ -2259,7 +2268,10 @@ def get_order_details_for_admin(request):
         } for item in order.items.all()]
     }
 
-    return Response({"order": data}, status=200)
+    body = {"order": data}
+    if moved_to_token:
+        body["moved_to"] = f"/a/shop/orders/{moved_to_token}"
+    return Response(body, status=200)
 
 
 @api_view(["POST"])
@@ -2528,13 +2540,12 @@ def get_total_coupon_uses(request):
     if not user or not user.role == "admin":
         return Response({"message": "Unauthorized access."}, status=403)
 
-    coupon_id = request.data.get("coupon_id")
-    if not coupon_id:
-        return Response({"message": "coupon_id is required."}, status=400)
-
-    try:
-        coupon = Coupon.objects.get(id=coupon_id)
-    except Coupon.DoesNotExist:
+    from afc_auth.slugs import resolve_or_redirect
+    ref = request.data.get("ref") or request.data.get("coupon_id")
+    if not ref:
+        return Response({"message": "ref is required."}, status=400)
+    coupon, _moved = resolve_or_redirect(Coupon, ref)
+    if coupon is None:
         return Response({"message": "Coupon not found."}, status=404)
 
     total_uses = Redemption.objects.filter(coupon=coupon).count()
@@ -2677,17 +2688,19 @@ def get_coupon_details(request):
     if not user or not user.role == "admin":
         return Response({"message": "Unauthorized access."}, status=403)
 
-    coupon_id = request.data.get("coupon_id")
-    if not coupon_id:
-        return Response({"message": "coupon_id is required."}, status=400)
-
-    try:
-        coupon = Coupon.objects.get(id=coupon_id)
-    except Coupon.DoesNotExist:
+    # `ref` is the coupon's slug, a retired slug or a legacy numeric id (owner rule R22);
+    # `coupon_id` stays accepted for older callers. A move comes back as `moved_to`.
+    from afc_auth.slugs import resolve_or_redirect
+    ref = request.data.get("ref") or request.data.get("coupon_id")
+    if not ref:
+        return Response({"message": "ref is required."}, status=400)
+    coupon, moved_to_slug = resolve_or_redirect(Coupon, ref)
+    if coupon is None:
         return Response({"message": "Coupon not found."}, status=404)
 
     data = {
         "id": coupon.id,
+        "slug": coupon.slug,
         "code": coupon.code,
         "discount_type": coupon.discount_type,
         "discount_value": str(coupon.discount_value),
@@ -2699,7 +2712,10 @@ def get_coupon_details(request):
         "description": coupon.description
     }
 
-    return Response({"coupon_details": data}, status=200)
+    body = {"coupon_details": data}
+    if moved_to_slug:
+        body["moved_to"] = f"/a/shop/coupons/{moved_to_slug}"
+    return Response(body, status=200)
 
 
 @api_view(["POST"])
