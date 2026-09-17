@@ -4874,7 +4874,7 @@ def search_users(request):
 
     # Everyone matches by username (= IGN), full_name and uid. Admins additionally match by email.
     # A deleted account (inbox #20) is not in the directory: its columns are tombstones anyway,
-    # and "deleted-123" is nobody's search result.
+    # and "Deleted player 123" is nobody's search result.
     cond = Q(username__icontains=q) | Q(full_name__icontains=q) | Q(uid__icontains=q)
     if is_admin:
         cond |= Q(email__icontains=q)

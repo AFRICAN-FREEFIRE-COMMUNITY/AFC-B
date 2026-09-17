@@ -1834,7 +1834,7 @@ class DeletedAccount(models.Model):
          are dropped and its password made unusable, so nobody can sign in as it.
       2. RELEASED: the unique identity columns (username, email, uid, discord_id, the WhatsApp
          number, the connected outside accounts) are copied HERE and replaced on the User row by
-         tombstones ("deleted-<id>", "deleted-<id>@deleted.invalid", NULL). A fresh signup with the
+         tombstones ("Deleted player <id>", "deleted-<id>@deleted.invalid", NULL). A fresh signup with the
          same email or in-game name goes straight through the ordinary uniqueness checks.
       3. RESTORABLE: a head admin restores from this row. If a new account has taken one of the
          released values in the meantime the restore is refused and names the field, rather than
