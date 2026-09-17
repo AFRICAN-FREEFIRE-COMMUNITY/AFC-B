@@ -54,6 +54,10 @@ VIEWER_RELATIONSHIP_KEYS = {
     "your_team_roster_edit_open",
     "your_team_roster_edit_until",
     "your_team_stage_over",
+    # What a co-organizing org's member was granted on this event (2026-09-13, AFC-B #70): the
+    # viewer's relationship to the event, like the others here. Missed when it landed; the goldens
+    # were red on main from 13 to 17 September because of it (and open_roster, regenerated).
+    "my_co_organizer_grants",
 }
 
 # Keys whose value cannot be the same twice: the autoincrement primary key, and an auto_now_add
