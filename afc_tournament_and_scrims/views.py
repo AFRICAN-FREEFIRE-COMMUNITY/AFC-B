@@ -459,6 +459,28 @@ def update_event_and_stage_statuses():
 # detail badge). The FE renders event_status directly (tournaments/page.tsx statusColors +
 # EventDetailsWrapper), so this makes the badge reflect reality without waiting on the sweep. Audit /
 # admin-edit surfaces (snapshot_event, get_event_details_for_admin) keep the raw stored value on purpose.
+def event_end_instant(event):
+    """The absolute moment this event is over, in the EVENT's own timezone, or None when it has no
+    end date. end_date + event_end_time, or end of day when the time is not set - the same
+    combination the auto-complete sweep and effective_event_status use, named once so a caller that
+    needs "can this still be played?" does not rebuild it and drift."""
+    from datetime import datetime as _dt, time as _time
+    if not event.end_date:
+        return None
+    return timezone.make_aware(
+        _dt.combine(event.end_date, event.event_end_time or _time.max),
+        _event_zone(event),
+    )
+
+
+def event_past_end(event) -> bool:
+    """True once the event's end instant has passed. Deliberately ignores event_status and
+    auto_complete_suppressed: this answers "can this event still be PLAYED", which is a fact about
+    the clock, not about what anybody stamped on the row."""
+    end = event_end_instant(event)
+    return bool(end and timezone.now() > end)
+
+
 def effective_event_status(event):
     from datetime import datetime as _dt, time as _time
     # A finished event stays finished - do not let a time comparison re-open it.
@@ -506,13 +528,10 @@ def effective_event_status(event):
     # and its END date + time instant (end_date + event_end_time, or end-of-day when the time is NULL,
     # combined in the current tz exactly like the sweep) has passed, the badge reads "completed". This
     # is a pure read-time comparison (no cron needed), so the badge is correct even before any sweep.
-    if event.event_status not in ("completed", "cancelled") and not getattr(event, "auto_complete_suppressed", False):
-        end_dt = timezone.make_aware(
-            _dt.combine(event.end_date, event.event_end_time or _time.max),
-            _tz,
-        )
-        if now > end_dt:
-            return "completed"
+    if (event.event_status not in ("completed", "cancelled")
+            and not getattr(event, "auto_complete_suppressed", False)
+            and event_past_end(event)):
+        return "completed"
     # Otherwise keep the existing upcoming -> ongoing convergence.
     return "ongoing" if now >= start_dt else "upcoming"
 
@@ -25349,6 +25368,11 @@ def reopen_event(request):
     still work, so the event re-closes normally afterwards. No player notification is sent (this is an
     admin/organizer correction, not a player-facing milestone); an AdminHistory row records it.
 
+    Response: { message, event_status, roster_unlocked, code }. `roster_unlocked` is true when the
+    event is past its end instant, which is the case where reopening does NOT re-lock rosters:
+    players can still leave their team, be removed or be swapped while it is open (owner 2026-09-14,
+    after a reopened scrim held 85 people). The Actions tab warns before and after the click.
+
     Request: { event_id }. Consumed by the shared ActionsTab "Reopen" button on both the admin
     (app/(a)/a/events/[slug]/edit) and organizer (app/(organizer)/.../edit) event-edit pages."""
     auth = request.headers.get("Authorization")
@@ -25402,10 +25426,19 @@ def reopen_event(request):
     except Exception:
         pass
 
+    # What reopening does NOT do (owner 2026-09-14): it does not lock rosters again. The roster
+    # lock and the identity lock both ask the CLOCK (event_past_end), precisely because a reopened
+    # event never auto-completes and used to hold players forever. So an event reopened after its
+    # end date is editable by staff and still leaveable by players, and the organizer is told that
+    # rather than discovering it from a support ticket. `roster_unlocked` is the flag the event-edit
+    # Actions tab reads; the screen prints its own translated sentence, not this one.
+    roster_unlocked = event_past_end(event)
     return Response(
         {
             "message": f"Event '{event.event_name}' has been reopened.",
             "event_status": new_status,
+            "roster_unlocked": roster_unlocked,
+            "code": "reopened_roster_unlocked" if roster_unlocked else "reopened",
         },
         status=200,
     )

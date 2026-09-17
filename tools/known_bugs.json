@@ -57,6 +57,22 @@
         "tools/*.py",
         "tools/*.sh"
       ]
+    },
+    {
+      "id": "be-validator-rebinds-message",
+      "title": "A validator's sentence is unpacked into `message`, overwriting what the user wrote",
+      "why": "`is_valid, message = is_valid_email(email)` looks harmless, and inside contact_us it overwrote the visitor's own `message` two lines before the email body was built. Every Contact Us mail AFC received for months read `Message: Valid email.`, while the sender was told it had been sent. Nothing failed, nothing logged, and the words were gone. The validator's result must have its own name (`email_error`), because `message` is the name request payloads use for the thing a human typed.",
+      "seen": [
+        "2026-09-14 the owner: \"the only email we get in our email is 'valid email'\" - every contact message since the form shipped",
+        "2026-09-14 five more call sites in afc_auth/views.py were one user-typed field away from the same fault, and were renamed with it"
+      ],
+      "fix": "name the validator's second value `email_error`; never unpack a validator into `message`",
+      "kind": "regex",
+      "pattern": "^[ \t]*is_valid,\\s*message\\s*=",
+      "globs": [
+        "afc_*/**/*.py",
+        "afc_*/*.py"
+      ]
     }
   ]
 }
