@@ -737,10 +737,17 @@ def get_all_events(request):
               # makes the sort TOTAL, which LIMIT/OFFSET paging needs: on a non-unique key a row can
               # otherwise appear on two pages or on none.
               .select_related("organization").order_by("-created_at", "-event_id"))
-    # optional org filter: when present, scope the list to one organization's events.
+    # optional org filter: when present, scope the list to one organization's events, PLUS the
+    # events it CO-ORGANIZES (an accepted EventCoOrganizer row; owner 2026-09-13, inbox #8). Each
+    # co-organized row carries the org's grant so the portal can scope itself; the grant only goes
+    # on the wire for a member of that org or an AFC admin.
     organization_id = request.GET.get("organization_id")
+    co_grants = {}
     if organization_id:
-        events = events.filter(organization_id=organization_id)
+        co_grants = _co_organizer_grants_for(request, organization_id)
+        events = events.filter(
+            Q(organization_id=organization_id) | Q(event_id__in=list(co_grants.keys()))
+        ).distinct()
 
     # i18n TRANSLATE-ON-READ (owner 2026-06-15): localize the event name to the caller's locale
     # (request.locale, set by afc_auth.locale_middleware from Accept-Language). The card list only
@@ -807,9 +814,64 @@ def get_all_events(request):
             # code -> "Tier N" + color (TournamentTierBadge).
             "tournament_tier": event.tournament_tier,
         }
+        # co-organized (owner 2026-09-13): the org's grant on an event it does not own, null on
+        # its own events. The portal gates its controls on this; org_can_event gates the backend.
+        item["co_organizer_grant"] = co_grants.get(event.event_id, {}).get("grant") if co_grants else None
+        item["co_organizer_of"] = co_grants.get(event.event_id, {}).get("primary") if co_grants else None
         localize_field(item, "event_name", event.event_name, locale)
         event_list.append(item)
     return Response({"events": event_list}, status=status.HTTP_200_OK)
+
+
+def _co_organizer_grants_for(request, organization_id):
+    """{event_id: {"grant": {can_*} | None, "primary": <primary org name>}} for every event the
+    organization CO-ORGANIZES (accepted). The grant is present only when the caller is an active
+    member of that organization or an AFC admin; other callers see the event in the list (it is a
+    public event) but not the permissions negotiated between the two organizations."""
+    from afc_organizers.models import EventCoOrganizer, OrganizationMember, PERMISSION_FIELDS
+    rows = (EventCoOrganizer.objects.filter(organization_id=organization_id, status="accepted")
+            .select_related("event__organization"))
+    if not rows:
+        return {}
+    viewer = None
+    auth_header = request.headers.get("Authorization")
+    if auth_header and auth_header.startswith("Bearer "):
+        viewer = validate_token(auth_header.split(" ")[1])
+    show_grant = bool(viewer) and (
+        _is_event_admin(viewer)
+        or OrganizationMember.objects.filter(organization_id=organization_id, user=viewer, status="active").exists()
+    )
+    out = {}
+    for co in rows:
+        out[co.event_id] = {
+            "grant": {f: getattr(co, f) for f in PERMISSION_FIELDS} if show_grant else None,
+            "primary": co.event.organization.name if co.event.organization_id else "AFC",
+        }
+    return out
+
+
+def _my_co_organizer_grants(event, user):
+    """The accepted co-organizer orgs of `event` the signed-in viewer is an active member of, each
+    with its grant: [{organization_id, organization_slug, organization_name, can_*}]. The
+    organizer edit page admits a co-owner on this and scopes its tabs to the grant (owner
+    2026-09-13, inbox #8). Empty for a stranger, and for events with no co-organizers."""
+    if user is None:
+        return []
+    from afc_organizers.models import EventCoOrganizer, OrganizationMember, PERMISSION_FIELDS
+    rows = (EventCoOrganizer.objects.filter(event=event, status="accepted")
+            .select_related("organization"))
+    if not rows:
+        return []
+    mine = set(OrganizationMember.objects.filter(user=user, status="active").values_list("organization_id", flat=True))
+    return [
+        {
+            "organization_id": co.organization_id,
+            "organization_slug": co.organization.slug,
+            "organization_name": co.organization.name,
+            **{f: getattr(co, f) for f in PERMISSION_FIELDS},
+        }
+        for co in rows if co.organization_id in mine
+    ]
 
 
 @api_view(["GET"])
@@ -5108,6 +5170,8 @@ def get_event_details(request):
         "your_team_roster_edit_until": viewer_team_roster_edit_until,
         "your_team_roster_edit_open": viewer_team_roster_edit_open,
         "your_team_stage_over": viewer_team_stage_over,
+        # the co-organizer orgs I belong to, with what each was granted (owner 2026-09-13)
+        "my_co_organizer_grants": _my_co_organizer_grants(event, user),
     }
 
     # i18n TRANSLATE-ON-READ (owner 2026-06-15): localize the user-visible event copy fields

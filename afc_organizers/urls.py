@@ -64,6 +64,7 @@ urlpatterns = [
     # F6 (owner 2026-06-19): multi-org event co-ownership. Creator-owner invites; invited-owner responds.
     path("co-organizers/invite/", co_organizers.invite_co_organizer, name="organizers_co_invite"),
     path("co-organizers/respond/", co_organizers.respond_co_organizer, name="organizers_co_respond"),
+    path("co-organizers/mine/", co_organizers.my_co_organizer_invites, name="organizers_co_mine"),  # the invited side (2026-09-13)
     path("co-organizers/revoke/", co_organizers.revoke_co_organizer, name="organizers_co_revoke"),
     path("co-organizers/", co_organizers.list_event_co_organizers, name="organizers_co_list"),
 
