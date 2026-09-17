@@ -196,45 +196,6 @@ def cross_field_conflict(value, field, exclude_pk=None):
     return None, None
 
 
-# ─────────────────────────────────────────────────────────────────────────────────────────────────
-# §4  A WhatsApp number belongs to one account (owner 2026-09-14, inbox #21)
-# ─────────────────────────────────────────────────────────────────────────────────────────────────
-WHATSAPP_TAKEN_CODE = "whatsapp_taken"
-WHATSAPP_TAKEN_MESSAGE = (
-    "That WhatsApp number is already on another AFC account. Each number can belong to one "
-    "account, like an email or an in-game name."
-)
-
-
-def whatsapp_number_holder(e164, exclude_pk=None):
-    """The OTHER live account already holding this WhatsApp number, or None.
-
-    Owner: "hope that two users cannot use/have the same whatsapp number, just like emails and
-    usernames." Usernames and emails are DB-unique columns; the WhatsApp number lives on
-    UserProfile as a blank-by-default CharField, and MySQL cannot carry a partial unique index
-    (blank rows would collide), so the rule is kept here and applied at the three doors that
-    write the field: signup, edit_profile and admin_set_user_whatsapp. All three normalise to
-    E.164 first (afc_whatsapp.phone.require_international), so a plain equality is exact.
-
-    `exclude_pk` leaves the account being edited out (re-saving your own number is not a clash).
-    Deleted accounts are skipped: their number was released to a DeletedAccount row and the
-    profile column blanked (afc_auth/account_deletion.py), so nothing matches anyway, but the
-    filter states the rule. Blank never conflicts.
-
-    50 numbers on production were already shared by 2 to 6 accounts when this landed
-    (2026-09-17, mostly a manager's phone on a whole roster). They are left as they are; this
-    refuses a NEW claim of a number another account holds.
-    """
-    if not e164:
-        return None
-    from .models import UserProfile
-    qs = UserProfile.objects.filter(whatsapp_number=e164).exclude(user__status="deleted")
-    if exclude_pk is not None:
-        qs = qs.exclude(user_id=exclude_pk)
-    row = qs.select_related("user").order_by("profile_id").first()
-    return row.user if row else None
-
-
 def anonymous_conflict_message(field, held_as):
     """Wording for a conflict shown to someone who is NOT an admin (registration, profile edit).
 

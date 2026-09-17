@@ -94,6 +94,15 @@ app.conf.beat_schedule = {
     # eight machine commits a day churning this history, so the same job runs here instead and
     # writes to disk. The bot reads knowledge_base.txt on every reply, so a fresh scrape is live
     # without a restart. Default queue, like everything else a plain worker must drain.
+    # ── Discord reminders organizers set on their events (owner 2026-09-14, inbox #22) ──────
+    # Every 10 minutes: for each upcoming event with a cadence, DM the rostered players whose
+    # reminder moment has come (afc_tournament_and_scrims.discord_reminders.send_due_reminders).
+    # Idempotent per (event, offset); a moment older than an hour is recorded as skipped, never
+    # sent late. Default queue.
+    'discord_reminder_sweep_every_10m': {
+        'task': 'afc_tournament_and_scrims.tasks.discord_reminder_sweep',
+        'schedule': crontab(minute='*/10'),
+    },
     'refresh_bot_knowledge_every_3h': {
         'task': 'afc_bot.tasks.refresh_bot_knowledge',
         'schedule': crontab(minute=0, hour='*/3'),   # 00:00, 03:00, 06:00 ...
