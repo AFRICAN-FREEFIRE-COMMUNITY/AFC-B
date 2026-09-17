@@ -70,7 +70,9 @@ class _Base(TestCase):
 class SoftDeleteTests(_Base):
     def test_the_row_stays_and_every_unique_column_is_released(self):
         original_pk = self.player.user_id
-        r = self._delete()
+        # The emails are sent on commit; a TestCase never commits, so run the callbacks here.
+        with self.captureOnCommitCallbacks(execute=True):
+            r = self._delete()
         self.assertEqual(r.status_code, 200, r.content)
 
         user = User.objects.get(pk=original_pk)         # SOFT: still there
@@ -201,7 +203,8 @@ class BlockerTests(_Base):
 class RestoreTests(_Base):
     def test_restore_puts_everything_back_and_is_audited(self):
         self._delete()
-        r = self._restore()
+        with self.captureOnCommitCallbacks(execute=True):
+            r = self._restore()
         self.assertEqual(r.status_code, 200, r.content)
         user = User.objects.get(pk=self.player.pk)
         self.assertEqual((user.status, user.username, user.email, user.uid, user.deleted_at),
