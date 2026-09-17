@@ -384,7 +384,7 @@ def eligible_users(include_suspended=False):
 
     Excludes deactivated accounts always, and suspended ones unless the admin opted in (an admin
     may legitimately want to tell suspended users something about their suspension)."""
-    qs = User.objects.filter(is_active=True)
+    qs = User.objects.filter(is_active=True).exclude(status="deleted")   # deleted: never (inbox #20)
     if not include_suspended:
         qs = qs.exclude(status="suspended")
     return qs

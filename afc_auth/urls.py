@@ -19,6 +19,20 @@ from django.conf import settings
 from django.conf.urls.static import static
 # Player-to-player reports (owner 2026-06-20) live in their own module, mirroring the
 # afc_player_market moderation split. Imported explicitly so the route names are clear.
+from django.views.decorators.csrf import csrf_exempt
+from .views_account_deletion import (
+    admin_list_deleted_accounts, admin_restore_account, delete_account, delete_account_preflight,
+)
+
+
+@csrf_exempt
+def _route_delete_account(request, *args, **kwargs):
+    """GET = preflight (what stands in the way), POST = delete. One address, two verbs."""
+    if request.method == "GET":
+        return delete_account_preflight(request, *args, **kwargs)
+    return delete_account(request, *args, **kwargs)
+
+
 from .views_player_reports import (
     file_player_report,
     file_team_report,
@@ -280,6 +294,12 @@ urlpatterns = [
     path('get-all-user-and-user-roles/', get_all_user_and_user_roles, name='get_all_user_and_user_roles'),
     # Typeahead user lookup for the <UserSearchSelect/> picker (admin bulk-notify, team invites, etc.).
     path('search-users/', search_users, name='search_users'),
+    # ── Account deletion (owner 2026-09-14, inbox #20): a person soft-deletes their own account;
+    #    head admins list the deletions and restore. See afc_auth/account_deletion.py.
+    path('delete-account/', _route_delete_account, name='delete_account'),
+    path('admin/deleted-accounts/', admin_list_deleted_accounts, name='admin_list_deleted_accounts'),
+    path('admin/deleted-accounts/<int:user_id>/restore/', admin_restore_account,
+         name='admin_restore_account'),
     path('suspend-user/', suspend_user, name='suspend_user'),
     path('activate-user/', activate_user, name='activate_user'),
     path('assign-roles-to-user/', assign_roles_to_user, name='assign_roles_to_user'),

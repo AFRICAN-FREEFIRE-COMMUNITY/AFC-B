@@ -348,6 +348,17 @@ SUBJECTS = {
         "fr": "AFC a répondu à votre message ({ticket})",
         "pt": "A AFC respondeu à sua mensagem ({ticket})",
     },
+    # -- afc_auth.account_deletion (inbox #20) --
+    "account_deleted": {
+        "en": "Your AFC account has been deleted",
+        "fr": "Votre compte AFC a été supprimé",
+        "pt": "A sua conta AFC foi eliminada",
+    },
+    "account_restored": {
+        "en": "Your AFC account is back",
+        "fr": "Votre compte AFC est de retour",
+        "pt": "A sua conta AFC está de volta",
+    },
 }
 
 
@@ -1512,6 +1523,59 @@ COPY = {
             "discord": "Se não consegue entrar na sua conta AFC, o e-mail é a forma mais lenta de resolver isso. Ligue a sua conta Discord no site e entre no servidor Discord da AFC, e tratamos disso consigo por lá.",
             "cta": "Abrir o meu ticket",
             "disclaimer": "Está a receber isto porque alguém usou o formulário de contacto em africanfreefirecommunity.com com este endereço. Se não foi você, ignore este e-mail.",
+        },
+    },
+
+    # -- afc_auth.account_deletion: the person deleted their own account --
+    "account_deleted": {
+        "en": {
+            "heading": "Your account has been deleted",
+            "intro": "You deleted your AFC account today. You are signed out everywhere and your in-game name, email, UID and WhatsApp number are free for a new account to use.",
+            "restore": "Nothing has been thrown away. If you change your mind, write to support from this address and a head admin can put the account back exactly as it was, as long as nobody has taken your in-game name or email in the meantime.",
+            "reuse": "Your match results and history stay in AFC's records under a hidden name.",
+            "cta": "Contact support",
+            "disclaimer": "You are getting this because an AFC account with this address was deleted from its own settings page. If that was not you, contact support straight away.",
+        },
+        "fr": {
+            "heading": "Votre compte a été supprimé",
+            "intro": "Vous avez supprimé votre compte AFC aujourd'hui. Vous êtes déconnecté partout, et votre nom en jeu, votre e-mail, votre UID et votre numéro WhatsApp sont libres pour un nouveau compte.",
+            "restore": "Rien n'a été jeté. Si vous changez d'avis, écrivez au support depuis cette adresse : un head admin peut remettre le compte exactement comme il était, tant que personne n'a pris votre nom en jeu ou votre e-mail entre-temps.",
+            "reuse": "Vos résultats de matchs et votre historique restent dans les archives d'AFC sous un nom masqué.",
+            "cta": "Contacter le support",
+            "disclaimer": "Vous recevez ce message parce qu'un compte AFC lié à cette adresse a été supprimé depuis sa propre page de paramètres. Si ce n'était pas vous, contactez le support tout de suite.",
+        },
+        "pt": {
+            "heading": "A sua conta foi eliminada",
+            "intro": "Eliminou hoje a sua conta AFC. Tem a sessão terminada em todo o lado, e o seu nome no jogo, e-mail, UID e número de WhatsApp ficam livres para uma nova conta.",
+            "restore": "Nada foi deitado fora. Se mudar de ideias, escreva ao suporte a partir deste endereço e um head admin pode repor a conta exatamente como estava, desde que ninguém tenha ficado com o seu nome no jogo ou e-mail entretanto.",
+            "reuse": "Os seus resultados de partidas e o seu histórico ficam nos registos da AFC sob um nome oculto.",
+            "cta": "Contactar o suporte",
+            "disclaimer": "Está a receber isto porque uma conta AFC com este endereço foi eliminada a partir da sua própria página de definições. Se não foi você, contacte o suporte de imediato.",
+        },
+    },
+
+    # -- afc_auth.account_deletion: a head admin restored it --
+    "account_restored": {
+        "en": {
+            "heading": "Your account is back",
+            "intro": "A head admin restored your AFC account. Your in-game name is {username} again, with your results, team history and settings as they were.",
+            "password": "Sign in with the password you had before. If you no longer remember it, use Forgot password on the sign-in page.",
+            "cta": "Sign in",
+            "disclaimer": "You are getting this because an AFC account with this address was restored by an administrator. If you did not ask for this, contact support.",
+        },
+        "fr": {
+            "heading": "Votre compte est de retour",
+            "intro": "Un head admin a restauré votre compte AFC. Votre nom en jeu est de nouveau {username}, avec vos résultats, votre historique d'équipe et vos réglages tels qu'ils étaient.",
+            "password": "Connectez-vous avec le mot de passe que vous aviez. Si vous ne vous en souvenez plus, utilisez Mot de passe oublié sur la page de connexion.",
+            "cta": "Se connecter",
+            "disclaimer": "Vous recevez ce message parce qu'un compte AFC lié à cette adresse a été restauré par un administrateur. Si vous n'avez rien demandé, contactez le support.",
+        },
+        "pt": {
+            "heading": "A sua conta está de volta",
+            "intro": "Um head admin repôs a sua conta AFC. O seu nome no jogo volta a ser {username}, com os seus resultados, histórico de equipa e definições como estavam.",
+            "password": "Inicie sessão com a palavra-passe que tinha. Se já não se lembra dela, use Esqueci-me da palavra-passe na página de início de sessão.",
+            "cta": "Iniciar sessão",
+            "disclaimer": "Está a receber isto porque uma conta AFC com este endereço foi reposta por um administrador. Se não pediu isto, contacte o suporte.",
         },
     },
 
