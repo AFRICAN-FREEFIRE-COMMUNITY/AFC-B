@@ -12,6 +12,13 @@ grow the 19k-line tournament views.py. Endpoints mounted under organizers/ via a
     POST organizers/co-organizers/respond/   respond_co_organizer   {co_organizer_id, action: accept|decline}
     POST organizers/co-organizers/revoke/    revoke_co_organizer    {co_organizer_id}
     GET  organizers/co-organizers/?event_id= list_event_co_organizers
+    GET  organizers/co-organizers/mine/      my_co_organizer_invites  (owner 2026-09-13, inbox #8)
+
+THE INVITED SIDE (owner 2026-09-13): the invited org's OWNER answers from the organizer portal's
+/organizer/invites page (my_co_organizer_invites lists what to answer; respond_co_organizer answers).
+The invite notification's link opens that page. Once accepted, the event shows in the co-org's
+portal lists with its grant (get_all_events / get_drafted_events carry co_organizer_grant) and the
+portal scopes itself to the grant; the backend keeps enforcing it through permissions.org_can_event.
 """
 from django.utils import timezone
 
@@ -148,7 +155,9 @@ def invite_co_organizer(request):
                 f"{primary_name} invited {target.name} to co-organize {event.event_name}. "
                 f"Review it in your organizer portal to accept or decline.",
                 delivery="both", notification_type="organizer", related_event=event,
-                target_type="event", target_id=event.slug, scope="event", log=False,
+                # The link opens the portal's invites page, where the Accept button lives (owner
+                # 2026-09-13). The public event page it used to open has no way to answer.
+                target_type="custom", target_id="/organizer/invites", scope="event", log=False,
             )
     except Exception:
         pass
@@ -189,6 +198,50 @@ def respond_co_organizer(request):
     co.save(update_fields=["status", "responded_at"])
     return Response({"message": f"Invite {co.status}.", "co_organizer": _co_payload(co)},
                     status=status.HTTP_200_OK)
+
+
+@api_view(["GET"])
+def my_co_organizer_invites(request):
+    """
+    GET organizers/co-organizers/mine/ -> the co-organizer invites addressed to every organization
+    the caller OWNS: pending ones to answer, answered ones as history. Anybody else (a sub-organizer,
+    a player, a member of an uninvolved org) gets an empty list, never somebody else's invites.
+
+    Response 200 {"invites": [{id, status, event: {event_id, event_name, slug, start_date, end_date},
+                               organization: {organization_id, name, slug}, invited_by: {name, slug},
+                               permissions: {can_*}, payout_percent, created_at, responded_at}]}
+    Consumed by app/(organizer)/organizer/invites/page.tsx and the dashboard's invitations card.
+    """
+    user, err = _auth(request)
+    if err:
+        return err
+    owned = OrganizationMember.objects.filter(user=user, role="owner", status="active").values_list(
+        "organization_id", flat=True,
+    )
+    rows = (EventCoOrganizer.objects.filter(organization_id__in=list(owned))
+            .select_related("event", "event__organization", "organization")
+            .order_by("-created_at"))
+    invites = []
+    for co in rows:
+        ev = co.event
+        primary = ev.organization
+        invites.append({
+            "id": co.id,
+            "status": co.status,
+            "event": {
+                "event_id": ev.event_id, "event_name": ev.event_name, "slug": ev.slug,
+                "start_date": ev.start_date, "end_date": ev.end_date,
+            },
+            "organization": {
+                "organization_id": co.organization_id, "name": co.organization.name, "slug": co.organization.slug,
+            },
+            "invited_by": {"name": primary.name if primary else "AFC", "slug": primary.slug if primary else None},
+            "permissions": {f: getattr(co, f) for f in PERMISSION_FIELDS},
+            "payout_percent": float(co.payout_percent or 0),
+            "created_at": co.created_at,
+            "responded_at": co.responded_at,
+        })
+    return Response({"invites": invites}, status=status.HTTP_200_OK)
 
 
 @api_view(["POST"])
