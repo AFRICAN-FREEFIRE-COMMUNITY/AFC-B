@@ -25,8 +25,44 @@
       "afc_auth/broadcast_ratelimit.py",
       "afc_partner_api/ratelimit.py"
     ],
-    "edge": [],
-    "live": null
+    "edge": [
+      {
+        "provider": "nginx",
+        "rule": "limit_req zone=afc_signin rate=10r/m burst=20 nodelay (429)",
+        "paths": [
+          "/auth/login/",
+          "/auth/admin-login/",
+          "/auth/two-factor/verify/",
+          "/auth/recovery/whatsapp/verify/",
+          "/auth/recovery/whatsapp/reset-password/",
+          "/auth/reset-password/"
+        ],
+        "verified": "2026-09-17"
+      },
+      {
+        "provider": "nginx",
+        "rule": "limit_req zone=afc_codes rate=5r/m burst=10 nodelay (429)",
+        "paths": [
+          "/auth/signup/",
+          "/auth/verify-code/",
+          "/auth/resend-verification-code/",
+          "/auth/resend-token/",
+          "/auth/two-factor/resend/",
+          "/auth/two-factor/send-code/",
+          "/auth/recovery/whatsapp/start/"
+        ],
+        "verified": "2026-09-17"
+      }
+    ],
+    "live": {
+      "path": "/auth/login/",
+      "method": "POST",
+      "body": {
+        "ign_or_uid": "nobody-ratelimit-probe",
+        "password": "x"
+      },
+      "burst": 30
+    }
   },
   "ownership": {
     "markers": [
