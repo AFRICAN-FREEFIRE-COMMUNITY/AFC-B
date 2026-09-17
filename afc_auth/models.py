@@ -19,7 +19,11 @@ class User(AbstractUser):
 
     STATUS_CHOICES = [
         ("active", "Active"),
-        ("suspended", "Suspended")
+        ("suspended", "Suspended"),
+        # Soft-deleted by the person themself (owner 2026-09-14, inbox #20). The row stays so a
+        # head admin can restore it; the identity columns are moved to DeletedAccount and
+        # replaced by tombstones so a new signup can reuse them. See afc_auth/account_deletion.py.
+        ("deleted", "Deleted"),
     ]
 
     # i18n Phase 0 (owner 2026-06-15): the user's preferred UI/email/content language.
@@ -88,6 +92,11 @@ class User(AbstractUser):
     #   - Written by: afc_auth.views.mark_welcome_seen (POST /auth/mark-welcome-seen/), called
     #                 best-effort by frontend app/(user)/_components/WelcomeTour.tsx on finish.
     has_seen_welcome = models.BooleanField(default=False)
+
+    # When the person deleted their own account (status "deleted"); None while it is live or
+    # after a restore. The identity they had at that moment is in DeletedAccount
+    # (afc_auth/account_deletion.py owns both).
+    deleted_at = models.DateTimeField(null=True, blank=True)
 
     # One-time NEW-USER ONBOARDING (owner 2026-06-20): the skippable first-login flow that walks a
     # brand-new account through the usual site requirements (upload esports image, set Free Fire UID,
@@ -1809,3 +1818,66 @@ class SlugHistory(models.Model):
 
     def __str__(self):
         return f"{self.app_label}.{self.model} {self.old_slug} -> {self.object_pk}"
+
+
+# ──────────────────── DeletedAccount (a soft-deleted user's identity, kept for a restore) ────────────────────
+class DeletedAccount(models.Model):
+    """What a user's identity WAS when they deleted their account, so a head admin can put it back.
+
+    WHY IT EXISTS (owner 2026-09-14, inbox #20): "users can delete their accounts, of course
+    it's to be soft deleted, head admins should be able to restore it back and a new user will be
+    able to use some info from that account." Three things follow from that sentence, and this
+    row is what makes all three true at once:
+
+      1. SOFT: the User row is never deleted. Results, transfers, orders, audit rows and every FK
+         that points at it keep pointing at it. The row is marked status="deleted", its sessions
+         are dropped and its password made unusable, so nobody can sign in as it.
+      2. RELEASED: the unique identity columns (username, email, uid, discord_id, the WhatsApp
+         number, the connected outside accounts) are copied HERE and replaced on the User row by
+         tombstones ("deleted-<id>", "deleted-<id>@deleted.invalid", NULL). A fresh signup with the
+         same email or in-game name goes straight through the ordinary uniqueness checks.
+      3. RESTORABLE: a head admin restores from this row. If a new account has taken one of the
+         released values in the meantime the restore is refused and names the field, rather than
+         half-restoring an account that cannot receive mail.
+
+    One row per deletion (a restore fills restored_at; deleting again writes a new row), so the
+    history of an account that came and went twice is readable. Written and read ONLY by
+    afc_auth/account_deletion.py (soft_delete_user / restore_user); the views in
+    views_account_deletion.py go through those two functions.
+    """
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="deletions")
+    # The identity at the moment of deletion. Nullable where the User column is nullable.
+    username = models.CharField(max_length=40)
+    email = models.EmailField()
+    full_name = models.CharField(max_length=40, blank=True, default="")
+    uid = models.CharField(max_length=15, null=True, blank=True)
+    discord_id = models.CharField(max_length=50, null=True, blank=True)
+    discord_username = models.CharField(max_length=100, null=True, blank=True)
+    whatsapp_number = models.CharField(max_length=20, blank=True, default="")
+    password_hash = models.CharField(max_length=128, blank=True, default="")
+    # The outside accounts that were linked (provider, provider_user_id, username, email, avatar,
+    # scopes): re-created on restore when the identity is still free.
+    connected_accounts = models.JSONField(default=list, blank=True)
+    reason = models.CharField(max_length=500, blank=True, default="")
+    deleted_at = models.DateTimeField(auto_now_add=True)
+    # Who deleted it. The person themself on the self-service path; an admin if that ever exists.
+    deleted_by = models.ForeignKey(
+        User, null=True, blank=True, on_delete=models.SET_NULL, related_name="+"
+    )
+    restored_at = models.DateTimeField(null=True, blank=True)
+    restored_by = models.ForeignKey(
+        User, null=True, blank=True, on_delete=models.SET_NULL, related_name="+"
+    )
+
+    class Meta:
+        ordering = ["-deleted_at"]
+        indexes = [
+            models.Index(fields=["email"]),
+            models.Index(fields=["username"]),
+            models.Index(fields=["restored_at"]),
+        ]
+
+    def __str__(self):
+        state = "restored" if self.restored_at else "deleted"
+        return f"DeletedAccount({self.username} <{self.email}> {state} {self.deleted_at:%Y-%m-%d})"
+

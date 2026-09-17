@@ -1532,6 +1532,19 @@ def login(request):
         payload, code = login_or_challenge(request, user)
         return Response(payload, status=code)
     else:
+        # A person trying the identity of an account they deleted (inbox #20) is told so, rather
+        # than "invalid credentials": the tombstoned row can never authenticate, and the archive
+        # is the only thing that still knows the old email or in-game name. A head admin can
+        # restore it. Says no more than the signup page already does about an address.
+        from .account_deletion import find_deleted_by_identifier
+        gone = find_deleted_by_identifier(ign_or_uid)
+        if gone is not None:
+            return Response({
+                'message': f"This account was deleted on {gone.deleted_at:%d %b %Y}. "
+                           "Contact support if you want it restored.",
+                'code': 'account_deleted',
+                'deleted_at': gone.deleted_at.isoformat(),
+            }, status=status.HTTP_403_FORBIDDEN)
         # Authentication failed, return error response
         return Response({
             'message': 'Invalid username/email or password'
@@ -4860,6 +4873,8 @@ def search_users(request):
     is_admin = requester.role == "admin" or requester.userroles.exists()
 
     # Everyone matches by username (= IGN), full_name and uid. Admins additionally match by email.
+    # A deleted account (inbox #20) is not in the directory: its columns are tombstones anyway,
+    # and "deleted-123" is nobody's search result.
     cond = Q(username__icontains=q) | Q(full_name__icontains=q) | Q(uid__icontains=q)
     if is_admin:
         cond |= Q(email__icontains=q)
@@ -4871,7 +4886,7 @@ def search_users(request):
     from utils.search_utils import normalized_column, separator_stripped
 
     norm_q = separator_stripped(q)
-    qs = User.objects.annotate(
+    qs = User.objects.exclude(status="deleted").annotate(
         _norm_username=normalized_column("username"),
         _norm_full_name=normalized_column("full_name"),
         _norm_uid=normalized_column("uid"),
