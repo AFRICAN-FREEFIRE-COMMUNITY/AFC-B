@@ -262,6 +262,14 @@ class Event(models.Model):
     # page so they can join before registering. The toggle is gated in the UI behind a "the AFC bot is
     # a member of discord_server_id" check (afc_auth.verify_bot_in_guild) so membership can be verified.
     discord_invite_link = models.CharField(max_length=255, null=True, blank=True)
+    # ── Discord reminders the organizer sets (owner 2026-09-14, inbox #22) ─────────────────────
+    # A cadence key from discord_reminders.FREQUENCIES ("off", "once_24h", "daily_3d", ...): each
+    # is a list of hours-before-start at which the AFC bot DMs every rostered player who has
+    # Discord connected. The note rides on every DM. Declared in event_contract.py (read and write
+    # ORGANIZER), saved from the Actions tab through views_discord_reminders.py, sent by the
+    # Celery beat sweep tasks.discord_reminder_sweep; each send is an EventDiscordReminder row.
+    discord_reminder_frequency = models.CharField(max_length=20, blank=True, default="off")
+    discord_reminder_note = models.CharField(max_length=200, blank=True, default="")
     is_sponsored = models.BooleanField(default=False)
     sponsor_name = models.CharField(max_length=100, null=True, blank=True)
     sponsor_requirement_description = models.CharField(max_length=200, null=True, blank=True)
@@ -3205,3 +3213,33 @@ class EventRequirementWaiver(models.Model):
     def __str__(self):
         who = self.team_id or self.user_id
         return f"waiver event {self.event_id} for {who} ({len(self.waived_codes or [])} codes)"
+
+
+# ──────────────── EventDiscordReminder (one Discord reminder of an event, sent or skipped) ────────────────
+class EventDiscordReminder(models.Model):
+    """One reminder moment of an event's Discord cadence, recorded when the sweep reaches it.
+
+    Keyed on (event, offset_hours) so the sweep (afc_tournament_and_scrims.discord_reminders
+    .send_due_reminders, Celery beat every 10 minutes) can never send the same reminder twice,
+    and so the organizer's Actions tab can show what went out, to how many, and what was skipped
+    because its moment had already passed when the cadence was set. Written only by
+    discord_reminders.py; read by views_discord_reminders.py.
+    """
+    event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name="discord_reminders")
+    offset_hours = models.PositiveIntegerField()          # hours before the start this one is for
+    sent_at = models.DateTimeField(null=True, blank=True)  # None when skipped
+    recipients = models.PositiveIntegerField(default=0)   # rostered players with Discord connected
+    delivered = models.PositiveIntegerField(default=0)    # DMs Discord accepted (closed DMs fail)
+    skipped = models.BooleanField(default=False)
+    reason = models.CharField(max_length=200, blank=True, default="")
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["event", "offset_hours"], name="uniq_event_discord_reminder_offset"),
+        ]
+        ordering = ["-offset_hours"]
+
+    def __str__(self):
+        state = "skipped" if self.skipped else "sent" if self.sent_at else "pending"
+        return f"DiscordReminder(event={self.event_id} {self.offset_hours}h {state})"
+
