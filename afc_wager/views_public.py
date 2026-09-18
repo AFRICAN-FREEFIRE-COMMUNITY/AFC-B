@@ -349,7 +349,7 @@ def withdraw(request):
     user, err = _require_user(request)
     if err:
         return err
-    if _throttle(f"withdraw:{user.pk}", 5, 300):
+    if _throttle(f"withdraw:{user.pk}", 10, 600):
         return _too_many()
     bank = PayoutBankAccount.objects.filter(user=user, pk=request.data.get("bank_account_id")).first()
     if bank is None:

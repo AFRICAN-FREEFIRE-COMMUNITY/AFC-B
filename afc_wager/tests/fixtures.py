@@ -8,6 +8,7 @@ URL, verify_stake answers success, transfers answer success at once.
 """
 from datetime import date, time, timedelta
 
+from django.core.cache import cache
 from django.test import Client, TestCase
 from django.utils import timezone
 
@@ -37,6 +38,7 @@ class WagerTestCase(TestCase):
     holding both wager roles, and a plain admin holding neither."""
 
     def setUp(self):
+        cache.clear()   # the per-user throttles live in the cache, shared across tests in a run
         SeedTemplates().handle()
         self.cfg = WagerSettings.get()
         self.client = Client()

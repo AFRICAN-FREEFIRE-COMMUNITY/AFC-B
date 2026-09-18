@@ -103,7 +103,7 @@ class LifecycleTests(WagerTestCase):
         self.assertEqual(s.refund_total_kobo, 170_000)
 
     def test_void_refunds_in_full_and_expires_the_unpaid(self):
-        unpaid = self.place(self.player_auth, self.market, [{"option_id": self.opt_b.id, "stake_kobo": 30_000}]).json()["wager"]["token"]
+        unpaid = self.place(self.player_auth, self.market, [{"option_id": self.opt_b.id, "stake_kobo": 60_000}]).json()["wager"]["token"]
         s = services.void_market(self.market, by=self.admin, reason="Match cancelled")
         self.assertEqual(s.resolution, Settlement.VOID_ADMIN)
         self.assertEqual(s.refund_total_kobo, 150_000)
