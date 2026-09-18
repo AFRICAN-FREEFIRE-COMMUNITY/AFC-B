@@ -28,6 +28,19 @@ class PlaceTests(WagerTestCase):
         self.assertEqual(self.market.cached_pool_kobo, 0)
         self.assertEqual(self.market.cached_wager_count, 0)
 
+    def test_payment_return_follows_the_api_host(self):
+        """A stake placed against a localhost API comes back to the local frontend, the same rule
+        as the Discord and v-ent SSO bounces; any other host returns to production."""
+        with self.settings(FRONTEND_URL="https://prod.example", FRONTEND_URL_LOCAL="http://localhost:3000",
+                           ALLOWED_HOSTS=["testserver", "localhost"]):
+            local = self.client.post(f"/wagers/markets/{self.market.slug}/place/",
+                                     {"lines": [{"option_id": self.opt_a.id, "stake_kobo": 100_000}]},
+                                     content_type="application/json", HTTP_HOST="localhost:8010", **self.player_auth)
+            self.assertEqual(local.status_code, 201, local.content)
+            self.assertTrue(local.json()["payment_url"].startswith("http://localhost:3000/wagers/"), local.json()["payment_url"])
+            prod = self.place(self.player_auth, self.market, [{"option_id": self.opt_a.id, "stake_kobo": 100_000}])
+            self.assertTrue(prod.json()["payment_url"].startswith("https://prod.example/wagers/"), prod.json()["payment_url"])
+
     def test_paying_activates_once_and_adds_to_the_pool(self):
         token = self.place_and_pay(self.player_auth, self.market, [{"option_id": self.opt_a.id, "stake_kobo": 100_000},
                                                                     {"option_id": self.opt_b.id, "stake_kobo": 50_000}])
