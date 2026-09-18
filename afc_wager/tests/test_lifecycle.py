@@ -60,6 +60,9 @@ class LifecycleTests(WagerTestCase):
         # notifications: winner told, loser told
         self.assertTrue(Notifications.objects.filter(user=self.player, title="You won").exists())
         self.assertTrue(Notifications.objects.filter(user=self.other, title="Not this time").exists())
+        # the player's ledger names the market as data, for the page to phrase in its language
+        recent = self.client.get("/wagers/winnings/", **self.player_auth).json()["recent"]
+        self.assertEqual((recent[0]["kind"], recent[0]["label"]), ("PAYOUT", "Match 1 winner"))
 
     def test_a_second_settle_is_refused(self):
         services.lock_market(self.market)

@@ -109,6 +109,15 @@ class WinningsTests(WagerTestCase):
         account = services.account_for(self.player)
         self.assertEqual((account.balance_kobo, account.held_kobo), (1_000_000, 0))
         self.assertEqual(Withdrawal.objects.get(pk=wd.pk).reject_reason, "Name mismatch")
+        # The player's ledger carries the facts as data, so the page can phrase them in fr / pt:
+        # the bank on both withdrawal lines, the rejection reason on the release, the adjustment
+        # reason on the seed credit.
+        rows = self.client.get("/wagers/winnings/ledger/", **self.player_auth).json()["results"]
+        by_kind = {r["kind"]: r for r in rows}
+        self.assertEqual(by_kind["WITHDRAWAL_HOLD"]["label"], "Mock Bank ******6789")
+        self.assertEqual(by_kind["WITHDRAWAL_RELEASED"]["label"], "Mock Bank ******6789")
+        self.assertEqual(by_kind["WITHDRAWAL_RELEASED"]["reason"], "Name mismatch")
+        self.assertEqual(by_kind["ADJUSTMENT_CREDIT"]["reason"], "seed")
 
     def test_large_withdrawal_needs_two_different_admins(self):
         with patch("afc_wager.notify.adjustment_made"):

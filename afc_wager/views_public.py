@@ -296,7 +296,7 @@ def winnings(request):
         "limits": ser.limits_dict(limits, caps),
         "min_withdrawal_kobo": cfg.min_withdrawal_kobo,
         "bank_accounts": [ser.bank_account_dict(b) for b in PayoutBankAccount.objects.filter(user=user).order_by("-is_default", "-created_at")],
-        "recent": [ser.ledger_dict(e) for e in LedgerEntry.objects.filter(account=account)[:8]],
+        "recent": ser.ledger_rows(LedgerEntry.objects.filter(account=account)[:8]),
     })
 
 
@@ -312,7 +312,7 @@ def ledger(request):
     if kind:
         qs = qs.filter(kind=kind)
     rows, page = _paginate(request, qs, default=25)
-    return Response({"results": [ser.ledger_dict(e) for e in rows], **page})
+    return Response({"results": ser.ledger_rows(rows), **page})
 
 
 @api_view(["GET"])

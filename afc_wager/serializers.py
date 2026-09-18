@@ -100,7 +100,11 @@ def wager_dict(w, *, with_market=True):
     return d
 
 
-def ledger_dict(e):
+def ledger_dict(e, *, label="", reason=""):
+    """One ledger line. `note` is the English audit sentence the CMS reads; the player's page
+    phrases the row itself from `kind`, so it also gets `label` (the market title or the bank
+    the money went to) and `reason` (a human-written sentence: an admin's adjustment reason or
+    a rejection reason), both plain data. Use ledger_rows() to fill those in for a list."""
     return {
         "id": e.pk,
         "kind": e.kind,
@@ -110,8 +114,48 @@ def ledger_dict(e):
         "ref_kind": e.ref_kind,
         "ref": e.ref,
         "note": e.note,
+        "label": label,
+        "reason": reason,
         "created_at": _iso(e.created_at),
     }
+
+
+def ledger_rows(rows):
+    """ledger_dict for a list, with label and reason resolved in three queries rather than one
+    per row: wager tokens to market titles, market slugs to titles, withdrawal tokens to the
+    bank (and the rejection reason), adjustment ids to their reason."""
+    from .models import Adjustment, Market, Wager, Withdrawal
+
+    rows = list(rows)
+    by_kind = {}
+    for e in rows:
+        by_kind.setdefault(e.ref_kind, set()).add(e.ref)
+    titles = {}
+    if by_kind.get("wager"):
+        titles.update({w.public_token: w.market.title for w in
+                       Wager.objects.filter(public_token__in=by_kind["wager"]).select_related("market")})
+    if by_kind.get("market"):
+        titles.update(dict(Market.objects.filter(slug__in=by_kind["market"]).values_list("slug", "title")))
+    banks, reasons = {}, {}
+    if by_kind.get("withdrawal"):
+        for w in Withdrawal.objects.filter(public_token__in=by_kind["withdrawal"]).select_related("bank_account"):
+            banks[w.public_token] = f"{w.bank_account.bank_name} {w.bank_account.masked_number}"
+            reasons[w.public_token] = w.reject_reason or w.failure_reason or ""
+    if by_kind.get("adjustment"):
+        ids = [int(r) for r in by_kind["adjustment"] if str(r).isdigit()]
+        reasons.update({str(a.pk): a.reason for a in Adjustment.objects.filter(pk__in=ids)})
+    out = []
+    for e in rows:
+        if e.ref_kind in ("wager", "market"):
+            out.append(ledger_dict(e, label=titles.get(e.ref, "")))
+        elif e.ref_kind == "withdrawal":
+            out.append(ledger_dict(e, label=banks.get(e.ref, ""),
+                                   reason=reasons.get(e.ref, "") if e.kind == e.WITHDRAWAL_RELEASED else ""))
+        elif e.ref_kind == "adjustment":
+            out.append(ledger_dict(e, reason=reasons.get(e.ref, "")))
+        else:
+            out.append(ledger_dict(e))
+    return out
 
 
 def account_dict(a, *, pending_withdrawal=None):
