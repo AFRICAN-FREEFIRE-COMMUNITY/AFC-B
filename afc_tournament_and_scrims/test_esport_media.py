@@ -12,6 +12,8 @@ import io
 import zipfile
 from datetime import date, timedelta
 
+from unittest.mock import patch
+
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase, Client
 
@@ -58,6 +60,15 @@ class UploadEsportImageTests(TestCase):
 
     def setUp(self):
         self.user, self.token = _user("imguser")
+        # The esport image check (afc_auth/face_check.py, YuNet since 2026-09-13) is SURE a one
+        # pixel PNG holds no person and answers 400 not_a_person; these tests are about the upload
+        # and replace mechanics, so the check is told the picture is fine (same patch as
+        # afc_auth/test_face_check.py). The refusal itself is tested there.
+        patcher = patch("afc_auth.face_check.check_esport_image",
+                        return_value={"verdict": "ok", "reason": "ok", "confidence": 0.9,
+                                      "face_share": 0.3, "detector": "yunet"})
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def _post(self, file=None, token=None):
         data = {"esport_image": file} if file else {}

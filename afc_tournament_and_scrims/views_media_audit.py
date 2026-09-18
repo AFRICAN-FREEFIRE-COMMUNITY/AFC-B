@@ -313,10 +313,13 @@ def media_upload(request, event_id):
         return Response({"message": "kind (team_logo|player_image) and file are required."},
                         status=400)
 
-    from afc_auth.image_utils import normalize_image_upload
-    upload = normalize_image_upload(upload)
-    if upload is None:
-        return Response({"message": "The uploaded file is not a valid image."}, status=400)
+    # The bytes decide what it is (owner rule R70). Until 2026-09-18 this called the normaliser
+    # and checked for None, which it never returns: a non-image passed straight through.
+    from afc_auth.image_utils import require_image_upload
+    upload, bad = require_image_upload(upload, force_jpeg=(kind == "player_image"))
+    if bad:
+        return Response({"message": "The uploaded file must be an image (JPEG, PNG, WEBP or GIF) under 10 MB.",
+                         "code": bad}, status=400)
 
     if kind == "team_logo":
         from afc_team.models import Team

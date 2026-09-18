@@ -58,6 +58,7 @@ from django.utils import timezone
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 
+from afc_auth.image_utils import require_image_upload
 from afc_auth.models import User
 from afc_auth.views import require_admin, validate_token
 # Super-admin god-mode: a head_admin/super_admin managing-as a vendor (X-Act-As-Vendor
@@ -623,6 +624,12 @@ def vendor_create_product(request):
         return Response({"message": "variants must be a non-empty list."}, status=400)
 
     image = request.FILES.get("image")
+    if image is not None:
+        # The bytes decide what it is (owner rule R70); a refusal names why.
+        image, bad = require_image_upload(image)
+        if bad:
+            return Response({"message": "The product image must be an image (JPEG, PNG, WEBP or GIF) under 10 MB.",
+                             "code": bad}, status=400)
 
     # Force ownership + draft state server-side (never trust the client for these).
     product = Product.objects.create(
@@ -716,6 +723,10 @@ def vendor_update_product(request):
 
     new_image = request.FILES.get("image")
     if new_image:
+        new_image, bad = require_image_upload(new_image)  # owner rule R70: the bytes decide
+        if bad:
+            return Response({"message": "The product image must be an image (JPEG, PNG, WEBP or GIF) under 10 MB.",
+                             "code": bad}, status=400)
         product.image = new_image
 
     product.save()

@@ -28,6 +28,8 @@ from rest_framework.response import Response
 from .models import TournamentPlayerMatchStats, Match
 from .views import _broadcast_gate
 
+MAX_LOG_BYTES = 25 * 1024 * 1024  # a debugger .log is text; the cap only stops a mistake
+
 # Tokens verified against real logs (mirrors afc-capture/afc_capture/tailer.py).
 _RE_TS = re.compile(r"^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3})\]")
 _RE_JOIN = re.compile(r"Player Join, (\d+), (\d+), (.+?),")
@@ -144,6 +146,11 @@ def debugger_backfill(request, event_id):
     up = request.FILES.get("file")
     if not up:
         return Response({"message": "Attach the debugger .log file."}, status=400)
+    # The whole file is decoded in memory and parsed as text; it is never stored. A real
+    # MatchResult log is well under a megabyte, so the cap only stops a mistake (R70).
+    if up.size > MAX_LOG_BYTES:
+        return Response({"message": "That file is too large for a debugger log (25 MB cap).",
+                         "code": "log_too_large"}, status=400)
     try:
         text = up.read().decode("utf-8", errors="replace")
     except Exception:
