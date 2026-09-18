@@ -155,6 +155,16 @@
       "rule": "R70",
       "path": "afc_tournament_and_scrims/views_media_audit.py",
       "reason": "the upload goes through require_image_upload (afc_auth/image_utils.py, 2026-09-18): Pillow decodes the BYTES and verifies them, the format must be JPEG / PNG / WEBP / GIF / HEIF, 10 MB cap, refused with a code, then re-encoded by normalize_image_upload; proven both ways in afc_auth/tests_image_upload_gate.py. The gate lives in one module, which is why this file shows no check of its own"
+    },
+    {
+      "rule": "R70",
+      "path": "afc_wager/views_admin.py",
+      "reason": "the market image goes through afc_auth.image_utils.require_image_upload (Pillow decodes the bytes, JPEG/PNG/WEBP/GIF/HEIF only, 10 MB cap, a code on refusal, re-encoded); the gate lives in that module, not in this file"
+    },
+    {
+      "rule": "R63",
+      "path": "afc_wager/models.py",
+      "reason": "PayoutBankAccount.account_number: Paystack needs the NUBAN readable to create the transfer recipient and it is masked in every player-facing response (masked_number); the same decision as the vendor and organizer payout details, ledgered MEDIUM there"
     }
   ],
   "auth": {
