@@ -20,12 +20,21 @@ THE ONE RULE THAT MATTERS MOST HERE
     page. An inbox is forever and gets forwarded; a link that expires in 72 hours and dies on first
     use is not. See afc_partner_apply/views_public.py claim_credentials.
 
+WHY A PARTNER AT THEIR OWN DOMAIN HEARD NOTHING UNTIL 2026-09-18
+    Every send here goes through afc_auth.views.send_email, which until that day ran the
+    recipient through the SIGNUP provider allowlist (gmail, yahoo...). An organisation's contact
+    is at the organisation's domain, so the approval of AFC-P-F5C35A emailed nobody while the
+    admin screen said it had. send_email now checks the shape of the address only
+    (afc_auth/tests_outbound_recipient.py); the tests in this app's tests.py that go through the
+    REAL send_email with a company address are the guard against it coming back.
+
 BEST EFFORT, ALWAYS
     Every send runs on a daemon thread and swallows its own failures, exactly like
     afc_sponsors/engagements.py _notify_rejection. send_email talks to Office365 SMTP
     synchronously, and a slow or unreachable server must never hold up an owner's decision or an
     applicant's submission. The status page is the guaranteed channel; the email is the courtesy.
 """
+import html
 import logging
 import threading
 
@@ -129,6 +138,98 @@ def _link(url, label):
     return f'<a href="{url}" style="color:#34d27b;text-decoration:none;font-weight:600;">{label}</a>'
 
 
+def _text(value):
+    """A plain value (an organisation name, a client id, a redirect URI) dropped into an HTML
+    sentence. Escaped, because these arrived from a form and the email body is HTML."""
+    return html.escape(str(value or ""), quote=False)
+
+
+def _code(value):
+    """A value the partner will copy: monospaced so an l and a 1 cannot be mistaken."""
+    return (
+        f'<span style="font-family:Consolas,Menlo,monospace;color:#ffffff;">{_text(value)}</span>'
+    )
+
+
+def _api_origin():
+    """Where the API lives, for the discovery URL and the Data API base URL. The same setting
+    guide_url() reads, so every absolute URL in these emails points at one host."""
+    return (getattr(settings, "AFC_API_BASE_URL", "") or "").rstrip("/")
+
+
+def discovery_url():
+    """The OIDC discovery document. Everything else an OpenID client needs is inside it."""
+    return f"{_api_origin()}/sso/.well-known/openid-configuration"
+
+
+def data_api_base_url():
+    return f"{_api_origin()}/api/v1/partner/"
+
+
+def data_api_guide_url():
+    """The public Data API reference: frontend app/(root)/partners/api/page.tsx."""
+    return f"{_frontend_origin()}/partners/api"
+
+
+def _sso_grants_text(sso_application, lang):
+    """What AFC will release about a player, in words, in the applicant's language.
+
+    Reads the same catalogue the consent screen shows the player (settings.OAUTH2_PROVIDER
+    ["SCOPES"], gettext_lazy, resolved under the applicant's locale), so the promise the partner
+    reads is the promise the player reads. `openid` is always allowed, so the list is never
+    empty: at minimum it says AFC confirms who the player is.
+    """
+    from django.utils.translation import override
+
+    from afc_sso.models import TOGGLE_TO_SCOPE
+
+    catalogue = settings.OAUTH2_PROVIDER["SCOPES"]
+    scopes = ["openid"] + [
+        scope for toggle, scope in TOGGLE_TO_SCOPE.items()
+        if getattr(sso_application, toggle, False)
+    ]
+    with override(lang or "en"):
+        return "; ".join(_text(catalogue[scope]) for scope in scopes if scope in catalogue)
+
+
+# The Data API resources in plain words, per language, in the order the toggles declare them.
+# Field toggles (kills, damage...) are refinements of these and are not listed: the reference
+# page explains each response shape, and a partner who reads "matches" knows where to look.
+_RESOURCE_WORDS = {
+    "en": {
+        "can_read_events": "events", "can_read_stages": "stages and groups",
+        "can_read_matches": "matches", "can_read_standings": "standings",
+        "can_read_teams": "teams", "can_read_players": "players",
+        "can_read_designs": "leaderboard designs",
+    },
+    "fr": {
+        "can_read_events": "les événements", "can_read_stages": "les étapes et les groupes",
+        "can_read_matches": "les matchs", "can_read_standings": "les classements",
+        "can_read_teams": "les équipes", "can_read_players": "les joueurs",
+        "can_read_designs": "les designs de classement",
+    },
+    "pt": {
+        "can_read_events": "eventos", "can_read_stages": "etapas e grupos",
+        "can_read_matches": "partidas", "can_read_standings": "classificações",
+        "can_read_teams": "equipas", "can_read_players": "jogadores",
+        "can_read_designs": "designs de classificação",
+    },
+}
+_NO_RESOURCES_YET = {
+    "en": "none switched on yet (ask AFC to enable the ones you need)",
+    "fr": "aucune pour l'instant (demandez à l'AFC d'activer celles dont vous avez besoin)",
+    "pt": "nenhum por enquanto (peça à AFC para ativar os que precisa)",
+}
+
+
+def _api_resources_text(data_partner, lang):
+    lang = lang if lang in _RESOURCE_WORDS else "en"
+    from afc_partner_api.models import RESOURCE_TOGGLES
+
+    words = [_RESOURCE_WORDS[lang][t] for t in RESOURCE_TOGGLES if getattr(data_partner, t, False)]
+    return ", ".join(words) if words else _NO_RESOURCES_YET[lang]
+
+
 # ── the four transitions ──────────────────────────────────────────────────────────────────────
 
 def guide_url():
@@ -163,7 +264,7 @@ def send_received(application, access_token):
         template="partner_apply_received",
         subject_key="partner_apply_received",
         body_keys=("intro", "next_steps", "what_it_is", "guide", "keep_link"),
-        organisation=application.organisation_name,
+        organisation=_text(application.organisation_name),
         reference=application.reference,
         link=_link(status_url(application, access_token), application.reference),
         guide=_link(guide_url(), "Sign in with AFC integration guide (PDF)"),
@@ -180,32 +281,69 @@ def send_changes_requested(application, access_token):
         template="partner_apply_changes",
         subject_key="partner_apply_changes",
         body_keys=("intro", "note", "how_to_fix"),
-        organisation=application.organisation_name,
+        organisation=_text(application.organisation_name),
         reference=application.reference,
-        note=application.decision_note,
+        note=_text(application.decision_note),
         link=_link(status_url(application, access_token), application.reference),
     )
 
 
 def send_approved(application, access_token, claim_token):
-    """Approved and provisioned. Carries the single-use credentials link.
+    """Approved and provisioned. Carries the single-use credentials link and everything else
+    the partner needs (owner 2026-09-18: "in the email, they should get all credentials they
+    need").
 
     CALLED BY afc_partner_apply/views_admin.py decide_application, action "approve", and again by
     resend_credentials when the owner mints a fresh link.
 
+    WHAT IS IN HERE. For Sign in with AFC: the client id, the OIDC discovery URL (which lists the
+    authorization, token, userinfo and JWKS endpoints), the redirect URIs AFC registered, and in
+    words what AFC will release about a player. For the Data API: the base URL, the header name,
+    the resources switched on, the reference page. For both: the integration guide and the
+    status link. Each block is sent only when that product was provisioned.
+
     NOTE WHAT IS NOT IN HERE: no client secret, no API key. `claim_link` is single use and expires
     (PartnerApplication.CLAIM_WINDOW_HOURS), which an emailed secret never does.
     """
-    _send(
-        application,
-        template="partner_apply_approved",
-        subject_key="partner_apply_approved",
-        body_keys=("intro", "credentials", "expiry", "guide"),
-        organisation=application.organisation_name,
+    lang = application.locale or "en"
+    body_keys = ["intro", "credentials", "expiry"]
+    fmt = dict(
+        organisation=_text(application.organisation_name),
         reference=application.reference,
         hours=CLAIM_WINDOW_HOURS,
         claim_link=_link(claim_url(application, claim_token), "Collect your credentials"),
         link=_link(status_url(application, access_token), application.reference),
+        guide=_link(guide_url(), "Sign in with AFC integration guide (PDF)"),
+    )
+
+    sso_application = application.sso_application
+    if sso_application is not None:
+        body_keys += ["sso_details", "sso_grants"]
+        uris = [u for u in str(sso_application.redirect_uris or "").split() if u]
+        fmt.update(
+            client_id=_code(sso_application.client_id),
+            discovery_url=_link(discovery_url(), discovery_url()),
+            # Required at submit and validated at provisioning, so never empty for an SSO app.
+            redirect_uris=", ".join(_code(u) for u in uris),
+            grants=_sso_grants_text(sso_application, lang),
+        )
+
+    data_partner = application.data_partner
+    if data_partner is not None:
+        body_keys.append("api_details")
+        fmt.update(
+            api_base=_code(data_api_base_url()),
+            resources=_api_resources_text(data_partner, lang),
+            api_guide=_link(data_api_guide_url(), data_api_guide_url()),
+        )
+
+    body_keys.append("guide")
+    _send(
+        application,
+        template="partner_apply_approved",
+        subject_key="partner_apply_approved",
+        body_keys=tuple(body_keys),
+        **fmt,
     )
 
 
@@ -220,9 +358,9 @@ def send_rejected(application):
         template="partner_apply_rejected",
         subject_key="partner_apply_rejected",
         body_keys=("intro", "note", "reapply"),
-        organisation=application.organisation_name,
+        organisation=_text(application.organisation_name),
         reference=application.reference,
-        note=application.decision_note,
+        note=_text(application.decision_note),
     )
 
 
