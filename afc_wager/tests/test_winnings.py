@@ -97,6 +97,10 @@ class WinningsTests(WagerTestCase):
         account = services.account_for(self.player)
         self.assertEqual((account.balance_kobo, account.held_kobo), (700_000, 0))
         self.assertEqual(LedgerEntry.objects.get(kind=LedgerEntry.WITHDRAWAL_PAID).amount_kobo, -300_000)
+        # the overview reports money out as a positive figure, whatever sign the ledger stores
+        ov = self.client.get("/wagers/admin/overview/", **self.admin_auth).json()
+        self.assertEqual(ov["paid_out_7d_kobo"], 300_000)
+        self.assertEqual(ov["withdrawals"]["PAID"], 1)
 
     def test_admin_rejects_with_a_reason_and_the_hold_is_released(self):
         wd = self._withdrawal()

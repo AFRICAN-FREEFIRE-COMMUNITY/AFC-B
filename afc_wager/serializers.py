@@ -305,9 +305,16 @@ def adjustment_dict(adj):
     }
 
 
-def admin_ledger_row(e):
-    d = ledger_dict(e)
+def admin_ledger_row(e, base=None):
+    """A ledger line for staff: the player's row (with label and reason when `base` comes from
+    ledger_rows) plus who the account belongs to and which admin wrote it."""
+    d = dict(base) if base is not None else ledger_dict(e)
     d["user"] = e.account.user.username if e.account_id and e.account else None
     d["is_house"] = e.account_id is None
     d["created_by"] = e.created_by.username if e.created_by_id and e.created_by else None
     return d
+
+
+def admin_ledger_rows(rows):
+    rows = list(rows)
+    return [admin_ledger_row(e, base) for e, base in zip(rows, ledger_rows(rows))]

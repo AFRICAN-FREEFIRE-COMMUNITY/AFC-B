@@ -609,7 +609,8 @@ def overview(request):
         "adjustments_pending": Adjustment.objects.filter(status=Adjustment.PENDING_COSIGN).count(),
         "stakes_24h_kobo": Wager.objects.filter(paid_at__gte=day, status__in=(Wager.ACTIVE, Wager.WON, Wager.LOST, Wager.REFUNDED)).aggregate(s=Sum("total_stake_kobo"))["s"] or 0,
         "stakes_7d_kobo": Wager.objects.filter(paid_at__gte=week, status__in=(Wager.ACTIVE, Wager.WON, Wager.LOST, Wager.REFUNDED)).aggregate(s=Sum("total_stake_kobo"))["s"] or 0,
-        "paid_out_7d_kobo": LedgerEntry.objects.filter(kind=LedgerEntry.WITHDRAWAL_PAID, created_at__gte=week).aggregate(s=Sum("amount_kobo"))["s"] or 0,
+        # debits are stored negative on the ledger; the overview reports money out as a positive figure
+        "paid_out_7d_kobo": -(LedgerEntry.objects.filter(kind=LedgerEntry.WITHDRAWAL_PAID, created_at__gte=week).aggregate(s=Sum("amount_kobo"))["s"] or 0),
         "players_with_balance": WinningsAccount.objects.filter(balance_kobo__gt=0).count(),
         "frozen_accounts": WinningsAccount.objects.filter(frozen=True).count(),
         "settings": ser.settings_dict(WagerSettings.get()),
@@ -747,7 +748,7 @@ def admin_ledger(request):
     if request.GET.get("ref"):
         qs = qs.filter(ref=request.GET["ref"])
     rows, page = _paginate(request, qs, default=50)
-    return Response({"results": [ser.admin_ledger_row(e) for e in rows], **page})
+    return Response({"results": ser.admin_ledger_rows(rows), **page})
 
 
 @api_view(["GET"])
