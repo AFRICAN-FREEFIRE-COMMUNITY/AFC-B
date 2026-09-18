@@ -289,3 +289,29 @@ class WriteTests(TestCase):
         changed = ec.apply_event_writes(self.event, {"event_name": "By The Creator"},
                                         actor=self.owner, table=self.table)
         self.assertEqual(changed, ["event_name"])
+
+
+class EmptyMoneyTests(TestCase):
+    """An empty cash value is a real answer (the column is nullable and every edit form posts the
+    whole form, "" included, on any tab's save), never a refusal (2026-09-18: the Sponsor tab of an
+    event with no cash value answered "prizepool_cash_value must be a number" and saved nothing)."""
+
+    def setUp(self):
+        self.owner = _user("moneyowner")
+        self.event = _event(self.owner)
+        self.event.prizepool_cash_value = 500
+        self.event.save(update_fields=["prizepool_cash_value"])
+
+    def test_empty_string_means_no_cash_value(self):
+        for empty in ("", None, "null"):
+            self.event.prizepool_cash_value = 500
+            changed = ec.apply_event_writes(self.event, {"prizepool_cash_value": empty}, role=ec.ORGANIZER)
+            self.assertEqual(changed, ["prizepool_cash_value"], empty)
+            self.assertIsNone(self.event.prizepool_cash_value, empty)
+
+    def test_a_number_still_lands_and_a_word_is_still_refused(self):
+        ec.apply_event_writes(self.event, {"prizepool_cash_value": "1250.50"}, role=ec.ORGANIZER)
+        self.assertEqual(float(self.event.prizepool_cash_value), 1250.5)
+        with self.assertRaises(ec.WriteRefused):
+            ec.apply_event_writes(self.event, {"prizepool_cash_value": "lots"}, role=ec.ORGANIZER)
+
