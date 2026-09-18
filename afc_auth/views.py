@@ -186,6 +186,29 @@ def is_valid_email(email: str) -> tuple[bool, str]:
     return True, "Valid email."
 
 
+def is_deliverable_address(email) -> bool:
+    """Is this shaped like an email address that can be handed to SMTP? Format only.
+
+    The check for OUTGOING mail (send_email). It deliberately knows nothing about providers:
+    a partner at their own domain, a sponsor at a company address and AFC's own staff are all
+    people AFC writes to, and none of them use Gmail. The provider allowlist above is a SIGNUP
+    rule and stays in is_valid_email. Django's validator is the same one the partner application
+    form and the contact form already accept an address with, so an address that got INTO the
+    database can always be written TO.
+    """
+    from django.core.exceptions import ValidationError as _DjangoValidationError
+    from django.core.validators import validate_email as _django_validate_email
+
+    text = str(email or "").strip()
+    if not text or "\n" in text or "\r" in text:
+        return False
+    try:
+        _django_validate_email(text)
+    except _DjangoValidationError:
+        return False
+    return True
+
+
 def get_client_ip(request):
     x_forwarded_for = request.META.get("HTTP_X_FORWARDED_FOR")
     if x_forwarded_for:
@@ -418,13 +441,19 @@ def send_email(to_address, subject, html_body, language="en", prelocalized=False
     does NOT depend on the DeepL engine being up. The machine-translation path stays for the ONLY
     remaining callers that carry admin-typed free-text bodies (broadcast + sponsor DM), which cannot
     be pre-authored and must be translated on the fly."""
-    try:
-        is_valid, email_error = is_valid_email(to_address)
-        if not is_valid:
-            print(f"Invalid email address: {to_address}. Error: {email_error}")
-            return False
-    except Exception as e:
-        print(f"Error validating email address: {to_address}. Exception: {e}")
+    # ── The recipient must be an ADDRESS, never a "popular provider" (owner, 2026-09-18) ────────
+    # This used to run `is_valid_email`, the SIGNUP gate, whose job is to keep throwaway providers
+    # out of the user table. Applied to OUTGOING mail it meant AFC could not write to anybody at
+    # their own domain: the partner-application notice to info@africanfreefirecommunity.com
+    # (2026-08-05), every sponsor invitation to a company address (2026-08-14), and on 2026-09-18
+    # the approval of AFC-P-F5C35A, whose contact at nexalgaming.co received neither their
+    # "received" email nor their credentials link, while the admin screen said they had been
+    # emailed. Each time the allowlist grew one exception; the fault was the gate being here at
+    # all. Outgoing mail asks one question only: is this shaped like an address. Who may SIGN UP
+    # stays the signup views' decision, through is_valid_email, unchanged.
+    # Tested both ways in afc_auth/tests_outbound_recipient.py.
+    if not is_deliverable_address(to_address):
+        print(f"Invalid email address: {to_address!r}. Error: not shaped like an email address.")
         return False
 
     # ── Localize to the recipient's language (best-effort, never raises into the send) ───────────
