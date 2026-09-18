@@ -149,6 +149,11 @@ class SettingsAndCreateTests(WagerTestCase):
         m.save()
         r = self.client.get(f"/wagers/markets/{old}/").json()
         self.assertEqual((r["status"], r["slug"]), ("moved", m.slug))
+        # the CMS answers the retired address the same way, so an admin's bookmark keeps working
+        r = self.client.get(f"/wagers/admin/markets/{old}/", **self.admin_auth).json()
+        self.assertEqual((r["status"], r["slug"]), ("moved", m.slug))
+        r = self.client.get(f"/wagers/admin/markets/{m.slug}/", **self.admin_auth).json()
+        self.assertEqual(r["market"]["slug"], m.slug)
 
     def test_edit_options_locked_once_staked(self):
         m = self.make_market()
