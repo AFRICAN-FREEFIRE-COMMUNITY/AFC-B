@@ -110,3 +110,45 @@ def normalize_image_upload(uploaded, *, max_dim=DEFAULT_MAX_DIM,
         except Exception:
             pass
         return uploaded
+
+
+# ── the gate (owner rule R70, 2026-09-18) ────────────────────────────────────────────────────
+# normalize_image_upload() above is FAIL-SAFE by design: a file it cannot open comes back
+# unchanged, so it can never refuse anything. R70 asks for the opposite at the door: sniff the
+# bytes, allow a short list of formats, cap the size, refuse with a code. require_image_upload()
+# is that door. It decodes with Pillow (the bytes decide, never the extension or the declared
+# content type), accepts only the raster formats the site can display, caps the size, then hands
+# the file to normalize_image_upload() so what is stored is the re-encoded copy.
+#
+# Callers: submit_player_report (evidence), the vendor product image (create + edit), the media
+# audit replace. Returns (file, None) or (None, code) with code in NOT_AN_IMAGE / IMAGE_TOO_LARGE.
+IMAGE_FORMATS = {"JPEG", "PNG", "WEBP", "GIF", "HEIF"}
+MAX_IMAGE_BYTES = 10 * 1024 * 1024
+NOT_AN_IMAGE = "not_an_image"
+IMAGE_TOO_LARGE = "image_too_large"
+
+
+def require_image_upload(uploaded, *, max_bytes=MAX_IMAGE_BYTES, **normalize_kwargs):
+    """(normalized file, None) when the bytes are a displayable raster image under the cap,
+    else (None, code). Never raises; a file Pillow cannot decode is NOT_AN_IMAGE."""
+    if uploaded is None:
+        return None, NOT_AN_IMAGE
+    size = getattr(uploaded, "size", None)
+    if size is not None and size > max_bytes:
+        return None, IMAGE_TOO_LARGE
+    try:
+        from PIL import Image
+        uploaded.seek(0)
+        with Image.open(uploaded) as img:
+            fmt = (img.format or "").upper()
+            img.verify()
+        uploaded.seek(0)
+    except Exception:
+        try:
+            uploaded.seek(0)
+        except Exception:
+            pass
+        return None, NOT_AN_IMAGE
+    if fmt not in IMAGE_FORMATS:
+        return None, NOT_AN_IMAGE
+    return normalize_image_upload(uploaded, **normalize_kwargs), None
