@@ -187,7 +187,7 @@ def _clean_lines(market, raw_lines):
     return [(options[oid], stake) for oid, stake in out.items()]
 
 
-def place_wager(user, market, raw_lines, *, cfg=None, now=None):
+def place_wager(user, market, raw_lines, *, cfg=None, now=None, request=None):
     """Create a PENDING_PAYMENT wager and its Paystack checkout. Returns the Wager (with
     `paystack_authorization_url` set). Nothing is in the pool until activate_wager runs."""
     from . import payments
@@ -221,7 +221,7 @@ def place_wager(user, market, raw_lines, *, cfg=None, now=None):
     WagerLine.objects.bulk_create([
         WagerLine(wager=wager, option=option, stake_kobo=stake) for option, stake in lines
     ])
-    url = payments.initialize_stake(user, wager)
+    url = payments.initialize_stake(user, wager, request)
     wager.paystack_authorization_url = url
     wager.save(update_fields=["paystack_authorization_url", "updated_at"])
     return wager

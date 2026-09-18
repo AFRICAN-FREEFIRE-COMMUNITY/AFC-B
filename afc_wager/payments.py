@@ -42,30 +42,36 @@ def new_reference():
     return f"{STAKE_REFERENCE_PREFIX}{secrets.token_hex(8)}"
 
 
-def _frontend():
+def _frontend(request=None):
+    """Frontend origin the player is sent back to, matched to the API host: a request that
+    arrived on localhost gets FRONTEND_URL_LOCAL, the same rule as afc_auth's Discord and v-ent
+    SSO bounces (_discord_frontend_origin). Without a request, production."""
+    host = request.get_host() if request is not None else ""
+    if "localhost" in host or "127.0.0.1" in host:
+        return (getattr(settings, "FRONTEND_URL_LOCAL", "") or "").rstrip("/")
     return (getattr(settings, "FRONTEND_URL", "") or "").rstrip("/")
 
 
-def stake_callback_url(wager):
+def stake_callback_url(wager, request=None):
     """Where Paystack sends the player after paying: the market page, which then calls
     verify_payment with the reference."""
-    return f"{_frontend()}/wagers/{wager.market.slug}?paid={wager.paystack_reference}"
+    return f"{_frontend(request)}/wagers/{wager.market.slug}?paid={wager.paystack_reference}"
 
 
-def initialize_stake(user, wager):
+def initialize_stake(user, wager, request=None):
     """POST transaction/initialize for exactly the stake. Returns the authorization URL.
     Raises services.WagerError(`payment_init_failed`) when Paystack refuses."""
     from .services import WagerError
 
     if not outbox.is_live():
         outbox.record("paystack", user.email, "stake", f"initialize {wager.paystack_reference} {wager.total_stake_kobo}")
-        return f"{_frontend()}/wagers/{wager.market.slug}?paid={wager.paystack_reference}&mock=1"
+        return f"{_frontend(request)}/wagers/{wager.market.slug}?paid={wager.paystack_reference}&mock=1"
     ok, body = _paystack("POST", "/transaction/initialize", {
         "email": user.email,
         "amount": int(wager.total_stake_kobo),
         "currency": "NGN",
         "reference": wager.paystack_reference,
-        "callback_url": stake_callback_url(wager),
+        "callback_url": stake_callback_url(wager, request),
         "metadata": {
             "kind": "wager",
             "wager_token": wager.public_token,

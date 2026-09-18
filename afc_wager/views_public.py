@@ -205,7 +205,7 @@ def place(request, slug):
     if _throttle(f"place:{user.pk}", 10, 60):
         return _too_many()
     try:
-        wager = services.place_wager(user, market, request.data.get("lines"))
+        wager = services.place_wager(user, market, request.data.get("lines"), request=request)
     except WagerError as exc:
         return _refused(exc)
     return Response({
