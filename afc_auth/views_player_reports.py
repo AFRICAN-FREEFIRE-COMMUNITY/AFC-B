@@ -35,6 +35,7 @@ from rest_framework.response import Response
 # this same app's views.py; import it directly (afc_player_market imports it the same
 # way). Importing from .views is safe here because urls.py imports this module, not
 # the reverse at module-load time.
+from .image_utils import require_image_upload
 from .views import validate_token
 from .models import User, UserReport, Notifications
 from afc_team.models import Team
@@ -241,6 +242,12 @@ def file_player_report(request):
         return Response({"message": "Please describe what happened."}, status=400)
 
     evidence = request.FILES.get("evidence")  # optional proof image
+    if evidence is not None:
+        # The bytes decide what it is (owner rule R70); a refusal names why.
+        evidence, bad = require_image_upload(evidence, force_jpeg=True)
+        if bad:
+            return Response({"message": "The evidence must be an image (JPEG, PNG, WEBP or GIF) under 10 MB.",
+                             "code": bad}, status=400)
 
     _create_report(
         user, subject_type="player", reported_user=reported_user,

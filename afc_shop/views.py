@@ -2005,7 +2005,9 @@ def paystack_webhook(request):
         hashlib.sha512
     ).hexdigest()
 
-    if signature != computed:
+    # Constant-time compare (owner rule R72): `!=` returns at the first differing byte, which
+    # lets a patient caller learn the signature one byte at a time. compare_digest does not.
+    if not hmac.compare_digest(signature, computed):
         return Response({"message": "Invalid signature"}, status=400)
 
     # Guard: an empty or non-JSON body makes json.loads raise (ValueError /

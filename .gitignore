@@ -86,3 +86,8 @@ media/
 afcbot/*.json
 afcbot/conversation_history.json
 afcbot/bot_config.json
+
+# private keys and certificates never belong in the repo (owner rule R62)
+*.pem
+*.key
+*.p12

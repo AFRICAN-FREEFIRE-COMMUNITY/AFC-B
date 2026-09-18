@@ -95,6 +95,92 @@
       "rule": "R58",
       "path": "afc_team/views_transfers.py",
       "reason": "the public transfer feed (/teams transfers tab): public by design, team_id only narrows a public list; writes to TeamTransfer happen elsewhere behind the team gates"
+    },
+    {
+      "rule": "R64",
+      "path": "afc_auth/connections/views.py",
+      "reason": "payload is the OAuth state the server signed and consumed once (state.consume); the user_id in it was written by us before the provider round trip, never sent by the client"
+    },
+    {
+      "rule": "R65",
+      "path": "afc_tournament_and_scrims/views.py",
+      "reason": "the one **create is duplicate_event copying the model's OWN columns (duplicate_field_values(source), the contract's inverted duplication); the request body only names the source event"
+    },
+    {
+      "rule": "R65",
+      "path": "afc_whatsapp/webhooks.py",
+      "reason": "fields is a dict this code builds by hand (user_id, phone, direction, body...) from a signature-verified Meta webhook; no request key reaches the ORM unnamed"
+    },
+    {
+      "rule": "R66",
+      "path": "afc_sso/webhooks.py",
+      "reason": "token here is a signed back-channel logout JWT (RFC 8417 security event) posted to the partner; it is not a cookie and never reaches a browser"
+    },
+    {
+      "rule": "R69",
+      "path": "afc_auth/trusted_devices.py",
+      "reason": "a helper, not a handler: device_from_request reads one token off the sign-in body for the callers (login, two-factor verify), which authenticate first; its write (remember) runs after a passed factor"
+    },
+    {
+      "rule": "R69",
+      "path": "afc_rankings/views.py",
+      "reason": "public read-only endpoints (the rankings ladders, allowed under R58); the only .update( in the file is a dict; month and season are parsed with try/except and a code"
+    },
+    {
+      "rule": "R70",
+      "path": "afc_tournament_and_scrims/debugger_ingest.py",
+      "reason": "the file is decoded as text in memory and parsed line by line, never stored; capped at MAX_LOG_BYTES (25 MB) since 2026-09-18; no content type is trustworthy for a game client's .log"
+    },
+    {
+      "rule": "R74",
+      "path": "afcbot/bot.py",
+      "reason": "the system f-string interpolates a staff-maintained knowledge file (load_knowledge) and a constant invite link; the admin's text goes in the user message"
+    },
+    {
+      "rule": "R75",
+      "path": "afc_ocr/views.py",
+      "reason": "the cap is per ORGANIZATION: Organization.ocr_free_reads_left, decremented and refunded in afc_ocr/services/extract.py (SharedCredentials); past it the organizer's own key pays (key_required_response)"
+    },
+    {
+      "rule": "R70",
+      "path": "afc_auth/views_player_reports.py",
+      "reason": "the upload goes through require_image_upload (afc_auth/image_utils.py, 2026-09-18): Pillow decodes the BYTES and verifies them, the format must be JPEG / PNG / WEBP / GIF / HEIF, 10 MB cap, refused with a code, then re-encoded by normalize_image_upload; proven both ways in afc_auth/tests_image_upload_gate.py. The gate lives in one module, which is why this file shows no check of its own"
+    },
+    {
+      "rule": "R70",
+      "path": "afc_shop/vendors.py",
+      "reason": "the upload goes through require_image_upload (afc_auth/image_utils.py, 2026-09-18): Pillow decodes the BYTES and verifies them, the format must be JPEG / PNG / WEBP / GIF / HEIF, 10 MB cap, refused with a code, then re-encoded by normalize_image_upload; proven both ways in afc_auth/tests_image_upload_gate.py. The gate lives in one module, which is why this file shows no check of its own"
+    },
+    {
+      "rule": "R70",
+      "path": "afc_tournament_and_scrims/views_media_audit.py",
+      "reason": "the upload goes through require_image_upload (afc_auth/image_utils.py, 2026-09-18): Pillow decodes the BYTES and verifies them, the format must be JPEG / PNG / WEBP / GIF / HEIF, 10 MB cap, refused with a code, then re-encoded by normalize_image_upload; proven both ways in afc_auth/tests_image_upload_gate.py. The gate lives in one module, which is why this file shows no check of its own"
     }
-  ]
+  ],
+  "auth": {
+    "markers": [
+      "validate_token(",
+      "_broadcast_gate(",
+      "_auth(request",
+      "org_can_event(",
+      "_is_event_admin(",
+      "_require_staff(",
+      "_require_head_admin(",
+      "_require_user(",
+      "_is_head_admin(",
+      "team_role_can(",
+      "canonical_profile(",
+      "require_admin(",
+      "_require_admin(",
+      "_require_results_access(",
+      "_require_ocr_admin("
+    ]
+  },
+  "https": {
+    "enforcedBy": "nginx on the VPS (deploy/vps/nginx-afc.conf): port 80 answers 301 to https for both hosts; HSTS max-age=31536000 includeSubDomains on both 443 server blocks",
+    "verified": "2026-09-18"
+  },
+  "backups": {
+    "register": "security/backups.md"
+  }
 }
