@@ -359,6 +359,39 @@ SUBJECTS = {
         "fr": "Votre compte AFC est de retour",
         "pt": "A sua conta AFC está de volta",
     },
+    # ── afc_wager: money moving for a player (owner 2026-09-18, inbox #33) ──
+    # Sent by afc_wager/notify.py. {market} is the market title, {amount} a naira figure already
+    # formatted ("₦2,375.00"), {reason} a sentence fragment written for the player.
+    "wager_won": {
+        "en": "You won {amount} on {market}",
+        "fr": "Vous avez gagné {amount} sur {market}",
+        "pt": "Ganhou {amount} em {market}",
+    },
+    "wager_refunded": {
+        "en": "Your stake on {market} is back",
+        "fr": "Votre mise sur {market} est remboursée",
+        "pt": "A sua aposta em {market} foi devolvida",
+    },
+    "wager_withdrawal_paid": {
+        "en": "{amount} is on its way to your bank",
+        "fr": "{amount} sont en route vers votre banque",
+        "pt": "{amount} estão a caminho do seu banco",
+    },
+    "wager_withdrawal_rejected": {
+        "en": "Your withdrawal of {amount} was not approved",
+        "fr": "Votre retrait de {amount} n'a pas été approuvé",
+        "pt": "O seu levantamento de {amount} não foi aprovado",
+    },
+    "wager_adjustment": {
+        "en": "Your AFC Winnings were adjusted by {amount}",
+        "fr": "Vos Gains AFC ont été ajustés de {amount}",
+        "pt": "Os seus Ganhos AFC foram ajustados em {amount}",
+    },
+    "wager_frozen": {
+        "en": "Your AFC Winnings are frozen",
+        "fr": "Vos Gains AFC sont gelés",
+        "pt": "Os seus Ganhos AFC estão congelados",
+    },
 }
 
 
@@ -1544,6 +1577,131 @@ COPY = {
     },
 
     # -- afc_auth.account_deletion: the person deleted their own account --
+    # ─────────────────────────────────────────────────────────────────────────────────────────
+    # afc_wager: the six money emails (owner 2026-09-18, inbox #33). Rendered by
+    # afc_wager/notify.py _email as heading + intro + next + a "Winnings" button. Amounts arrive
+    # formatted in naira; there are no coins.
+    # ─────────────────────────────────────────────────────────────────────────────────────────
+    "wager_won": {
+        "en": {
+            "heading": "You won",
+            "intro": "{market} has settled and your stake won. {amount} is in your AFC Winnings now.",
+            "next": "Winnings can be withdrawn to your bank account from the Winnings page once your WhatsApp number is confirmed and Discord is connected.",
+            "cta": "Open Winnings",
+        },
+        "fr": {
+            "heading": "Vous avez gagné",
+            "intro": "{market} est réglé et votre mise a gagné. {amount} sont maintenant dans vos Gains AFC.",
+            "next": "Vos Gains peuvent être retirés vers votre compte bancaire depuis la page Gains, une fois votre numéro WhatsApp confirmé et Discord connecté.",
+            "cta": "Ouvrir mes Gains",
+        },
+        "pt": {
+            "heading": "Ganhou",
+            "intro": "{market} foi liquidado e a sua aposta ganhou. {amount} estão agora nos seus Ganhos AFC.",
+            "next": "Os Ganhos podem ser levantados para a sua conta bancária a partir da página Ganhos, depois de confirmar o seu número de WhatsApp e ligar o Discord.",
+            "cta": "Abrir Ganhos",
+        },
+    },
+    "wager_refunded": {
+        "en": {
+            "heading": "Your stake is back",
+            "intro": "{market}: {reason}. Your {amount} is back in your AFC Winnings in full, no fee.",
+            "next": "You can stake it again on another market or withdraw it from the Winnings page.",
+            "cta": "Open Winnings",
+        },
+        "fr": {
+            "heading": "Votre mise est remboursée",
+            "intro": "{market} : {reason}. Vos {amount} sont de retour dans vos Gains AFC, en totalité, sans frais.",
+            "next": "Vous pouvez les remiser sur un autre marché ou les retirer depuis la page Gains.",
+            "cta": "Ouvrir mes Gains",
+        },
+        "pt": {
+            "heading": "A sua aposta foi devolvida",
+            "intro": "{market}: {reason}. Os seus {amount} voltaram por inteiro aos seus Ganhos AFC, sem taxa.",
+            "next": "Pode apostá-los noutro mercado ou levantá-los na página Ganhos.",
+            "cta": "Abrir Ganhos",
+        },
+    },
+    "wager_withdrawal_paid": {
+        "en": {
+            "heading": "Sent to your bank",
+            "intro": "Your withdrawal of {amount} has been approved and sent. Transfers usually land within an hour; some banks take longer.",
+            "next": "If it has not arrived by tomorrow, reply to this email with the reference on your Winnings page and we will chase it.",
+            "cta": "Open Winnings",
+        },
+        "fr": {
+            "heading": "Envoyé vers votre banque",
+            "intro": "Votre retrait de {amount} a été approuvé et envoyé. Les virements arrivent en général dans l'heure ; certaines banques prennent plus de temps.",
+            "next": "S'il n'est pas arrivé demain, répondez à cet e-mail avec la référence indiquée sur votre page Gains et nous ferons le suivi.",
+            "cta": "Ouvrir mes Gains",
+        },
+        "pt": {
+            "heading": "Enviado para o seu banco",
+            "intro": "O seu levantamento de {amount} foi aprovado e enviado. As transferências costumam chegar dentro de uma hora; alguns bancos demoram mais.",
+            "next": "Se não tiver chegado amanhã, responda a este e-mail com a referência da sua página Ganhos e nós tratamos disso.",
+            "cta": "Abrir Ganhos",
+        },
+    },
+    "wager_withdrawal_rejected": {
+        "en": {
+            "heading": "Withdrawal not approved",
+            "intro": "Your withdrawal of {amount} was not approved. The reason given: {reason}",
+            "next": "The money is back in your AFC Winnings. Fix what was raised and request it again, or reply to this email if the reason is unclear.",
+            "cta": "Open Winnings",
+        },
+        "fr": {
+            "heading": "Retrait refusé",
+            "intro": "Votre retrait de {amount} n'a pas été approuvé. Le motif indiqué : {reason}",
+            "next": "L'argent est de retour dans vos Gains AFC. Corrigez le point soulevé et refaites la demande, ou répondez à cet e-mail si le motif n'est pas clair.",
+            "cta": "Ouvrir mes Gains",
+        },
+        "pt": {
+            "heading": "Levantamento não aprovado",
+            "intro": "O seu levantamento de {amount} não foi aprovado. O motivo indicado: {reason}",
+            "next": "O dinheiro voltou aos seus Ganhos AFC. Corrija o que foi apontado e peça de novo, ou responda a este e-mail se o motivo não estiver claro.",
+            "cta": "Abrir Ganhos",
+        },
+    },
+    "wager_adjustment": {
+        "en": {
+            "heading": "Your Winnings were adjusted",
+            "intro": "An AFC admin adjusted your Winnings by {amount}. The reason on record: {reason}",
+            "next": "Every adjustment is logged with who made it and why. Reply to this email if you do not recognise it.",
+            "cta": "Open Winnings",
+        },
+        "fr": {
+            "heading": "Vos Gains ont été ajustés",
+            "intro": "Un administrateur AFC a ajusté vos Gains de {amount}. Le motif enregistré : {reason}",
+            "next": "Chaque ajustement est journalisé avec son auteur et son motif. Répondez à cet e-mail si vous ne le reconnaissez pas.",
+            "cta": "Ouvrir mes Gains",
+        },
+        "pt": {
+            "heading": "Os seus Ganhos foram ajustados",
+            "intro": "Um administrador da AFC ajustou os seus Ganhos em {amount}. O motivo registado: {reason}",
+            "next": "Cada ajuste fica registado com quem o fez e porquê. Responda a este e-mail se não o reconhecer.",
+            "cta": "Abrir Ganhos",
+        },
+    },
+    "wager_frozen": {
+        "en": {
+            "heading": "Your Winnings are frozen",
+            "intro": "AFC has frozen your Winnings, so nothing can be withdrawn for now. The reason on record: {reason}",
+            "next": "Reply to this email or write to support and a head admin will look at it.",
+            "cta": "Contact support",
+        },
+        "fr": {
+            "heading": "Vos Gains sont gelés",
+            "intro": "AFC a gelé vos Gains ; aucun retrait n'est possible pour le moment. Le motif enregistré : {reason}",
+            "next": "Répondez à cet e-mail ou écrivez au support : un head admin s'en occupera.",
+            "cta": "Contacter le support",
+        },
+        "pt": {
+            "heading": "Os seus Ganhos estão congelados",
+            "intro": "A AFC congelou os seus Ganhos, pelo que nada pode ser levantado por agora. O motivo registado: {reason}",
+            "next": "Responda a este e-mail ou escreva ao suporte e um head admin irá analisar.",
+            "cta": "Contactar o suporte",
+        },
+    },
     "account_deleted": {
         "en": {
             "heading": "Your account has been deleted",

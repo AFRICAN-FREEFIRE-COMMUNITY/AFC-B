@@ -369,6 +369,10 @@ class Roles(models.Model):
         ("sponsor_admin", "Sponsor Admin"),
         ("organizer", "Organizer"),              # granted to any active OrganizationMember
         ("organizer_admin", "Organizer Admin"),  # AFC staff who oversee organizations
+        # Wagers (owner 2026-09-18): markets and settlement / the money side. head_admin holds
+        # both and is the only co-signer. See afc_wager/views_admin.py.
+        ("wager_admin", "Wager Admin"),
+        ("finance_admin", "Finance Admin"),
     ]
 
     role_id = models.AutoField(primary_key=True)
@@ -1361,6 +1365,10 @@ class TwoFactorChallenge(models.Model):
         # RECOVERY can never be spent on the login endpoint to satisfy the second factor.
         # See afc_auth/views_recovery.py.
         ("recovery", "Prove a saved WhatsApp number to reset a forgotten password"),
+        # WAGER KYC (owner 2026-09-18): confirm the profile WhatsApp number before a withdrawal.
+        # Its own purpose for the same reason as recovery: its budget is its own. See
+        # afc_wager/services.py kyc_start_whatsapp.
+        ("wager_kyc", "Confirm the WhatsApp number for wager withdrawals"),
     ]
 
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="two_factor_challenges")

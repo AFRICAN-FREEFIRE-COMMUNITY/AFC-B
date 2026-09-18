@@ -79,6 +79,10 @@ urlpatterns = [
     # partner_admin, the same staff who run both partner products. See
     # afc_partner_apply/views_public.py and views_admin.py.
     path("partner-apply/", include('afc_partner_apply.urls')),
+    # Wagers (owner 2026-09-18): wagers/markets/... for players (public reads, Bearer writes),
+    # wagers/winnings/... for the withdraw-only balance, wagers/admin/... for the CMS
+    # (wager_admin / finance_admin / head_admin). See afc_wager/urls.py.
+    path("wagers/", include('afc_wager.urls')),
     # ONE poll engine, with award ballots as a preset of it (WEBSITE/tasks/polls-spec.md).
     # PUBLIC: polls/ (the listing), polls/<slug>/ (one poll, its questions and the viewer's own
     # eligibility verdict) and polls/<slug>/responses/ (answering, auth required). The

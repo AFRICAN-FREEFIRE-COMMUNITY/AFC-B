@@ -2019,7 +2019,22 @@ def paystack_webhook(request):
     if not isinstance(payload, dict):
         return Response({"message": "Invalid payload"}, status=400)
 
-    if payload.get("event") != "charge.success":
+    # Paystack sends EVERY event of the integration to this one URL, so the wager feature's
+    # charges and transfers arrive here too (owner 2026-09-18). A charge whose metadata says
+    # kind = "wager" and every transfer.* event are handed to afc_wager.payments, which is
+    # idempotent with the player's own verify call. Everything else is the shop's, as before.
+    event_name = payload.get("event")
+    data_peek = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+    meta_peek = data_peek.get("metadata") if isinstance(data_peek.get("metadata"), dict) else {}
+    if event_name == "charge.success" and meta_peek.get("kind") == "wager":
+        from afc_wager.payments import handle_charge_success
+        handle_charge_success(data_peek)
+        return Response({"message": "Wager charge handled"}, status=200)
+    if isinstance(event_name, str) and event_name.startswith("transfer."):
+        from afc_wager.payments import handle_transfer_event
+        handle_transfer_event(event_name, data_peek)
+        return Response({"message": "Transfer event handled"}, status=200)
+    if event_name != "charge.success":
         return Response({"message": "Ignored"}, status=200)
 
     # Guard: `data` / `data.metadata.order_id` may be absent on a malformed event.

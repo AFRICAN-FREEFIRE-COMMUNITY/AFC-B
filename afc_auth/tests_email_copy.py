@@ -271,6 +271,13 @@ CALLER_PLACEHOLDERS = {
     },
     # Account deletion and restore (afc_auth.account_deletion, 2026-09-17). The deleted mail names
     # nobody (the address it goes to is the released one); the restore mail greets by name.
+    # afc_wager/notify.py _email: heading + intro + next + cta; every value pre-formatted.
+    "wager_won": dict.fromkeys(("heading", "intro", "next", "cta"), {"market", "amount"}),
+    "wager_refunded": dict.fromkeys(("heading", "intro", "next", "cta"), {"market", "amount", "reason"}),
+    "wager_withdrawal_paid": dict.fromkeys(("heading", "intro", "next", "cta"), {"amount"}),
+    "wager_withdrawal_rejected": dict.fromkeys(("heading", "intro", "next", "cta"), {"amount", "reason"}),
+    "wager_adjustment": dict.fromkeys(("heading", "intro", "next", "cta"), {"amount", "reason"}),
+    "wager_frozen": dict.fromkeys(("heading", "intro", "next", "cta"), {"reason"}),
     "account_deleted": dict.fromkeys(("heading", "intro", "restore", "reuse", "cta", "disclaimer"), set()),
     "account_restored": {
         "heading": set(), "intro": {"username"}, "password": set(), "cta": set(), "disclaimer": set(),
@@ -328,6 +335,12 @@ CALLER_SUBJECT_PLACEHOLDERS = {
     "event_team_invitation": {"event"},
     "support_received": {"ticket"},
     "support_reply": {"ticket"},
+    "wager_won": {"market", "amount"},
+    "wager_refunded": {"market"},
+    "wager_withdrawal_paid": {"amount"},
+    "wager_withdrawal_rejected": {"amount"},
+    "wager_adjustment": {"amount"},
+    "wager_frozen": set(),
     "account_deleted": set(),
     "account_restored": set(),
 }
