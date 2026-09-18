@@ -153,7 +153,7 @@ class SettingsAndCreateTests(WagerTestCase):
         r = self.client.get(f"/wagers/admin/markets/{old}/", **self.admin_auth).json()
         self.assertEqual((r["status"], r["slug"]), ("moved", m.slug))
         r = self.client.get(f"/wagers/admin/markets/{m.slug}/", **self.admin_auth).json()
-        self.assertEqual(r["market"]["slug"], m.slug)
+        self.assertEqual(r["slug"], m.slug)
 
     def test_edit_options_locked_once_staked(self):
         m = self.make_market()
