@@ -96,11 +96,17 @@ class PartnerApplyTestCase(TestCase):
         # directly, because it is English-only and not in the localized catalog. Left unpatched it
         # opened a real Office365 socket on a daemon thread for every submission in this file, and
         # the suite sat waiting on the connect timeout.
-        for target in ("afc_partner_apply.emails._send",
-                       "afc_partner_apply.emails.send_internal_new_application"):
+        for target in self.patched_sends():
             patcher = patch(target)
             patcher.start()
             self.addCleanup(patcher.stop)
+
+    def patched_sends(self):
+        """The send functions this class replaces with mocks. DecisionReachesTheApplicant below
+        overrides it to leave `_send` REAL: patching it here is what hid, for six weeks, that the
+        fixture's own company-domain address could never have been written to."""
+        return ("afc_partner_apply.emails._send",
+                "afc_partner_apply.emails.send_internal_new_application")
 
     def _auth(self):
         return {"HTTP_AUTHORIZATION": "Bearer tok-apply-admin"}
@@ -1047,3 +1053,274 @@ class CredentialClaimTests(PartnerApplyTestCase):
 
         self.assertEqual(resp.status_code, 409)
         self.assertFalse(PartnerApiKey.objects.filter(partner__name="Other").exists())
+
+
+# ──────────────────────────────────────────────────────────────────────────────────────────────
+# The decision REACHES the applicant (owner 2026-09-18, inbox #30)
+# ──────────────────────────────────────────────────────────────────────────────────────────────
+class _InlineThread:
+    """threading.Thread stand-in: runs the target on start(), so the outbox can be read the
+    moment the view returns instead of racing a daemon thread."""
+
+    def __init__(self, target=None, daemon=None, **kwargs):
+        self._target = target
+
+    def start(self):
+        self._target()
+
+
+class DecisionReachesTheApplicant(PartnerApplyTestCase):
+    """The approval of AFC-P-F5C35A on 2026-09-18 emailed nobody: the applicant's address was at
+    their own domain, and send_email refused it against the SIGNUP provider allowlist. Every
+    test above had `_send` mocked, so the fixture's company address (ama@kite.example) never met
+    the gate. These tests run the real emails.py through the real send_email, with delivery
+    held in afc_auth.outbox (the test runner's mode), and read what would have gone out.
+
+    They also hold the rest of the owner's ask: the approval email carries everything the
+    partner needs that is not a secret; the rejection email carries the reason; the bell on a
+    matching AFC account and the WhatsApp number they gave hear the same thing."""
+
+    def patched_sends(self):
+        # `_send` stays REAL. Only the internal notice to AFC is mocked, as before.
+        return ("afc_partner_apply.emails.send_internal_new_application",)
+
+    def setUp(self):
+        super().setUp()
+        from afc_auth import outbox
+
+        self.outbox = outbox
+        self.outbox.drain()
+        for target, new in (("afc_partner_apply.emails.threading.Thread", _InlineThread),):
+            patcher = patch(target, new)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        smtp = patch("afc_auth.views.smtplib.SMTP")
+        self.smtp = smtp.start()
+        self.addCleanup(smtp.stop)
+
+    def _submitted(self, **overrides):
+        resp = self._submit(**overrides)
+        self.assertEqual(resp.status_code, 201, resp.content)
+        # The "received" email went out too (to the same company address); it is not what these
+        # tests read, so it is drained here and asserted once below.
+        received = self.outbox.drain()
+        self.assertEqual([m["to"] for m in received], [self._body(**overrides)["contact_email"]])
+        return PartnerApplication.objects.get(reference=resp.json()["reference"])
+
+    def _reject(self, application, note):
+        return self.client.post(
+            f"{ADMIN_LIST_URL}{application.pk}/decide/",
+            data=json.dumps({"action": "reject", "note": note}),
+            content_type="application/json", **self._auth())
+
+    def _only_email(self):
+        sent = self.outbox.drain()
+        self.assertEqual(len(sent), 1, [m["subject"] for m in sent])
+        self.smtp.assert_not_called()
+        return sent[0]
+
+    # ── approval ──
+
+    def test_an_applicant_at_their_own_domain_is_emailed_on_approval(self):
+        application = self._submitted()
+
+        resp = self._approve(application, share_profile=True, share_ranking=True)
+
+        self.assertEqual(resp.status_code, 200, resp.content)
+        mail = self._only_email()
+        self.assertEqual(mail["to"], "ama@kite.example")
+        self.assertIn(application.reference, mail["subject"])
+        self.assertIn("approved", mail["subject"])
+
+    def test_the_approval_email_carries_everything_but_the_secret(self):
+        application = self._submitted()
+        self._approve(application, share_profile=True, share_ranking=True)
+        application.refresh_from_db()
+        body = self._only_email()["body"]
+        sso = application.sso_application
+
+        # The single-use link for the secret, with the token that opens it.
+        self.assertIn(f"/partners/apply/credentials?ref={application.reference}&token=", body)
+        # The public half of the credential and where every endpoint is listed.
+        self.assertIn(sso.client_id, body)
+        self.assertIn("/sso/.well-known/openid-configuration", body)
+        # What AFC registered for them.
+        self.assertIn("https://kite.example/auth/afc/callback", body)
+        # What AFC will release, in words, exactly as the player's consent screen says it.
+        self.assertIn("Confirm who you are on AFC", body)
+        self.assertIn("Your in-game name, avatar, country and language", body)
+        self.assertIn("Your AFC rank and ranking points", body)
+        self.assertNotIn("Your email address", body)   # share_email was not granted
+        # The guide and their own status page.
+        self.assertIn("/partner-apply/integration-guide/", body)
+        self.assertIn(f"/partners/apply/status?ref={application.reference}&token=", body)
+        # And NOT the secret: not the stored hash, not any Data API key.
+        self.assertNotIn(sso.client_secret, body)
+        self.assertNotIn("afcp_", body)
+        self.assertNotIn("api/v1/partner", body)   # no Data API was provisioned
+
+    def _data_api_only(self):
+        """Every submission is a Sign in with AFC application (views_public forces wants_sso);
+        a Data API row is set on the model, exactly as DecisionTests does above."""
+        application = self._submitted()
+        application.wants_sso = False
+        application.wants_data_api = True
+        application.save(update_fields=["wants_sso", "wants_data_api"])
+        return application
+
+    def test_the_approval_email_names_the_data_api_base_url_and_the_resources(self):
+        application = self._data_api_only()
+        self._approve(application, can_read_events=True, can_read_standings=True)
+        body = self._only_email()["body"]
+
+        self.assertIn("/api/v1/partner/", body)
+        self.assertIn("X-API-Key", body)
+        self.assertIn("events, standings", body)
+        self.assertIn("/partners/api", body)
+        self.assertNotIn("afcp_", body)
+        self.assertNotIn("openid-configuration", body)   # no SSO app was provisioned
+        self.assertFalse(PartnerApiKey.objects.filter(partner__name="Kite Esports").exists())
+
+    def test_a_data_api_partner_with_nothing_switched_on_is_told_so(self):
+        application = self._data_api_only()
+        self._approve(application)
+        body = self._only_email()["body"]
+        self.assertIn("none switched on yet", body)
+
+    def test_a_french_applicant_is_approved_in_french(self):
+        application = self._submitted(locale="fr")
+        self._approve(application, share_profile=True)
+        mail = self._only_email()
+        self.assertIn("approuvée", mail["subject"])
+        self.assertIn("identifiant client", mail["body"])
+        self.assertIn("Votre pseudo en jeu", mail["body"])   # the scope catalogue, in French
+
+    def test_resending_credentials_reaches_the_same_company_address(self):
+        application = self._submitted()
+        self._approve(application)
+        self.outbox.drain()
+
+        resp = self.client.post(
+            f"{ADMIN_LIST_URL}{application.pk}/resend-credentials/", **self._auth())
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(self._only_email()["to"], "ama@kite.example")
+
+    # ── rejection ──
+
+    def test_a_rejection_emails_the_reason_to_their_own_domain(self):
+        application = self._submitted()
+
+        resp = self._reject(application, "We could not verify that kite.example is yours.")
+
+        self.assertEqual(resp.status_code, 200, resp.content)
+        mail = self._only_email()
+        self.assertEqual(mail["to"], "ama@kite.example")
+        self.assertIn("not able to approve", mail["body"])
+        self.assertIn("We could not verify that kite.example is yours.", mail["body"])
+
+    def test_a_reason_typed_with_markup_cannot_reshape_the_email(self):
+        application = self._submitted()
+        self._reject(application, "Use <b>your</b> domain & a real logo")
+        body = self._only_email()["body"]
+        self.assertIn("Use &lt;b&gt;your&lt;/b&gt; domain &amp; a real logo", body)
+
+    # ── the bell ──
+
+    def test_a_matching_afc_account_gets_the_bell_in_its_own_language(self):
+        from afc_auth.models import Notifications
+
+        account = User.objects.create_user(
+            username="ama", email="AMA@kite.example", password="x", language="pt")
+        application = self._submitted()
+
+        self._approve(application)
+
+        row = Notifications.objects.get(user=account)
+        self.assertEqual(row.notification_type, "partner_application")
+        self.assertEqual(row.title, "A sua candidatura a parceiro AFC foi aprovada")
+        self.assertIn(application.reference, row.message)
+        self.assertIn("ama@kite.example", row.message)
+        self.assertFalse(row.is_read)
+
+    def test_the_bell_carries_the_rejection_reason(self):
+        from afc_auth.models import Notifications
+
+        account = User.objects.create_user(
+            username="ama", email="ama@kite.example", password="x")
+        application = self._submitted()
+
+        self._reject(application, "Not enough detail about your product.")
+
+        row = Notifications.objects.get(user=account)
+        self.assertEqual(row.title, "About your AFC partner application")
+        self.assertIn("Not enough detail about your product.", row.message)
+
+    def test_no_matching_account_means_no_bell_and_the_decision_still_lands(self):
+        from afc_auth.models import Notifications
+
+        application = self._submitted()
+        resp = self._approve(application)
+        self.assertEqual(resp.status_code, 200)
+        self.assertFalse(Notifications.objects.filter(
+            notification_type="partner_application").exists())
+
+    def test_a_deleted_account_with_that_email_is_not_notified(self):
+        from afc_auth.models import Notifications
+
+        User.objects.create_user(
+            username="gone", email="ama@kite.example", password="x", status="deleted")
+        application = self._submitted()
+        self._approve(application)
+        self.assertFalse(Notifications.objects.filter(
+            notification_type="partner_application").exists())
+
+    # ── WhatsApp ──
+
+    @override_settings(WHATSAPP_BROADCAST_TEMPLATE="broadcast", WHATSAPP_BROADCAST_TEMPLATE_LANG="en")
+    def test_the_whatsapp_number_they_gave_gets_one_template_message(self):
+        application = self._submitted(contact_whatsapp="+2348012345678")
+
+        with patch("afc_whatsapp.tasks.queue_template") as queue:
+            self._approve(application)
+
+        queue.assert_called_once()
+        args, kwargs = queue.call_args
+        self.assertEqual(args, ("+2348012345678", "broadcast", "en"))
+        name, body = kwargs["body_params"]
+        self.assertEqual(name, "Ama Mensah")
+        self.assertIn(application.reference, body)
+        self.assertIn("approved", body)
+        self.assertNotIn("\n", body)
+        self.assertEqual(kwargs["context"], "partner_approved")
+
+    @override_settings(WHATSAPP_BROADCAST_TEMPLATE="")
+    def test_no_template_configured_means_no_whatsapp(self):
+        application = self._submitted(contact_whatsapp="+2348012345678")
+        with patch("afc_whatsapp.tasks.queue_template") as queue:
+            self._approve(application)
+        queue.assert_not_called()
+
+    @override_settings(WHATSAPP_BROADCAST_TEMPLATE="broadcast")
+    def test_no_number_means_no_whatsapp(self):
+        application = self._submitted()
+        with patch("afc_whatsapp.tasks.queue_template") as queue:
+            self._reject(application, "No.")
+        queue.assert_not_called()
+
+    # ── never blocks ──
+
+    def test_a_failing_side_channel_never_fails_the_decision(self):
+        User.objects.create_user(username="ama", email="ama@kite.example", password="x")
+        application = self._submitted(contact_whatsapp="+2348012345678")
+
+        with patch("afc_partner_apply.notify.Notifications.objects.create",
+                   side_effect=RuntimeError("db gone")), \
+                override_settings(WHATSAPP_BROADCAST_TEMPLATE="broadcast"), \
+                patch("afc_whatsapp.tasks.queue_template", side_effect=RuntimeError("meta gone")):
+            resp = self._approve(application)
+
+        self.assertEqual(resp.status_code, 200, resp.content)
+        application.refresh_from_db()
+        self.assertEqual(application.status, PartnerApplication.APPROVED)
+        self.assertEqual(self._only_email()["to"], "ama@kite.example")

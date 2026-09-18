@@ -72,7 +72,8 @@ class OutboxWhenLive(SimpleTestCase):
         with patch("afc_auth.views.smtplib.SMTP") as smtp:
             server = Mock()
             smtp.return_value = server
-            # a gmail address: send_email refuses providers it does not know before it sends
+            # any well-formed address: since 2026-09-18 send_email checks the SHAPE only (the
+            # provider allowlist is a signup rule, see tests_outbound_recipient.py)
             ok = send_email("someone@gmail.com", "Subject", "<p>body</p>")
         self.assertTrue(ok)
         smtp.assert_called_once()

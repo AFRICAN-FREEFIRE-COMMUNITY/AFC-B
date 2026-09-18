@@ -48,7 +48,7 @@ from afc_partner_api.models import PARTNER_TOGGLE_FIELDS, Partner
 from afc_sso.models import SSO_FIELD_TOGGLES
 from afc_sso.provisioning import provision_sso_application
 
-from . import emails
+from . import emails, notify
 from .models import PartnerApplication
 
 # The same two roles that manage both partner products manage the queue that feeds them, because
@@ -379,6 +379,9 @@ def decide_application(request, application_id):
             # forwarded older email stops working, which is the safer default for a link that now
             # grants write access.
             emails.send_changes_requested(application, application.issue_access_token())
+        # The bell on a matching AFC account and the WhatsApp number they gave, with the reason
+        # (owner 2026-09-18). Best effort: the email above is the promised channel.
+        notify.notify_decision(application, application.status)
 
         return Response(
             {
@@ -469,6 +472,8 @@ def decide_application(request, application_id):
 
     claim_token = application.issue_claim_token()
     emails.send_approved(application, application.issue_access_token(), claim_token)
+    # The bell on a matching AFC account and the WhatsApp number they gave (owner 2026-09-18).
+    notify.notify_decision(application, PartnerApplication.APPROVED)
 
     return Response(
         {

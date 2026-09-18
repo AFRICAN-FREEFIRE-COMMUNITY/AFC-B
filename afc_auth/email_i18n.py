@@ -1363,6 +1363,14 @@ COPY = {
     # NOTE WHAT THE APPROVAL COPY DOES NOT SAY: it never contains a client secret or an API key.
     # It points at a single-use link that expires, because an inbox does not. See the module
     # header of afc_partner_apply/emails.py.
+    #
+    # WHAT IT DOES SAY, since 2026-09-18 (owner: "in the email, they should get all credentials
+    # they need"): everything a partner needs that is NOT a secret. sso_details carries the client
+    # id, the OIDC discovery URL and the registered redirect URIs; sso_grants lists in words what
+    # AFC will release about a player (the scope catalogue in the applicant's language);
+    # api_details carries the Data API base URL, the header name, the resources switched on and
+    # the reference page. Each of the three is sent only when it applies (emails.send_approved
+    # picks the keys), so the placeholder sets differ between keys on purpose.
     "partner_apply_received": {
         "en": {
             "heading": "Your application is with us",
@@ -1415,21 +1423,30 @@ COPY = {
             "intro": "The application for {organisation} ({reference}) is approved and everything on the AFC side is set up.",
             "credentials": "Collect your credentials here: {claim_link}. We deliberately do not send them by email. The link works once, and your client secret is shown a single time on that page, so have somewhere safe to paste it before you open it.",
             "expiry": "The link stops working after {hours} hours. If you miss it, or you lose the secret afterwards, ask us and we will send a new link.",
-            "guide": "Your application page stays available here: {link}. AFC will also send you the partner integration guide, which covers every endpoint, what each scope releases, and a full worked integration.",
+            "sso_details": "Sign in with AFC. Your client id is {client_id}. Your discovery document is {discovery_url}: it lists the authorization, token, userinfo and JWKS endpoints, so you never have to type one. The redirect URIs registered for you are: {redirect_uris}. The client secret is the one thing that waits behind the link above.",
+            "sso_grants": "What AFC will release about a player who signs in through you, and nothing more, in the words the player reads on the consent screen: {grants}. If you later need something else, ask us; every grant is switched on by AFC, never requested from the player.",
+            "api_details": "Data API. Your API key is minted behind the link above. The base URL is {api_base}, every request carries the key in the X-API-Key header, and the resources switched on for you are: {resources}. The full reference, with every endpoint and response shape, is here: {api_guide}.",
+            "guide": "Your application page stays available here: {link}. The Sign in with AFC integration guide (PDF) is here: {guide}. It covers every endpoint, what each scope releases, the error responses and a full worked integration.",
         },
         "fr": {
             "heading": "Vous êtes partenaire AFC",
             "intro": "La demande de {organisation} ({reference}) est approuvée et tout est en place du côté de l'AFC.",
             "credentials": "Récupérez vos identifiants ici : {claim_link}. Nous ne les envoyons volontairement pas par e-mail. Le lien ne fonctionne qu'une fois et votre secret client n'est affiché qu'une seule fois sur cette page, alors prévoyez un endroit sûr où le coller avant de l'ouvrir.",
             "expiry": "Le lien cesse de fonctionner au bout de {hours} heures. Si vous le manquez, ou si vous perdez le secret ensuite, demandez-nous et nous vous en enverrons un nouveau.",
-            "guide": "La page de votre demande reste accessible ici : {link}. L'AFC vous transmettra également le guide d'intégration partenaire, qui couvre chaque endpoint, ce que chaque scope communique et une intégration complète commentée.",
+            "sso_details": "Sign in with AFC. Votre identifiant client (client id) est {client_id}. Votre document de découverte est {discovery_url} : il liste les endpoints d'autorisation, de jeton, userinfo et JWKS, vous n'avez donc jamais à en saisir un. Les URI de redirection enregistrées pour vous sont : {redirect_uris}. Le secret client est la seule chose qui vous attend derrière le lien ci-dessus.",
+            "sso_grants": "Ce que l'AFC communiquera sur un joueur qui se connecte via vous, et rien de plus, dans les termes que le joueur lit sur l'écran de consentement : {grants}. Si vous avez besoin d'autre chose par la suite, demandez-nous ; chaque autorisation est activée par l'AFC, jamais demandée au joueur.",
+            "api_details": "API de données. Votre clé d'API est générée derrière le lien ci-dessus. L'URL de base est {api_base}, chaque requête porte la clé dans l'en-tête X-API-Key, et les ressources activées pour vous sont : {resources}. La référence complète, avec chaque endpoint et la forme de chaque réponse, est ici : {api_guide}.",
+            "guide": "La page de votre demande reste accessible ici : {link}. Le guide d'intégration Sign in with AFC (PDF) est ici : {guide}. Il couvre chaque endpoint, ce que chaque scope communique, les réponses d'erreur et une intégration complète commentée.",
         },
         "pt": {
             "heading": "É agora parceiro da AFC",
             "intro": "A candidatura de {organisation} ({reference}) foi aprovada e está tudo preparado do lado da AFC.",
             "credentials": "Recolha as suas credenciais aqui: {claim_link}. Não as enviamos por e-mail, e isso é intencional. A ligação funciona uma única vez e o seu segredo de cliente é mostrado uma só vez nessa página, por isso tenha um local seguro para o colar antes de a abrir.",
             "expiry": "A ligação deixa de funcionar ao fim de {hours} horas. Se a perder, ou se perder o segredo depois, peça-nos e enviamos uma nova.",
-            "guide": "A página da sua candidatura continua disponível aqui: {link}. A AFC enviará também o guia de integração para parceiros, que cobre todos os endpoints, o que cada scope disponibiliza e uma integração completa comentada.",
+            "sso_details": "Sign in with AFC. O seu client id é {client_id}. O seu documento de descoberta é {discovery_url}: lista os endpoints de autorização, de token, userinfo e JWKS, por isso nunca tem de escrever um. Os URIs de redirecionamento registados para si são: {redirect_uris}. O segredo de cliente é a única coisa que o espera atrás da ligação acima.",
+            "sso_grants": "O que a AFC disponibiliza sobre um jogador que inicia sessão através de si, e nada mais, nas palavras que o jogador lê no ecrã de consentimento: {grants}. Se mais tarde precisar de outra coisa, peça-nos; cada permissão é ativada pela AFC, nunca pedida ao jogador.",
+            "api_details": "API de dados. A sua chave de API é gerada atrás da ligação acima. O URL base é {api_base}, cada pedido leva a chave no cabeçalho X-API-Key, e os recursos ativados para si são: {resources}. A referência completa, com todos os endpoints e a forma de cada resposta, está aqui: {api_guide}.",
+            "guide": "A página da sua candidatura continua disponível aqui: {link}. O guia de integração do Sign in with AFC (PDF) está aqui: {guide}. Cobre todos os endpoints, o que cada scope disponibiliza, as respostas de erro e uma integração completa comentada.",
         },
     },
     "partner_apply_rejected": {
