@@ -3338,19 +3338,10 @@ def _competitor_in_active_stage(ev, tt, rc) -> bool:
     a data gap), return True. The stage-over release therefore only fires when we positively have stage data
     that shows the competitor out of every active stage. Consumed by `_has_active_event_registration`.
     """
-    from afc_tournament_and_scrims.models import StageCompetitor
-    base = StageCompetitor.objects.filter(stage__event=ev)
-    if tt is not None:
-        base = base.filter(tournament_team=tt)
-    elif rc is not None:
-        base = base.filter(player=rc)
-    else:
-        return True  # unknown competitor -> safe default (keep locked)
-    if not base.exists():
-        return True  # no stage data for them -> safe default (don't wrongly unlock mid-event)
-    # Positively have stage rows: locked only while an ACTIVE one sits in a NOT-completed stage
-    # (upcoming/ongoing/paused). Only a "completed" stage is over.
-    return base.filter(status="active").exclude(stage__stage_status="completed").exists()
+    # The rule itself lives in afc_tournament_and_scrims.still_in (one copy for the four locks that
+    # ask it, owner 2026-09-18); this wrapper keeps the name the callers here know.
+    from afc_tournament_and_scrims.still_in import competitor_still_in
+    return competitor_still_in(ev, tournament_team=tt, player=rc)
 
 
 def _name_locking_events(events) -> str:

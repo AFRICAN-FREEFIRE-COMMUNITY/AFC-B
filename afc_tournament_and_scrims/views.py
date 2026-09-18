@@ -34,6 +34,7 @@ from afc_tournament_and_scrims import open_roster
 # per-role ladders (afc_rankings/player_roles.py) report the role a player held WHEN the points were
 # earned instead of the role they hold today. See afc_tournament_and_scrims/roster_roles.py.
 from afc_tournament_and_scrims import roster_roles
+from .still_in import competitor_still_in
 from .models import Event, EventInviteToken, EventPageView, MatchResultImage, RegisteredCompetitors, RoundRobinGroup, SoloPlayerMatchStats, SponsorEvent, StageAdvancementRule, StageCompetitor, StageGroupCompetitor, StageGroups, Stages, StreamChannel, TournamentPlayerMatchStats, TournamentTeam, Leaderboard, TournamentTeamMatchStats, Match, TournamentTeamMember
 # One answer to "what KIND of stage is this?" for all three generations of stage_format values
 # (owner item 21, 2026-08-13). create_event / edit_event branch on it below. See stage_formats.py.
@@ -5066,10 +5067,11 @@ def get_event_details(request):
             # so the user-facing Edit Roster button should open. Mirrors edit_roster's team_stage_over and
             # the identity-lock release (afc_auth._competitor_in_active_stage). Only "completed" = over;
             # SAFE DEFAULT: no StageCompetitor rows -> NOT over (button stays governed by window/registration).
-            _vtt_stage_rows = StageCompetitor.objects.filter(stage__event=event, tournament_team=_vtt)
+            # One rule for every lock (afc_tournament_and_scrims/still_in.py, owner 2026-09-18):
+            # "over" = the team has stage data and is no longer in the event.
             viewer_team_stage_over = (
-                _vtt_stage_rows.exists()
-                and not _vtt_stage_rows.filter(status="active").exclude(stage__stage_status="completed").exists()
+                StageCompetitor.objects.filter(stage__event=event, tournament_team=_vtt).exists()
+                and not competitor_still_in(event, tournament_team=_vtt)
             )
 
     # -------- ROOM-DETAILS VISIBILITY CONTEXT (owner 2026-06-17) --------
@@ -23875,10 +23877,10 @@ def edit_roster(request):
     # the identity-lock release in afc_auth._competitor_in_active_stage). Only "completed" = over. SAFE
     # DEFAULT: a team with NO StageCompetitor rows at all (stages unseeded / data gap) is treated as STILL IN
     # so we never wrongly open a live roster. This does NOT relax the manager-only / captain permission gate.
-    _tt_stage_rows = StageCompetitor.objects.filter(stage__event=event, tournament_team=tt)
+    # One rule for every lock (afc_tournament_and_scrims/still_in.py, owner 2026-09-18).
     team_stage_over = (
-        _tt_stage_rows.exists()
-        and not _tt_stage_rows.filter(status="active").exclude(stage__stage_status="completed").exists()
+        StageCompetitor.objects.filter(stage__event=event, tournament_team=tt).exists()
+        and not competitor_still_in(event, tournament_team=tt)
     )
 
     # ---------------- STAFF (MANAGER) OVERRIDE FLAG ----------------
