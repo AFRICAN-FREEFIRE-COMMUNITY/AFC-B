@@ -4,45 +4,199 @@
   "users": {
     "a": {
       "$comment": "an ordinary player, owner of a team on the scratch DB",
-      "headers": { "Authorization": "Bearer REPLACE_WITH_SCRATCH_TOKEN_A" }
+      "headers": {
+        "Authorization": "Bearer REPLACE_WITH_SCRATCH_TOKEN_A"
+      }
     },
     "b": {
       "$comment": "another ordinary player, member of nothing A owns, no admin role",
-      "headers": { "Authorization": "Bearer REPLACE_WITH_SCRATCH_TOKEN_B" }
+      "headers": {
+        "Authorization": "Bearer REPLACE_WITH_SCRATCH_TOKEN_B"
+      }
     }
   },
   "cases": [
     {
       "name": "B cannot read the Discord reminder settings of an event whose organization B is not part of (events/<id>/discord-reminders/, reopen_event's gate)",
-      "attempt": { "as": "b", "method": "GET", "path": "/events/5/discord-reminders/", "expect": [403] }
+      "attempt": {
+        "as": "b",
+        "method": "GET",
+        "path": "/events/5/discord-reminders/",
+        "expect": [
+          403
+        ]
+      }
     },
     {
       "name": "B cannot set that event's Discord reminders either",
-      "attempt": { "as": "b", "method": "POST", "path": "/events/5/discord-reminders/", "body": { "frequency": "once_24h", "note": "" }, "expect": [403] }
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/events/5/discord-reminders/",
+        "body": {
+          "frequency": "once_24h",
+          "note": ""
+        },
+        "expect": [
+          403
+        ]
+      }
     },
     {
       "name": "B (no staff role) cannot list deleted accounts (head admin only)",
-      "attempt": { "as": "b", "method": "GET", "path": "/auth/admin/deleted-accounts/", "expect": [403] }
+      "attempt": {
+        "as": "b",
+        "method": "GET",
+        "path": "/auth/admin/deleted-accounts/",
+        "expect": [
+          403
+        ]
+      }
     },
     {
       "name": "B cannot restore a deleted account (head admin only); an unknown id is 404 and a stranger 403 before that",
-      "attempt": { "as": "b", "method": "POST", "path": "/auth/admin/deleted-accounts/1/restore/", "body": {}, "expect": [403, 404] }
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/auth/admin/deleted-accounts/1/restore/",
+        "body": {},
+        "expect": [
+          403,
+          404
+        ]
+      }
     },
     {
       "name": "B cannot set another user's WhatsApp number (admin identity endpoint)",
-      "attempt": { "as": "b", "method": "POST", "path": "/auth/admin/set-user-whatsapp/", "body": { "user_id": 1, "whatsapp_number": "+2348000000000", "reason": "idor probe" }, "expect": [403] }
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/auth/admin/set-user-whatsapp/",
+        "body": {
+          "user_id": 1,
+          "whatsapp_number": "+2348000000000",
+          "reason": "idor probe"
+        },
+        "expect": [
+          403
+        ]
+      }
     },
     {
       "name": "B cannot read the support desk (support staff only)",
-      "attempt": { "as": "b", "method": "GET", "path": "/support/tickets/", "expect": [403, 404] }
+      "attempt": {
+        "as": "b",
+        "method": "GET",
+        "path": "/support/tickets/",
+        "expect": [
+          403,
+          404
+        ]
+      }
     },
     {
       "name": "B cannot invite a co-organizer on an event of an organization B does not own",
-      "attempt": { "as": "b", "method": "POST", "path": "/organizers/co-organizers/invite/", "body": { "event_id": 5, "organization_slug": "beta-guests", "permissions": {}, "payout_percent": 0 }, "expect": [403, 404, 400] }
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/organizers/co-organizers/invite/",
+        "body": {
+          "event_id": 5,
+          "organization_slug": "beta-guests",
+          "permissions": {},
+          "payout_percent": 0
+        },
+        "expect": [
+          403,
+          404,
+          400
+        ]
+      }
     },
     {
       "name": "B cannot rebuild the ranking scores (head admin only)",
-      "attempt": { "as": "b", "method": "POST", "path": "/rankings/scoring-config/rebuild/", "body": {}, "expect": [403] }
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/rankings/scoring-config/rebuild/",
+        "body": {},
+        "expect": [
+          403
+        ]
+      }
+    },
+    {
+      "name": "B cannot cancel A's wager (wagers/wager/<token>/cancel/, owner-scoped lookup answers 404)",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/wagers/wager/REPLACE_WITH_A_WAGER_TOKEN/cancel/",
+        "expect": [
+          404
+        ]
+      }
+    },
+    {
+      "name": "B cannot verify A's stake payment (wagers/payments/verify/ is owner-scoped)",
+      "attempt": {
+        "as": "b",
+        "method": "GET",
+        "path": "/wagers/payments/verify/?reference=REPLACE_WITH_A_STAKE_REFERENCE",
+        "expect": [
+          404
+        ]
+      }
+    },
+    {
+      "name": "B cannot cancel A's withdrawal",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/wagers/winnings/withdrawals/REPLACE_WITH_A_WITHDRAWAL_TOKEN/cancel/",
+        "expect": [
+          404
+        ]
+      }
+    },
+    {
+      "name": "B (no finance role) cannot read the wager ledger of everyone",
+      "attempt": {
+        "as": "b",
+        "method": "GET",
+        "path": "/wagers/admin/ledger/",
+        "expect": [
+          403
+        ]
+      }
+    },
+    {
+      "name": "B (no wager role) cannot settle a market",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/wagers/admin/markets/REPLACE_WITH_A_MARKET_SLUG/settle/",
+        "body": {
+          "option_id": 1
+        },
+        "expect": [
+          403
+        ]
+      }
+    },
+    {
+      "name": "signed out cannot read Winnings",
+      "attempt": {
+        "as": "b",
+        "method": "GET",
+        "path": "/wagers/winnings/",
+        "headers": {
+          "Authorization": ""
+        },
+        "expect": [
+          401,
+          403
+        ]
+      }
     }
   ]
 }
