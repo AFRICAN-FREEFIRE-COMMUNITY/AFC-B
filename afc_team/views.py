@@ -2639,13 +2639,12 @@ def _active_event_roster_blockers(team, member_id):
     never added to it, so this returns False for both cases -> the team may remove them. It
     stays True (locked) only while the player is actually rostered for a live event.
 
-    STAGE-OVER release (owner 2026-06-30): even while the event is still upcoming/ongoing, if the
-    member's TournamentTeam is no longer in any ACTIVE stage (its stage/group is over and it did
-    not advance) the player can no longer be fielded for that event, so it no longer locks the
-    removal. Mirrors the identity-lock stage-over release (afc_auth._competitor_in_active_stage):
-    a team that advances keeps an active StageCompetitor in the next stage and stays locked; an
-    eliminated team has none and unlocks. Safe default: a roster row with NO StageCompetitor data
-    at all (stages unseeded / data gap) stays locked so we never wrongly free a live roster.
+    STAGE-OVER release (owner 2026-06-30, refined 2026-09-18): even while the event is still
+    upcoming/ongoing, a TournamentTeam that is no longer IN the event (its stage is over and it
+    did not advance, or the event was seeded onward without it) can no longer be fielded, so it
+    no longer locks the removal. The rule lives in afc_tournament_and_scrims.still_in, shared with
+    the identity lock and the event page, so the four readers cannot drift. Safe default: a roster
+    row with NO StageCompetitor data at all (stages unseeded / data gap) stays locked.
 
     EFFECTIVE-STATUS release (owner 2026-07-14): the DB pre-filter below matches on the RAW
     event_status field, but that field goes stale. The auto-complete sweep that flips
@@ -2658,7 +2657,8 @@ def _active_event_roster_blockers(team, member_id):
     no longer be played and must not lock. This is the same derived badge reopen_event and the public
     event surfaces already trust (afc_tournament_and_scrims.views.effective_event_status).
     """
-    from afc_tournament_and_scrims.models import TournamentTeamMember, StageCompetitor
+    from afc_tournament_and_scrims.models import TournamentTeamMember
+    from afc_tournament_and_scrims.still_in import competitor_still_in
     # Local import (heavy views module) keeps this lazy + avoids an import cycle, matching how this
     # helper already imports its models inline.
     from afc_tournament_and_scrims.views import effective_event_status, event_past_end
@@ -2694,13 +2694,11 @@ def _active_event_roster_blockers(team, member_id):
         # keeping a roster. event_past_end asks the clock, not the status field.
         if event_past_end(tt.event):
             continue
-        stage_rows = StageCompetitor.objects.filter(stage__event=tt.event, tournament_team=tt)
-        locked = (
-            not stage_rows.exists()  # no stage data -> safe default: treat as still on a live roster
-            # NOT-completed stage (upcoming/ongoing/paused) with an active row = still in. Only
-            # "completed" releases; a paused stage is in progress, not over.
-            or stage_rows.filter(status="active").exclude(stage__stage_status="completed").exists()
-        )
+        # STILL IN (one rule for every lock, afc_tournament_and_scrims/still_in.py): an active row
+        # in a stage that is not over, AND the event has not moved on to a later stage without
+        # them. Owner 2026-09-18: a team that did not qualify for the next stage is free to make
+        # roster moves while the transfer window is open; only the teams that qualified stay held.
+        locked = competitor_still_in(tt.event, tournament_team=tt)
         if locked and tt.event.event_id not in seen:
             seen.add(tt.event.event_id)
             blockers.append(tt.event)
