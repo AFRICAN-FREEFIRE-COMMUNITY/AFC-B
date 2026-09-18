@@ -1159,8 +1159,17 @@ class DecisionReachesTheApplicant(PartnerApplyTestCase):
         self.assertNotIn("afcp_", body)
         self.assertNotIn("api/v1/partner", body)   # no Data API was provisioned
 
+    def _data_api_only(self):
+        """Every submission is a Sign in with AFC application (views_public forces wants_sso);
+        a Data API row is set on the model, exactly as DecisionTests does above."""
+        application = self._submitted()
+        application.wants_sso = False
+        application.wants_data_api = True
+        application.save(update_fields=["wants_sso", "wants_data_api"])
+        return application
+
     def test_the_approval_email_names_the_data_api_base_url_and_the_resources(self):
-        application = self._submitted(wants_sso=False, wants_data_api=True, redirect_uris="")
+        application = self._data_api_only()
         self._approve(application, can_read_events=True, can_read_standings=True)
         body = self._only_email()["body"]
 
@@ -1173,7 +1182,7 @@ class DecisionReachesTheApplicant(PartnerApplyTestCase):
         self.assertFalse(PartnerApiKey.objects.filter(partner__name="Kite Esports").exists())
 
     def test_a_data_api_partner_with_nothing_switched_on_is_told_so(self):
-        application = self._submitted(wants_sso=False, wants_data_api=True, redirect_uris="")
+        application = self._data_api_only()
         self._approve(application)
         body = self._only_email()["body"]
         self.assertIn("none switched on yet", body)
