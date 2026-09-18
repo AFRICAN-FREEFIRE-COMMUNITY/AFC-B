@@ -1,5 +1,5 @@
 {
-  "updated": "2026-09-17",
+  "updated": "2026-09-18",
   "rules": {
     "R55": {
       "high": 0,
@@ -42,6 +42,156 @@
       "medium": 0,
       "since": "2026-09-17",
       "lastMoved": "2026-09-17"
+    },
+    "R62": {
+      "high": 0,
+      "medium": 0,
+      "since": "2026-09-18",
+      "lastMoved": "2026-09-18"
+    },
+    "R63": {
+      "high": 0,
+      "medium": 2,
+      "since": "2026-09-18",
+      "lastMoved": "2026-09-18"
+    },
+    "R64": {
+      "high": 0,
+      "medium": 8,
+      "since": "2026-09-18",
+      "lastMoved": "2026-09-18"
+    },
+    "R65": {
+      "high": 0,
+      "medium": 0,
+      "since": "2026-09-18",
+      "lastMoved": "2026-09-18"
+    },
+    "R66": {
+      "high": 0,
+      "medium": 0,
+      "since": "2026-09-18",
+      "lastMoved": "2026-09-18"
+    },
+    "R67": {
+      "high": 0,
+      "medium": 0,
+      "since": "2026-09-18",
+      "lastMoved": "2026-09-18"
+    },
+    "R68": {
+      "high": 0,
+      "medium": 3,
+      "since": "2026-09-18",
+      "lastMoved": "2026-09-18"
+    },
+    "R69": {
+      "high": 0,
+      "medium": 25,
+      "since": "2026-09-18",
+      "lastMoved": "2026-09-18"
+    },
+    "R70": {
+      "high": 0,
+      "medium": 36,
+      "since": "2026-09-18",
+      "lastMoved": "2026-09-18"
+    },
+    "R71": {
+      "high": 0,
+      "medium": 0,
+      "since": "2026-09-18",
+      "lastMoved": "2026-09-18"
+    },
+    "R72": {
+      "high": 0,
+      "medium": 0,
+      "since": "2026-09-18",
+      "lastMoved": "2026-09-18"
+    },
+    "R73": {
+      "high": 0,
+      "medium": 0,
+      "since": "2026-09-18",
+      "lastMoved": "2026-09-18"
+    },
+    "R74": {
+      "high": 0,
+      "medium": 0,
+      "since": "2026-09-18",
+      "lastMoved": "2026-09-18"
+    },
+    "R75": {
+      "high": 0,
+      "medium": 0,
+      "since": "2026-09-18",
+      "lastMoved": "2026-09-18"
+    },
+    "R76": {
+      "high": 0,
+      "medium": 0,
+      "since": "2026-09-18",
+      "lastMoved": "2026-09-18"
+    },
+    "R77": {
+      "high": 0,
+      "medium": 0,
+      "since": "2026-09-18",
+      "lastMoved": "2026-09-18"
+    },
+    "R78": {
+      "high": 0,
+      "medium": 0,
+      "since": "2026-09-18",
+      "lastMoved": "2026-09-18"
+    },
+    "R79": {
+      "high": 0,
+      "medium": 50,
+      "since": "2026-09-18",
+      "lastMoved": "2026-09-18"
+    },
+    "R80": {
+      "high": 0,
+      "medium": 1,
+      "since": "2026-09-18",
+      "lastMoved": "2026-09-18"
+    },
+    "R81": {
+      "high": 0,
+      "medium": 0,
+      "since": "2026-09-18",
+      "lastMoved": "2026-09-18"
+    },
+    "R82": {
+      "high": 0,
+      "medium": 0,
+      "since": "2026-09-18",
+      "lastMoved": "2026-09-18"
+    },
+    "R83": {
+      "high": 0,
+      "medium": 0,
+      "since": "2026-09-18",
+      "lastMoved": "2026-09-18"
+    },
+    "R84": {
+      "high": 0,
+      "medium": 0,
+      "since": "2026-09-18",
+      "lastMoved": "2026-09-18"
+    },
+    "R85": {
+      "high": 0,
+      "medium": 0,
+      "since": "2026-09-18",
+      "lastMoved": "2026-09-18"
+    },
+    "R86": {
+      "high": 0,
+      "medium": 0,
+      "since": "2026-09-18",
+      "lastMoved": "2026-09-18"
     }
   }
 }
