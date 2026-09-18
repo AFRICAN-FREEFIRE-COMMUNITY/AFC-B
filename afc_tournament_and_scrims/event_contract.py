@@ -161,6 +161,13 @@ def _clean_waitlist_capacity(raw):
 
 
 def _clean_cash_value(raw):
+    # Nullable column, and the edit forms send "" for an event that has no cash value (they post
+    # the WHOLE form on every tab's save). Empty is a real answer here, never a refusal: until
+    # 2026-09-18 an organizer saving the Sponsor tab of such an event got "prizepool_cash_value
+    # must be a number" and nothing saved, while the screen said it had. Same shape as
+    # _clean_registration_fee below.
+    if raw in (None, "", "null"):
+        return None
     try:
         return float(raw)
     except (TypeError, ValueError):
