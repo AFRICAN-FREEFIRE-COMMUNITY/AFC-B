@@ -144,12 +144,15 @@ def _text(value):
     return html.escape(str(value or ""), quote=False)
 
 
-def _code(value):
-    """A value the partner will copy: monospaced so an l and a 1 cannot be mistaken."""
-    # word-break so a 40-character id or a long URI wraps on a phone instead of pushing the
-    # whole email past the right edge (measured at 390px on 2026-09-18).
+def _code(value, inside_link=False):
+    """A value the partner will copy: monospaced so an l and a 1 cannot be mistaken.
+
+    word-break so a 40-character id or a long URI wraps on a phone instead of pushing the whole
+    email past the right edge (measured at 390px on 2026-09-18). Inside an anchor the colour is
+    inherited, so a URL still reads as a link."""
+    colour = "inherit" if inside_link else "#ffffff"
     return (
-        f'<span style="font-family:Consolas,Menlo,monospace;color:#ffffff;'
+        f'<span style="font-family:Consolas,Menlo,monospace;color:{colour};'
         f'word-break:break-all;">{_text(value)}</span>'
     )
 
@@ -327,7 +330,7 @@ def send_approved(application, access_token, claim_token):
             client_id=_code(sso_application.client_id),
             # The URL is the label on purpose (a partner pastes it into their OIDC client), so
             # it wraps: the anchor gets the same word-break as _code.
-            discovery_url=_link(discovery_url(), _code(discovery_url())),
+            discovery_url=_link(discovery_url(), _code(discovery_url(), inside_link=True)),
             # Required at submit and validated at provisioning, so never empty for an SSO app.
             redirect_uris=", ".join(_code(u) for u in uris),
             grants=_sso_grants_text(sso_application, lang),
@@ -339,7 +342,7 @@ def send_approved(application, access_token, claim_token):
         fmt.update(
             api_base=_code(data_api_base_url()),
             resources=_api_resources_text(data_partner, lang),
-            api_guide=_link(data_api_guide_url(), _code(data_api_guide_url())),
+            api_guide=_link(data_api_guide_url(), _code(data_api_guide_url(), inside_link=True)),
         )
 
     body_keys.append("guide")
