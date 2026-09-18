@@ -83,6 +83,30 @@ _ENGINE_DOWN_KEY = "afc:translation:engine_down"
 _ENGINE_DOWN_TTL = 300             # seconds the breaker stays open after a failure (5 min, self-heals)
 
 
+class EngineDown(RuntimeError):
+    """Raised by _call_deepl while the circuit breaker is open: an expected, already-known state,
+    not a new failure. The callers log it ONCE per breaker window and keep the original text; the
+    generic handler's traceback is for failures nobody has seen yet. Before 2026-09-18 every string
+    on a French or Portuguese page logged a full traceback while the free quota was gone: 84 per
+    page view, 944 lines in eight minutes, drowning the log the real errors live in (owner rule R81)."""
+
+
+_BREAKER_LOGGED_KEY = "deepl:breaker_logged"
+
+
+def _log_breaker_skip_once():
+    """One warning per breaker window, whatever the traffic. cache.add is atomic: the first caller in
+    the window writes the key and logs; everybody else sees it set and stays quiet. Best-effort like
+    the breaker itself: a cache failure means the line is logged, which is the safe side."""
+    try:
+        first = cache.add(_BREAKER_LOGGED_KEY, True, _ENGINE_DOWN_TTL)
+    except Exception:
+        first = True
+    if first:
+        logger.warning("DeepL circuit breaker is open (a recent key, quota or network failure): strings are "
+                       "served in their original language until it closes. One line per window.")
+
+
 def _engine_down() -> bool:
     """True while the circuit breaker is open (a recent engine-level failure). Best-effort: if the cache
     backend itself is unreachable we return False and let the call fall through to the API guard."""
@@ -143,7 +167,7 @@ def _call_deepl(texts, target, source="en"):
     # while open we do NOT pay another round trip - bail so the caller falls back to English. Self-heals
     # when the cache TTL lapses (the next miss tries the API again).
     if _engine_down():
-        raise RuntimeError("DeepL translate skipped: engine circuit-breaker is open.")
+        raise EngineDown("DeepL translate skipped: engine circuit-breaker is open.")
 
     # A FREE key (":fx" suffix) MUST use the free host; a Pro key the pro host. Wrong host -> 403.
     host = DEEPL_FREE_HOST if api_key.endswith(":fx") else DEEPL_PRO_HOST
@@ -233,6 +257,9 @@ def translate(text, target, source="en") -> str:
     # ── 3. cache miss -> call DeepL (single-item batch) ──────────────────────────────────────────
     try:
         translated = _call_deepl([text], target, source=source)[0]
+    except EngineDown:
+        _log_breaker_skip_once()  # known state, one line per window, no traceback
+        return text
     except Exception:
         # Failure-safe: any engine error -> original English text, never raise.
         logger.warning("DeepL translate failed for target=%s; returning original text", target, exc_info=True)
@@ -314,6 +341,9 @@ def translate_batch(texts, target, source="en") -> list:
         chunk = miss_texts[start:start + DEEPL_MAX_BATCH]
         try:
             translated_misses.extend(_call_deepl(chunk, target, source=source))
+        except EngineDown:
+            _log_breaker_skip_once()  # known state, one line per window, no traceback
+            translated_misses.extend(chunk)
         except Exception:
             logger.warning("DeepL batch translate failed for target=%s; chunk kept as English", target, exc_info=True)
             translated_misses.extend(chunk)  # keep originals for this chunk -> stays length-aligned
