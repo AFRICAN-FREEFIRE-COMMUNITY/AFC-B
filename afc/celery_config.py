@@ -103,6 +103,13 @@ app.conf.beat_schedule = {
         'task': 'afc_tournament_and_scrims.tasks.discord_reminder_sweep',
         'schedule': crontab(minute='*/10'),
     },
+    # ── Wagers (owner 2026-09-18) ────────────────────────────────────────────
+    # Expire unpaid stakes, lock markets at lock_at, compute the settlement suggestion once
+    # the match result is in. Idempotent; a human still confirms every settlement.
+    'wager_sweep_every_minute': {
+        'task': 'afc_wager.tasks.wager_sweep',
+        'schedule': crontab(minute='*'),
+    },
     'refresh_bot_knowledge_every_3h': {
         'task': 'afc_bot.tasks.refresh_bot_knowledge',
         'schedule': crontab(minute=0, hour='*/3'),   # 00:00, 03:00, 06:00 ...
