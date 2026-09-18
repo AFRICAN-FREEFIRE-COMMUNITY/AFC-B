@@ -19,7 +19,8 @@ from django.test import Client, TestCase
 from afc_auth.models import SessionToken, User
 from afc_team.models import Team, TeamMembers
 from afc_team.views import _active_event_roster_blockers, _member_in_active_event_roster, _name_events
-from afc_tournament_and_scrims.models import Event, TournamentTeam, TournamentTeamMember
+from afc_tournament_and_scrims.models import Event, StageCompetitor, Stages, TournamentTeam, TournamentTeamMember
+from afc_tournament_and_scrims.still_in import competitor_still_in
 
 
 def _user(username):
@@ -155,3 +156,85 @@ class RosterLockTests(TestCase):
         self.assertEqual(_name_events([_E("A")]), 'the event "A"')
         self.assertEqual(_name_events([_E("A"), _E("B")]), 'the events "A" and "B"')
         self.assertEqual(_name_events([_E(x) for x in "ABCDE"]), 'the events "A", "B" and 3 more')
+
+
+def _stage(event, name, order, *, status="ongoing"):
+    return Stages.objects.create(
+        event=event, stage_name=name, stage_order=order, start_date=date.today(),
+        end_date=date.today() + timedelta(days=7), number_of_groups=1,
+        stage_format="br - normal", teams_qualifying_from_stage=4, stage_status=status,
+    )
+
+
+class StillInTests(TestCase):
+    """Owner 2026-09-18: "when teams/players did not qualify to the next stage of an event, they
+    should be allowed to do roster moves like leaving team or kicking players when transfer
+    window is open. Only teams that qualified should be limited."
+
+    The hole: the organizer seeds the next stage with the qualifiers and never marks the previous
+    stage completed, so the eliminated teams kept an active row in an "ongoing" stage and stayed
+    locked. Now the event's own progress decides: seeded onward without you = out."""
+
+    def setUp(self):
+        self.owner, self.owner_auth = _user("stillowner")
+        self.player, self.player_auth = _user("stillplayer")
+        self.team = Team.objects.create(team_name="Eliminated FC", team_tag="ELM", country="NG",
+                                        join_settings="open", team_owner=self.owner,
+                                        team_creator=self.owner)
+        TeamMembers.objects.create(team=self.team, member=self.player)
+        self.event = _event(self.owner, "CAGE 27", status="ongoing",
+                            start=date.today(), end=date.today() + timedelta(days=7))
+        self.tt = TournamentTeam.objects.create(event=self.event, team=self.team)
+        TournamentTeamMember.objects.create(tournament_team=self.tt, user=self.player, event=self.event)
+        other_owner, _ = _user("otherowner")
+        other = Team.objects.create(team_name="Qualified FC", team_tag="QLF", country="NG",
+                                    join_settings="open", team_owner=other_owner, team_creator=other_owner)
+        self.other_tt = TournamentTeam.objects.create(event=self.event, team=other)
+        self.stage1 = _stage(self.event, "GROUP STAGE", 1)
+        StageCompetitor.objects.create(stage=self.stage1, tournament_team=self.tt)
+        StageCompetitor.objects.create(stage=self.stage1, tournament_team=self.other_tt)
+        self.client = Client()
+
+    def _exit(self):
+        return self.client.post("/team/exit-team/", {}, content_type="application/json", **self.player_auth)
+
+    def test_a_single_live_stage_holds_everybody(self):
+        self.assertTrue(competitor_still_in(self.event, tournament_team=self.tt))
+        self.assertEqual(self._exit().status_code, 403)
+
+    def test_seeded_onward_without_them_frees_them_even_while_their_stage_says_ongoing(self):
+        # The organizer seeds the finals with the qualifier only; the group stage is still "ongoing".
+        finals = _stage(self.event, "FINALS", 2, status="upcoming")
+        StageCompetitor.objects.create(stage=finals, tournament_team=self.other_tt)
+        self.assertFalse(competitor_still_in(self.event, tournament_team=self.tt))
+        self.assertEqual(_active_event_roster_blockers(self.team, self.player.user_id), [])
+        r = self._exit()
+        self.assertEqual(r.status_code, 200, r.content[:300])
+        self.assertFalse(TeamMembers.objects.filter(team=self.team, member=self.player).exists())
+
+    def test_the_qualified_team_stays_held(self):
+        finals = _stage(self.event, "FINALS", 2, status="upcoming")
+        StageCompetitor.objects.create(stage=finals, tournament_team=self.other_tt)
+        self.assertTrue(competitor_still_in(self.event, tournament_team=self.other_tt))
+
+    def test_a_completed_stage_with_nothing_seeded_after_it_frees_everybody(self):
+        # The old release, unchanged: the stage is over and the next is not seeded yet.
+        self.stage1.stage_status = "completed"
+        self.stage1.save(update_fields=["stage_status"])
+        self.assertFalse(competitor_still_in(self.event, tournament_team=self.tt))
+        self.assertEqual(self._exit().status_code, 200)
+
+    def test_no_stage_data_keeps_the_safe_default(self):
+        StageCompetitor.objects.filter(stage__event=self.event).delete()
+        self.assertTrue(competitor_still_in(self.event, tournament_team=self.tt))
+        self.assertEqual(self._exit().status_code, 403)
+
+    def test_a_losers_route_at_the_furthest_order_keeps_them_in(self):
+        # Branching routes: the eliminated side is routed into its own next stage, so it is
+        # still playing and still held.
+        finals = _stage(self.event, "FINALS", 2, status="upcoming")
+        consolation = _stage(self.event, "CONSOLATION", 2, status="upcoming")
+        StageCompetitor.objects.create(stage=finals, tournament_team=self.other_tt)
+        StageCompetitor.objects.create(stage=consolation, tournament_team=self.tt)
+        self.assertTrue(competitor_still_in(self.event, tournament_team=self.tt))
+
