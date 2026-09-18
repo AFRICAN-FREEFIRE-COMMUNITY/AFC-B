@@ -233,10 +233,19 @@ CALLER_PLACEHOLDERS = {
         ("heading", "intro", "note", "how_to_fix"),
         {"organisation", "reference", "note", "link"},
     ),
-    "partner_apply_approved": dict.fromkeys(
-        ("heading", "intro", "credentials", "expiry", "guide"),
-        {"organisation", "reference", "hours", "claim_link", "link"},
-    ),
+    # send_approved passes the common set to every key and adds the SSO or Data API values only
+    # when that product was provisioned (2026-09-18); the three product keys are skipped when
+    # their values are absent, so each declares the union its sentence may use.
+    "partner_apply_approved": {
+        **dict.fromkeys(
+            ("heading", "intro", "credentials", "expiry", "guide"),
+            {"organisation", "reference", "hours", "claim_link", "link", "guide"},
+        ),
+        "sso_details": {"organisation", "reference", "client_id", "discovery_url",
+                        "redirect_uris"},
+        "sso_grants": {"organisation", "reference", "grants"},
+        "api_details": {"organisation", "reference", "api_base", "resources", "api_guide"},
+    },
     "partner_apply_rejected": dict.fromkeys(
         ("heading", "intro", "note", "reapply"),
         {"organisation", "reference", "note"},
