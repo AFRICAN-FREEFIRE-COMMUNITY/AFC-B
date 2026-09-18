@@ -25,6 +25,7 @@ from rest_framework.response import Response
 
 from afc_auth.audit import set_audit
 from afc_auth.models import User
+from afc_auth.slugs import resolve_or_redirect
 from afc_auth.views import validate_token
 from afc_tournament_and_scrims.models import Event, Match, Stages, TournamentTeam
 
@@ -126,10 +127,16 @@ def _dt(value, name, *, required=False):
 
 
 def _market_by_slug(slug):
-    m = Market.objects.select_related("event", "template", "match", "stage", "settled_option", "suggested_option").filter(slug=slug).first()
+    """A market by its slug, or by a retired slug (the title was edited and the slug followed it,
+    R22): the old address still answers, as `{"status": "moved", "slug": <current>}`, the same
+    answer the public view gives, so an admin link in a chat or a bookmark keeps working."""
+    m, moved_to = resolve_or_redirect(Market, slug, "slug")
     if m is None:
         return None, Response({"message": "We could not find that market.", "code": "market_not_found"},
                               status=status.HTTP_404_NOT_FOUND)
+    if moved_to and moved_to != slug:
+        return None, Response({"status": "moved", "slug": moved_to}, status=status.HTTP_200_OK)
+    m = Market.objects.select_related("event", "template", "match", "stage", "settled_option", "suggested_option").get(pk=m.pk)
     return m, None
 
 
