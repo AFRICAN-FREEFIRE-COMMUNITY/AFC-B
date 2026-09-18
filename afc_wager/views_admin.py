@@ -651,7 +651,7 @@ def user_detail(request, username):
     return Response({
         "account": ser.admin_account_row(account, kyc=services.kyc_state(target), limits=ser.limits_dict(limits, caps)),
         "wagers": [ser.wager_dict(w) for w in Wager.objects.filter(user=target).exclude(status=Wager.EXPIRED).select_related("market")[:50]],
-        "ledger": [ser.ledger_dict(e) for e in LedgerEntry.objects.filter(account=account)[:100]],
+        "ledger": ser.ledger_rows(LedgerEntry.objects.filter(account=account)[:100]),
         "withdrawals": [ser.withdrawal_dict(w, for_staff=True) for w in Withdrawal.objects.filter(user=target).select_related("bank_account", "user", "reviewed_by", "cosigned_by")[:50]],
         "adjustments": [ser.adjustment_dict(a) for a in Adjustment.objects.filter(user=target).select_related("user", "submitted_by", "cosigned_by")[:50]],
         "bank_accounts": [ser.bank_account_dict(b) for b in target.payout_bank_accounts.all()],
