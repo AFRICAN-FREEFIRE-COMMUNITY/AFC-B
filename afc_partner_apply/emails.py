@@ -146,8 +146,11 @@ def _text(value):
 
 def _code(value):
     """A value the partner will copy: monospaced so an l and a 1 cannot be mistaken."""
+    # word-break so a 40-character id or a long URI wraps on a phone instead of pushing the
+    # whole email past the right edge (measured at 390px on 2026-09-18).
     return (
-        f'<span style="font-family:Consolas,Menlo,monospace;color:#ffffff;">{_text(value)}</span>'
+        f'<span style="font-family:Consolas,Menlo,monospace;color:#ffffff;'
+        f'word-break:break-all;">{_text(value)}</span>'
     )
 
 
@@ -322,7 +325,9 @@ def send_approved(application, access_token, claim_token):
         uris = [u for u in str(sso_application.redirect_uris or "").split() if u]
         fmt.update(
             client_id=_code(sso_application.client_id),
-            discovery_url=_link(discovery_url(), discovery_url()),
+            # The URL is the label on purpose (a partner pastes it into their OIDC client), so
+            # it wraps: the anchor gets the same word-break as _code.
+            discovery_url=_link(discovery_url(), _code(discovery_url())),
             # Required at submit and validated at provisioning, so never empty for an SSO app.
             redirect_uris=", ".join(_code(u) for u in uris),
             grants=_sso_grants_text(sso_application, lang),
@@ -334,7 +339,7 @@ def send_approved(application, access_token, claim_token):
         fmt.update(
             api_base=_code(data_api_base_url()),
             resources=_api_resources_text(data_partner, lang),
-            api_guide=_link(data_api_guide_url(), data_api_guide_url()),
+            api_guide=_link(data_api_guide_url(), _code(data_api_guide_url())),
         )
 
     body_keys.append("guide")
