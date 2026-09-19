@@ -155,6 +155,30 @@ class SettingsAndCreateTests(WagerTestCase):
         r = self.client.get(f"/wagers/admin/markets/{m.slug}/", **self.admin_auth).json()
         self.assertEqual(r["slug"], m.slug)
 
+    def test_market_image_is_sniffed_and_stored(self):
+        """A card image travels as its own multipart PATCH (the form's JSON never carries files):
+        real image bytes land on the market, anything else is refused with a code."""
+        import struct
+        import zlib
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        from django.test.client import BOUNDARY, MULTIPART_CONTENT, encode_multipart
+
+        def chunk(tag, data):
+            return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
+        raw = b"".join(b"\x00" + b"\x20\xa0\x40" * 4 for _ in range(4))
+        png = (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 4, 4, 8, 2, 0, 0, 0))
+               + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b""))
+        m = self.make_market(status=Market.DRAFT)
+        r = self.client.patch(f"/wagers/admin/markets/{m.slug}/",
+                              encode_multipart(BOUNDARY, {"image": SimpleUploadedFile("card.png", png, content_type="image/png")}),
+                              content_type=MULTIPART_CONTENT, **self.admin_auth)
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertTrue(r.json()["market"]["image"], r.json()["market"])
+        r = self.client.patch(f"/wagers/admin/markets/{m.slug}/",
+                              encode_multipart(BOUNDARY, {"image": SimpleUploadedFile("card.png", b"not an image", content_type="image/png")}),
+                              content_type=MULTIPART_CONTENT, **self.admin_auth)
+        self.assertEqual((r.status_code, r.json()["code"]), (400, "not_an_image"))
+
     def test_edit_options_locked_once_staked(self):
         m = self.make_market()
         self.place_and_pay(self.player_auth, m, [{"option_id": self.opt_a.id, "stake_kobo": 100_000}])

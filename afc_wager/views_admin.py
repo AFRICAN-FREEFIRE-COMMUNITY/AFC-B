@@ -350,6 +350,20 @@ def _apply_market_fields(m, data, *, creating):
         raise WagerError("open_at_invalid", "The market must open before it locks.")
 
 
+def _apply_image(m, request):
+    """The card image, when the request carries one: the bytes decide what it is (R70,
+    afc_auth.image_utils.require_image_upload), and a refusal comes back with its code."""
+    upload = request.FILES.get("image")
+    if not upload:
+        return
+    from afc_auth.image_utils import require_image_upload
+    image, bad = require_image_upload(upload)
+    if bad:
+        raise WagerError(bad, "The image must be a JPEG, PNG, WEBP or GIF under 10 MB.")
+    m.image = image
+    m.save(update_fields=["image", "updated_at"])
+
+
 @api_view(["POST"])
 @authentication_classes([])
 @parser_classes([JSONParser, MultiPartParser, FormParser])
@@ -387,10 +401,7 @@ def create_market(request):
         if data.get("publish"):
             m.status = Market.OPEN
             m.save(update_fields=["status", "updated_at"])
-        if request.FILES.get("image"):
-            from afc_auth.image_utils import require_image_upload
-            m.image = require_image_upload(request.FILES["image"])
-            m.save(update_fields=["image", "updated_at"])
+        _apply_image(m, request)
     except WagerError as exc:
         return _refused(exc)
     set_audit(request, f"Created wager market {m.title} ({m.status})", slug=m.slug)
@@ -421,10 +432,7 @@ def market_admin_detail(request, slug):
             m.options.all().delete()
             MarketOption.objects.bulk_create(services.build_options(m, m.template, request.data.get("options")))
         m.save()
-        if request.FILES.get("image"):
-            from afc_auth.image_utils import require_image_upload
-            m.image = require_image_upload(request.FILES["image"])
-            m.save(update_fields=["image", "updated_at"])
+        _apply_image(m, request)
     except WagerError as exc:
         return _refused(exc)
     set_audit(request, f"Edited wager market {m.title}", slug=m.slug)
