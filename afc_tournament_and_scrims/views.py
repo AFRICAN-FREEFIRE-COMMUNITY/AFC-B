@@ -21235,14 +21235,18 @@ def live_push(request):
     or when it was minted for a DIFFERENT event than the pushed event_id (a token is scoped to ONE event,
     so it can never write another event's live key).
 
-    Body (application/json):
+    Body (application/json), OBSERVATIONS ONLY from 1.4.0 (owner 2026-09-22):
       { event_id:int, stage_id, group_id,
-        standings: [ {pos, team_name, kills, deaths, knockdowns, headshots, most_used_weapon,
-                      survival_time, revives_received, gloowall_used, medkit_used, placement_points,
-                      kill_points, total_points, booyah, ...} ],
+        standings: [ {team_name, kills, deaths, knockdowns, knocked, headshots, assists,
+                      most_used_weapon, survival_time, revives_received, gloowall_used, medkit_used,
+                      grenades_used, grenade_kills, eliminated, elimination_order, alive_count,
+                      roster_size, players:[...]} ],
         updated_at }
-    The standings rows are stored AS-IS (they already carry the live values); overlay_feed caps them to
-    the chosen design's max_rows on read. Blank/absent stage_id or group_id => the cumulative slice.
+    The rows are RANKED AND SCORED here by live_ranking.normalize_live_standings from this event's own
+    scoring config (placement, pos, kill_points, placement_points, total_points); a client's own point
+    columns are ignored. A pre-1.4.0 client that still sends them is unaffected. overlay_feed caps the
+    result to the chosen design's max_rows on read. Blank/absent stage_id or group_id => the cumulative
+    slice.
     Returns 200 {"ok": true}.
     CONNECTS TO: EventUploadToken + _resolve_event_upload_token (auth), _overlay_live_key (shared key),
     overlay_feed (the reader). CONSUMED BY: the afc-capture desktop client's debugger tailer (Tier 2)."""
@@ -21272,19 +21276,18 @@ def live_push(request):
 
     # Stash under the EXACT key overlay_feed reads. Short 15s TTL bounds staleness: when the client stops
     # pushing (round ends / app closed) the snapshot evaporates and the feed falls back to official.
-    # ── Normalize the live snapshot to the OFFICIAL scoring (owner 2026-07-05, live-overlay bug) ──
-    # The capture client pushed rows where KP/PP/BOOYAH were 0 (only TP populated) - a thin/stale client
-    # sends a raw score without the kill_points/placement_points split, so a LIVE overlay rendered
-    # KP=PP=BOOYAH=0 while the official (non-live) board is fine. Recompute the point columns HERE from
-    # the SAME per-group Leaderboard scoring upload_team_match_result uses (Leaderboard.kill_point +
-    # normalize_placement_points(placement_points)), so the live board's numbers match the official
-    # export. Keyed to the pushed stage/group; per-row best-effort; wrapped so a bad row never 500s the
-    # push (falls back to the client's raw row / the previous store-as-is behaviour). CONNECTS TO:
-    # scoring.normalize_placement_points, Leaderboard (same source as the official upload), and
-    # _overlay_rows_from_standings whose field_type keys (kills/kill_points/placement_points/total_points/
-    # booyah) this now mirrors so the LIVE and OFFICIAL paths emit identical row shapes.
+    # ── The BACKEND ranks and scores the live snapshot (owner 2026-09-22) ──
+    # "its not the capture that runs any calculation its the events and leaderboard models that do
+    # all of that and all overlays pick from there." The client pushes OBSERVATIONS only (counts,
+    # who is alive, the order teams were wiped in). Placement, the row order and every point column
+    # are decided HERE, from this event's own scoring config, through the SAME
+    # scoring.compute_team_points the official upload path uses - so the live board and the official
+    # export can never disagree about the rule. Rows from a pre-1.4.0 client still carry their own
+    # points and order; live_ranking ignores the points and falls back to their order only when the
+    # row carries no elimination facts at all. See live_ranking.py for the placement rule.
     try:
         from .scoring import normalize_placement_points
+        from .live_ranking import normalize_live_standings
         stage_id_raw = request.data.get("stage_id")
         group_id_raw = request.data.get("group_id")
         lb = None
@@ -21297,9 +21300,9 @@ def live_push(request):
         # PREFER the per-match scoring the OFFICIAL board uses (match.scoring_settings) over the
         # Leaderboard row (bug 2026-07-06): Leaderboard.placement_points/kill_point are empty for
         # custom-scored events (ScoringConfigPanel writes match.scoring_settings, not the LB row), so
-        # the LB-only path here made the LIVE overlay diverge from the official export the moment
-        # anyone customized scoring. Take a representative match's config from the pushed group (fall
-        # back to the LB row, then DEFAULT) so live and official share one scoring source.
+        # the LB-only path made the LIVE overlay diverge from the official export the moment anyone
+        # customized scoring. Take a representative match's config from the pushed group (fall back
+        # to the LB row, then the default table) so live and official share one scoring source.
         match_cfg = None
         if group_id_raw:
             for _m in Match.objects.filter(group_id=group_id_raw).only("scoring_settings"):
@@ -21309,36 +21312,20 @@ def live_push(request):
         if match_cfg:
             kill_point = float(match_cfg.get("kill_point", 1))
             place_table = normalize_placement_points(match_cfg.get("placement_points"))
+            per_assist = float(match_cfg.get("points_per_assist", 0))
+            per_damage = float(match_cfg.get("points_per_1000_damage", 0))
         else:
             kill_point = float(lb.kill_point) if lb and lb.kill_point is not None else 1.0
             place_table = normalize_placement_points(lb.placement_points if lb else None)
-        normalized = []
-        for r in standings:
-            try:
-                kills = int(r.get("kills") or 0)
-                place = r.get("placement") or r.get("pos")
-                kill_pts = int(round(kills * kill_point))
-                # placement points from the official table when the round rank is known; else keep the
-                # row's own value (in-round snapshots may not have a final placement yet).
-                if str(place).isdigit():
-                    place_pts = int(place_table.get(int(place), 0))
-                else:
-                    place_pts = int(r.get("placement_points") or 0)
-                normalized.append({
-                    **r,  # keep the live-only rich stats (deaths/knockdowns/headshots/... ) as-is
-                    "kills": kills,
-                    "kill_points": kill_pts,
-                    "placement_points": place_pts,
-                    "total_points": kill_pts + place_pts,
-                    "base_total": kill_pts + place_pts,
-                    "booyah": r.get("booyah", 0),  # 0 in-round by design (no booyah until the round ends)
-                    "matches": r.get("matches", 0),
-                    "bonus": r.get("bonus", 0),
-                    "penalty": r.get("penalty", 0),
-                })
-            except Exception:
-                normalized.append(r)  # a single malformed row never drops the whole snapshot
-        standings = normalized
+            per_assist = 0.0
+            per_damage = 0.0
+        standings = normalize_live_standings(
+            standings,
+            placement_points=place_table,
+            kill_point=kill_point,
+            points_per_assist=per_assist,
+            points_per_1000_damage=per_damage,
+        )
     except Exception:
         pass  # scoring/Leaderboard lookup failed -> store the client's raw rows (previous behaviour)
 
