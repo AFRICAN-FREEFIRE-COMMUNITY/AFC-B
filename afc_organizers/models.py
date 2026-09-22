@@ -465,6 +465,13 @@ class OrgLeaderboardDesignField(models.Model):
         ("headshots", "Headshots (live)"), ("most_used_weapon", "Most-used weapon (live)"),
         ("survival_time", "Survival time (live)"), ("revives_received", "Revives received (live)"),
         ("gloowall_used", "Gloo walls used (live)"), ("medkit_used", "Medkits used (live)"),
+        # AFC Capture 1.4.0 (owner 2026-09-22): the three counters the OB55 rebuild added, and
+        # the frontend palette started offering the same day. They were missing here, so placing
+        # one answered "Unknown field type" and the column could not be saved at all. Since the
+        # capture client now also attaches these per player to each map's result upload, they are
+        # no longer live-only: the official feed sums them per team from the stored rows too.
+        ("knocked", "Times knocked"), ("grenades_used", "Grenades thrown"),
+        ("grenade_kills", "Grenade kills"),
     ]
     ALIGN_CHOICES = [("left", "Left"), ("center", "Center"), ("right", "Right")]
 
