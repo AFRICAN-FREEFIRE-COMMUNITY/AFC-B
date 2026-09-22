@@ -51,13 +51,13 @@
     },
     "R63": {
       "high": 0,
-      "medium": 1,
+      "medium": 0,
       "since": "2026-09-18",
       "lastMoved": "2026-09-22"
     },
     "R64": {
       "high": 0,
-      "medium": 8,
+      "medium": 0,
       "since": "2026-09-18",
       "lastMoved": "2026-09-22"
     },
@@ -87,9 +87,9 @@
     },
     "R69": {
       "high": 0,
-      "medium": 25,
+      "medium": 0,
       "since": "2026-09-18",
-      "lastMoved": "2026-09-18"
+      "lastMoved": "2026-09-22"
     },
     "R70": {
       "high": 0,
