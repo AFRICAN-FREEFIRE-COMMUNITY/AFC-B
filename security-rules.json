@@ -490,6 +490,11 @@
       "rule": "R63",
       "path": "afc_shop/models.py",
       "reason": "the vendor payout bank account, the same recorded decision as the organizer one in afc_organizers/models.py: Paystack needs the number readable to create a transfer recipient, so it cannot be hashed and is not encrypted today. Revisit with a Fernet field if payouts ever stop needing the raw value (WEBSITE/CLAUDE.md, R63 row)."
+    },
+    {
+      "rule": "R80",
+      "path": "requirements.txt",
+      "reason": "pip-audit is not on PATH on the Windows workstation, so the checker cannot run it; it IS installed in the backend virtualenv and was run on 2026-09-22. 99 advisories across five packages, all pinned to the first release on their own line carrying the fix, re-audit clean. The run, the versions and how to repeat it are in security/dependency-audit.md."
     }
   ],
   "auth": {
