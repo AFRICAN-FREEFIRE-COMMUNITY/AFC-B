@@ -2703,6 +2703,15 @@ def create_news(request):
     category = request.data.get("category")
     related_event_id = request.data.get("related_event")   # legacy single-event link (back-compat)
     images = request.FILES.get("images")
+    # R70 (2026-09-22): a news picture is shown to everyone who opens the site, so the bytes
+    # are decoded before they are stored.
+    if images is not None:
+        from afc_auth.image_utils import require_image_upload
+        images, bad_image = require_image_upload(images)
+        if bad_image:
+            return Response({"message": "The article image must be a JPEG, PNG, WEBP or GIF "
+                                        "under 10 MB.", "code": bad_image},
+                            status=status.HTTP_400_BAD_REQUEST)
 
     # Validate required fields
     if not news_title or not content or not category:

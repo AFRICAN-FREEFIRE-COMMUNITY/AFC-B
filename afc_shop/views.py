@@ -216,6 +216,14 @@ def add_product(request):
     # Optional primary image (multipart). Additional images/videos are uploaded
     # separately via add_product_media after the product exists.
     image = request.FILES.get("image")
+    # R70 (2026-09-22): a product picture is served to every shopper, so the bytes are decoded
+    # before they are stored. The vendor path already did this (afc_shop/vendors.py).
+    if image is not None:
+        from afc_auth.image_utils import require_image_upload
+        image, bad_image = require_image_upload(image)
+        if bad_image:
+            return Response({"message": "The product image must be a JPEG, PNG, WEBP or GIF "
+                                        "under 10 MB.", "code": bad_image}, status=400)
 
     # Selling currency (owner 2026-07-04): multi-currency ROUTE only - normalised + validated against
     # the currently-chargeable set. Today that is NGN only (shipping is Nigeria-only, and the store

@@ -164,6 +164,13 @@ def report_organization(request, slug):
 
     # ── optional evidence image from the multipart upload ──
     evidence = request.FILES.get("evidence")
+    # The evidence attached to an organizer report is shown to admins, so decode it (R70, 2026-09-22).
+    if evidence is not None:
+        from afc_auth.image_utils import require_image_upload
+        evidence, bad_image = require_image_upload(evidence)
+        if bad_image:
+            return Response({"message": "The evidence must be a JPEG, PNG, WEBP or GIF under 10 MB.",
+                             "code": bad_image}, status=400)
 
     # ── create the report (always starts 'open'; reporter is the caller) ──
     OrganizationReport.objects.create(

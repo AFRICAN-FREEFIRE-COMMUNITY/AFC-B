@@ -348,6 +348,13 @@ def _validate_post_image_files(files):
     for f in files:
         if getattr(f, "size", 0) and f.size > MAX_POST_IMAGE_BYTES:
             return "Each screenshot must be 10 MB or smaller."
+        # R70 (2026-09-22): the count and the size were checked, but not what the bytes ARE.
+        # require_image_upload decodes them, so a file merely NAMED .png cannot be stored
+        # and served back to other players.
+        from afc_auth.image_utils import require_image_upload
+        _cleaned, bad_image = require_image_upload(f, max_bytes=MAX_POST_IMAGE_BYTES)
+        if bad_image:
+            return "Each screenshot must be a JPEG, PNG, WEBP or GIF image."
     return None
 
 

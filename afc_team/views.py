@@ -382,9 +382,17 @@ def create_team(request):
     # Extract data
     team_name = request.data.get("team_name")
     team_logo = request.FILES.get("team_logo")
-    # HEIC/HEIF -> JPEG so the logo displays in browsers (owner 2026-06-21). Passthrough otherwise.
-    from afc_auth.image_utils import normalize_image_upload
-    team_logo = normalize_image_upload(team_logo)
+    # The bytes must BE an image, not merely be named like one (R70, 2026-09-22):
+    # require_image_upload decodes them with Pillow, refuses anything that is not a
+    # JPEG / PNG / WEBP / GIF / HEIF, caps the size at 10 MB, and still converts HEIC so the
+    # logo displays in a browser. normalize_image_upload did the conversion only, and handed
+    # back whatever it could not convert.
+    if team_logo is not None:
+        from afc_auth.image_utils import require_image_upload
+        team_logo, bad_image = require_image_upload(team_logo)
+        if bad_image:
+            return Response({"message": "The team logo must be a JPEG, PNG, WEBP or GIF under 10 MB.",
+                             "code": bad_image}, status=status.HTTP_400_BAD_REQUEST)
     team_description = request.data.get("team_description", "We Love Playing Free Fire")
     country = user.country
     join_settings = request.data.get("join_settings", "by_request")
@@ -1059,9 +1067,17 @@ def edit_team(request):
     team_id = request.data.get("team_id")
     team_name = request.data.get("team_name")
     team_logo = request.FILES.get("team_logo")
-    # HEIC/HEIF -> JPEG so the logo displays in browsers (owner 2026-06-21). Passthrough otherwise.
-    from afc_auth.image_utils import normalize_image_upload
-    team_logo = normalize_image_upload(team_logo)
+    # The bytes must BE an image, not merely be named like one (R70, 2026-09-22):
+    # require_image_upload decodes them with Pillow, refuses anything that is not a
+    # JPEG / PNG / WEBP / GIF / HEIF, caps the size at 10 MB, and still converts HEIC so the
+    # logo displays in a browser. normalize_image_upload did the conversion only, and handed
+    # back whatever it could not convert.
+    if team_logo is not None:
+        from afc_auth.image_utils import require_image_upload
+        team_logo, bad_image = require_image_upload(team_logo)
+        if bad_image:
+            return Response({"message": "The team logo must be a JPEG, PNG, WEBP or GIF under 10 MB.",
+                             "code": bad_image}, status=status.HTTP_400_BAD_REQUEST)
     join_settings = request.data.get("join_settings")
     # OPTIONAL short team handle. Default to a sentinel (object()) so we can tell "key omitted"
     # (leave the tag untouched) apart from "key sent empty" (owner is clearing the tag).

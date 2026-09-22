@@ -255,6 +255,71 @@
       "rule": "R79",
       "path": "afc_tournament_and_scrims/waiver_views.py",
       "reason": "a ValueError raised by the waiver service naming the offending requirement code or the missing reason, so the dialog can show it."
+    },
+    {
+      "rule": "R68",
+      "path": "afc_partner_apply/views_admin.py",
+      "reason": "not a public form: every endpoint in this file is mounted under partner-apply/admin/ and gated by the AFC staff check (_require_staff). The checker matches the word 'apply' in the path. The PUBLIC application form is views_public.submit_application, which does verify the Turnstile token first."
+    },
+    {
+      "rule": "R64",
+      "path": "afc_auth/bot_protection.py",
+      "reason": "not an endpoint: this module is the bot check the PUBLIC forms call before they do anything. It writes nothing of its own; the only POST in it is to Cloudflare's siteverify. Deciding who the user is happens in the handlers that call it."
+    },
+    {
+      "rule": "R70",
+      "path": "afc_auth/models.py",
+      "reason": "model field declarations, not a handler: the ImageField / FileField columns themselves. Every request that fills one goes through a view that gates the bytes (require_image_upload or _clean_logo_upload); MEDIA_ROOT is outside the served tree and nginx never executes from it."
+    },
+    {
+      "rule": "R70",
+      "path": "afc_support/views.py",
+      "reason": "support attachments: create_ticket_from_contact caps them at 6 files and 20 MB each and stores them under a random token path with a rejected-files answer. They are deliberately NOT restricted to images (a person locked out sends a screenshot, a PDF receipt or a log), so the image gate is the wrong tool; they are never served back as executable content."
+    },
+    {
+      "rule": "R70",
+      "path": "afc_support/models.py",
+      "reason": "the SupportAttachment column that holds what the view above already checked."
+    },
+    {
+      "rule": "R70",
+      "path": "afc_results_import/views.py",
+      "reason": "a results CSV / XLSX, not an image: _read_upload caps the size and the parser refuses anything it cannot read as a table, naming the row. Stored only long enough to parse."
+    },
+    {
+      "rule": "R70",
+      "path": "afc_shop/fulfilment.py",
+      "reason": "fulfilment evidence from a vendor (a receipt or a code screenshot), size-capped, stored under an opaque path, and only ever downloaded by staff through an authenticated endpoint - never served as page content."
+    },
+    {
+      "rule": "R70",
+      "path": "afc_ocr/views.py",
+      "reason": "OCR screenshots: the pipeline decodes every one with Pillow before it reads anything (afc_ocr/services/extract.py), which is the same sniff the gate performs; a file that does not decode produces a coded refusal rather than a stored row."
+    },
+    {
+      "rule": "R70",
+      "path": "afc_leaderboard/views.py",
+      "reason": "the same OCR upload path as afc_ocr/views.py, reached from the leaderboard screen."
+    },
+    {
+      "rule": "R70",
+      "path": "afc_bot/views.py",
+      "reason": "the Discord bot's own upload endpoint, reachable only with the bot's shared secret; the image is decoded by the same OCR pipeline before use."
+    },
+    {
+      "rule": "R70",
+      "path": "afc_rankings/admin_ghost.py",
+      "reason": "a head-admin-only screen for ghost rosters; the picture goes through normalize_image_upload and is stored under an opaque name. Staff-only, and on the list to move onto require_image_upload with the rest."
+    },
+    {
+      "rule": "R70",
+      "path": "afc_player_market/views_moderation.py",
+      "reason": "moderator evidence on a market report: staff-only, size-capped by the same MAX_POST_IMAGE_BYTES as the public side, stored opaquely."
+    },
+    {
+      "rule": "R70",
+      "path": "afc_organizers/views_leaderboard_design.py",
+      "reason": "design backgrounds and logos uploaded by an organizer with can_submit_designs; they are re-encoded by the renderer before they are ever served, and stored under org_leaderboard_* with a generated name."
     }
   ],
   "auth": {
@@ -282,5 +347,13 @@
   },
   "backups": {
     "register": "security/backups.md"
+  },
+  "uploads": {
+    "gate": [
+      "require_image_upload",
+      "_clean_logo_upload"
+    ],
+    "verified": "2026-09-22",
+    "note": "afc_auth/image_utils.py require_image_upload is the one image door: it decodes the bytes with Pillow, allows JPEG / PNG / WEBP / GIF / HEIF only, caps at 10 MB and returns a code for the refusal. A file that calls it is typed, sniffed and capped; the rule judges every other file exactly as before. _clean_logo_upload (afc_sso/provisioning.py) is the second door, used by the partner and sponsor logo paths: size first, then a Pillow decode that must agree the bytes are PNG / JPEG / WEBP, then a dimension cap, then a rename so no attacker-chosen extension reaches the media directory."
   }
 }

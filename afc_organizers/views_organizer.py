@@ -342,7 +342,13 @@ def edit_organization_profile(request, slug):
 
     # File fields: only replace when a new upload is present in request.FILES.
     if "logo" in request.FILES:
-        org.logo = request.FILES["logo"]
+        # R70 (2026-09-22): decode the bytes before they become the organisation public logo.
+        from afc_auth.image_utils import require_image_upload
+        _logo, bad_image = require_image_upload(request.FILES["logo"])
+        if bad_image:
+            return Response({"message": "The logo must be a JPEG, PNG, WEBP or GIF under 10 MB.",
+                             "code": bad_image}, status=status.HTTP_400_BAD_REQUEST)
+        org.logo = _logo
     if "default_banner" in request.FILES:
         org.default_banner = request.FILES["default_banner"]
 
