@@ -31,12 +31,12 @@ def _require_event_manager(request, event):
     """(user, None) when the caller may manage this event's registrations, else (None, Response)."""
     header = request.headers.get("Authorization")
     if not header or not header.startswith("Bearer "):
-        return None, Response({"message": "Invalid token."}, status=400)
+        return None, Response({"message": "Invalid token.", "code": "invalid_token"}, status=400)
     user = validate_token(header.split(" ")[1])
     if not user:
-        return None, Response({"message": "Unauthorized."}, status=403)
+        return None, Response({"message": "Unauthorized.", "code": "require_event_manager_unauthorized"}, status=403)
     if not _is_event_admin(user) and not org_can_event(user, "can_manage_registrations", event):
-        return None, Response({"message": "Unauthorized."}, status=403)
+        return None, Response({"message": "Unauthorized.", "code": "require_event_manager_unauthorized"}, status=403)
     return user, None
 
 
@@ -90,7 +90,7 @@ def create_event_waiver(request):
     except ValueError as exc:
         # The message names the offending code or the missing reason, so the dialog can show it
         # rather than a generic failure.
-        return Response({"message": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": str(exc), "code": "create_event_waiver_refused"}, status=status.HTTP_400_BAD_REQUEST)
 
     return Response(
         {"message": "Waiver saved.", "waiver": waivers.serialize(waiver)},

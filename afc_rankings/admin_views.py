@@ -70,19 +70,19 @@ def _auth(request, roles=RANKING_ADMIN_ROLES):
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
         return None, Response(
-            {"message": "Invalid or missing Authorization token."},
+            {"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"},
             status=status.HTTP_400_BAD_REQUEST,
         )
     user = validate_token(auth.split(" ")[1])
     if not user:
         return None, Response(
-            {"message": "Invalid or expired session token."},
+            {"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"},
             status=status.HTTP_401_UNAUTHORIZED,
         )
     if _has_role(user, *roles):
         return user, None
     return None, Response(
-        {"message": "You do not have permission to manage rankings."},
+        {"message": "You do not have permission to manage rankings.", "code": "not_permission_manage_rankings"},
         status=status.HTTP_403_FORBIDDEN,
     )
 

@@ -101,14 +101,14 @@ def _require_partner_admin(request):
     # auth failure (matches afc_organizers/views_admin.py wording/shape).
     if not session_token:
         return None, Response(
-            {"message": "Authorization header is required"},
+            {"message": "Authorization header is required", "code": "authorization_header_required"},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
     # 400 when the scheme is wrong - the token format is the caller's mistake.
     if not session_token.startswith("Bearer "):
         return None, Response(
-            {"message": "Invalid token format"},
+            {"message": "Invalid token format", "code": "invalid_token_format"},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
@@ -119,14 +119,14 @@ def _require_partner_admin(request):
     # 401 when the token does not resolve to a live session/user.
     if not user:
         return None, Response(
-            {"message": "Invalid or expired session token."},
+            {"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"},
             status=status.HTTP_401_UNAUTHORIZED,
         )
 
     # 403 GATE: a valid login that lacks the partner-admin role is refused.
     if not _is_partner_admin(user):
         return None, Response(
-            {"message": "You do not have permission to manage partners."},
+            {"message": "You do not have permission to manage partners.", "code": "not_permission_manage_partners"},
             status=status.HTTP_403_FORBIDDEN,
         )
 
@@ -144,7 +144,7 @@ def _partner_or_404(slug):
     partner = Partner.objects.filter(slug=slug).first()
     if not partner:
         return None, Response(
-            {"message": "Partner not found."},
+            {"message": "Partner not found.", "code": "partner_not_found"},
             status=status.HTTP_404_NOT_FOUND,
         )
     return partner, None
@@ -246,13 +246,13 @@ def _parse_expires_at(raw):
 
     if not isinstance(raw, str):
         return None, Response(
-            {"message": "expires_at must be a date (YYYY-MM-DD) or an ISO-8601 timestamp."},
+            {"message": "expires_at must be a date (YYYY-MM-DD) or an ISO-8601 timestamp.", "code": "expires_date_yyyy_iso"},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
     raw = raw.strip()
     bad_shape = Response(
-        {"message": "expires_at must be a date (YYYY-MM-DD) or an ISO-8601 timestamp."},
+        {"message": "expires_at must be a date (YYYY-MM-DD) or an ISO-8601 timestamp.", "code": "expires_date_yyyy_iso"},
         status=status.HTTP_400_BAD_REQUEST,
     )
 
@@ -288,7 +288,7 @@ def _parse_expires_at(raw):
     # An expiry already in the past would mint a key that 401s on its first call.
     if parsed <= timezone.now():
         return None, Response(
-            {"message": "expires_at must be in the future."},
+            {"message": "expires_at must be in the future.", "code": "expires_future"},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
@@ -311,7 +311,7 @@ def create_partner(request):
 
     name = (request.data.get("name") or "").strip()
     if not name:
-        return Response({"message": "Partner name is required."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "Partner name is required.", "code": "partner_name_required"}, status=status.HTTP_400_BAD_REQUEST)
 
     # Optional contact email (internal metadata; never crosses the partner firewall).
     contact_email = request.data.get("contact_email") or ""
@@ -614,7 +614,7 @@ def revoke_key(request, key_id):
 
     key = PartnerApiKey.objects.filter(key_id=key_id).first()
     if not key:
-        return Response({"message": "API key not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "API key not found.", "code": "api_key_not_found"}, status=status.HTTP_404_NOT_FOUND)
 
     # Idempotent: flip to revoked (re-revoking is harmless).
     key.status = "revoked"
@@ -641,7 +641,7 @@ def delete_key(request, key_id):
 
     key = PartnerApiKey.objects.filter(key_id=key_id).first()
     if not key:
-        return Response({"message": "API key not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "API key not found.", "code": "api_key_not_found"}, status=status.HTTP_404_NOT_FOUND)
 
     key.delete()
     return Response({"message": "API key deleted."}, status=status.HTTP_200_OK)
@@ -665,7 +665,7 @@ def publish_event(request, event_slug):
     from afc_tournament_and_scrims.models import Event
     event = Event.objects.filter(slug=event_slug).first()
     if not event:
-        return Response({"message": "Event not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "Event not found.", "code": "event_not_found"}, status=status.HTTP_404_NOT_FOUND)
 
     # Truthy `published` → reachable via the partner API; falsy → withdrawn.
     published = bool(request.data.get("published"))

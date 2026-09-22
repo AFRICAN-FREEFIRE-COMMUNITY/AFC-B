@@ -321,23 +321,23 @@ def prize_create(request):
     # ── validate the event FK ──
     event_id = request.data.get("event_id")
     if not event_id:
-        return Response({"message": "event_id is required."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "event_id is required.", "code": "event_required"}, status=status.HTTP_400_BAD_REQUEST)
     event = Event.objects.filter(pk=event_id).first()
     if not event:
-        return Response({"message": "Event not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "Event not found.", "code": "event_not_found"}, status=status.HTTP_404_NOT_FOUND)
 
     # ── validate the team FK (a TournamentTeam, mapped from the brief's team_id) ──
     team_id = request.data.get("team_id")
     if not team_id:
-        return Response({"message": "team_id is required."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "team_id is required.", "code": "team_required"}, status=status.HTTP_400_BAD_REQUEST)
     tt = TournamentTeam.objects.filter(pk=team_id).select_related("team").first()
     if not tt:
-        return Response({"message": "Tournament team not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "Tournament team not found.", "code": "tournament_team_not_found"}, status=status.HTTP_404_NOT_FOUND)
     if tt.event_id != event.pk:
         # Guard against pairing a team with the wrong tournament - the payout must belong
         # to the event the team is registered in, or the recalc would attribute it wrongly.
         return Response(
-            {"message": "This team is not registered in the given event."},
+            {"message": "This team is not registered in the given event.", "code": "team_not_registered_given"},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
@@ -394,7 +394,7 @@ def prize_update(request, payout_id):
               .select_related("event", "tournament_team", "tournament_team__team")
               .filter(pk=payout_id).first())
     if not payout:
-        return Response({"message": "Payout not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "Payout not found.", "code": "payout_not_found"}, status=status.HTTP_404_NOT_FOUND)
 
     amount, err = _parse_amount(request.data.get("amount"))
     if err:
@@ -445,7 +445,7 @@ def prize_delete(request, payout_id):
               .select_related("event", "tournament_team", "tournament_team__team")
               .filter(pk=payout_id).first())
     if not payout:
-        return Response({"message": "Payout not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "Payout not found.", "code": "payout_not_found"}, status=status.HTTP_404_NOT_FOUND)
 
     with transaction.atomic():
         before = serialize_prize(payout)
@@ -472,11 +472,11 @@ def _parse_amount(raw):
     """
     from decimal import Decimal, InvalidOperation
     if raw is None or raw == "":
-        return None, Response({"message": "amount is required."}, status=status.HTTP_400_BAD_REQUEST)
+        return None, Response({"message": "amount is required.", "code": "amount_required"}, status=status.HTTP_400_BAD_REQUEST)
     try:
         amount = Decimal(str(raw))
     except (InvalidOperation, TypeError, ValueError):
-        return None, Response({"message": "amount must be a valid number."}, status=status.HTTP_400_BAD_REQUEST)
+        return None, Response({"message": "amount must be a valid number.", "code": "amount_valid_number"}, status=status.HTTP_400_BAD_REQUEST)
     if amount < 0:
-        return None, Response({"message": "amount must not be negative."}, status=status.HTTP_400_BAD_REQUEST)
+        return None, Response({"message": "amount must not be negative.", "code": "amount_not_negative"}, status=status.HTTP_400_BAD_REQUEST)
     return amount, None

@@ -264,7 +264,7 @@ def _admin_or_refusal(request):
     auth = request.headers.get("Authorization") or ""
     user = validate_token(auth.split(" ", 1)[1].strip()) if auth.startswith("Bearer ") else None
     if not user or not (user.role == "admin" or user.userroles.exists()):
-        return None, Response({"message": "Admin access required."},
+        return None, Response({"message": "Admin access required.", "code": "admin_access_required"},
                               status=status.HTTP_401_UNAUTHORIZED)
     return user, None
 
@@ -372,12 +372,12 @@ def get_player_details(request):
     # (coarse role admin/moderator/support OR any granular UserRoles row).
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid token."}, status=400)
+        return Response({"message": "Invalid token.", "code": "invalid_token"}, status=400)
     caller = validate_token(auth.split(" ")[1])
     if not caller:
-        return Response({"message": "Invalid session."}, status=401)
+        return Response({"message": "Invalid session.", "code": "invalid_session"}, status=401)
     if caller.role not in ("admin", "moderator", "support") and not caller.userroles.exists():
-        return Response({"message": "Unauthorized."}, status=403)
+        return Response({"message": "Unauthorized.", "code": "get_player_details_unauthorized"}, status=403)
 
     # `ref` is the player's username or a legacy numeric id (owner rule R22: the admin address
     # is /a/players/<username>); `player_id` stays accepted for older callers. A legacy id
@@ -385,10 +385,10 @@ def get_player_details(request):
     from afc_auth.slugs import resolve_or_redirect
     ref = request.data.get("ref") or request.data.get("player_id")
     if not ref:
-        return Response({"message": "ref is required"}, status=400)
+        return Response({"message": "ref is required", "code": "ref_required"}, status=400)
     player, moved_to_username = resolve_or_redirect(User, ref, field="username")
     if player is None:
-        return Response({"message": "Player not found."}, status=404)
+        return Response({"message": "Player not found.", "code": "player_not_found"}, status=404)
 
     # Shared aggregation (kills/wins/mvps/kdr/avg_damage/win_rate + scrim/tournament splits
     # + booyahs + per_event[] + recent_matches[]). Defensive against null leaderboards.
@@ -496,14 +496,14 @@ def get_public_player_stats(request):
     """
     player_ign = request.data.get("player_ign")
     if not player_ign:
-        return Response({"message": "player_ign is required."}, status=400)
+        return Response({"message": "player_ign is required.", "code": "player_ign_required"}, status=400)
 
     try:
         # A soft-deleted account (afc_auth/account_deletion.py) is gone from the public site;
         # its username is a tombstone anyway, so this mostly guards the "Deleted player <id>" address.
         player = User.objects.exclude(status="deleted").get(username=player_ign)
     except User.DoesNotExist:
-        return Response({"message": "Player not found."}, status=404)
+        return Response({"message": "Player not found.", "code": "player_not_found"}, status=404)
 
     # Identify the (optional) viewer and decide whether the sensitive stats are
     # visible to them (self / admin / teammate). Anonymous => not visible.

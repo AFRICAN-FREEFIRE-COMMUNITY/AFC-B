@@ -705,16 +705,16 @@ def tier_rule_create(request):
     # Validate the inbound fields before opening the transaction.
     match, msg = _validate_match(request.data.get("match", "all"))
     if msg:
-        return Response({"message": msg}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": msg, "code": "tier_rule_create_refused"}, status=status.HTTP_400_BAD_REQUEST)
     conditions, msg = _validate_conditions(request.data.get("conditions", []))
     if msg:
-        return Response({"message": msg}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": msg, "code": "tier_rule_create_refused"}, status=status.HTTP_400_BAD_REQUEST)
     tier, msg = _validate_tier(request.data.get("tier", 2))
     if msg:
-        return Response({"message": msg}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": msg, "code": "tier_rule_create_refused"}, status=status.HTTP_400_BAD_REQUEST)
     name, msg = _validate_name(request.data.get("name"))
     if msg:
-        return Response({"message": msg}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": msg, "code": "tier_rule_create_refused"}, status=status.HTTP_400_BAD_REQUEST)
     enabled = bool(request.data.get("enabled", True))
 
     with transaction.atomic():
@@ -778,25 +778,25 @@ def tier_rule_update(request, rule_id):
 
     rule = EventTierRule.objects.filter(pk=rule_id).first()
     if not rule:
-        return Response({"message": "Tier rule not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "Tier rule not found.", "code": "tier_rule_not_found"}, status=status.HTTP_404_NOT_FOUND)
 
     # Validate only the fields the caller actually sent (PATCH semantics).
     if "match" in request.data:
         match, msg = _validate_match(request.data.get("match"))
         if msg:
-            return Response({"message": msg}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"message": msg, "code": "tier_rule_update_refused"}, status=status.HTTP_400_BAD_REQUEST)
     if "conditions" in request.data:
         conditions, msg = _validate_conditions(request.data.get("conditions"))
         if msg:
-            return Response({"message": msg}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"message": msg, "code": "tier_rule_update_refused"}, status=status.HTTP_400_BAD_REQUEST)
     if "tier" in request.data:
         tier, msg = _validate_tier(request.data.get("tier"))
         if msg:
-            return Response({"message": msg}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"message": msg, "code": "tier_rule_update_refused"}, status=status.HTTP_400_BAD_REQUEST)
     if "name" in request.data:
         name, msg = _validate_name(request.data.get("name"))
         if msg:
-            return Response({"message": msg}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"message": msg, "code": "tier_rule_update_refused"}, status=status.HTTP_400_BAD_REQUEST)
 
     with transaction.atomic():
         before = serialize_tier_rule(rule)
@@ -855,9 +855,9 @@ def tier_rule_delete(request, rule_id):
 
     rule = EventTierRule.objects.filter(pk=rule_id).first()
     if not rule:
-        return Response({"message": "Tier rule not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "Tier rule not found.", "code": "tier_rule_not_found"}, status=status.HTTP_404_NOT_FOUND)
     if rule.retired_at is not None:
-        return Response({"message": "This rule is already retired."},
+        return Response({"message": "This rule is already retired.", "code": "rule_already_retired"},
                         status=status.HTTP_400_BAD_REQUEST)
 
     with transaction.atomic():
@@ -904,9 +904,9 @@ def tier_rule_restore(request, rule_id):
 
     rule = EventTierRule.objects.filter(pk=rule_id).first()
     if not rule:
-        return Response({"message": "Tier rule not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "Tier rule not found.", "code": "tier_rule_not_found"}, status=status.HTTP_404_NOT_FOUND)
     if rule.retired_at is None:
-        return Response({"message": "This rule is not retired."},
+        return Response({"message": "This rule is not retired.", "code": "rule_not_retired"},
                         status=status.HTTP_400_BAD_REQUEST)
 
     with transaction.atomic():
@@ -962,13 +962,13 @@ def tier_rules_reorder(request):
     order = request.data.get("order")
     if not isinstance(order, list) or not order:
         return Response(
-            {"message": "`order` must be a non-empty list of rule ids."},
+            {"message": "`order` must be a non-empty list of rule ids.", "code": "order_non_empty_list"},
             status=status.HTTP_400_BAD_REQUEST,
         )
     # Reject duplicates up front - a repeated id would silently overwrite a priority.
     if len(order) != len(set(order)):
         return Response(
-            {"message": "`order` contains duplicate rule ids."},
+            {"message": "`order` contains duplicate rule ids.", "code": "order_contains_duplicate_rule"},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
@@ -976,7 +976,7 @@ def tier_rules_reorder(request):
     if set(order) != live_ids:
         return Response(
             {"message": "`order` must list every active rule id exactly once. Retired rules "
-                        "are not ordered."},
+                        "are not ordered.", "code": "order_list_active_rule"},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
@@ -1032,7 +1032,7 @@ def tier_rules_copy_from(request):
         return Response({"message": f"`source` must be one of {list(COMPETITIONS)}."},
                         status=status.HTTP_400_BAD_REQUEST)
     if raw_source == target:
-        return Response({"message": "`source` and `competition_type` must be different sets."},
+        return Response({"message": "`source` and `competition_type` must be different sets.", "code": "source_competition_type_different"},
                         status=status.HTTP_400_BAD_REQUEST)
 
     copied = copy_rule_set(raw_source, target, user=user, reason=reason)
@@ -1041,7 +1041,7 @@ def tier_rules_copy_from(request):
         # answer about why the set did not change.
         return Response(
             {"message": "That set already has rules. Copying would duplicate them, so it was not "
-                        "done. Retire the existing rules first if you want to start over."},
+                        "done. Retire the existing rules first if you want to start over.", "code": "set_already_rules_copying"},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
@@ -1083,7 +1083,7 @@ def tier_config_update(request):
     if msg:
         # Reuse the tier validator (same 1-3 range); reword for this field.
         return Response(
-            {"message": msg.replace("`tier`", "`default_tier`")},
+            {"message": msg.replace("`tier`", "`default_tier`"), "code": "tier_config_update_refused"},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
@@ -1183,7 +1183,7 @@ def tier_rules_classify(request):
     # Reuses _validate_currency so the preview accepts exactly the codes a saved rule accepts.
     prize_currency, msg = _validate_currency("prize", data.get("prize_currency"), 0)
     if msg:
-        return Response({"message": msg}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": msg, "code": "tier_rules_classify_refused"}, status=status.HTTP_400_BAD_REQUEST)
     rate_map = _fx_rate_map()
     prize_ngn = convert_to_ngn(sample["prize"], prize_currency, rate_map)
     if prize_ngn is None:

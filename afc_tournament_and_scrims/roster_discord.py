@@ -86,19 +86,19 @@ def roster_discord_status(request):
     # ── AUTH (house Bearer idiom, mirrors validate_team_roster_discord) ──
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
 
     user = validate_token(auth.split(" ")[1])
     if not user:
-        return Response({"message": "Invalid or expired session token."}, status=status.HTTP_401_UNAUTHORIZED)
+        return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=status.HTTP_401_UNAUTHORIZED)
 
     if user.status != "active":
-        return Response({"message": "Your account is not active."}, status=403)
+        return Response({"message": "Your account is not active.", "code": "account_not_active"}, status=403)
 
     # ── INPUT: user_ids -> de-duplicated list of ints (order preserved) ──
     raw_ids = request.data.get("user_ids")
     if not isinstance(raw_ids, list) or not raw_ids:
-        return Response({"message": "user_ids is required and must be a non-empty list."}, status=400)
+        return Response({"message": "user_ids is required and must be a non-empty list.", "code": "user_ids_required_non"}, status=400)
 
     user_ids = []
     for raw in raw_ids:

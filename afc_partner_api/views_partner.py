@@ -56,7 +56,7 @@ def partner_endpoint(resource_toggle=None):
             try:
                 partner, key = authenticate_partner(request)
             except PartnerAuthError as exc:
-                return Response({"error": str(exc)}, status=401)
+                return Response({"error": str(exc), "code": "inner_refused"}, status=401)
             # 2) Count this request against the key's per-minute budget, else 429.
             #    Retry-After tells a well-behaved client exactly how long to back off
             #    (the window is one wall-clock minute - see ratelimit.py). On success the
@@ -65,13 +65,13 @@ def partner_endpoint(resource_toggle=None):
             try:
                 count = check_rate_limit(key)
             except RateLimitExceeded:
-                return Response({"error": "rate_limit_exceeded"}, status=429,
+                return Response({"error": "rate_limit_exceeded", "code": "inner_refused"}, status=429,
                                 headers={"Retry-After": "60"})
             # 3) Resource toggle: the partner is authenticated, but is this endpoint's
             #    resource turned on for them? Toggles default OFF (least privilege), so
             #    a brand-new partner gets 403 on everything until an AFC admin opts in.
             if resource_toggle and not getattr(partner, resource_toggle):
-                return Response({"error": "resource_not_enabled"}, status=403)
+                return Response({"error": "resource_not_enabled", "code": "inner_refused"}, status=403)
             # 4) Hand the authenticated partner to the view (scope + serialize happen there).
             response = fn(request, partner, *args, **kwargs)
             # 5) Advertise the rate-limit budget on every SUCCESSFUL (2xx) read, mirroring
@@ -167,7 +167,7 @@ def event_detail(request, partner, event_slug):
     """GET /events/<slug>/ - one event's public card, or 404 if out of scope."""
     event = _visible_event_or_404(partner, event_slug)
     if not event:
-        return Response({"error": "not_found"}, status=404)
+        return Response({"error": "not_found", "code": "event_detail_refused"}, status=404)
     return Response(serialize.serialize_event(event, partner))
 
 
@@ -179,7 +179,7 @@ def event_stages(request, partner, event_slug):
     nested. Resolve the event first so an out-of-scope slug 404s before we read stages."""
     event = _visible_event_or_404(partner, event_slug)
     if not event:
-        return Response({"error": "not_found"}, status=404)
+        return Response({"error": "not_found", "code": "event_stages_refused"}, status=404)
     # stage_id order == creation order, which is also the order serialize_stage numbers.
     qs = event.stages.order_by("stage_id")
 
@@ -203,7 +203,7 @@ def event_matches(request, partner, event_slug):
 
     event = _visible_event_or_404(partner, event_slug)
     if not event:
-        return Response({"error": "not_found"}, status=404)
+        return Response({"error": "not_found", "code": "event_matches_refused"}, status=404)
     # A match belongs to the event through group -> stage -> event. Filter on that chain
     # so we only ever return THIS event's matches.
     qs = (Match.objects
@@ -224,7 +224,7 @@ def event_standings(request, partner, event_slug):
     """
     event = _visible_event_or_404(partner, event_slug)
     if not event:
-        return Response({"error": "not_found"}, status=404)
+        return Response({"error": "not_found", "code": "event_standings_refused"}, status=404)
     rows = serialize.serialize_standings(event, partner)  # already ranked + firewalled
     return _paginate_list(request, rows)
 
@@ -237,7 +237,7 @@ def event_teams(request, partner, event_slug):
     event-wide aggregated, toggled stats."""
     event = _visible_event_or_404(partner, event_slug)
     if not event:
-        return Response({"error": "not_found"}, status=404)
+        return Response({"error": "not_found", "code": "event_teams_refused"}, status=404)
     # Deterministic, handle-sorted order so pagination is stable across pages.
     qs = event.tournament_teams.order_by("team__team_name", "tournament_team_id")
     return _paginate(request, qs, serialize.serialize_team, partner)
@@ -257,7 +257,7 @@ def event_players(request, partner, event_slug):
     """
     event = _visible_event_or_404(partner, event_slug)
     if not event:
-        return Response({"error": "not_found"}, status=404)
+        return Response({"error": "not_found", "code": "event_players_refused"}, status=404)
 
     # Build (player, tournament_team) pairs sorted by team then username, then serialize
     # each scoped to the team they played for in THIS event. Stable order => stable paging.
@@ -294,6 +294,6 @@ def event_designs(request, partner, event_slug):
     """
     event = _visible_event_or_404(partner, event_slug)
     if not event:
-        return Response({"error": "not_found"}, status=404)
+        return Response({"error": "not_found", "code": "event_designs_refused"}, status=404)
     qs = serialize.designs_for_event(event)
     return _paginate(request, qs, serialize.serialize_design, partner)

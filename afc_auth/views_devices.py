@@ -61,11 +61,11 @@ def _bearer(request):
     thing that identifies it. Same two status codes as every other afc_auth auth gate."""
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return None, None, Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return None, None, Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
     token = auth.split(" ")[1]
     user = validate_token(token)
     if not user:
-        return None, None, Response({"message": "Invalid or expired session token."}, status=401)
+        return None, None, Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
     return user, token, None
 
 
@@ -163,7 +163,7 @@ def trusted_device_revoke(request):
     try:
         device_id = int(device_id)
     except (TypeError, ValueError):
-        return Response({"message": "device_id or all is required."},
+        return Response({"message": "device_id or all is required.", "code": "device_required"},
                         status=status.HTTP_400_BAD_REQUEST)
 
     removed = trusted_devices.revoke_one(user, device_id)

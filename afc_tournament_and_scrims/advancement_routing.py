@@ -65,10 +65,10 @@ def _auth_user(request):
     """Resolve the Bearer-token user, or return (None, error Response)."""
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return None, Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return None, Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
     user = validate_token(auth.split(" ")[1])
     if not user:
-        return None, Response({"message": "Invalid or expired session token."}, status=401)
+        return None, Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
     return user, None
 
 
@@ -423,14 +423,14 @@ def advance_stage_by_rules(request):
     event_id = request.data.get("event_id")
     stage_id = request.data.get("stage_id")
     if not event_id or not stage_id:
-        return Response({"message": "event_id and stage_id are required."}, status=400)
+        return Response({"message": "event_id and stage_id are required.", "code": "event_stage_required"}, status=400)
 
     event = get_object_or_404(Event, event_id=event_id)
     # Scope the stage to the event so a mismatched pair can't advance another event's stage.
     stage = get_object_or_404(Stages, stage_id=stage_id, event=event)
     if not _advance_gate(user, event):
         return Response(
-            {"message": "You do not have permission to advance stages for this event."},
+            {"message": "You do not have permission to advance stages for this event.", "code": "not_permission_advance_stages"},
             status=403)
 
     if not StageAdvancementRule.objects.filter(source_stage=stage).exists():
@@ -439,7 +439,7 @@ def advance_stage_by_rules(request):
                        "advance for a normal stage, or the round-robin advance for a "
                        "round-robin stage.",
             "branching": False,
-        }, status=400)
+         "code": "stage_no_branching_advancement"}, status=400)
 
     dry_run = str(request.data.get("dry_run", "false")).lower() in ("1", "true", "yes")
     result = route_stage_advancement(stage, dry_run=dry_run)

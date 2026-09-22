@@ -133,7 +133,7 @@ def _is_head_admin(user):
 def _forbidden():
     """The one 403 body this module returns, so every endpoint refuses a non-admin identically."""
     return Response(
-        {"message": "You do not have permission to send broadcasts."},
+        {"message": "You do not have permission to send broadcasts.", "code": "not_permission_send_broadcasts"},
         status=status.HTTP_403_FORBIDDEN,
     )
 
@@ -334,7 +334,7 @@ def broadcast_audience_preview(request):
     spec = parse_audience_spec(request.data)
     if spec_is_empty(spec):
         return Response(
-            {"message": "Select at least one recipient, team, or filter."},
+            {"message": "Select at least one recipient, team, or filter.", "code": "select_least_recipient_team"},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
@@ -421,7 +421,7 @@ def broadcast_audience_send(request):
     # ── message body ──
     message = (request.data.get("message") or "").strip()
     if not message:
-        return Response({"message": "A message is required."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "A message is required.", "code": "message_required"}, status=status.HTTP_400_BAD_REQUEST)
     title = (request.data.get("title") or "").strip() or None
 
     # Channels, not a single channel: "both,whatsapp" is three of them. parse_delivery owns the
@@ -432,7 +432,7 @@ def broadcast_audience_send(request):
     if not channels:
         return Response(
             {"message": "delivery must be 'push', 'email', 'whatsapp', or a comma separated "
-                        "combination such as 'both,whatsapp'."},
+                        "combination such as 'both,whatsapp'.", "code": "delivery_push_email_whatsapp"},
             status=status.HTTP_400_BAD_REQUEST,
         )
     delivery = delivery_token(channels)
@@ -477,7 +477,7 @@ def broadcast_audience_send(request):
     spec = parse_audience_spec(request.data)
     if spec_is_empty(spec):
         return Response(
-            {"message": "Select at least one recipient, team, or filter."},
+            {"message": "Select at least one recipient, team, or filter.", "code": "select_least_recipient_team"},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
@@ -488,7 +488,7 @@ def broadcast_audience_send(request):
 
     if recipient_count == 0:
         return Response(
-            {"message": "This audience has no recipients."},
+            {"message": "This audience has no recipients.", "code": "audience_no_recipients"},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
@@ -504,7 +504,7 @@ def broadcast_audience_send(request):
                 "message": "Preview the audience and confirm the recipient count before sending.",
                 "recipient_count": recipient_count,
                 "email_volume": volume,
-            },
+             "code": "preview_audience_confirm_recipient"},
             status=status.HTTP_400_BAD_REQUEST,
         )
     if confirmed_count != recipient_count:
@@ -532,7 +532,7 @@ def broadcast_audience_send(request):
                     "email_volume": volume,
                     "recipient_count": recipient_count,
                     "recommended_delivery": "push",
-                },
+                 "code": "broadcast_audience_send_refused"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
         if volume["requires_confirmation"] and not request.data.get("confirm_large_email"):
@@ -561,7 +561,7 @@ def broadcast_audience_send(request):
                 "whatsapp_volume": wa_volume,
                 "recipient_count": recipient_count,
                 "recommended_delivery": "push",
-            },
+             "code": "broadcast_audience_send_refused"},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
@@ -577,7 +577,7 @@ def broadcast_audience_send(request):
                 "resets_at": info.get("resets_at"),
                 "remaining": info.get("remaining"),
                 "reason": info.get("reason"),
-            },
+             "code": "broadcast_audience_send_refused"},
             status=status.HTTP_429_TOO_MANY_REQUESTS,
         )
 

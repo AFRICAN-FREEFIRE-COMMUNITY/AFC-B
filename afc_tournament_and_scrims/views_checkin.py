@@ -156,19 +156,19 @@ def set_event_checkin(request):
     BEFORE the event starts. Auth: AFC event admin OR organizer with can_manage_registrations."""
     user = _auth_user(request)
     if not user:
-        return Response({"message": "Invalid or missing session token."}, status=401)
+        return Response({"message": "Invalid or missing session token.", "code": "invalid_missing_session_token"}, status=401)
     event = get_object_or_404(Event, event_id=request.data.get("event_id"))
     if not _is_checkin_manager(user, event):
-        return Response({"message": "You do not have permission to configure check-in."}, status=403)
+        return Response({"message": "You do not have permission to configure check-in.", "code": "not_permission_configure_check"}, status=403)
 
     enabled = bool(request.data.get("checkin_enabled"))
     if enabled:
         start = _aware(parse_datetime(request.data.get("checkin_start") or ""))
         end = _aware(parse_datetime(request.data.get("checkin_end") or ""))
         if not start or not end:
-            return Response({"message": "checkin_start and checkin_end are required when check-in is on."}, status=400)
+            return Response({"message": "checkin_start and checkin_end are required when check-in is on.", "code": "checkin_start_checkin_end"}, status=400)
         if end <= start:
-            return Response({"message": "Check-in end time must be after its start time."}, status=400)
+            return Response({"message": "Check-in end time must be after its start time.", "code": "check_end_time_after"}, status=400)
         reg_end = _registration_end_dt(event)
         ev_start = _event_start_dt(event)
         # The refusals NAME the boundary they are refusing against, in the event's own timezone.
@@ -207,20 +207,20 @@ def player_checkin(request):
     (the (event,user) unique constraint means a double-tap just returns the existing row)."""
     user = _auth_user(request)
     if not user:
-        return Response({"message": "Invalid or missing session token."}, status=401)
+        return Response({"message": "Invalid or missing session token.", "code": "invalid_missing_session_token"}, status=401)
     event = get_object_or_404(Event, event_id=request.data.get("event_id"))
     if not event.checkin_enabled:
-        return Response({"message": "Check-in is not enabled for this event."}, status=400)
+        return Response({"message": "Check-in is not enabled for this event.", "code": "check_not_enabled_event"}, status=400)
     now = timezone.now()
     if not event.checkin_start or now < event.checkin_start:
-        return Response({"message": "Check-in has not opened yet."}, status=400)
+        return Response({"message": "Check-in has not opened yet.", "code": "check_not_opened"}, status=400)
     if not event.checkin_end or now > event.checkin_end:
-        return Response({"message": "Check-in has closed."}, status=400)
+        return Response({"message": "Check-in has closed.", "code": "check_closed"}, status=400)
 
     squad = _user_squad(event, user)
     solo = None if squad else _user_solo_registration(event, user)
     if not squad and not solo:
-        return Response({"message": "You are not registered for this event."}, status=403)
+        return Response({"message": "You are not registered for this event.", "code": "not_registered_event"}, status=403)
 
     obj, created = EventCheckIn.objects.get_or_create(
         event=event, user=user, defaults={"tournament_team": squad})
@@ -478,14 +478,14 @@ def checkin_relegate_now(request):
     Body: {event_id}. Returns how many competitors were moved to the waitlist."""
     user = _auth_user(request)
     if not user:
-        return Response({"message": "Invalid or missing session token."}, status=401)
+        return Response({"message": "Invalid or missing session token.", "code": "invalid_missing_session_token"}, status=401)
     event = get_object_or_404(Event, event_id=request.data.get("event_id"))
     if not _is_checkin_manager(user, event):
-        return Response({"message": "You do not have permission."}, status=403)
+        return Response({"message": "You do not have permission.", "code": "not_permission"}, status=403)
     if not event.checkin_enabled:
-        return Response({"message": "Check-in is not enabled for this event."}, status=400)
+        return Response({"message": "Check-in is not enabled for this event.", "code": "check_not_enabled_event"}, status=400)
     if not event.checkin_end or timezone.now() < event.checkin_end:
-        return Response({"message": "Check-in is still open; relegation runs after it closes."}, status=400)
+        return Response({"message": "Check-in is still open; relegation runs after it closes.", "code": "check_open_relegation_runs"}, status=400)
     moved = relegate_unchecked_competitors(event)
     # Relegating empties a seat; this fills it. Both halves run together so an organizer pressing
     # the button once gets the whole rule, not the half that removes people.

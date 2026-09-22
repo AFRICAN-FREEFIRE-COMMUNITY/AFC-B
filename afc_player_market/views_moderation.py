@@ -66,10 +66,10 @@ def _authenticate(request):
     """
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return None, Response({"message": "Invalid token."}, status=400)
+        return None, Response({"message": "Invalid token.", "code": "invalid_token"}, status=400)
     user = validate_token(auth.split(" ")[1])
     if not user:
-        return None, Response({"message": "Invalid session."}, status=401)
+        return None, Response({"message": "Invalid session.", "code": "invalid_session"}, status=401)
     return user, None
 
 
@@ -307,11 +307,11 @@ def file_market_report(request):
     # ── resolve the reported post (404 if it no longer exists) ──
     post_id = request.data.get("post_id")
     if not post_id:
-        return Response({"message": "post_id is required."}, status=400)
+        return Response({"message": "post_id is required.", "code": "post_required"}, status=400)
     try:
         post = RecruitmentPost.objects.select_related("team", "player").get(id=post_id)
     except RecruitmentPost.DoesNotExist:
-        return Response({"message": "Post not found."}, status=404)
+        return Response({"message": "Post not found.", "code": "post_not_found"}, status=404)
 
     # ── derive the subject (team vs player) FROM THE POST, never from the client ──
     # A team-recruitment post reports the team; a player-availability post reports the
@@ -321,27 +321,27 @@ def file_market_report(request):
         reported_team = post.team
         reported_player = None
         if reported_team is None:
-            return Response({"message": "This post has no team to report."}, status=400)
+            return Response({"message": "This post has no team to report.", "code": "post_no_team_report"}, status=400)
     elif post.post_type == "PLAYER_AVAILABLE":
         subject_type = "player"
         reported_team = None
         # player posts store the author on both created_by and player - prefer player.
         reported_player = post.player or post.created_by
         if reported_player is None:
-            return Response({"message": "This post has no player to report."}, status=400)
+            return Response({"message": "This post has no player to report.", "code": "post_no_player_report"}, status=400)
     else:
-        return Response({"message": "Unsupported post type for reporting."}, status=400)
+        return Response({"message": "Unsupported post type for reporting.", "code": "unsupported_post_type_reporting"}, status=400)
 
     # ── category: validate against the model choices, default to "other" ──
     valid_categories = {choice[0] for choice in MarketReport.CATEGORY_CHOICES}
     category = request.data.get("category") or "other"
     if category not in valid_categories:
-        return Response({"message": "Invalid report category."}, status=400)
+        return Response({"message": "Invalid report category.", "code": "invalid_report_category"}, status=400)
 
     # ── details: required free text (400 if empty / whitespace-only) ──
     details = (request.data.get("details") or "").strip()
     if not details:
-        return Response({"message": "Please describe what happened."}, status=400)
+        return Response({"message": "Please describe what happened.", "code": "describe_what_happened"}, status=400)
 
     # ── REQUIRED evidence: one or more images AND/OR videos (owner 2026-06-30) ──
     # Evidence is COMPULSORY (J4) and now supports MULTIPLE files of two kinds: screenshots AND
@@ -354,11 +354,11 @@ def file_market_report(request):
     if legacy:
         evidence_files = [legacy] + evidence_files
     if not evidence_files:
-        return Response({"message": "Evidence is required to file a report."}, status=400)
+        return Response({"message": "Evidence is required to file a report.", "code": "evidence_required_file_report"}, status=400)
 
     evidence_err = _validate_report_evidence(evidence_files)
     if evidence_err:
-        return Response({"message": evidence_err}, status=400)
+        return Response({"message": evidence_err, "code": "file_market_report_refused"}, status=400)
 
     # First image (if any) mirrors into the legacy single field so any reader of report.evidence still
     # shows something; the full set (images + videos) lives in the MarketReportEvidence rows below.
@@ -402,7 +402,7 @@ def admin_list_market_reports(request):
     if err:
         return err
     if not _is_market_moderator(user):
-        return Response({"message": "You do not have permission to view market reports."}, status=403)
+        return Response({"message": "You do not have permission to view market reports.", "code": "not_permission_view_market"}, status=403)
 
     # Base queryset, newest first. select_related pulls the FK rows the serializer
     # touches (team / player / reporter / reviewed_by) in one query - no N+1 per page.
@@ -464,7 +464,7 @@ def admin_update_market_report(request, report_id):
     if err:
         return err
     if not _is_market_moderator(user):
-        return Response({"message": "You do not have permission to manage market reports."}, status=403)
+        return Response({"message": "You do not have permission to manage market reports.", "code": "not_permission_manage_market"}, status=403)
 
     report = (
         MarketReport.objects.select_related(
@@ -475,14 +475,14 @@ def admin_update_market_report(request, report_id):
         .first()
     )
     if not report:
-        return Response({"message": "Report not found."}, status=404)
+        return Response({"message": "Report not found.", "code": "report_not_found"}, status=404)
 
     # ── status: only apply when present AND valid ──
     if "status" in request.data:
         new_status = request.data.get("status")
         valid_statuses = {choice[0] for choice in MarketReport.STATUS_CHOICES}
         if new_status not in valid_statuses:
-            return Response({"message": "Invalid report status."}, status=400)
+            return Response({"message": "Invalid report status.", "code": "invalid_report_status"}, status=400)
         report.status = new_status
 
     # ── resolution_notes: apply when the key was sent (allows clearing to "") ──
@@ -531,24 +531,24 @@ def admin_market_ban(request):
     if err:
         return err
     if not _is_market_moderator(user):
-        return Response({"message": "You do not have permission to ban from the market."}, status=403)
+        return Response({"message": "You do not have permission to ban from the market.", "code": "not_permission_ban_market"}, status=403)
 
     data = request.data
 
     # ── scope ──
     scope = data.get("scope")
     if scope not in ("player", "team"):
-        return Response({"message": "scope must be 'player' or 'team'."}, status=400)
+        return Response({"message": "scope must be 'player' or 'team'.", "code": "scope_player_team"}, status=400)
 
     # ── target_id ──
     target_id = data.get("target_id")
     if not target_id:
-        return Response({"message": "target_id is required."}, status=400)
+        return Response({"message": "target_id is required.", "code": "target_required"}, status=400)
 
     # ── reason (required, shown to the banned user) ──
     reason = (data.get("reason") or "").strip()
     if not reason:
-        return Response({"message": "A ban reason is required."}, status=400)
+        return Response({"message": "A ban reason is required.", "code": "ban_reason_required"}, status=400)
 
     # ── duration: omit / null / 0 → permanent; otherwise a positive integer of days ──
     raw_duration = data.get("duration_days")
@@ -558,9 +558,9 @@ def admin_market_ban(request):
         try:
             duration_days = int(raw_duration)
         except (TypeError, ValueError):
-            return Response({"message": "duration_days must be a whole number of days."}, status=400)
+            return Response({"message": "duration_days must be a whole number of days.", "code": "duration_days_whole_number"}, status=400)
         if duration_days <= 0:
-            return Response({"message": "duration_days must be a positive number of days."}, status=400)
+            return Response({"message": "duration_days must be a positive number of days.", "code": "duration_days_positive_number"}, status=400)
 
     # ── resolve the concrete target (404 if it does not exist) ──
     banned_team = None
@@ -568,12 +568,12 @@ def admin_market_ban(request):
     if scope == "team":
         banned_team = Team.objects.filter(team_id=target_id).first()
         if not banned_team:
-            return Response({"message": "Team not found."}, status=404)
+            return Response({"message": "Team not found.", "code": "team_not_found"}, status=404)
     else:
         # the user model id field is user_id (afc_auth.User extends AbstractUser); pk works too.
         banned_player = validate_target_user(target_id)
         if not banned_player:
-            return Response({"message": "Player not found."}, status=404)
+            return Response({"message": "Player not found.", "code": "player_not_found"}, status=404)
 
     # ── optional originating report (stamp it "banned" so the queue reflects it) ──
     source_report = None

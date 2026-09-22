@@ -195,10 +195,10 @@ def _auth_user(request):
     """Bearer -> validate_token. Returns (user, error_response)."""
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return None, Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return None, Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
     user = validate_token(auth.split(" ")[1])
     if not user:
-        return None, Response({"message": "Invalid or expired session token."}, status=401)
+        return None, Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
     return user, None
 
 
@@ -266,7 +266,7 @@ def update_delivery_profile(request):
         id=request.data.get("profile_id"), user=user,
     ).first()
     if not profile:
-        return Response({"message": "Saved address not found."}, status=404)
+        return Response({"message": "Saved address not found.", "code": "saved_address_not_found"}, status=404)
 
     data = request.data
     # Apply only the delivery fields actually present (partial update). label too.
@@ -296,7 +296,7 @@ def delete_delivery_profile(request):
         id=request.data.get("profile_id"), user=user,
     ).first()
     if not profile:
-        return Response({"message": "Saved address not found."}, status=404)
+        return Response({"message": "Saved address not found.", "code": "saved_address_not_found"}, status=404)
 
     was_default = profile.is_default
     with transaction.atomic():
@@ -321,7 +321,7 @@ def set_default_delivery_profile(request):
         id=request.data.get("profile_id"), user=user,
     ).first()
     if not profile:
-        return Response({"message": "Saved address not found."}, status=404)
+        return Response({"message": "Saved address not found.", "code": "saved_address_not_found"}, status=404)
 
     with transaction.atomic():
         _make_sole_default(user, profile)
@@ -401,7 +401,7 @@ def admin_reveal_delivery_info(request):
         .filter(id=request.data.get("order_id")).first()
     )
     if not order:
-        return Response({"message": "Order not found."}, status=404)
+        return Response({"message": "Order not found.", "code": "order_not_found"}, status=404)
 
     return Response({"record": {
         "order_id": order.id,

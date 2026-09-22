@@ -46,17 +46,17 @@ def _team_users(tt):
 def release_room_details_to_waitlist(request):
     user = _auth(request)
     if not user:
-        return Response({"message": "Invalid or missing session token."}, status=401)
+        return Response({"message": "Invalid or missing session token.", "code": "invalid_missing_session_token"}, status=401)
 
     match = get_object_or_404(Match, match_id=request.data.get("match_id"))
     if not (match.group and match.group.stage):
-        return Response({"message": "This match is not linked to a group/stage."}, status=400)
+        return Response({"message": "This match is not linked to a group/stage.", "code": "match_not_linked_group"}, status=400)
     group = match.group
     event = group.stage.event
     if not _can_manage(user, event):
-        return Response({"message": "You do not have permission."}, status=403)
+        return Response({"message": "You do not have permission.", "code": "not_permission"}, status=403)
     if not (match.room_id or match.room_name or match.room_password):
-        return Response({"message": "Set this map's room ID/name/password first."}, status=400)
+        return Response({"message": "Set this map's room ID/name/password first.", "code": "set_map_room_name"}, status=400)
 
     # ── choose the recipient waitlist team(s) ──
     chosen_id = request.data.get("tournament_team_id")
@@ -65,19 +65,19 @@ def release_room_details_to_waitlist(request):
         tt = wl.filter(tournament_team_id=chosen_id).first() or \
             TournamentTeam.objects.filter(event=event, tournament_team_id=chosen_id).first()
         if not tt:
-            return Response({"message": "That team is not registered for this event."}, status=404)
+            return Response({"message": "That team is not registered for this event.", "code": "team_not_registered_event"}, status=404)
         teams = [tt]
     else:
         mode = event.waitlist_mode or "first_registered"
         if mode == "manual_admin":
-            return Response({"message": "This event's waitlist is set to manual: pick a team to send to."}, status=400)
+            return Response({"message": "This event's waitlist is set to manual: pick a team to send to.", "code": "event_waitlist_set_manual"}, status=400)
         if mode == "fcfs_room":
             teams = list(wl.select_related("team").order_by("tournament_team_id"))
         else:  # first_registered
             nxt = wl.order_by("tournament_team_id").first()
             teams = [nxt] if nxt else []
     if not teams:
-        return Response({"message": "No waitlisted teams to send the room to."}, status=400)
+        return Response({"message": "No waitlisted teams to send the room to.", "code": "no_waitlisted_teams_send"}, status=400)
 
     # ── recipients + message ──
     recipients = {}
@@ -86,7 +86,7 @@ def release_room_details_to_waitlist(request):
             recipients[u.user_id] = u
     recipients = list(recipients.values())
     if not recipients:
-        return Response({"message": "The selected waitlist team(s) have no players to message."}, status=400)
+        return Response({"message": "The selected waitlist team(s) have no players to message.", "code": "selected_waitlist_team_no"}, status=400)
 
     title = f"Room details - {event.event_name}"
     message = (

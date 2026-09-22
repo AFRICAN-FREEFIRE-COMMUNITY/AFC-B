@@ -110,19 +110,19 @@ def get_my_organizations(request):
     session_token = request.headers.get("Authorization")
     if not session_token:
         return Response(
-            {"message": "Authorization header is required"},
+            {"message": "Authorization header is required", "code": "authorization_header_required"},
             status=status.HTTP_400_BAD_REQUEST,
         )
     if not session_token.startswith("Bearer "):
         return Response(
-            {"message": "Invalid token format"},
+            {"message": "Invalid token format", "code": "invalid_token_format"},
             status=status.HTTP_400_BAD_REQUEST,
         )
     session_token = session_token.split(" ")[1]
     user = validate_token(session_token)
     if not user:
         return Response(
-            {"message": "Invalid or expired session token."},
+            {"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"},
             status=status.HTTP_401_UNAUTHORIZED,
         )
 
@@ -190,19 +190,19 @@ def get_organization(request, slug):
     session_token = request.headers.get("Authorization")
     if not session_token:
         return Response(
-            {"message": "Authorization header is required"},
+            {"message": "Authorization header is required", "code": "authorization_header_required"},
             status=status.HTTP_400_BAD_REQUEST,
         )
     if not session_token.startswith("Bearer "):
         return Response(
-            {"message": "Invalid token format"},
+            {"message": "Invalid token format", "code": "invalid_token_format"},
             status=status.HTTP_400_BAD_REQUEST,
         )
     session_token = session_token.split(" ")[1]
     user = validate_token(session_token)
     if not user:
         return Response(
-            {"message": "Invalid or expired session token."},
+            {"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"},
             status=status.HTTP_401_UNAUTHORIZED,
         )
 
@@ -210,7 +210,7 @@ def get_organization(request, slug):
     org = Organization.objects.filter(slug=slug).first()
     if not org:
         return Response(
-            {"message": "Organization not found."},
+            {"message": "Organization not found.", "code": "organization_not_found"},
             status=status.HTTP_404_NOT_FOUND,
         )
 
@@ -228,7 +228,7 @@ def get_organization(request, slug):
             override = True
         else:
             return Response(
-                {"message": "You are not a member of this organization."},
+                {"message": "You are not a member of this organization.", "code": "not_member_organization"},
                 status=status.HTTP_403_FORBIDDEN,
             )
 
@@ -273,26 +273,26 @@ def edit_organization_profile(request, slug):
     session_token = request.headers.get("Authorization")
     if not session_token:
         return Response(
-            {"message": "Authorization header is required"},
+            {"message": "Authorization header is required", "code": "authorization_header_required"},
             status=status.HTTP_400_BAD_REQUEST,
         )
     if not session_token.startswith("Bearer "):
         return Response(
-            {"message": "Invalid token format"},
+            {"message": "Invalid token format", "code": "invalid_token_format"},
             status=status.HTTP_400_BAD_REQUEST,
         )
     session_token = session_token.split(" ")[1]
     user = validate_token(session_token)
     if not user:
         return Response(
-            {"message": "Invalid or expired session token."},
+            {"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"},
             status=status.HTTP_401_UNAUTHORIZED,
         )
 
     org = Organization.objects.filter(slug=slug).first()
     if not org:
         return Response(
-            {"message": "Organization not found."},
+            {"message": "Organization not found.", "code": "organization_not_found"},
             status=status.HTTP_404_NOT_FOUND,
         )
 
@@ -300,7 +300,7 @@ def edit_organization_profile(request, slug):
     member = _member_or_403(user, org)
     if not member or member.role != "owner":
         return Response(
-            {"message": "Only the organization owner can edit the profile."},
+            {"message": "Only the organization owner can edit the profile.", "code": "organization_owner_edit_profile"},
             status=status.HTTP_403_FORBIDDEN,
         )
 
@@ -314,7 +314,7 @@ def edit_organization_profile(request, slug):
         new_name = (request.data.get("name") or "").strip()
         if not new_name:
             return Response(
-                {"message": "Organization name cannot be empty."},
+                {"message": "Organization name cannot be empty.", "code": "organization_name_cannot_empty"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
         org.name = new_name
@@ -330,19 +330,25 @@ def edit_organization_profile(request, slug):
                 socials = json.loads(socials)
             except (ValueError, TypeError):
                 return Response(
-                    {"message": "socials must be a valid JSON object."},
+                    {"message": "socials must be a valid JSON object.", "code": "socials_valid_json_object"},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
         if not isinstance(socials, dict):
             return Response(
-                {"message": "socials must be a JSON object."},
+                {"message": "socials must be a JSON object.", "code": "socials_json_object"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
         org.socials = socials
 
     # File fields: only replace when a new upload is present in request.FILES.
     if "logo" in request.FILES:
-        org.logo = request.FILES["logo"]
+        # R70 (2026-09-22): decode the bytes before they become the organisation public logo.
+        from afc_auth.image_utils import require_image_upload
+        _logo, bad_image = require_image_upload(request.FILES["logo"])
+        if bad_image:
+            return Response({"message": "The logo must be a JPEG, PNG, WEBP or GIF under 10 MB.",
+                             "code": bad_image}, status=status.HTTP_400_BAD_REQUEST)
+        org.logo = _logo
     if "default_banner" in request.FILES:
         org.default_banner = request.FILES["default_banner"]
 
@@ -378,33 +384,33 @@ def get_organization_members(request, slug):
     session_token = request.headers.get("Authorization")
     if not session_token:
         return Response(
-            {"message": "Authorization header is required"},
+            {"message": "Authorization header is required", "code": "authorization_header_required"},
             status=status.HTTP_400_BAD_REQUEST,
         )
     if not session_token.startswith("Bearer "):
         return Response(
-            {"message": "Invalid token format"},
+            {"message": "Invalid token format", "code": "invalid_token_format"},
             status=status.HTTP_400_BAD_REQUEST,
         )
     session_token = session_token.split(" ")[1]
     user = validate_token(session_token)
     if not user:
         return Response(
-            {"message": "Invalid or expired session token."},
+            {"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"},
             status=status.HTTP_401_UNAUTHORIZED,
         )
 
     org = Organization.objects.filter(slug=slug).first()
     if not org:
         return Response(
-            {"message": "Organization not found."},
+            {"message": "Organization not found.", "code": "organization_not_found"},
             status=status.HTTP_404_NOT_FOUND,
         )
 
     # Membership gate - only the org's own people may see the roster.
     if not _member_or_403(user, org):
         return Response(
-            {"message": "You are not a member of this organization."},
+            {"message": "You are not a member of this organization.", "code": "not_member_organization"},
             status=status.HTTP_403_FORBIDDEN,
         )
 
@@ -434,26 +440,26 @@ def add_organization_member(request, slug):
     session_token = request.headers.get("Authorization")
     if not session_token:
         return Response(
-            {"message": "Authorization header is required"},
+            {"message": "Authorization header is required", "code": "authorization_header_required"},
             status=status.HTTP_400_BAD_REQUEST,
         )
     if not session_token.startswith("Bearer "):
         return Response(
-            {"message": "Invalid token format"},
+            {"message": "Invalid token format", "code": "invalid_token_format"},
             status=status.HTTP_400_BAD_REQUEST,
         )
     session_token = session_token.split(" ")[1]
     user = validate_token(session_token)
     if not user:
         return Response(
-            {"message": "Invalid or expired session token."},
+            {"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"},
             status=status.HTTP_401_UNAUTHORIZED,
         )
 
     org = Organization.objects.filter(slug=slug).first()
     if not org:
         return Response(
-            {"message": "Organization not found."},
+            {"message": "Organization not found.", "code": "organization_not_found"},
             status=status.HTTP_404_NOT_FOUND,
         )
 
@@ -461,7 +467,7 @@ def add_organization_member(request, slug):
     # rejects any sub_organizer, even one holding can_manage_members).
     if not org_is_owner(user, org):
         return Response(
-            {"message": "Only the organization owner can manage members."},
+            {"message": "Only the organization owner can manage members.", "code": "organization_owner_manage_members"},
             status=status.HTTP_403_FORBIDDEN,
         )
 
@@ -469,13 +475,13 @@ def add_organization_member(request, slug):
     username = request.data.get("username")
     if not username:
         return Response(
-            {"message": "username is required."},
+            {"message": "username is required.", "code": "username_required"},
             status=status.HTTP_400_BAD_REQUEST,
         )
     target_user = User.objects.filter(username=username).first()
     if not target_user:
         return Response(
-            {"message": "No user found with that username."},
+            {"message": "No user found with that username.", "code": "no_user_found_username"},
             status=status.HTTP_404_NOT_FOUND,
         )
 
@@ -497,7 +503,7 @@ def add_organization_member(request, slug):
         # Refuse to clobber the owner via the add endpoint.
         if member.role == "owner":
             return Response(
-                {"message": "This user is the organization owner."},
+                {"message": "This user is the organization owner.", "code": "user_organization_owner"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
         # Re-activate a previously removed sub_organizer and reset its inviter.
@@ -540,33 +546,33 @@ def edit_organization_member(request, slug, user_id):
     session_token = request.headers.get("Authorization")
     if not session_token:
         return Response(
-            {"message": "Authorization header is required"},
+            {"message": "Authorization header is required", "code": "authorization_header_required"},
             status=status.HTTP_400_BAD_REQUEST,
         )
     if not session_token.startswith("Bearer "):
         return Response(
-            {"message": "Invalid token format"},
+            {"message": "Invalid token format", "code": "invalid_token_format"},
             status=status.HTTP_400_BAD_REQUEST,
         )
     session_token = session_token.split(" ")[1]
     user = validate_token(session_token)
     if not user:
         return Response(
-            {"message": "Invalid or expired session token."},
+            {"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"},
             status=status.HTTP_401_UNAUTHORIZED,
         )
 
     org = Organization.objects.filter(slug=slug).first()
     if not org:
         return Response(
-            {"message": "Organization not found."},
+            {"message": "Organization not found.", "code": "organization_not_found"},
             status=status.HTTP_404_NOT_FOUND,
         )
 
     # Permission gate - OWNER-ONLY (owner/AFC-admin only; sub_organizers can never edit perms).
     if not org_is_owner(user, org):
         return Response(
-            {"message": "Only the organization owner can edit member permissions."},
+            {"message": "Only the organization owner can edit member permissions.", "code": "organization_owner_edit_member"},
             status=status.HTTP_403_FORBIDDEN,
         )
 
@@ -576,14 +582,14 @@ def edit_organization_member(request, slug, user_id):
     ).select_related("user").first()
     if not member:
         return Response(
-            {"message": "Member not found in this organization."},
+            {"message": "Member not found in this organization.", "code": "member_not_found_organization"},
             status=status.HTTP_404_NOT_FOUND,
         )
 
     # The owner's row carries every permission implicitly - never editable here.
     if member.role == "owner":
         return Response(
-            {"message": "The organization owner's permissions cannot be edited."},
+            {"message": "The organization owner's permissions cannot be edited.", "code": "organization_owner_permissions_cannot"},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
@@ -617,33 +623,33 @@ def remove_organization_member(request, slug, user_id):
     session_token = request.headers.get("Authorization")
     if not session_token:
         return Response(
-            {"message": "Authorization header is required"},
+            {"message": "Authorization header is required", "code": "authorization_header_required"},
             status=status.HTTP_400_BAD_REQUEST,
         )
     if not session_token.startswith("Bearer "):
         return Response(
-            {"message": "Invalid token format"},
+            {"message": "Invalid token format", "code": "invalid_token_format"},
             status=status.HTTP_400_BAD_REQUEST,
         )
     session_token = session_token.split(" ")[1]
     user = validate_token(session_token)
     if not user:
         return Response(
-            {"message": "Invalid or expired session token."},
+            {"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"},
             status=status.HTTP_401_UNAUTHORIZED,
         )
 
     org = Organization.objects.filter(slug=slug).first()
     if not org:
         return Response(
-            {"message": "Organization not found."},
+            {"message": "Organization not found.", "code": "organization_not_found"},
             status=status.HTTP_404_NOT_FOUND,
         )
 
     # Permission gate - OWNER-ONLY (owner/AFC-admin only; sub_organizers can never remove members).
     if not org_is_owner(user, org):
         return Response(
-            {"message": "Only the organization owner can remove members."},
+            {"message": "Only the organization owner can remove members.", "code": "organization_owner_remove_members"},
             status=status.HTTP_403_FORBIDDEN,
         )
 
@@ -653,14 +659,14 @@ def remove_organization_member(request, slug, user_id):
     ).first()
     if not member:
         return Response(
-            {"message": "Member not found in this organization."},
+            {"message": "Member not found in this organization.", "code": "member_not_found_organization"},
             status=status.HTTP_404_NOT_FOUND,
         )
 
     # The owner is structural - refuse to remove them through the member endpoint.
     if member.role == "owner":
         return Response(
-            {"message": "The organization owner cannot be removed."},
+            {"message": "The organization owner cannot be removed.", "code": "organization_owner_cannot_removed"},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
@@ -680,15 +686,15 @@ def _org_lifecycle_auth(request, slug):
     Returns (user, org, None) or (None, None, error_response)."""
     session_token = request.headers.get("Authorization")
     if not session_token or not session_token.startswith("Bearer "):
-        return None, None, Response({"message": "Authorization header is required"},
+        return None, None, Response({"message": "Authorization header is required", "code": "authorization_header_required"},
                                     status=status.HTTP_400_BAD_REQUEST)
     user = validate_token(session_token.split(" ")[1])
     if not user:
-        return None, None, Response({"message": "Invalid or expired session token."},
+        return None, None, Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"},
                                     status=status.HTTP_401_UNAUTHORIZED)
     org = Organization.objects.filter(slug=slug).first()
     if not org:
-        return None, None, Response({"message": "Organization not found."},
+        return None, None, Response({"message": "Organization not found.", "code": "organization_not_found"},
                                     status=status.HTTP_404_NOT_FOUND)
     return user, org, None
 
@@ -705,11 +711,11 @@ def leave_organization(request, slug):
     member = OrganizationMember.objects.filter(
         organization=org, user=user, status="active").first()
     if not member:
-        return Response({"message": "You are not a member of this organization."},
+        return Response({"message": "You are not a member of this organization.", "code": "not_member_organization"},
                         status=status.HTTP_404_NOT_FOUND)
     if member.role == "owner":
         return Response(
-            {"message": "The owner cannot leave. Transfer ownership or delete the organization."},
+            {"message": "The owner cannot leave. Transfer ownership or delete the organization.", "code": "owner_cannot_leave_transfer"},
             status=status.HTTP_400_BAD_REQUEST,
         )
     member.status = "removed"
@@ -736,10 +742,10 @@ def suspend_my_organization(request, slug):
     if err:
         return err
     if not _is_org_owner_or_admin(user, org):
-        return Response({"message": "Only the organization owner can do this."},
+        return Response({"message": "Only the organization owner can do this.", "code": "organization_owner"},
                         status=status.HTTP_403_FORBIDDEN)
     if org.status == "deleted":
-        return Response({"message": "This organization is deleted. Ask an AFC admin to restore it first."},
+        return Response({"message": "This organization is deleted. Ask an AFC admin to restore it first.", "code": "organization_deleted_ask_afc"},
                         status=status.HTTP_400_BAD_REQUEST)
     suspend = request.data.get("suspend", True)
     if isinstance(suspend, str):
@@ -760,7 +766,7 @@ def delete_my_organization(request, slug):
     if err:
         return err
     if not _is_org_owner_or_admin(user, org):
-        return Response({"message": "Only the organization owner can do this."},
+        return Response({"message": "Only the organization owner can do this.", "code": "organization_owner"},
                         status=status.HTTP_403_FORBIDDEN)
     from django.utils import timezone
     org.status = "deleted"

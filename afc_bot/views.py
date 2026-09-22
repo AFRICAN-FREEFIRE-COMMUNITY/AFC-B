@@ -51,14 +51,14 @@ def _gate(request):
     """(user, error_response). One place decides both identity and permission."""
     header = request.headers.get("Authorization") or ""
     if not header.startswith("Bearer "):
-        return None, Response({"message": "You need to be signed in to do this."},
+        return None, Response({"message": "You need to be signed in to do this.", "code": "need_signed"},
                               status=status.HTTP_401_UNAUTHORIZED)
     user = validate_token(header.split(" ", 1)[1])
     if not user:
-        return None, Response({"message": "Invalid or expired session token."},
+        return None, Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"},
                               status=status.HTTP_401_UNAUTHORIZED)
     if not can_manage_bot(user):
-        return None, Response({"message": "Only AFC head admins can manage the bot."},
+        return None, Response({"message": "Only AFC head admins can manage the bot.", "code": "afc_head_admins_manage"},
                               status=status.HTTP_403_FORBIDDEN)
     return user, None
 
@@ -155,7 +155,7 @@ def bot_knowledge(request):
 
     upload = request.FILES.get("file")
     if not upload:
-        return Response({"message": "Attach a file."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "Attach a file.", "code": "attach_file"}, status=status.HTTP_400_BAD_REQUEST)
     scope = request.data.get("scope", "public")
     return _forward(
         "POST", f"/control/knowledge?scope={scope}",

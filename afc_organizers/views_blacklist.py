@@ -394,7 +394,7 @@ def _create_blacklist(request):
     organization_id = request.data.get("organization_id")
     if not organization_id:
         return Response(
-            {"message": "organization_id is required."},
+            {"message": "organization_id is required.", "code": "organization_required"},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
@@ -403,13 +403,13 @@ def _create_blacklist(request):
     target_type = (request.data.get("target_type") or "team").strip().lower()
     if target_type not in ("team", "player"):
         return Response(
-            {"message": "target_type must be 'team' or 'player'."},
+            {"message": "target_type must be 'team' or 'player'.", "code": "target_type_team_player"},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
     org = Organization.objects.filter(pk=organization_id).first()
     if not org:
-        return Response({"message": "Organization not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "Organization not found.", "code": "organization_not_found"}, status=status.HTTP_404_NOT_FOUND)
 
     # Resolve the target itself. Exactly one of team / target_player is set from here on; the rest
     # of the view is shared so both shapes get an identical window, status and lifecycle.
@@ -419,27 +419,27 @@ def _create_blacklist(request):
         team_id = request.data.get("team_id")
         if not team_id:
             return Response(
-                {"message": "team_id is required."},
+                {"message": "team_id is required.", "code": "team_required"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
         team = Team.objects.filter(pk=team_id).first()
         if not team:
-            return Response({"message": "Team not found."}, status=status.HTTP_404_NOT_FOUND)
+            return Response({"message": "Team not found.", "code": "team_not_found"}, status=status.HTTP_404_NOT_FOUND)
     else:
         target_user_id = request.data.get("user_id")
         if not target_user_id:
             return Response(
-                {"message": "user_id is required for a player blacklist."},
+                {"message": "user_id is required for a player blacklist.", "code": "user_required_player_blacklist"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
         target_player = User.objects.filter(pk=target_user_id).first()
         if not target_player:
-            return Response({"message": "Player not found."}, status=status.HTTP_404_NOT_FOUND)
+            return Response({"message": "Player not found.", "code": "player_not_found"}, status=status.HTTP_404_NOT_FOUND)
 
     # ── permission gate: only someone who can manage registrations for THIS org ──
     if not org_can(user, "can_manage_registrations", org):
         return Response(
-            {"message": "You do not have permission to manage blacklists for this organization."},
+            {"message": "You do not have permission to manage blacklists for this organization.", "code": "not_permission_manage_blacklists"},
             status=status.HTTP_403_FORBIDDEN,
         )
 
@@ -470,7 +470,7 @@ def _create_blacklist(request):
         # end_date is required on this path.
         if not raw_end:
             return Response(
-                {"message": "end_date is required (ISO YYYY-MM-DD)."},
+                {"message": "end_date is required (ISO YYYY-MM-DD).", "code": "end_date_required_iso"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
         # start_date is optional; default to "now" at day-start when omitted.
@@ -478,19 +478,19 @@ def _create_blacklist(request):
         end_date = _parse_day(raw_end, end_of_day=True)
         if start_date is None or end_date is None:
             return Response(
-                {"message": "start_date and end_date must be valid ISO dates (YYYY-MM-DD)."},
+                {"message": "start_date and end_date must be valid ISO dates (YYYY-MM-DD).", "code": "start_date_end_date"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
         # end must be strictly after start (a zero/negative-length window is meaningless).
         if end_date <= start_date:
             return Response(
-                {"message": "end_date must be after start_date."},
+                {"message": "end_date must be after start_date.", "code": "end_date_after_start"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
         # end must be in the future (cannot create an already-expired blacklist).
         if end_date <= now:
             return Response(
-                {"message": "end_date must be in the future."},
+                {"message": "end_date must be in the future.", "code": "end_date_future"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
     else:
@@ -499,12 +499,12 @@ def _create_blacklist(request):
             duration_days = int(request.data.get("duration_days"))
         except (TypeError, ValueError):
             return Response(
-                {"message": "duration_days must be a positive integer."},
+                {"message": "duration_days must be a positive integer.", "code": "duration_days_positive_integer"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
         if duration_days <= 0:
             return Response(
-                {"message": "duration_days must be a positive integer."},
+                {"message": "duration_days must be a positive integer.", "code": "duration_days_positive_integer"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
         start_date = now
@@ -584,16 +584,16 @@ def _list_blacklists(request):
     organization_id = request.GET.get("organization_id")
     if not organization_id:
         return Response(
-            {"message": "organization_id is required."},
+            {"message": "organization_id is required.", "code": "organization_required"},
             status=status.HTTP_400_BAD_REQUEST,
         )
     org = Organization.objects.filter(pk=organization_id).first()
     if not org:
-        return Response({"message": "Organization not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "Organization not found.", "code": "organization_not_found"}, status=status.HTTP_404_NOT_FOUND)
 
     if not org_can(user, "can_manage_registrations", org):
         return Response(
-            {"message": "You do not have permission to view blacklists for this organization."},
+            {"message": "You do not have permission to view blacklists for this organization.", "code": "not_permission_view_blacklists"},
             status=status.HTTP_403_FORBIDDEN,
         )
 
@@ -639,11 +639,11 @@ def lift_blacklist(request, blacklist_id):
         .first()
     )
     if not blacklist:
-        return Response({"message": "Blacklist not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "Blacklist not found.", "code": "blacklist_not_found"}, status=status.HTTP_404_NOT_FOUND)
 
     if not org_can(user, "can_manage_registrations", blacklist.organization):
         return Response(
-            {"message": "You do not have permission to lift this blacklist."},
+            {"message": "You do not have permission to lift this blacklist.", "code": "not_permission_lift_blacklist"},
             status=status.HTTP_403_FORBIDDEN,
         )
 
@@ -687,12 +687,12 @@ def request_lift(request, blacklist_id):
         .first()
     )
     if not blacklist:
-        return Response({"message": "Blacklist not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "Blacklist not found.", "code": "blacklist_not_found"}, status=status.HTTP_404_NOT_FOUND)
 
     scope = request.data.get("scope")
     if scope not in ("team", "player"):
         return Response(
-            {"message": "scope must be 'team' or 'player'."},
+            {"message": "scope must be 'team' or 'player'.", "code": "scope_team_player"},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
@@ -705,20 +705,20 @@ def request_lift(request, blacklist_id):
         # message that points the requester at the scope that DOES apply.
         if blacklist.target_type == "player" or blacklist.team is None:
             return Response(
-                {"message": "This blacklist targets a player, not a team. Request a player lift instead."},
+                {"message": "This blacklist targets a player, not a team. Request a player lift instead.", "code": "blacklist_targets_player_not"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
         # Team-scope: only a manager of the blacklisted team may ask for a full lift.
         if not _is_team_manager(user, blacklist.team):
             return Response(
-                {"message": "Only the team owner, captain, coach, or manager can request a team lift."},
+                {"message": "Only the team owner, captain, coach, or manager can request a team lift.", "code": "team_owner_captain_coach"},
                 status=status.HTTP_403_FORBIDDEN,
             )
     else:  # scope == "player"
         target_user_id = request.data.get("target_user_id")
         if not target_user_id:
             return Response(
-                {"message": "target_user_id is required for a player-scope lift request."},
+                {"message": "target_user_id is required for a player-scope lift request.", "code": "target_user_required_player"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
         # The target must actually be a snapshot player on this blacklist - you cannot request a
@@ -728,7 +728,7 @@ def request_lift(request, blacklist_id):
         ).select_related("user").first()
         if not player_row:
             return Response(
-                {"message": "That player is not on this blacklist."},
+                {"message": "That player is not on this blacklist.", "code": "player_not_blacklist"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
         target_user = player_row.user
@@ -739,7 +739,7 @@ def request_lift(request, blacklist_id):
         manager_can_act = blacklist.team is not None and _is_team_manager(user, blacklist.team)
         if not (is_self or manager_can_act):
             return Response(
-                {"message": "You can only request a lift for yourself, or a team manager can request it for you."},
+                {"message": "You can only request a lift for yourself, or a team manager can request it for you.", "code": "request_lift_yourself_team"},
                 status=status.HTTP_403_FORBIDDEN,
             )
 
@@ -749,7 +749,7 @@ def request_lift(request, blacklist_id):
     ).exists()
     if duplicate:
         return Response(
-            {"message": "A pending lift request already exists for this scope."},
+            {"message": "A pending lift request already exists for this scope.", "code": "pending_lift_request_already"},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
@@ -787,16 +787,16 @@ def list_lift_requests(request):
     organization_id = request.GET.get("organization_id")
     if not organization_id:
         return Response(
-            {"message": "organization_id is required."},
+            {"message": "organization_id is required.", "code": "organization_required"},
             status=status.HTTP_400_BAD_REQUEST,
         )
     org = Organization.objects.filter(pk=organization_id).first()
     if not org:
-        return Response({"message": "Organization not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "Organization not found.", "code": "organization_not_found"}, status=status.HTTP_404_NOT_FOUND)
 
     if not org_can(user, "can_manage_registrations", org):
         return Response(
-            {"message": "You do not have permission to view lift requests for this organization."},
+            {"message": "You do not have permission to view lift requests for this organization.", "code": "not_permission_view_lift"},
             status=status.HTTP_403_FORBIDDEN,
         )
 
@@ -851,26 +851,26 @@ def decide_lift_request(request, request_id):
         .first()
     )
     if not lift_request:
-        return Response({"message": "Lift request not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "Lift request not found.", "code": "lift_request_not_found"}, status=status.HTTP_404_NOT_FOUND)
 
     blacklist = lift_request.blacklist
     if not org_can(user, "can_manage_registrations", blacklist.organization):
         return Response(
-            {"message": "You do not have permission to decide this lift request."},
+            {"message": "You do not have permission to decide this lift request.", "code": "not_permission_decide_lift"},
             status=status.HTTP_403_FORBIDDEN,
         )
 
     decision = request.data.get("decision")
     if decision not in ("approve", "deny"):
         return Response(
-            {"message": "decision must be 'approve' or 'deny'."},
+            {"message": "decision must be 'approve' or 'deny'.", "code": "decision_approve_deny"},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
     # Only a still-pending request can be decided (idempotency guard: re-deciding does nothing).
     if lift_request.status != "pending":
         return Response(
-            {"message": "This lift request has already been decided."},
+            {"message": "This lift request has already been decided.", "code": "lift_request_already_decided"},
             status=status.HTTP_400_BAD_REQUEST,
         )
 

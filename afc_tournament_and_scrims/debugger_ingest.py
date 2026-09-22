@@ -145,7 +145,7 @@ def debugger_backfill(request, event_id):
 
     up = request.FILES.get("file")
     if not up:
-        return Response({"message": "Attach the debugger .log file."}, status=400)
+        return Response({"message": "Attach the debugger .log file.", "code": "attach_debugger_log_file"}, status=400)
     # The whole file is decoded in memory and parsed as text; it is never stored. A real
     # MatchResult log is well under a megabyte, so the cap only stops a mistake (R70).
     if up.size > MAX_LOG_BYTES:
@@ -154,11 +154,11 @@ def debugger_backfill(request, event_id):
     try:
         text = up.read().decode("utf-8", errors="replace")
     except Exception:
-        return Response({"message": "Could not read the file."}, status=400)
+        return Response({"message": "Could not read the file.", "code": "could_not_read_file"}, status=400)
 
     rounds = parse_debugger_log(text)
     if not rounds:
-        return Response({"message": "No rounds with players found in this log."}, status=400)
+        return Response({"message": "No rounds with players found in this log.", "code": "no_rounds_players_found"}, status=400)
 
     # UIDs present in the log that match site accounts (User.uid), for the dry-run report.
     from afc_auth.models import User

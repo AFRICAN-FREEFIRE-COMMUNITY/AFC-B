@@ -86,7 +86,7 @@ def _resolve_library(request, raw_org_id):
     # correct regardless of the field name (filter(id=...) raises FieldError on this model).
     org = Organization.objects.filter(pk=raw_org_id).first()
     if not org:
-        return None, False, Response({"message": "Organization not found."}, status=404)
+        return None, False, Response({"message": "Organization not found.", "code": "organization_not_found"}, status=404)
     return org, org_can(user, "can_submit_designs", org), None
 
 
@@ -612,9 +612,9 @@ def designs_collection(request):
         # org-owned leaderboard could open the export picker but fail to load that org's designs (403).
         if org is None:
             if user.role != "admin":
-                return Response({"message": "Admins only."}, status=status.HTTP_403_FORBIDDEN)
+                return Response({"message": "Admins only.", "code": "designs_collection_admins"}, status=status.HTTP_403_FORBIDDEN)
         elif user.role != "admin" and not _member_or_403(user, org):
-            return Response({"message": "You do not have access to this organization."},
+            return Response({"message": "You do not have access to this organization.", "code": "not_access_organization"},
                             status=status.HTTP_403_FORBIDDEN)
         rows = [_serialize_design(d, request) for d in _library_qs(org)]
         return Response({"results": rows, "total_count": len(rows)})
@@ -624,11 +624,11 @@ def designs_collection(request):
     if err:
         return err
     if not can_write:
-        return Response({"message": "You do not have permission to manage these designs."},
+        return Response({"message": "You do not have permission to manage these designs.", "code": "not_permission_manage_designs"},
                         status=status.HTTP_403_FORBIDDEN)
     name = (request.data.get("name") or "").strip()
     if not name:
-        return Response({"message": "A design name is required."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "A design name is required.", "code": "design_name_required"}, status=status.HTTP_400_BAD_REQUEST)
     d = OrgLeaderboardDesign(organization=org, name=name, created_by=user)
     _apply_fields(d, request.data)
     if request.FILES.get("background_instagram"):
@@ -657,9 +657,9 @@ def design_item(request, design_id):
         d = (OrgLeaderboardDesign.objects.select_related("organization")
              .prefetch_related("logos", "fields", "texts", "pages").get(id=design_id))
     except OrgLeaderboardDesign.DoesNotExist:
-        return Response({"message": "Design not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "Design not found.", "code": "design_not_found"}, status=status.HTTP_404_NOT_FOUND)
     if not _can_write_design(user, d):
-        return Response({"message": "You do not have permission to manage this design."},
+        return Response({"message": "You do not have permission to manage this design.", "code": "not_permission_manage_design"},
                         status=status.HTTP_403_FORBIDDEN)
 
     if request.method == "DELETE":
@@ -707,9 +707,9 @@ def _get_design_for_write(user, design_id):
         d = (OrgLeaderboardDesign.objects.select_related("organization")
              .prefetch_related("pages").get(id=design_id))
     except OrgLeaderboardDesign.DoesNotExist:
-        return None, Response({"message": "Design not found."}, status=status.HTTP_404_NOT_FOUND)
+        return None, Response({"message": "Design not found.", "code": "design_not_found"}, status=status.HTTP_404_NOT_FOUND)
     if not _can_write_design(user, d):
-        return None, Response({"message": "You do not have permission to manage this design."},
+        return None, Response({"message": "You do not have permission to manage this design.", "code": "not_permission_manage_design"},
                               status=status.HTTP_403_FORBIDDEN)
     return d, None
 
@@ -729,7 +729,7 @@ def design_logos(request, design_id):
         return err
     image = request.FILES.get("image")
     if not image:
-        return Response({"message": "A logo image is required."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "A logo image is required.", "code": "logo_image_required"}, status=status.HTTP_400_BAD_REQUEST)
     size = (request.data.get("size") or "medium").lower()
     logo = OrgLeaderboardDesignLogo.objects.create(
         design=d,
@@ -753,7 +753,7 @@ def design_logo_item(request, design_id, logo_id):
         return err
     logo = OrgLeaderboardDesignLogo.objects.filter(design=d, id=logo_id).first()
     if not logo:
-        return Response({"message": "Logo not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "Logo not found.", "code": "logo_not_found"}, status=status.HTTP_404_NOT_FOUND)
 
     if request.method == "DELETE":
         logo.delete()
@@ -874,7 +874,7 @@ def design_page_item(request, design_id, page_id):
 
     page = OrgLeaderboardDesignPage.objects.filter(design=d, id=page_id).first()
     if not page:
-        return Response({"message": "Page not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "Page not found.", "code": "page_not_found"}, status=status.HTTP_404_NOT_FOUND)
 
     if request.method == "DELETE":
         page.delete()
@@ -933,7 +933,7 @@ def apply_background_to_all(request, design_id):
     yt_file = request.FILES.get("background_youtube")
     if not ig_file and not yt_file:
         return Response(
-            {"message": "Upload at least one background image to apply."},
+            {"message": "Upload at least one background image to apply.", "code": "upload_least_background_image"},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
@@ -1011,7 +1011,7 @@ def apply_field_enablement_to_all(request, design_id):
     if single:
         target = OrgLeaderboardDesignField.objects.filter(design=d, id=raw_field_id).first()
         if not target:
-            return Response({"message": "Field not found."}, status=status.HTTP_404_NOT_FOUND)
+            return Response({"message": "Field not found.", "code": "field_not_found"}, status=status.HTTP_404_NOT_FOUND)
         # Enable THIS column on both sizes, plus its twin (same field_type + column_group) on every
         # other page of the design (multi-page "all pages"). Matching by type+group keeps the same
         # logical column in sync without needing per-page ids from the caller.
@@ -1106,7 +1106,7 @@ def design_fields(request, design_id):
         return err
     ft = (request.data.get("field_type") or "").strip()
     if ft not in FIELD_TYPES:
-        return Response({"message": "Unknown field type."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "Unknown field type.", "code": "unknown_field_type"}, status=status.HTTP_400_BAD_REQUEST)
     f = OrgLeaderboardDesignField(design=d, field_type=ft, x_pct=_clamp_pct(request.data.get("x_pct"), 10.0))
     _apply_field_attrs(f, request.data, d)
     # Optional page scoping (multi-page, owner 2026-06-14). page_id null = legacy / page-1 layout.
@@ -1132,7 +1132,7 @@ def design_field_item(request, design_id, field_id):
         return err
     f = OrgLeaderboardDesignField.objects.filter(design=d, id=field_id).first()
     if not f:
-        return Response({"message": "Field not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "Field not found.", "code": "field_not_found"}, status=status.HTTP_404_NOT_FOUND)
     if request.method == "DELETE":
         f.delete()
         return Response({"message": "Field removed."})
@@ -1219,7 +1219,7 @@ def design_text_item(request, design_id, text_id):
         return err
     t = OrgLeaderboardDesignText.objects.filter(design=d, id=text_id).first()
     if not t:
-        return Response({"message": "Text not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "Text not found.", "code": "text_not_found"}, status=status.HTTP_404_NOT_FOUND)
     if request.method == "DELETE":
         t.delete()
         return Response({"message": "Text removed."})
@@ -1247,9 +1247,9 @@ def fonts_collection(request):
             return err
         if org is None:
             if user.role != "admin":
-                return Response({"message": "Admins only."}, status=status.HTTP_403_FORBIDDEN)
+                return Response({"message": "Admins only.", "code": "fonts_collection_admins"}, status=status.HTTP_403_FORBIDDEN)
         elif user.role != "admin" and not _member_or_403(user, org):
-            return Response({"message": "You do not have access to this organization."},
+            return Response({"message": "You do not have access to this organization.", "code": "not_access_organization"},
                             status=status.HTTP_403_FORBIDDEN)
         qs = (OrgLeaderboardDesignFont.objects.filter(organization__isnull=True)
               if org is None else OrgLeaderboardDesignFont.objects.filter(organization=org))
@@ -1261,13 +1261,13 @@ def fonts_collection(request):
     if err:
         return err
     if not can_write:
-        return Response({"message": "You do not have permission to manage these fonts."},
+        return Response({"message": "You do not have permission to manage these fonts.", "code": "not_permission_manage_fonts"},
                         status=status.HTTP_403_FORBIDDEN)
     upload = request.FILES.get("file")
     if not upload:
-        return Response({"message": "A font file is required."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "A font file is required.", "code": "font_file_required"}, status=status.HTTP_400_BAD_REQUEST)
     if not upload.name.lower().endswith(FONT_EXTS):
-        return Response({"message": "Only .ttf or .otf font files are allowed."},
+        return Response({"message": "Only .ttf or .otf font files are allowed.", "code": "ttf_otf_font_files"},
                         status=status.HTTP_400_BAD_REQUEST)
     name = (request.data.get("name") or "").strip() or upload.name.rsplit(".", 1)[0][:80]
     f = OrgLeaderboardDesignFont.objects.create(
@@ -1284,11 +1284,11 @@ def font_item(request, font_id):
         return err
     f = OrgLeaderboardDesignFont.objects.select_related("organization").filter(id=font_id).first()
     if not f:
-        return Response({"message": "Font not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "Font not found.", "code": "font_not_found"}, status=status.HTTP_404_NOT_FOUND)
     can_write = (user.role == "admin") if f.organization_id is None else org_can(
         user, "can_submit_designs", f.organization)
     if not can_write:
-        return Response({"message": "You do not have permission to manage this font."},
+        return Response({"message": "You do not have permission to manage this font.", "code": "not_permission_manage_font"},
                         status=status.HTTP_403_FORBIDDEN)
     f.delete()
     return Response({"message": "Font removed."})
@@ -1339,13 +1339,13 @@ def design_duplicate(request, design_id):
     request._afc_user = user
     src = OrgLeaderboardDesign.objects.filter(id=design_id).first()
     if not src:
-        return Response({"message": "Design not found."}, status=404)
+        return Response({"message": "Design not found.", "code": "design_not_found"}, status=404)
     _org, can_write, gate_err = _resolve_library(
         request, src.organization_id if src.organization_id else None)
     if gate_err:
         return gate_err
     if not can_write:
-        return Response({"message": "You cannot modify this design library."}, status=403)
+        return Response({"message": "You cannot modify this design library.", "code": "cannot_modify_design_library"}, status=403)
 
     # ── 1. The design row itself (never the default; images shared by reference). ──
     copy = OrgLeaderboardDesign.objects.create(
@@ -1900,7 +1900,7 @@ def create_default_design(request):
     if preset not in _DEFAULT_PRESETS:
         return Response(
             {"message": "Choose a preset: 12, 15 or 24 teams, a live scene "
-                        "(booyah, mvp, top_killers, h2h), or set for the whole overlay kit."},
+                        "(booyah, mvp, top_killers, h2h), or set for the whole overlay kit.", "code": "choose_preset_teams_live"},
             status=status.HTTP_400_BAD_REQUEST)
 
     # Resolve which library this targets + whether the caller may write to it (same as create).
@@ -1908,7 +1908,7 @@ def create_default_design(request):
     if err:
         return err
     if not can_write:
-        return Response({"message": "You do not have permission to manage these designs."},
+        return Response({"message": "You do not have permission to manage these designs.", "code": "not_permission_manage_designs"},
                         status=status.HTTP_403_FORBIDDEN)
 
     # One preset, or the whole kit. "set" = the standings board every event needs plus one design

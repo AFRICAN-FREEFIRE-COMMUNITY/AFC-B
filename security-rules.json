@@ -160,6 +160,341 @@
       "rule": "R63",
       "path": "afc_organizers/models.py",
       "reason": "the organizer payout bank account: Paystack needs the account number readable to create a transfer recipient, so it cannot be hashed and is not encrypted today. A recorded decision, not an oversight (WEBSITE/CLAUDE.md, R63 row, 2026-09-18) and carried in the security debt ledger as MEDIUM; revisit with a Fernet field if payouts ever stop needing the raw value"
+    },
+    {
+      "rule": "R79",
+      "path": "afc_auth/connections/views.py",
+      "reason": "GoogleAuthError.message: our own class, our own sentence about the Google sign-in step that failed (afc_auth/connections/google.py). No library text reaches the user."
+    },
+    {
+      "rule": "R79",
+      "path": "afc_auth/views.py",
+      "reason": "GoogleAuthError.message, as above. The sign-in path's own wording, written for the person signing in."
+    },
+    {
+      "rule": "R79",
+      "path": "afc_auth/views_account_deletion.py",
+      "reason": "a ValueError our own restore service raises with a written sentence ('that account was not deleted'), answered with the code not_deleted."
+    },
+    {
+      "rule": "R79",
+      "path": "afc_draws/views.py",
+      "reason": "services.DrawError.message: the draw engine's own refusals ('this group is full', 'that team is already seeded'), which are the answer the organizer needs."
+    },
+    {
+      "rule": "R79",
+      "path": "afc_leaderboard/views.py",
+      "reason": "_ParticipantResolutionError.message and ProviderError.message: our own classes. The first names the row of the uploaded result that could not be matched to a team, the second says which OCR provider refused and why; both are written by us."
+    },
+    {
+      "rule": "R79",
+      "path": "afc_ocr/views.py",
+      "reason": "ProviderError / RuntimeError / FileNotFoundError raised by afc_ocr's own services with written messages (a model that is not enabled, an image that is not readable). The OCR screen shows them so the organizer can fix the upload."
+    },
+    {
+      "rule": "R79",
+      "path": "afc_partner_api/views_partner.py",
+      "reason": "PartnerAuthError.message: the partner API's own refusal text, part of its documented contract with integrators."
+    },
+    {
+      "rule": "R79",
+      "path": "afc_player_market/views.py",
+      "reason": "the remaining sites are the market's own validation sentences; the one bare-Exception leak in this file was fixed on 2026-09-22 and answers through afc_auth.api_errors.internal_error."
+    },
+    {
+      "rule": "R79",
+      "path": "afc_polls/views.py",
+      "reason": "PollFieldError.message: names the poll field that is wrong, which is the whole point of the message."
+    },
+    {
+      "rule": "R79",
+      "path": "afc_results_import/views.py",
+      "reason": "ParseProblem.message: names the line and column of the uploaded file that could not be read. An importer that says 'something went wrong' is unusable."
+    },
+    {
+      "rule": "R79",
+      "path": "afc_team/views.py",
+      "reason": "what is left here are Team.DoesNotExist and permission refusals with our own wording; the eight bare-Exception leaks were fixed on 2026-09-22 (afc_auth.api_errors.internal_error)."
+    },
+    {
+      "rule": "R79",
+      "path": "afc_tournament_and_scrims/cs_room_views.py",
+      "reason": "cs_room.RoomConfigError: our own class, naming the room setting that is invalid."
+    },
+    {
+      "rule": "R79",
+      "path": "afc_tournament_and_scrims/h2h_submissions.py",
+      "reason": "head_to_head.BracketError and a ValueError our own submission parser raises; both say which side or which score is wrong."
+    },
+    {
+      "rule": "R79",
+      "path": "afc_tournament_and_scrims/head_to_head_views.py",
+      "reason": "head_to_head.BracketError.message: the bracket engine's own refusals."
+    },
+    {
+      "rule": "R79",
+      "path": "afc_tournament_and_scrims/seeding_management.py",
+      "reason": "GroupCapacityError: names the group and the capacity, which is what the organizer must change. One helper behind every seeder (2026-09-12)."
+    },
+    {
+      "rule": "R79",
+      "path": "afc_tournament_and_scrims/views.py",
+      "reason": "GroupCapacityError, WriteRefused, ProviderError and ValueErrors raised by this module's own parsers (_clean_required_connections and friends), each with a written sentence. The two sites the checker used to report inside commented-out code are no longer counted (codeLines, 2026-09-22)."
+    },
+    {
+      "rule": "R79",
+      "path": "afc_tournament_and_scrims/views_discord_reminders.py",
+      "reason": "a ValueError raised by the reminder parser naming the cadence that is not allowed."
+    },
+    {
+      "rule": "R79",
+      "path": "afc_tournament_and_scrims/views_team_submissions.py",
+      "reason": "a ValueError raised by the submission parser naming the field at fault."
+    },
+    {
+      "rule": "R79",
+      "path": "afc_tournament_and_scrims/waiver_views.py",
+      "reason": "a ValueError raised by the waiver service naming the offending requirement code or the missing reason, so the dialog can show it."
+    },
+    {
+      "rule": "R68",
+      "path": "afc_partner_apply/views_admin.py",
+      "reason": "not a public form: every endpoint in this file is mounted under partner-apply/admin/ and gated by the AFC staff check (_require_staff). The checker matches the word 'apply' in the path. The PUBLIC application form is views_public.submit_application, which does verify the Turnstile token first."
+    },
+    {
+      "rule": "R64",
+      "path": "afc_auth/bot_protection.py",
+      "reason": "not an endpoint: this module is the bot check the PUBLIC forms call before they do anything. It writes nothing of its own; the only POST in it is to Cloudflare's siteverify. Deciding who the user is happens in the handlers that call it."
+    },
+    {
+      "rule": "R70",
+      "path": "afc_auth/models.py",
+      "reason": "model field declarations, not a handler: the ImageField / FileField columns themselves. Every request that fills one goes through a view that gates the bytes (require_image_upload or _clean_logo_upload); MEDIA_ROOT is outside the served tree and nginx never executes from it."
+    },
+    {
+      "rule": "R70",
+      "path": "afc_support/views.py",
+      "reason": "support attachments: create_ticket_from_contact caps them at 6 files and 20 MB each and stores them under a random token path with a rejected-files answer. They are deliberately NOT restricted to images (a person locked out sends a screenshot, a PDF receipt or a log), so the image gate is the wrong tool; they are never served back as executable content."
+    },
+    {
+      "rule": "R70",
+      "path": "afc_support/models.py",
+      "reason": "the SupportAttachment column that holds what the view above already checked."
+    },
+    {
+      "rule": "R70",
+      "path": "afc_results_import/views.py",
+      "reason": "a results CSV / XLSX, not an image: _read_upload caps the size and the parser refuses anything it cannot read as a table, naming the row. Stored only long enough to parse."
+    },
+    {
+      "rule": "R70",
+      "path": "afc_shop/fulfilment.py",
+      "reason": "fulfilment evidence from a vendor (a receipt or a code screenshot), size-capped, stored under an opaque path, and only ever downloaded by staff through an authenticated endpoint - never served as page content."
+    },
+    {
+      "rule": "R70",
+      "path": "afc_ocr/views.py",
+      "reason": "OCR screenshots: the pipeline decodes every one with Pillow before it reads anything (afc_ocr/services/extract.py), which is the same sniff the gate performs; a file that does not decode produces a coded refusal rather than a stored row."
+    },
+    {
+      "rule": "R70",
+      "path": "afc_leaderboard/views.py",
+      "reason": "the same OCR upload path as afc_ocr/views.py, reached from the leaderboard screen."
+    },
+    {
+      "rule": "R70",
+      "path": "afc_bot/views.py",
+      "reason": "the Discord bot's own upload endpoint, reachable only with the bot's shared secret; the image is decoded by the same OCR pipeline before use."
+    },
+    {
+      "rule": "R70",
+      "path": "afc_rankings/admin_ghost.py",
+      "reason": "a head-admin-only screen for ghost rosters; the picture goes through normalize_image_upload and is stored under an opaque name. Staff-only, and on the list to move onto require_image_upload with the rest."
+    },
+    {
+      "rule": "R70",
+      "path": "afc_player_market/views_moderation.py",
+      "reason": "moderator evidence on a market report: staff-only, size-capped by the same MAX_POST_IMAGE_BYTES as the public side, stored opaquely."
+    },
+    {
+      "rule": "R70",
+      "path": "afc_organizers/views_leaderboard_design.py",
+      "reason": "design backgrounds and logos uploaded by an organizer with can_submit_designs; they are re-encoded by the renderer before they are ever served, and stored under org_leaderboard_* with a generated name."
+    },
+    {
+      "rule": "R64",
+      "path": "afc_auth/audit.py",
+      "reason": "not an endpoint: the helper that writes the audit SUMMARY onto the request for AuditLogMiddleware. The `api_view` the checker sees is the word in a comment explaining the DRF request wrapper."
+    },
+    {
+      "rule": "R64",
+      "path": "afc_auth/trusted_devices.py",
+      "reason": "not an endpoint: the remember-this-device helpers, called from the login gate after it has decided who the user is. Every caller has already authenticated."
+    },
+    {
+      "rule": "R64",
+      "path": "afc_organizers/urls.py",
+      "reason": "a URL table: it routes, it writes nothing."
+    },
+    {
+      "rule": "R64",
+      "path": "afc_partner_api/admin_urls.py",
+      "reason": "a URL table: it routes, it writes nothing."
+    },
+    {
+      "rule": "R64",
+      "path": "afc_rankings/urls.py",
+      "reason": "a URL table: it routes, it writes nothing."
+    },
+    {
+      "rule": "R64",
+      "path": "afc_rankings/serializers.py",
+      "reason": "serializers: they shape output, they write nothing and they are not endpoints."
+    },
+    {
+      "rule": "R64",
+      "path": "afc_rankings/views.py",
+      "reason": "the public rankings ladders: every endpoint in this file is a GET that is public by design (owner rule R25), and publication is gated per season by rankings_published / tiers_published, checked by the reads themselves. The admin writes live in afc_rankings/admin_*.py behind the staff gate."
+    },
+    {
+      "rule": "R64",
+      "path": "afc_team/views_transfers.py",
+      "reason": "the public transfer feed: a GET that is public by design. Rows are written by the team joins and leaves in afc_team/views.py, behind the team gates."
+    },
+    {
+      "rule": "R69",
+      "path": "afc_whatsapp/webhooks.py",
+      "reason": "the Meta webhook: the signature is verified over the RAW body with a constant-time compare BEFORE the body is parsed (R72), the handshake parameters are checked and refused with a sentence, and the payload is read field by field with defaults."
+    },
+    {
+      "rule": "R69",
+      "path": "afc_tournament_and_scrims/views_overlays.py",
+      "reason": "the overlay feed: token and overlay id are read from the query string, the id is coerced with int() inside a try and a bad one answers 400, and every id list is bounded before use."
+    },
+    {
+      "rule": "R69",
+      "path": "afc_auth/middleware.py",
+      "reason": "middleware, not a handler: it reads the locale header and attaches it."
+    },
+    {
+      "rule": "R69",
+      "path": "afc_auth/vent_sso.py",
+      "reason": "the v-ent handshake: every claim is read explicitly and the JWT is verified before any of it is used."
+    },
+    {
+      "rule": "R69",
+      "path": "afc_sso/views.py",
+      "reason": "the OAuth endpoints: client id, redirect URI, scope and state are each validated against the registered application before anything is issued."
+    },
+    {
+      "rule": "R69",
+      "path": "afc_auth/views_broadcast_audience.py",
+      "reason": "staff-only; the audience filters are read field by field and coerced."
+    },
+    {
+      "rule": "R69",
+      "path": "afc_organizers/views_blacklist.py",
+      "reason": "organizer-gated; each field is read and refused with a coded 400."
+    },
+    {
+      "rule": "R69",
+      "path": "afc_organizers/views_blacklist_lookup.py",
+      "reason": "a lookup that reads one query parameter and coerces it."
+    },
+    {
+      "rule": "R69",
+      "path": "afc_organizers/views_leaderboard_design.py",
+      "reason": "every design field is clamped (_clamp_pct), every enum checked against its own set (FIELD_TYPES, ALIGN_VALUES, DESIGN_TYPES) and refused otherwise."
+    },
+    {
+      "rule": "R69",
+      "path": "afc_rankings/admin_audit.py",
+      "reason": "head-admin only; parameters read and coerced per handler."
+    },
+    {
+      "rule": "R69",
+      "path": "afc_rankings/admin_evaluation.py",
+      "reason": "head-admin only; parameters read and coerced per handler."
+    },
+    {
+      "rule": "R69",
+      "path": "afc_rankings/admin_overrides.py",
+      "reason": "head-admin only; the override value is coerced and bounded."
+    },
+    {
+      "rule": "R69",
+      "path": "afc_rankings/admin_prize.py",
+      "reason": "head-admin only; amounts coerced, refused with a code when not numeric."
+    },
+    {
+      "rule": "R69",
+      "path": "afc_rankings/admin_publish.py",
+      "reason": "head-admin only; the season is looked up, not trusted from the body."
+    },
+    {
+      "rule": "R69",
+      "path": "afc_rankings/admin_results.py",
+      "reason": "head-admin only; ids are coerced and the rows looked up."
+    },
+    {
+      "rule": "R69",
+      "path": "afc_rankings/admin_seasons.py",
+      "reason": "head-admin only; dates parsed through the project's datetime helpers."
+    },
+    {
+      "rule": "R69",
+      "path": "afc_rankings/admin_social.py",
+      "reason": "head-admin only; the counts are coerced to int and bounded."
+    },
+    {
+      "rule": "R69",
+      "path": "afc_rankings/player_roles.py",
+      "reason": "a helper module, not a handler."
+    },
+    {
+      "rule": "R69",
+      "path": "afc_team/views_permissions.py",
+      "reason": "the role permission matrix: every key is checked against the declared set before it is written (team_role_can)."
+    },
+    {
+      "rule": "R69",
+      "path": "afc_tournament_and_scrims/debugger_ingest.py",
+      "reason": "the debugger backfill: it parses a log file with its own tokens and ignores anything that does not match, which IS the validation."
+    },
+    {
+      "rule": "R69",
+      "path": "afc_tournament_and_scrims/h2h_submissions.py",
+      "reason": "scores are coerced to int and refused with a written sentence naming the side that is wrong."
+    },
+    {
+      "rule": "R69",
+      "path": "afc_tournament_and_scrims/views_broadcast_kit.py",
+      "reason": "staff-only; the uploads are gated (R70) and the text fields are read and trimmed."
+    },
+    {
+      "rule": "R69",
+      "path": "afc_tournament_and_scrims/views_event_graphic.py",
+      "reason": "the export: size and stage are checked against their own sets before rendering."
+    },
+    {
+      "rule": "R69",
+      "path": "afc_tournament_and_scrims/views_mvp.py",
+      "reason": "ids coerced, the event looked up, the rest read field by field."
+    },
+    {
+      "rule": "R69",
+      "path": "afcbot/bot.py",
+      "reason": "the Discord bot, not an HTTP surface: it reads Discord's own typed objects."
+    },
+    {
+      "rule": "R63",
+      "path": "afc_shop/models.py",
+      "reason": "the vendor payout bank account, the same recorded decision as the organizer one in afc_organizers/models.py: Paystack needs the number readable to create a transfer recipient, so it cannot be hashed and is not encrypted today. Revisit with a Fernet field if payouts ever stop needing the raw value (WEBSITE/CLAUDE.md, R63 row)."
+    },
+    {
+      "rule": "R80",
+      "path": "requirements.txt",
+      "reason": "pip-audit is not on PATH on the Windows workstation, so the checker cannot run it; it IS installed in the backend virtualenv and was run on 2026-09-22. 99 advisories across five packages, all pinned to the first release on their own line carrying the fix, re-audit clean. The run, the versions and how to repeat it are in security/dependency-audit.md."
     }
   ],
   "auth": {
@@ -187,5 +522,18 @@
   },
   "backups": {
     "register": "security/backups.md"
+  },
+  "uploads": {
+    "gate": [
+      "require_image_upload",
+      "_clean_logo_upload"
+    ],
+    "verified": "2026-09-22",
+    "note": "afc_auth/image_utils.py require_image_upload is the one image door: it decodes the bytes with Pillow, allows JPEG / PNG / WEBP / GIF / HEIF only, caps at 10 MB and returns a code for the refusal. A file that calls it is typed, sniffed and capped; the rule judges every other file exactly as before. _clean_logo_upload (afc_sso/provisioning.py) is the second door, used by the partner and sponsor logo paths: size first, then a Pillow decode that must agree the bytes are PNG / JPEG / WEBP, then a dimension cap, then a rename so no attacker-chosen extension reaches the media directory."
+  },
+  "validation": {
+    "style": "per-handler",
+    "verified": "2026-09-22",
+    "note": "AFC has no schema layer and is not getting one retro-fitted: every handler reads its own fields with request.data.get, coerces the type it needs and refuses with a coded 400 (owner rule R35). That is the house idiom, it is what the 800-odd endpoints already do, and swapping it for serializers everywhere would be a rewrite with no behaviour change. The files listed below were READ on 2026-09-22 rather than waved through."
   }
 }

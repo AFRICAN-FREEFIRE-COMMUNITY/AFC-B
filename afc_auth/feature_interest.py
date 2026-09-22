@@ -94,7 +94,7 @@ def feature_interest(request):
     if user is None:
         # 401 rather than a silent no-op: the button changes state on the client, so a write that
         # quietly did nothing would leave the page claiming a tick that was never recorded.
-        return Response({"message": "Sign in to register your interest."},
+        return Response({"message": "Sign in to register your interest.", "code": "sign_register_interest"},
                         status=status.HTTP_401_UNAUTHORIZED)
 
     wants = bool(request.data.get("interested", True))

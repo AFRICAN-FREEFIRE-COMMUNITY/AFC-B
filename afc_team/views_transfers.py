@@ -124,7 +124,7 @@ def get_transfer_feed(request):
     team_id_raw = request.GET.get("team_id")
     if team_id_raw not in (None, ""):
         if not str(team_id_raw).strip().isdigit():
-            return Response({"message": "team_id must be a number."},
+            return Response({"message": "team_id must be a number.", "code": "team_number"},
                             status=status.HTTP_400_BAD_REQUEST)
         feed = feed.filter(team_id=int(team_id_raw))
 
@@ -152,7 +152,7 @@ def get_transfer_feed(request):
         limit = int(request.GET.get("limit", DEFAULT_PAGE_SIZE))
         offset = int(request.GET.get("offset", 0))
     except (TypeError, ValueError):
-        return Response({"message": "limit and offset must be numbers."},
+        return Response({"message": "limit and offset must be numbers.", "code": "limit_offset_numbers"},
                         status=status.HTTP_400_BAD_REQUEST)
     limit = max(1, min(limit, MAX_PAGE_SIZE))
     offset = max(0, offset)

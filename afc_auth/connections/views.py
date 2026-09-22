@@ -36,13 +36,13 @@ def _require_player(request):
     header = request.headers.get("Authorization")
     if not header or not header.startswith("Bearer "):
         return None, Response(
-            {"message": "Authorization header is required"},
+            {"message": "Authorization header is required", "code": "authorization_header_required"},
             status=status.HTTP_400_BAD_REQUEST,
         )
     user = validate_token(header.split(" ")[1])
     if not user:
         return None, Response(
-            {"message": "Invalid or expired session token."},
+            {"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"},
             status=status.HTTP_401_UNAUTHORIZED,
         )
     return user, None
@@ -133,10 +133,10 @@ def start_connection(request, provider_slug):
 
     provider = get_provider(provider_slug)
     if not provider or not provider.enabled():
-        return Response({"message": "Unknown provider."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "Unknown provider.", "code": "unknown_provider"}, status=status.HTTP_404_NOT_FOUND)
     if provider.kind != "oauth2":
         return Response(
-            {"message": "This provider is linked without a redirect."},
+            {"message": "This provider is linked without a redirect.", "code": "provider_linked_without_redirect"},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
@@ -242,7 +242,7 @@ def link_google(request):
 
     provider = get_provider("google")
     if not provider or not provider.enabled():
-        return Response({"message": "Unknown provider."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "Unknown provider.", "code": "unknown_provider"}, status=status.HTTP_404_NOT_FOUND)
 
     from django.conf import settings
 
@@ -270,14 +270,14 @@ def link_google(request):
         )
     except Exception:
         return Response(
-            {"message": "Could not verify your Google sign-in. Please try again."},
+            {"message": "Could not verify your Google sign-in. Please try again.", "code": "could_not_verify_google"},
             status=status.HTTP_401_UNAUTHORIZED,
         )
 
     normalized = provider.normalize(claims)
     if not normalized.get("provider_user_id"):
         return Response(
-            {"message": "Could not verify your Google sign-in. Please try again."},
+            {"message": "Could not verify your Google sign-in. Please try again.", "code": "could_not_verify_google"},
             status=status.HTTP_401_UNAUTHORIZED,
         )
 
@@ -313,7 +313,7 @@ def disconnect(request, provider_slug):
         return refusal
 
     if not get_provider(provider_slug):
-        return Response({"message": "Unknown provider."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "Unknown provider.", "code": "unknown_provider"}, status=status.HTTP_404_NOT_FOUND)
 
     try:
         unlink_account(user, provider_slug)

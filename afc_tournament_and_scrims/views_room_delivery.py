@@ -38,10 +38,10 @@ def _authenticate(request):
     """Bearer SessionToken, the house pattern. Returns (user, error_response)."""
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return None, Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return None, Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
     user = validate_token(auth.split(" ")[1])
     if not user:
-        return None, Response({"message": "Invalid or expired session token."}, status=401)
+        return None, Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
     return user, None
 
 
@@ -77,16 +77,16 @@ def match_room_delivery(request):
 
     match_id = request.query_params.get("match_id")
     if not match_id:
-        return Response({"message": "match_id is required."}, status=400)
+        return Response({"message": "match_id is required.", "code": "match_required"}, status=400)
 
     match = get_object_or_404(Match, match_id=match_id)
     if not (match.group and match.group.stage):
-        return Response({"message": "This match is not linked to a group/stage."}, status=400)
+        return Response({"message": "This match is not linked to a group/stage.", "code": "match_not_linked_group"}, status=400)
     event = match.group.stage.event
 
     if not _may_manage(user, event):
         return Response(
-            {"message": "You do not have permission to view this."},
+            {"message": "You do not have permission to view this.", "code": "not_permission_view"},
             status=status.HTTP_403_FORBIDDEN,
         )
 
@@ -168,16 +168,16 @@ def resend_room_details(request):
 
     match_id = request.data.get("match_id")
     if not match_id:
-        return Response({"message": "match_id is required."}, status=400)
+        return Response({"message": "match_id is required.", "code": "match_required"}, status=400)
 
     match = get_object_or_404(Match, match_id=match_id)
     if not (match.group and match.group.stage):
-        return Response({"message": "This match is not linked to a group/stage."}, status=400)
+        return Response({"message": "This match is not linked to a group/stage.", "code": "match_not_linked_group"}, status=400)
     event = match.group.stage.event
 
     if not _may_manage(user, event):
         return Response(
-            {"message": "You do not have permission to send room details for this event."},
+            {"message": "You do not have permission to send room details for this event.", "code": "not_permission_send_room"},
             status=status.HTTP_403_FORBIDDEN,
         )
 
@@ -189,7 +189,7 @@ def resend_room_details(request):
     )
     if not failed_user_ids:
         return Response({"message": "Nothing to resend, no message failed.", "resent": 0,
-                         "skipped": 0}, status=400)
+                         "skipped": 0, "code": "nothing_resend_no_message"}, status=400)
 
     # Resolve back to user objects through the recipient list so a player who has since
     # left the group is not messaged.

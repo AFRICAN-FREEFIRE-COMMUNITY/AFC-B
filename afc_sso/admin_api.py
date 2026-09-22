@@ -122,14 +122,14 @@ def _require_sso_admin(request):
     # 400 when the header is missing entirely - a malformed request, not yet an auth failure.
     if not session_token:
         return None, Response(
-            {"message": "Authorization header is required"},
+            {"message": "Authorization header is required", "code": "authorization_header_required"},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
     # 400 when the scheme is wrong - the token format is the caller's mistake.
     if not session_token.startswith("Bearer "):
         return None, Response(
-            {"message": "Invalid token format"},
+            {"message": "Invalid token format", "code": "invalid_token_format"},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
@@ -138,14 +138,14 @@ def _require_sso_admin(request):
     user = validate_token(session_token.split(" ")[1])
     if not user:
         return None, Response(
-            {"message": "Invalid or expired session token."},
+            {"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"},
             status=status.HTTP_401_UNAUTHORIZED,
         )
 
     # 403 GATE: a valid login that lacks the role is refused.
     if not _is_sso_admin(user):
         return None, Response(
-            {"message": "You do not have permission to manage sign-in partners."},
+            {"message": "You do not have permission to manage sign-in partners.", "code": "not_permission_manage_sign"},
             status=status.HTTP_403_FORBIDDEN,
         )
 
@@ -169,7 +169,7 @@ def _require_object_body(request):
     """
     if not hasattr(request.data, "get") or not hasattr(request.data, "keys"):
         return Response(
-            {"message": "Request body must be a JSON object."},
+            {"message": "Request body must be a JSON object.", "code": "request_body_json_object"},
             status=status.HTTP_400_BAD_REQUEST,
         )
     return None
@@ -183,7 +183,7 @@ def _application_or_404(application_id):
     application = Application.objects.filter(pk=application_id).first()
     if not application:
         return None, Response(
-            {"message": "Sign-in partner not found."},
+            {"message": "Sign-in partner not found.", "code": "sign_partner_not_found"},
             status=status.HTTP_404_NOT_FOUND,
         )
     return application, None
@@ -391,7 +391,7 @@ def sso_applications(request):
         created_by=user,
     )
     if err_msg:
-        return Response({"message": err_msg}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": err_msg, "code": "sso_applications_refused"}, status=status.HTTP_400_BAD_REQUEST)
 
     return Response(
         {
@@ -480,7 +480,7 @@ def sso_application_detail(request, application_id):
     if "name" in request.data:
         name = (request.data.get("name") or "").strip()
         if not name:
-            return Response({"message": "Partner name is required."},
+            return Response({"message": "Partner name is required.", "code": "partner_name_required"},
                             status=status.HTTP_400_BAD_REQUEST)
         application.name = name
     if "display_name" in request.data:
@@ -506,13 +506,13 @@ def sso_application_detail(request, application_id):
         if field in request.data:
             cleaned, err_msg = cleaner(request.data.get(field), label)
             if err_msg:
-                return Response({"message": err_msg}, status=status.HTTP_400_BAD_REQUEST)
+                return Response({"message": err_msg, "code": "sso_application_detail_refused"}, status=status.HTTP_400_BAD_REQUEST)
             setattr(application, field, cleaned)
 
     if "redirect_uris" in request.data:
         cleaned, err_msg = _clean_redirect_uris(request.data.get("redirect_uris"))
         if err_msg:
-            return Response({"message": err_msg}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"message": err_msg, "code": "sso_application_detail_refused"}, status=status.HTTP_400_BAD_REQUEST)
         application.redirect_uris = cleaned
 
     # Same policy, and allowed to be emptied: a partner that drops RP-initiated logout
@@ -524,7 +524,7 @@ def sso_application_detail(request, application_id):
             label="post-logout redirect URI",
         )
         if err_msg:
-            return Response({"message": err_msg}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"message": err_msg, "code": "sso_application_detail_refused"}, status=status.HTTP_400_BAD_REQUEST)
         application.post_logout_redirect_uris = cleaned
 
     # ── the eight data toggles ──
@@ -776,13 +776,13 @@ def sso_application_logo(request, application_id):
     uploaded = request.FILES.get("logo")
     if not uploaded:
         return Response(
-            {"message": "A logo image file is required."},
+            {"message": "A logo image file is required.", "code": "logo_image_file_required"},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
     cleaned, err_msg = _clean_logo_upload(uploaded)
     if err_msg:
-        return Response({"message": err_msg}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": err_msg, "code": "sso_application_logo_refused"}, status=status.HTTP_400_BAD_REQUEST)
 
     # Drop the file being replaced first, so repeated uploads do not accumulate dead
     # files under MEDIA_ROOT. Nothing else references them.
@@ -853,7 +853,7 @@ def sso_integration_guide(request):
     # caller did anything wrong. Say so plainly instead of raising a 500.
     if not os.path.exists(GUIDE_PATH):
         return Response(
-            {"message": "The integration guide is not available on this server."},
+            {"message": "The integration guide is not available on this server.", "code": "integration_guide_not_available"},
             status=status.HTTP_404_NOT_FOUND,
         )
 

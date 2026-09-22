@@ -114,12 +114,12 @@ def _pending_gate(request, event_id):
     auth = request.headers.get("Authorization") or ""
     user = validate_token(auth.split(" ")[1]) if auth.startswith("Bearer ") else None
     if not user:
-        return None, None, Response({"message": "Invalid or expired session token."}, status=401)
+        return None, None, Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
     event = Event.objects.filter(event_id=event_id).first()
     if not event:
-        return None, None, Response({"message": "Event not found."}, status=404)
+        return None, None, Response({"message": "Event not found.", "code": "event_not_found"}, status=404)
     if not (_is_event_admin(user) or org_can_event(user, "can_upload_results", event)):
-        return None, None, Response({"message": "You do not have permission for this event."}, status=403)
+        return None, None, Response({"message": "You do not have permission for this event.", "code": "not_permission_event"}, status=403)
     return user, event, None
 
 
@@ -205,7 +205,7 @@ def resolve_pending_capture(request, event_id, pending_id):
 
     pending = PendingCaptureUpload.objects.filter(id=pending_id, event=event).first()
     if not pending:
-        return Response({"message": "Pending capture not found."}, status=404)
+        return Response({"message": "Pending capture not found.", "code": "pending_capture_not_found"}, status=404)
     if pending.status != "pending":
         return Response({"message": f"This capture is already {pending.status}."}, status=400)
 
@@ -221,21 +221,21 @@ def resolve_pending_capture(request, event_id, pending_id):
         group_id = data.get("group_id") or (pending.raw_payload or {}).get("group_id")
         grp = StageGroups.objects.filter(group_id=group_id, stage__event=event).first() if group_id else None
         if grp is None:
-            return Response({"message": "Choose a valid group for the new map."}, status=400)
+            return Response({"message": "Choose a valid group for the new map.", "code": "choose_valid_group_new"}, status=400)
         # The inner view creates + scores a brand-new slot in this group (attribution="new").
         upload_data["group"] = grp.group_id
         upload_data["attribution"] = "new"
     elif attribution.startswith("replace:"):
         rid = attribution.split(":", 1)[1].strip()
         if not rid.isdigit():
-            return Response({"message": "replace target match_id must be numeric."}, status=400)
+            return Response({"message": "replace target match_id must be numeric.", "code": "replace_target_match_numeric"}, status=400)
         match = Match.objects.filter(match_id=int(rid), group__stage__event=event).first()
         if match is None:
-            return Response({"message": "Replacement match not found for this event."}, status=400)
+            return Response({"message": "Replacement match not found for this event.", "code": "replacement_match_not_found"}, status=400)
         # An explicit match_id makes the inner view overwrite that slot (idempotent re-derive).
         upload_data["match_id"] = match.match_id
     else:
-        return Response({"message": "attribution must be 'new' or 'replace:<match_id>'."}, status=400)
+        return Response({"message": "attribution must be 'new' or 'replace:<match_id>'.", "code": "attribution_new_replace_match"}, status=400)
 
     # ── Re-invoke the real scoring view with a synthetic multipart request ──
     factory = APIRequestFactory()
@@ -282,7 +282,7 @@ def discard_pending_capture(request, event_id, pending_id):
 
     pending = PendingCaptureUpload.objects.filter(id=pending_id, event=event).first()
     if not pending:
-        return Response({"message": "Pending capture not found."}, status=404)
+        return Response({"message": "Pending capture not found.", "code": "pending_capture_not_found"}, status=404)
     if pending.status != "pending":
         return Response({"message": f"This capture is already {pending.status}."}, status=400)
 

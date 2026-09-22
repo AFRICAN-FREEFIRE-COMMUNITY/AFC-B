@@ -51,15 +51,15 @@
     },
     "R63": {
       "high": 0,
-      "medium": 1,
+      "medium": 0,
       "since": "2026-09-18",
       "lastMoved": "2026-09-22"
     },
     "R64": {
       "high": 0,
-      "medium": 8,
+      "medium": 0,
       "since": "2026-09-18",
-      "lastMoved": "2026-09-18"
+      "lastMoved": "2026-09-22"
     },
     "R65": {
       "high": 0,
@@ -71,7 +71,7 @@
       "high": 0,
       "medium": 0,
       "since": "2026-09-18",
-      "lastMoved": "2026-09-18"
+      "lastMoved": "2026-09-22"
     },
     "R67": {
       "high": 0,
@@ -81,21 +81,21 @@
     },
     "R68": {
       "high": 0,
-      "medium": 3,
+      "medium": 0,
       "since": "2026-09-18",
-      "lastMoved": "2026-09-18"
+      "lastMoved": "2026-09-22"
     },
     "R69": {
       "high": 0,
-      "medium": 25,
+      "medium": 0,
       "since": "2026-09-18",
-      "lastMoved": "2026-09-18"
+      "lastMoved": "2026-09-22"
     },
     "R70": {
       "high": 0,
-      "medium": 36,
+      "medium": 0,
       "since": "2026-09-18",
-      "lastMoved": "2026-09-18"
+      "lastMoved": "2026-09-22"
     },
     "R71": {
       "high": 0,
@@ -147,9 +147,9 @@
     },
     "R79": {
       "high": 0,
-      "medium": 50,
+      "medium": 0,
       "since": "2026-09-18",
-      "lastMoved": "2026-09-18"
+      "lastMoved": "2026-09-22"
     },
     "R80": {
       "high": 0,

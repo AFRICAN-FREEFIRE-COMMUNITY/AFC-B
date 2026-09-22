@@ -37,10 +37,10 @@ def _auth(request):
     """Bearer-token user, or (None, error Response)."""
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return None, Response({"message": "Authorization header is required"}, status=status.HTTP_400_BAD_REQUEST)
+        return None, Response({"message": "Authorization header is required", "code": "authorization_header_required"}, status=status.HTTP_400_BAD_REQUEST)
     user = validate_token(auth.split(" ")[1])
     if not user:
-        return None, Response({"message": "Invalid or expired session token."}, status=status.HTTP_401_UNAUTHORIZED)
+        return None, Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=status.HTTP_401_UNAUTHORIZED)
     return user, None
 
 
@@ -48,7 +48,7 @@ def _event_or_404(event_id):
     from afc_tournament_and_scrims.models import Event
     ev = Event.objects.filter(event_id=event_id).first()
     if not ev:
-        return None, Response({"message": "Event not found."}, status=status.HTTP_404_NOT_FOUND)
+        return None, Response({"message": "Event not found.", "code": "event_not_found"}, status=status.HTTP_404_NOT_FOUND)
     return ev, None
 
 
@@ -93,7 +93,7 @@ def invite_co_organizer(request):
     if err:
         return err
     if not _is_event_primary_owner_or_admin(user, event):
-        return Response({"message": "Only the creating organization's owner can invite co-organizers."},
+        return Response({"message": "Only the creating organization's owner can invite co-organizers.", "code": "creating_organization_owner_invite"},
                         status=status.HTTP_403_FORBIDDEN)
 
     # Resolve the target by organization_id (preferred) OR slug (the FE picker sends a slug).
@@ -103,9 +103,9 @@ def invite_co_organizer(request):
     target = (target_qs.filter(organization_id=org_id).first() if org_id
               else target_qs.filter(slug=org_slug).first() if org_slug else None)
     if not target:
-        return Response({"message": "Target organization not found or not active."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "Target organization not found or not active.", "code": "target_organization_not_found"}, status=status.HTTP_404_NOT_FOUND)
     if target.organization_id == event.organization_id:
-        return Response({"message": "That organization already owns this event."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "That organization already owns this event.", "code": "organization_already_owns_event"}, status=status.HTTP_400_BAD_REQUEST)
 
     perms = request.data.get("permissions") or {}
     grant = {f: bool(perms.get(f, False)) for f in PERMISSION_FIELDS}
@@ -176,23 +176,23 @@ def respond_co_organizer(request):
         id=request.data.get("co_organizer_id"),
     ).select_related("organization").first()
     if not co:
-        return Response({"message": "Co-organizer invite not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "Co-organizer invite not found.", "code": "organizer_invite_not_found"}, status=status.HTTP_404_NOT_FOUND)
     is_owner = OrganizationMember.objects.filter(
         organization=co.organization, user=user, role="owner", status="active",
     ).exists()
     if not (is_owner or is_platform_org_admin(user)):
-        return Response({"message": "Only the invited organization's owner can respond."},
+        return Response({"message": "Only the invited organization's owner can respond.", "code": "invited_organization_owner_respond"},
                         status=status.HTTP_403_FORBIDDEN)
     action = (request.data.get("action") or "").lower()
     if action not in ("accept", "decline"):
-        return Response({"message": "action must be 'accept' or 'decline'."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "action must be 'accept' or 'decline'.", "code": "action_accept_decline"}, status=status.HTTP_400_BAD_REQUEST)
     # State-machine guard: only a PENDING invite may be responded to. Without this the invited owner
     # could flip a previously declined invite straight to accepted (unilaterally re-activating
     # co-ownership the primary org thought was settled), or re-flip an already-decided one. A genuine
     # re-offer goes through invite_co_organizer, which resets a declined row to pending. (Adversarial-
     # review fix, owner 2026-06-19.)
     if co.status != "pending":
-        return Response({"message": "This invite is no longer pending."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "This invite is no longer pending.", "code": "invite_no_longer_pending"}, status=status.HTTP_400_BAD_REQUEST)
     co.status = "accepted" if action == "accept" else "declined"
     co.responded_at = timezone.now()
     co.save(update_fields=["status", "responded_at"])
@@ -254,9 +254,9 @@ def revoke_co_organizer(request):
         id=request.data.get("co_organizer_id"),
     ).select_related("event").first()
     if not co:
-        return Response({"message": "Co-organizer not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "Co-organizer not found.", "code": "organizer_not_found"}, status=status.HTTP_404_NOT_FOUND)
     if not _is_event_primary_owner_or_admin(user, co.event):
-        return Response({"message": "Only the creating organization's owner can revoke a co-organizer."},
+        return Response({"message": "Only the creating organization's owner can revoke a co-organizer.", "code": "creating_organization_owner_revoke"},
                         status=status.HTTP_403_FORBIDDEN)
     co.delete()
     return Response({"message": "Co-organizer removed."}, status=status.HTTP_200_OK)

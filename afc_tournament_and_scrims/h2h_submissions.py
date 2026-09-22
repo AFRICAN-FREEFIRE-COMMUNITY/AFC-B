@@ -163,27 +163,27 @@ def submit_h2h_result(request, match_id):
     if my_team is None:
         return Response(
             {"message": "Only a player on one of the two teams in this match can submit its "
-                        "result."}, status=403)
+                        "result.", "code": "player_two_teams_match"}, status=403)
     if not (match.team_a_id and match.team_b_id):
-        return Response({"message": "This match does not have both teams yet."}, status=400)
+        return Response({"message": "This match does not have both teams yet.", "code": "match_not_both_teams"}, status=400)
     if match.status == "completed":
         return Response(
-            {"message": "This match already has a result. Ask the organizer if it is wrong."},
+            {"message": "This match already has a result. Ask the organizer if it is wrong.", "code": "match_already_result_ask"},
             status=400)
 
     try:
         score_a = int(request.data.get("score_a"))
         score_b = int(request.data.get("score_b"))
     except (TypeError, ValueError):
-        return Response({"message": "score_a and score_b must be whole numbers (round wins)."},
+        return Response({"message": "score_a and score_b must be whole numbers (round wins).", "code": "score_score_whole_numbers"},
                         status=400)
     if score_a < 0 or score_b < 0:
-        return Response({"message": "Scores cannot be negative."}, status=400)
+        return Response({"message": "Scores cannot be negative.", "code": "scores_cannot_negative"}, status=400)
 
     try:
         players = _clean_players(request.data.get("players"), my_team)
     except ValueError as e:
-        return Response({"message": str(e)}, status=400)
+        return Response({"message": str(e), "code": "submit_h2h_result_refused"}, status=400)
 
     with transaction.atomic():
         # One live proposal per team per match: an edit replaces rather than appends.
@@ -231,7 +231,7 @@ def list_h2h_submissions(request, match_id):
 
     can_review = _can_review(user, event)
     if not can_review and _my_team_in_match(user, match) is None:
-        return Response({"message": "You are not involved in this match."}, status=403)
+        return Response({"message": "You are not involved in this match.", "code": "not_involved_match"}, status=403)
 
     subs = list(
         H2HResultSubmission.objects
@@ -288,7 +288,7 @@ def approve_h2h_submission(request, submission_id):
     match = sub.h2h_match
     if not _can_review(user, match.stage.event):
         return Response({"message": "You do not have permission to review results for this "
-                                    "event."}, status=403)
+                                    "event.", "code": "not_permission_review_results"}, status=403)
     if sub.status != "pending":
         return Response({"message": f"This submission is already {sub.status}."}, status=400)
 
@@ -299,7 +299,7 @@ def approve_h2h_submission(request, submission_id):
         score_a = int(request.data.get("score_a", payload.get("score_a")))
         score_b = int(request.data.get("score_b", payload.get("score_b")))
     except (TypeError, ValueError):
-        return Response({"message": "score_a and score_b must be whole numbers."}, status=400)
+        return Response({"message": "score_a and score_b must be whole numbers.", "code": "score_score_whole_numbers"}, status=400)
 
     try:
         with transaction.atomic():
@@ -321,7 +321,7 @@ def approve_h2h_submission(request, submission_id):
                 h2h_match=match, status="pending").exclude(
                 submission_id=sub.submission_id).update(status="superseded")
     except head_to_head.BracketError as e:
-        return Response({"message": str(e)}, status=400)
+        return Response({"message": str(e), "code": "approve_h2h_submission_refused"}, status=400)
 
     match.refresh_from_db()
     h2h_notifications.notify_match_result(match)
@@ -353,13 +353,13 @@ def reject_h2h_submission(request, submission_id):
         submission_id=submission_id)
     if not _can_review(user, sub.h2h_match.stage.event):
         return Response({"message": "You do not have permission to review results for this "
-                                    "event."}, status=403)
+                                    "event.", "code": "not_permission_review_results"}, status=403)
     if sub.status != "pending":
         return Response({"message": f"This submission is already {sub.status}."}, status=400)
 
     note = str(request.data.get("review_note") or "").strip()
     if not note:
-        return Response({"message": "Say why you are rejecting it, so the team can fix it."},
+        return Response({"message": "Say why you are rejecting it, so the team can fix it.", "code": "say_why_rejecting_team"},
                         status=400)
 
     sub.status = "rejected"

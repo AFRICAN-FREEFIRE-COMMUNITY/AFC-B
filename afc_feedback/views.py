@@ -41,6 +41,7 @@ from django.utils import timezone
 from rest_framework import status
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
+from afc_auth.bot_protection import require_human
 
 from afc_auth.views import validate_token
 
@@ -172,13 +173,13 @@ def _auth_user(request):
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
         return None, Response(
-            {"message": "Authentication credentials were not provided."},
+            {"message": "Authentication credentials were not provided.", "code": "authentication_credentials_not_provided"},
             status=status.HTTP_401_UNAUTHORIZED,
         )
     user = validate_token(auth.split(" ")[1])
     if not user:
         return None, Response(
-            {"message": "Invalid or expired token."}, status=status.HTTP_401_UNAUTHORIZED
+            {"message": "Invalid or expired token.", "code": "invalid_expired_token"}, status=status.HTTP_401_UNAUTHORIZED
         )
     return user, None
 
@@ -356,7 +357,7 @@ def form_schema(request, key):
     )
     if not form:
         return Response(
-            {"message": "This feedback form is not available."}, status=status.HTTP_404_NOT_FOUND
+            {"message": "This feedback form is not available.", "code": "feedback_form_not_available"}, status=status.HTTP_404_NOT_FOUND
         )
     return Response({"form": _serialize_form(form)}, status=status.HTTP_200_OK)
 
@@ -381,6 +382,14 @@ def submit_feedback(request, key):
     submissions and FEEDBACK_RATE_LIMIT_PER_HOUR per clock hour. The slot is consumed only AFTER the
     row is written, so a validation failure does not eat the visitor's allowance.
     """
+    # Bot protection (owner 2026-09-22). FIRST, before anything is written or emailed:
+    # this form is open to the whole internet and a script filling it costs a queue, a
+    # database row and mail quota. Verified server side against Cloudflare Turnstile; with
+    # no key configured it allows the request and the checker counts that as debt.
+    refused = require_human(request, where="submit_feedback")
+    if refused is not None:
+        return refused
+
     # Inactive forms refuse writes here, independently of form_schema hiding them, so a stale open tab
     # or a scripted client cannot post to a form the owner has retired.
     form = (
@@ -390,7 +399,7 @@ def submit_feedback(request, key):
     )
     if not form:
         return Response(
-            {"message": "This feedback form is not available."}, status=status.HTTP_404_NOT_FOUND
+            {"message": "This feedback form is not available.", "code": "feedback_form_not_available"}, status=status.HTTP_404_NOT_FOUND
         )
 
     user = _optional_user(request)
@@ -404,13 +413,13 @@ def submit_feedback(request, key):
                 "message": info["message"],
                 "reason": info["reason"],
                 "resets_at": info["resets_at"],
-            },
+             "code": "submit_feedback_refused"},
             status=status.HTTP_429_TOO_MANY_REQUESTS,
         )
 
     cleaned, error = _validate_answers(form, request.data.get("answers"))
     if error:
-        return Response({"message": error}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": error, "code": "submit_feedback_refused"}, status=status.HTTP_400_BAD_REQUEST)
 
     submission = FeedbackSubmission.objects.create(
         form=form,
@@ -458,7 +467,7 @@ def admin_list_forms(request):
         return error
     if not is_feedback_admin(user):
         return Response(
-            {"message": "You do not have permission to view feedback."},
+            {"message": "You do not have permission to view feedback.", "code": "not_permission_view_feedback"},
             status=status.HTTP_403_FORBIDDEN,
         )
 
@@ -508,7 +517,7 @@ def admin_list_submissions(request):
         return error
     if not is_feedback_admin(user):
         return Response(
-            {"message": "You do not have permission to view feedback."},
+            {"message": "You do not have permission to view feedback.", "code": "not_permission_view_feedback"},
             status=status.HTTP_403_FORBIDDEN,
         )
 
@@ -581,7 +590,7 @@ def admin_update_submission(request, submission_id):
         return error
     if not is_feedback_admin(user):
         return Response(
-            {"message": "You do not have permission to update feedback."},
+            {"message": "You do not have permission to update feedback.", "code": "not_permission_update_feedback"},
             status=status.HTTP_403_FORBIDDEN,
         )
 
@@ -591,13 +600,13 @@ def admin_update_submission(request, submission_id):
         .first()
     )
     if not submission:
-        return Response({"message": "Submission not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "Submission not found.", "code": "submission_not_found"}, status=status.HTTP_404_NOT_FOUND)
 
     if "status" in request.data:
         new_status = str(request.data.get("status") or "").strip()
         if new_status not in (FeedbackSubmission.OPEN, FeedbackSubmission.HANDLED):
             return Response(
-                {"message": "status must be 'open' or 'handled'."},
+                {"message": "status must be 'open' or 'handled'.", "code": "status_open_handled"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
         submission.status = new_status

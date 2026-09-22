@@ -32,10 +32,10 @@ def shipping_quote(request):
     # Bearer auth, identical to buy_now (afc_shop/views.py:1406).
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid token"}, status=400)
+        return Response({"message": "Invalid token", "code": "invalid_token"}, status=400)
     user = validate_token(auth.split(" ")[1])
     if not user:
-        return Response({"message": "Invalid session"}, status=401)
+        return Response({"message": "Invalid session", "code": "invalid_session"}, status=401)
 
     # The delivery address the courier quotes against (same field names buy_now uses).
     address = {

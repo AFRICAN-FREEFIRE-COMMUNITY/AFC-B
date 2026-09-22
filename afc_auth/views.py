@@ -35,7 +35,10 @@ from afc_auth.audit import set_audit
 # is what made a typed string ambiguous at sign-in. Used by register, edit_profile and
 # _unique_username_from_email below; the matching resolver lives in the same module and is consumed
 # by afc_auth/backends.py.
-from afc_auth.identifiers import anonymous_conflict_message, cross_field_conflict
+from afc_auth.identifiers import (
+    WHATSAPP_TAKEN_CODE, WHATSAPP_TAKEN_MESSAGE, anonymous_conflict_message, cross_field_conflict,
+    whatsapp_number_holder,
+)
 # i18n Phase 0 (owner 2026-06-15): map the login geo country to a default language for first-time users.
 # Used in login() (auto-detect) and read alongside User.language in the auth payloads below.
 from afc_auth.language_utils import language_for_country
@@ -55,6 +58,7 @@ from afc_auth import trusted_devices
 # load: afc_whatsapp.phone imports nothing from this app (only `logging` and an optional
 # `phonenumbers`), so no cycle can form.
 from afc_whatsapp.phone import require_international
+from afc_auth.bot_protection import require_human
 # The outbox is where send_email puts a message when this process must not send (the test
 # runner, the scratch server). It imports nothing from this module, so no cycle.
 from afc_auth import outbox
@@ -326,14 +330,14 @@ def is_stats_admin(user) -> bool:
 def require_admin(request):
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return None, Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return None, Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
 
     admin = validate_token(auth.split(" ")[1])
     if not admin:
-        return None, Response({"message": "Invalid or expired session token."}, status=401)
+        return None, Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
 
     if admin.role != "admin":
-        return None, Response({"message": "You do not have permission."}, status=403)
+        return None, Response({"message": "You do not have permission.", "code": "not_permission"}, status=403)
 
     return admin, None
 
@@ -357,13 +361,13 @@ def require_head_admin(request):
     failure - same shape as require_admin."""
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return None, Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return None, Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
     user = validate_token(auth.split(" ")[1])
     if not user:
-        return None, Response({"message": "Invalid or expired session token."}, status=401)
+        return None, Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
     roles = _user_role_names(user)
     if "head_admin" not in roles and "super_admin" not in roles and not user.is_superuser:
-        return None, Response({"message": "Head admin access required."}, status=403)
+        return None, Response({"message": "Head admin access required.", "code": "head_admin_access_required"}, status=403)
     return user, None
 
 
@@ -1224,106 +1228,11 @@ def deliver_broadcast(recipients, title, message, *, delivery="both",
     return BroadcastResult(pushed, emailed, whatsapp_queued, whatsapp_skipped)
 
 
-# def send_email(to_address, subject, html_body):
-#     # Gmail SMTP server credentials
-#     # smtp_server = 'smtp.gmail.com'
-#     # smtp_port = 465  # or 587 for TLS
-#     smtp_server = 'smtp.office365.com'
-#     smtp_port = 587
-#     from_address = 'info@africanfreefirecommunity.com' #vermillioninformation@gmail.com, Info@v-ent.co, africanfreefirecommunity3@gmail.com
-#     password = os.getenv("EMAIL_PASSWORD")  
-
-#     try:
-#         msg = MIMEMultipart()
-#         msg['From'] = from_address
-#         msg['To'] = to_address
-#         msg['Subject'] = subject
-
-#         msg.attach(MIMEText(html_body, 'html'))
-
-#         server = smtplib.SMTP(smtp_server, smtp_port)
-#         server.starttls()  # IMPORTANT for Microsoft
-#         server.login(from_address, password)
-
-#         server.sendmail(from_address, to_address, msg.as_string())
-#         server.quit()
-
-#         return True
-
-#     except Exception as e:
-#         print(e)
-#         return False
-
-
-    # password = '[secret removed from history 2026-09-23]'
-    #'[secret removed from history 2026-09-23]2'
-    # '[secret removed from history 2026-09-23]1'  # Or your actual Gmail password (if less secure apps are enabled)
-
-# [secret removed from history 2026-09-23] africanfreefirecommunity3@gmail.com
-
-    # try:
-    #     # Create a MIMEMultipart email object
-    #     msg = MIMEMultipart()
-    #     msg['From'] = from_address
-    #     msg['To'] = to_address
-    #     msg['Subject'] = subject
-
-    #     # Attach the HTML body to the MIME message
-    #     msg.attach(MIMEText(html_body, 'html'))
-
-    #     # Set up the SMTP connection using SSL
-    #     server = smtplib.SMTP_SSL(smtp_server, smtp_port)
-    #     server.login(from_address, password)
-        
-    #     # Send the email
-    #     server.sendmail(from_address, to_address, msg.as_string())
-    #     server.quit()
-
-    #     return True
-    # except Exception as e:
-    #     return False
-
-
-# @api_view(['POST'])
-# def admin_login(request):
-#     username = request.data.get('username')
-#     password = request.data.get('password')
-
-#     if not username or not password:
-#         return Response(
-#             {'status': 'error', 'message': 'Username and password are required.'},
-#             status=status.HTTP_400_BAD_REQUEST
-#         )
-
-#     # Authenticate user with username or email
-#     admin = authenticate(username=username, password=password)
-
-#     if admin is not None:
-#         # Generate a session token
-#         session_token = generate_session_token()
-
-#         # Save session token to the user model (ensure this field exists)
-#         admin.session_token = session_token
-#         admin.save()
-
-#         # Return success response with the session token
-#         return Response(
-#             {
-#                 'status': 'success',
-#                 'message': 'Login successful',
-#                 'data': {
-#                     'session_token': session_token,
-#                 }
-#             },
-#             status=status.HTTP_200_OK
-#         )
-#     else:
-#         # Authentication failed, return error response
-#         return Response(
-#             {'status': 'error', 'message': 'Invalid username or password'},
-#             status=status.HTTP_401_UNAUTHORIZED
-#         )
-
+# The commented-out legacy send_email and the commented-out admin login handler that used to sit
+# here were DELETED on 2026-09-23. They were dead - the live sender is send_email above, through
+# Office 365, with its password in the environment - and they carried three Gmail app passwords
+# in comments, one of which GitGuardian caught on the 22 September push. A credential in a
+# comment is still a credential.
 
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
 # Session establishment - everything that happens once a login is FULLY authenticated.
@@ -1699,13 +1608,13 @@ def google_auth(request):
             "Google sign-in verify failed (client_id=%s...): %s: %s",
             client_id[:18], type(exc).__name__, exc,
         )
-        return Response({"message": "Could not verify your Google sign-in. Please try again."},
+        return Response({"message": "Could not verify your Google sign-in. Please try again.", "code": "could_not_verify_google"},
                         status=status.HTTP_401_UNAUTHORIZED)
 
     # Email must be present AND Google-verified before we trust it as an identity.
     email = (claims.get("email") or "").strip().lower()
     if not email or not claims.get("email_verified", False):
-        return Response({"message": "Your Google account has no verified email."},
+        return Response({"message": "Your Google account has no verified email.", "code": "google_account_no_verified"},
                         status=status.HTTP_401_UNAUTHORIZED)
 
     full_name = (claims.get("name") or "").strip()[:40]
@@ -1747,7 +1656,7 @@ def google_auth(request):
 
     # Respect account state exactly like the password login path does.
     if not user.is_active:
-        return Response({"message": "Your account is not active. Please contact support."},
+        return Response({"message": "Your account is not active. Please contact support.", "code": "account_not_active_contact"},
                         status=status.HTTP_403_FORBIDDEN)
 
     # Record or refresh the Google link so the player can see and manage it at
@@ -1800,6 +1709,14 @@ def google_auth(request):
 
 @api_view(["POST"])
 def signup(request):
+    # Bot protection (owner 2026-09-22). FIRST: signup creates an account AND sends mail, so a
+    # script here costs the mail quota and fills the table with unverified rows. Verified
+    # server side against Cloudflare Turnstile (afc_auth/bot_protection.py); with no key set it
+    # allows the request rather than locking signup, and the security checker counts that.
+    refused = require_human(request, where="signup")
+    if refused is not None:
+        return refused
+
     in_game_name = request.data.get("in_game_name")
     uid = request.data.get("uid")
     email = request.data.get("email")
@@ -1822,15 +1739,15 @@ def signup(request):
     try:
         # Validation
         if not all([in_game_name, email, password, confirm_password]):
-            return Response({"error": "All fields are required."}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"error": "All fields are required.", "code": "signup_refused"}, status=status.HTTP_400_BAD_REQUEST)
         
         # is_valid, message = is_valid_email(email)
 
         # if not is_valid:
-        #     return Response({"error": message}, status=400)
+        #     return Response({"error": message, "code": "signup_refused"}, status=400)
 
         if password != confirm_password:
-            return Response({"error": "Passwords do not match."}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"error": "Passwords do not match.", "code": "signup_refused"}, status=status.HTTP_400_BAD_REQUEST)
 
         # THE COUNTRY CODE IS COMPULSORY when a number is given. Checked HERE, before any of the
         # uniqueness work below, so a bad number costs one round trip instead of being discovered
@@ -1839,7 +1756,12 @@ def signup(request):
         # afc_whatsapp.phone.require_international.
         whatsapp_e164, whatsapp_error = require_international(whatsapp_number)
         if whatsapp_error:
-            return Response({"error": whatsapp_error}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"error": whatsapp_error, "code": "signup_refused"}, status=status.HTTP_400_BAD_REQUEST)
+        # One account per WhatsApp number (owner 2026-09-14, inbox #21), same idea as the email
+        # and in-game name checks below. Never names the holder: this endpoint is public.
+        if whatsapp_e164 and whatsapp_number_holder(whatsapp_e164) is not None:
+            return Response({"message": WHATSAPP_TAKEN_MESSAGE, "code": WHATSAPP_TAKEN_CODE},
+                            status=status.HTTP_400_BAD_REQUEST)
 
         # ── Uniqueness pre-checks (return FRIENDLY 400s, never the raw DB 1062 error) ──
         #
@@ -2015,7 +1937,7 @@ def signup(request):
         # Final safety net: any unique-constraint error that escapes the inner handler still
         # returns a friendly message rather than the raw MySQL (1062, "Duplicate entry ...").
         return Response(
-            {"message": "That in-game name or email is already registered. Please try a different one or log in."},
+            {"message": "That in-game name or email is already registered. Please try a different one or log in.", "code": "game_name_email_already"},
             status=status.HTTP_400_BAD_REQUEST,
         )
     except Exception as e:
@@ -2036,20 +1958,20 @@ def verify_code(request):
     is_valid, email_error = is_valid_email(email)
 
     if not is_valid:
-        return Response({"error": email_error}, status=400)
+        return Response({"error": email_error, "code": "verify_code_refused"}, status=400)
 
     try:
         user = User.objects.get(email=email)
     except User.DoesNotExist:
-        return Response({"error": "Invalid email."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"error": "Invalid email.", "code": "verify_code_refused"}, status=status.HTTP_400_BAD_REQUEST)
 
     stored_code = cache.get(f"verification_code_{user.user_id}")
 
     if stored_code is None:
-        return Response({"error": "Verification code expired or invalid."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"error": "Verification code expired or invalid.", "code": "verify_code_refused"}, status=status.HTTP_400_BAD_REQUEST)
 
     if str(stored_code) != str(code):
-        return Response({"error": "Invalid verification code."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"error": "Invalid verification code.", "code": "verify_code_refused"}, status=status.HTTP_400_BAD_REQUEST)
 
     # Activate user account
     user.is_active = True
@@ -2092,20 +2014,20 @@ def resend_verification_code(request):
     email = request.data.get("email")
 
     if not email:
-        return Response({"error": "Email is required."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"error": "Email is required.", "code": "resend_verification_code_refused"}, status=status.HTTP_400_BAD_REQUEST)
     
     is_valid, email_error = is_valid_email(email)
 
     if not is_valid:
-        return Response({"error": email_error}, status=400)
+        return Response({"error": email_error, "code": "resend_verification_code_refused"}, status=400)
 
     user = User.objects.filter(email=email).first()
 
     if not user:
-        return Response({"error": "No account found with this email."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"error": "No account found with this email.", "code": "resend_verification_code_refused"}, status=status.HTTP_404_NOT_FOUND)
 
     if user.is_active:
-        return Response({"error": "This account is already verified."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"error": "This account is already verified.", "code": "resend_verification_code_refused"}, status=status.HTTP_400_BAD_REQUEST)
 
     # 🔒 Check resend cooldown (4 mins)
     cooldown_key = f"resend_cooldown_{user.user_id}"
@@ -2147,15 +2069,15 @@ def resend_verification_code(request):
 #     email = request.data.get("email")
 
 #     if not email:
-#         return Response({"error": "Email is required."}, status=status.HTTP_400_BAD_REQUEST)
+#         return Response({"error": "Email is required.", "code": "resend_verification_code_refused"}, status=status.HTTP_400_BAD_REQUEST)
 
 #     user = User.objects.filter(email=email).first()
 
 #     if not user:
-#         return Response({"error": "No account found with this email."}, status=status.HTTP_404_NOT_FOUND)
+#         return Response({"error": "No account found with this email.", "code": "resend_verification_code_refused"}, status=status.HTTP_404_NOT_FOUND)
 
 #     if user.is_active:
-#         return Response({"error": "This account is already verified."}, status=status.HTTP_400_BAD_REQUEST)
+#         return Response({"error": "This account is already verified.", "code": "resend_verification_code_refused"}, status=status.HTTP_400_BAD_REQUEST)
 
 #     # Generate new verification code
 #     verification_code = random.randint(100000, 999999)
@@ -2200,14 +2122,14 @@ def verify_email_token(request, uidb64, token):
         uid = force_str(urlsafe_base64_decode(uidb64))
     except (ValueError, TypeError, OverflowError):
         # prevents ValueError / DjangoUnicodeDecodeError on undecodable uidb64
-        return Response({"error": "Invalid or malformed token."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"error": "Invalid or malformed token.", "code": "verify_email_token_refused"}, status=status.HTTP_400_BAD_REQUEST)
 
     try:
         user = User.objects.get(pk=uid)
     except (User.DoesNotExist, ValueError, TypeError):
         # prevents User.DoesNotExist (no such user) and ValueError/TypeError
         # (uid decoded to a non-integer that the integer pk lookup rejects)
-        return Response({"error": "Invalid user."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"error": "Invalid user.", "code": "verify_email_token_refused"}, status=status.HTTP_400_BAD_REQUEST)
 
     # Validate token. check_token already returns False (never raises) for a
     # malformed token in this Django version, so no extra guard is needed here.
@@ -2216,7 +2138,7 @@ def verify_email_token(request, uidb64, token):
         user.save()
         return Response({"message": "Email verified successfully!"}, status=status.HTTP_200_OK)
     else:
-        return Response({"error": "Invalid or expired token."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"error": "Invalid or expired token.", "code": "verify_email_token_refused"}, status=status.HTTP_400_BAD_REQUEST)
     
 
 @api_view(["POST"])
@@ -2225,10 +2147,10 @@ def ban_team(request):
     session_token = request.headers.get("Authorization")
 
     if not session_token:
-        return Response({'status': 'error', 'message': 'Authorization header is required'}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'status': 'error', 'message': 'Authorization header is required', "code": "authorization_header_required"}, status=status.HTTP_400_BAD_REQUEST)
 
     if not session_token.startswith("Bearer "):
-        return Response({'status': 'error', 'message': 'Invalid token format'}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'status': 'error', 'message': 'Invalid token format', "code": "invalid_token_format"}, status=status.HTTP_400_BAD_REQUEST)
 
     session_token = session_token.split(" ")[1]
     
@@ -2236,17 +2158,17 @@ def ban_team(request):
     user = validate_token(session_token)
     if not user:
         return Response(
-            {"message": "Invalid or expired session token."},
+            {"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"},
             status=status.HTTP_401_UNAUTHORIZED
         )
 
     if user.role not in ["admin", "moderator"]:
-            return Response({"message": "Unauthorized."}, status=status.HTTP_403_FORBIDDEN)           
+            return Response({"message": "Unauthorized.", "code": "ban_team_unauthorized"}, status=status.HTTP_403_FORBIDDEN)           
 
     if user.userroles.filter(role__role_name='head_admin').exists() or user.userroles.filter(role__role_name='teams_admin').exists():
         pass  # User has permission
     else:
-        return Response({"message": "You do not have permission to ban a team."}, status=status.HTTP_403_FORBIDDEN)
+        return Response({"message": "You do not have permission to ban a team.", "code": "not_permission_ban_team"}, status=status.HTTP_403_FORBIDDEN)
                     
 
     team_id = request.data.get("team_id")
@@ -2254,17 +2176,17 @@ def ban_team(request):
     reason = request.data.get("reason", "Violation of rules")
 
     if not team_id or not ban_duration:
-        return Response({"message": "Team ID and ban duration are required."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "Team ID and ban duration are required.", "code": "team_ban_duration_required"}, status=status.HTTP_400_BAD_REQUEST)
 
     # Get team
     try:
         team = Team.objects.get(team_id=team_id)
     except Team.DoesNotExist:
-        return Response({"message": "Team not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "Team not found.", "code": "team_not_found"}, status=status.HTTP_404_NOT_FOUND)
 
     # Check if already banned
     if team.is_banned:
-        return Response({"message": "Team is already banned."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "Team is already banned.", "code": "team_already_banned"}, status=status.HTTP_400_BAD_REQUEST)
 
     # Calculate ban end time
     ban_end_date = timezone.now() + timezone.timedelta(hours=int(ban_duration))
@@ -2319,10 +2241,10 @@ def unban_team(request):
     session_token = request.headers.get("Authorization")
 
     if not session_token:
-        return Response({'status': 'error', 'message': 'Authorization header is required'}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'status': 'error', 'message': 'Authorization header is required', "code": "authorization_header_required"}, status=status.HTTP_400_BAD_REQUEST)
 
     if not session_token.startswith("Bearer "):
-        return Response({'status': 'error', 'message': 'Invalid token format'}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'status': 'error', 'message': 'Invalid token format', "code": "invalid_token_format"}, status=status.HTTP_400_BAD_REQUEST)
 
     session_token = session_token.split(" ")[1]
 
@@ -2330,29 +2252,29 @@ def unban_team(request):
     user = validate_token(session_token)
     if not user:
         return Response(
-            {"message": "Invalid or expired session token."},
+            {"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"},
             status=status.HTTP_401_UNAUTHORIZED
         )
     
     if user.role not in ["admin", "moderator"]:
-            return Response({"message": "Unauthorized."}, status=status.HTTP_403_FORBIDDEN)           
+            return Response({"message": "Unauthorized.", "code": "unban_team_unauthorized"}, status=status.HTTP_403_FORBIDDEN)           
     
     if user.userroles.filter(role__role_name='head_admin').exists() or user.userroles.filter(role__role_name='teams_admin').exists():
         pass  # User has permission
     else:
-        return Response({"message": "You do not have permission to ban a team."}, status=status.HTTP_403_FORBIDDEN)
+        return Response({"message": "You do not have permission to ban a team.", "code": "not_permission_ban_team"}, status=status.HTTP_403_FORBIDDEN)
 
 
     team_id = request.data.get("team_id")
 
     if not team_id:
-        return Response({"message": "Team ID is required."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "Team ID is required.", "code": "team_required"}, status=status.HTTP_400_BAD_REQUEST)
 
     # Get the team
     try:
         team = Team.objects.get(team_id=team_id)
     except Team.DoesNotExist:
-        return Response({"message": "Team not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "Team not found.", "code": "team_not_found"}, status=status.HTTP_404_NOT_FOUND)
 
     # Check if the team is actually banned
     try:
@@ -2361,7 +2283,7 @@ def unban_team(request):
         team.is_banned = False
         team.save()
     except TeamBan.DoesNotExist:
-        return Response({"message": "Team is not banned."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "Team is not banned.", "code": "team_not_banned"}, status=status.HTTP_400_BAD_REQUEST)
     
     set_audit(request, f"Unbanned the team {team.team_name}")
     AdminHistory.objects.create(
@@ -2396,10 +2318,10 @@ def ban_player(request):
     session_token = request.headers.get("Authorization")
 
     if not session_token:
-        return Response({'status': 'error', 'message': 'Authorization header is required'}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'status': 'error', 'message': 'Authorization header is required', "code": "authorization_header_required"}, status=status.HTTP_400_BAD_REQUEST)
 
     if not session_token.startswith("Bearer "):
-        return Response({'status': 'error', 'message': 'Invalid token format'}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'status': 'error', 'message': 'Invalid token format', "code": "invalid_token_format"}, status=status.HTTP_400_BAD_REQUEST)
 
     session_token = session_token.split(" ")[1]
 
@@ -2407,18 +2329,18 @@ def ban_player(request):
     user = validate_token(session_token)
     if not user:
         return Response(
-            {"message": "Invalid or expired session token."},
+            {"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"},
             status=status.HTTP_401_UNAUTHORIZED
         )
 
     # Check if the user has permission to ban a player
     if user.role not in ["admin", "moderator", "support"]:
-        return Response({"message": "You do not have permission to ban a player."}, status=status.HTTP_403_FORBIDDEN)
+        return Response({"message": "You do not have permission to ban a player.", "code": "not_permission_ban_player"}, status=status.HTTP_403_FORBIDDEN)
     
     if user.userroles.filter(role__role_name='head_admin').exists() or user.userroles.filter(role__role_name='teams_admin').exists():
         pass  # User has permission
     else:
-        return Response({"message": "You do not have permission to ban a player."}, status=status.HTTP_403_FORBIDDEN)
+        return Response({"message": "You do not have permission to ban a player.", "code": "not_permission_ban_player"}, status=status.HTTP_403_FORBIDDEN)
 
     # Extract player IGN and ban details
     player_ign = request.data.get("player_ign")
@@ -2426,12 +2348,12 @@ def ban_player(request):
     reason = request.data.get("reason", "No reason provided")
 
     if not player_ign or not duration:
-        return Response({"message": "Player IGN and duration are required."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "Player IGN and duration are required.", "code": "player_ign_duration_required"}, status=status.HTTP_400_BAD_REQUEST)
 
     try:
         player = User.objects.get(username=player_ign)
     except User.DoesNotExist:
-        return Response({"message": "Player not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "Player not found.", "code": "player_not_found"}, status=status.HTTP_404_NOT_FOUND)
 
     # Create a ban entry
     ban_entry = BannedPlayer.objects.create(
@@ -2467,10 +2389,10 @@ def unban_player(request):
     session_token = request.headers.get("Authorization")
 
     if not session_token:
-        return Response({'status': 'error', 'message': 'Authorization header is required'}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'status': 'error', 'message': 'Authorization header is required', "code": "authorization_header_required"}, status=status.HTTP_400_BAD_REQUEST)
 
     if not session_token.startswith("Bearer "):
-        return Response({'status': 'error', 'message': 'Invalid token format'}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'status': 'error', 'message': 'Invalid token format', "code": "invalid_token_format"}, status=status.HTTP_400_BAD_REQUEST)
 
     session_token = session_token.split(" ")[1]
 
@@ -2478,35 +2400,35 @@ def unban_player(request):
     user = validate_token(session_token)
     if not user:
         return Response(
-            {"message": "Invalid or expired session token."},
+            {"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"},
             status=status.HTTP_401_UNAUTHORIZED
         )
 
     # Check if the user has permission to unban a player
     if user.role not in ["admin", "moderator", "support"]:
-        return Response({"message": "You do not have permission to unban a player."}, status=status.HTTP_403_FORBIDDEN)
+        return Response({"message": "You do not have permission to unban a player.", "code": "not_permission_unban_player"}, status=status.HTTP_403_FORBIDDEN)
     
     if user.userroles.filter(role__role_name='head_admin').exists() or user.userroles.filter(role__role_name='teams_admin').exists():
         pass  # User has permission
     else:
-        return Response({"message": "You do not have permission to unban a player."}, status=status.HTTP_403_FORBIDDEN)
+        return Response({"message": "You do not have permission to unban a player.", "code": "not_permission_unban_player"}, status=status.HTTP_403_FORBIDDEN)
 
     # Extract player IGN
     player_ign = request.data.get("player_ign")
 
     if not player_ign:
-        return Response({"message": "Player IGN is required."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "Player IGN is required.", "code": "player_ign_required"}, status=status.HTTP_400_BAD_REQUEST)
 
     try:
         player = User.objects.get(username=player_ign)
     except User.DoesNotExist:
-        return Response({"message": "Player not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "Player not found.", "code": "player_not_found"}, status=status.HTTP_404_NOT_FOUND)
 
     # Check if the player is banned
     try:
         ban_entry = BannedPlayer.objects.get(banned_player=player, is_active=True)
     except BannedPlayer.DoesNotExist:
-        return Response({"message": "Player is not currently banned."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "Player is not currently banned.", "code": "player_not_currently_banned"}, status=status.HTTP_400_BAD_REQUEST)
 
     # Unban the player
     ban_entry.is_active = False
@@ -2656,10 +2578,10 @@ def create_news(request):
     session_token = request.headers.get("Authorization")
 
     if not session_token:
-        return Response({'status': 'error', 'message': 'Authorization header is required'}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'status': 'error', 'message': 'Authorization header is required', "code": "authorization_header_required"}, status=status.HTTP_400_BAD_REQUEST)
 
     if not session_token.startswith("Bearer "):
-        return Response({'status': 'error', 'message': 'Invalid token format'}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'status': 'error', 'message': 'Invalid token format', "code": "invalid_token_format"}, status=status.HTTP_400_BAD_REQUEST)
 
     session_token = session_token.split(" ")[1]
 
@@ -2667,18 +2589,18 @@ def create_news(request):
     user = validate_token(session_token)
     if not user:
         return Response(
-            {"message": "Invalid or expired session token."},
+            {"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"},
             status=status.HTTP_401_UNAUTHORIZED
         )
 
     # Check if the user has permission to create news
     if user.role not in ["admin", "moderator", "support"]:
-        return Response({"message": "You do not have permission to create news."}, status=status.HTTP_403_FORBIDDEN)
+        return Response({"message": "You do not have permission to create news.", "code": "not_permission_create_news"}, status=status.HTTP_403_FORBIDDEN)
     
     if user.userroles.filter(role__role_name='head_admin').exists() or user.userroles.filter(role__role_name='news_admin').exists():
         pass  # User has permission
     else:
-        return Response({"message": "You do not have permission to create news."}, status=status.HTTP_403_FORBIDDEN)
+        return Response({"message": "You do not have permission to create news.", "code": "not_permission_create_news"}, status=status.HTTP_403_FORBIDDEN)
 
     # Extract news details
     news_title = request.data.get("news_title")
@@ -2686,17 +2608,26 @@ def create_news(request):
     category = request.data.get("category")
     related_event_id = request.data.get("related_event")   # legacy single-event link (back-compat)
     images = request.FILES.get("images")
+    # R70 (2026-09-22): a news picture is shown to everyone who opens the site, so the bytes
+    # are decoded before they are stored.
+    if images is not None:
+        from afc_auth.image_utils import require_image_upload
+        images, bad_image = require_image_upload(images)
+        if bad_image:
+            return Response({"message": "The article image must be a JPEG, PNG, WEBP or GIF "
+                                        "under 10 MB.", "code": bad_image},
+                            status=status.HTTP_400_BAD_REQUEST)
 
     # Validate required fields
     if not news_title or not content or not category:
-        return Response({"message": "Title, content, and category are required."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "Title, content, and category are required.", "code": "title_content_category_required"}, status=status.HTTP_400_BAD_REQUEST)
 
     # Validate category choice. Read straight off News.CATEGORY_CHOICES (afc_auth/models.py) instead
     # of a hardcoded copy, so adding a category to the model is enough for the admin News form to be
     # able to save it - there is no second list here that can silently drift out of sync.
     valid_categories = [key for key, _label in News.CATEGORY_CHOICES]
     if category not in valid_categories:
-        return Response({"message": "Invalid category."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "Invalid category.", "code": "invalid_category"}, status=status.HTTP_400_BAD_REQUEST)
 
     # Fetch related event if provided (LEGACY single field). The NEW multi-event link is
     # `related_events`, handled right after the row is created; when it is present it takes precedence
@@ -2706,14 +2637,14 @@ def create_news(request):
         try:
             related_event = Event.objects.get(event_id=related_event_id)
         except Event.DoesNotExist:
-            return Response({"message": "Related event not found."}, status=status.HTTP_404_NOT_FOUND)
+            return Response({"message": "Related event not found.", "code": "related_event_not_found"}, status=status.HTTP_404_NOT_FOUND)
 
     # Cover image (optional). Same 10MB guard + HEIC/EXIF/downscale normalization as the article-body
     # image endpoint and every other image upload (force_jpeg=True: a cover is a photo). Fail-safe.
     if images:
         if getattr(images, "size", 0) > 10 * 1024 * 1024:
             return Response({"message": "That cover image is too large (over 10MB). Please upload a "
-                                        "smaller image."}, status=status.HTTP_400_BAD_REQUEST)
+                                        "smaller image.", "code": "cover_image_too_large"}, status=status.HTTP_400_BAD_REQUEST)
         from .image_utils import normalize_image_upload
         images = normalize_image_upload(images, force_jpeg=True)
 
@@ -2722,13 +2653,13 @@ def create_news(request):
     # past time -> publish immediately (preserves the original behaviour). See _resolve_scheduled_publish.
     scheduled_dt, is_published, sched_error = _resolve_scheduled_publish(request.data.get("scheduled_publish_at"))
     if sched_error:
-        return Response({"message": sched_error}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": sched_error, "code": "create_news_refused"}, status=status.HTTP_400_BAD_REQUEST)
 
     # Pin to homepage (optional, backlog item 22). A FUTURE pinned_until makes this post a homepage
     # notice until that moment; blank or a past time means not pinned. See _resolve_pinned_until.
     pinned_until, pin_error = _resolve_pinned_until(request.data.get("pinned_until"))
     if pin_error:
-        return Response({"message": pin_error}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": pin_error, "code": "create_news_refused"}, status=status.HTTP_400_BAD_REQUEST)
 
     # Create the news
     news = News.objects.create(
@@ -2790,10 +2721,10 @@ def edit_news(request):
     session_token = request.headers.get("Authorization")
 
     if not session_token:
-        return Response({'status': 'error', 'message': 'Authorization header is required'}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'status': 'error', 'message': 'Authorization header is required', "code": "authorization_header_required"}, status=status.HTTP_400_BAD_REQUEST)
 
     if not session_token.startswith("Bearer "):
-        return Response({'status': 'error', 'message': 'Invalid token format'}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'status': 'error', 'message': 'Invalid token format', "code": "invalid_token_format"}, status=status.HTTP_400_BAD_REQUEST)
 
     session_token = session_token.split(" ")[1]
 
@@ -2801,29 +2732,29 @@ def edit_news(request):
     user = validate_token(session_token)
     if not user:
         return Response(
-            {"message": "Invalid or expired session token."},
+            {"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"},
             status=status.HTTP_401_UNAUTHORIZED
         )
 
     # Extract news ID
     news_id = request.data.get("news_id")
     if not news_id:
-        return Response({"message": "News ID is required."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "News ID is required.", "code": "news_required"}, status=status.HTTP_400_BAD_REQUEST)
 
     # Fetch news
     try:
         news = News.objects.get(news_id=news_id)
     except News.DoesNotExist:
-        return Response({"message": "News not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "News not found.", "code": "news_not_found"}, status=status.HTTP_404_NOT_FOUND)
 
     # Check if user is the author or an admin
     if news.author != user and user.role != "admin":
-        return Response({"message": "You do not have permission to edit this news."}, status=status.HTTP_403_FORBIDDEN)
+        return Response({"message": "You do not have permission to edit this news.", "code": "not_permission_edit_news"}, status=status.HTTP_403_FORBIDDEN)
     
     if user.userroles.filter(role__role_name='head_admin').exists() or user.userroles.filter(role__role_name='news_admin').exists():
         pass  # User has permission
     else:
-        return Response({"message": "You do not have permission to edit this news."}, status=status.HTTP_403_FORBIDDEN)
+        return Response({"message": "You do not have permission to edit this news.", "code": "not_permission_edit_news"}, status=status.HTTP_403_FORBIDDEN)
 
     # Extract new values (if provided)
     news_title = request.data.get("news_title", news.news_title)
@@ -2835,7 +2766,7 @@ def edit_news(request):
     # News.CATEGORY_CHOICES (afc_auth/models.py), never a hardcoded copy.
     valid_categories = [key for key, _label in News.CATEGORY_CHOICES]
     if category and category not in valid_categories:
-        return Response({"message": "Invalid category."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "Invalid category.", "code": "invalid_category"}, status=status.HTTP_400_BAD_REQUEST)
 
     # Update related event if changed (LEGACY single field). Superseded below when the new
     # `related_events` multi field is present (its first id is mirrored back into this FK).
@@ -2843,7 +2774,7 @@ def edit_news(request):
         try:
             news.related_event = Event.objects.get(event_id=related_event_id)
         except Event.DoesNotExist:
-            return Response({"message": "Related event not found."}, status=status.HTTP_404_NOT_FOUND)
+            return Response({"message": "Related event not found.", "code": "related_event_not_found"}, status=status.HTTP_404_NOT_FOUND)
 
     # Cover image (optional), three cases:
     #   • a new file was uploaded (`images`) -> 10MB guard + normalize (force_jpeg) + replace.
@@ -2856,7 +2787,7 @@ def edit_news(request):
     if new_cover:
         if getattr(new_cover, "size", 0) > 10 * 1024 * 1024:
             return Response({"message": "That cover image is too large (over 10MB). Please upload a "
-                                        "smaller image."}, status=status.HTTP_400_BAD_REQUEST)
+                                        "smaller image.", "code": "cover_image_too_large"}, status=status.HTTP_400_BAD_REQUEST)
         from .image_utils import normalize_image_upload
         news.images = normalize_image_upload(new_cover, force_jpeg=True)
     elif str(request.data.get("remove_image", "")).lower() == "true":
@@ -2876,7 +2807,7 @@ def edit_news(request):
     if "scheduled_publish_at" in request.data:
         scheduled_dt, is_published, sched_error = _resolve_scheduled_publish(request.data.get("scheduled_publish_at"))
         if sched_error:
-            return Response({"message": sched_error}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"message": sched_error, "code": "edit_news_refused"}, status=status.HTTP_400_BAD_REQUEST)
         news.scheduled_publish_at = scheduled_dt
         news.is_published = is_published
 
@@ -2888,7 +2819,7 @@ def edit_news(request):
     if "pinned_until" in request.data:
         pinned_until, pin_error = _resolve_pinned_until(request.data.get("pinned_until"))
         if pin_error:
-            return Response({"message": pin_error}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"message": pin_error, "code": "edit_news_refused"}, status=status.HTTP_400_BAD_REQUEST)
         news.pinned_until = pinned_until
 
     news.save()
@@ -2958,30 +2889,30 @@ def upload_news_image(request):
     # ---------------- AUTH (mirrors upload_esport_image) ----------------
     session_token = request.headers.get("Authorization")
     if not session_token:
-        return Response({'status': 'error', 'message': 'Authorization header is required'},
+        return Response({'status': 'error', 'message': 'Authorization header is required', "code": "authorization_header_required"},
                         status=status.HTTP_400_BAD_REQUEST)
     if not session_token.startswith("Bearer "):
-        return Response({'status': 'error', 'message': 'Invalid token format'},
+        return Response({'status': 'error', 'message': 'Invalid token format', "code": "invalid_token_format"},
                         status=status.HTTP_400_BAD_REQUEST)
     user = validate_token(session_token.split(" ")[1])
     if not user:
-        return Response({"message": "Invalid or expired session token."},
+        return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"},
                         status=status.HTTP_401_UNAUTHORIZED)
     # Same permission gate as create_news (role + head_admin|news_admin) - only news managers upload
     # article media. _is_news_admin is the single source of truth for that gate.
     if not _is_news_admin(user):
-        return Response({"message": "You do not have permission to upload news media."},
+        return Response({"message": "You do not have permission to upload news media.", "code": "not_permission_upload_news"},
                         status=status.HTTP_403_FORBIDDEN)
 
     image = request.FILES.get("image")
     if not image:
-        return Response({"message": "image file is required."},
+        return Response({"message": "image file is required.", "code": "image_file_required"},
                         status=status.HTTP_400_BAD_REQUEST)
     # 10MB ceiling (contract). The frontend also compresses before sending, so normal phone photos
     # never hit this; the message tells the admin WHY an upload was rejected.
     if getattr(image, "size", 0) > 10 * 1024 * 1024:
         return Response({"message": "That image is too large (over 10MB). Please upload a "
-                                    "smaller image."},
+                                    "smaller image.", "code": "image_too_large_over"},
                         status=status.HTTP_400_BAD_REQUEST)
 
     # HEIC->JPEG + EXIF-rotate + downscale, same as every other image upload. force_jpeg=True: article
@@ -3031,34 +2962,34 @@ def upload_news_video(request):
     # ---------------- AUTH (mirrors upload_news_image) ----------------
     session_token = request.headers.get("Authorization")
     if not session_token:
-        return Response({'status': 'error', 'message': 'Authorization header is required'},
+        return Response({'status': 'error', 'message': 'Authorization header is required', "code": "authorization_header_required"},
                         status=status.HTTP_400_BAD_REQUEST)
     if not session_token.startswith("Bearer "):
-        return Response({'status': 'error', 'message': 'Invalid token format'},
+        return Response({'status': 'error', 'message': 'Invalid token format', "code": "invalid_token_format"},
                         status=status.HTTP_400_BAD_REQUEST)
     user = validate_token(session_token.split(" ")[1])
     if not user:
-        return Response({"message": "Invalid or expired session token."},
+        return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"},
                         status=status.HTTP_401_UNAUTHORIZED)
     if not _is_news_admin(user):
-        return Response({"message": "You do not have permission to upload news media."},
+        return Response({"message": "You do not have permission to upload news media.", "code": "not_permission_upload_news"},
                         status=status.HTTP_403_FORBIDDEN)
 
     video = request.FILES.get("video")
     if not video:
-        return Response({"message": "video file is required."},
+        return Response({"message": "video file is required.", "code": "video_file_required"},
                         status=status.HTTP_400_BAD_REQUEST)
     # Only accept real video files (contract). content_type is browser-supplied, but it is a good
     # first gate against a mislabeled image/doc being embedded as a <video> and rendering blank.
     ctype = (getattr(video, "content_type", "") or "").lower()
     if not ctype.startswith("video/"):
-        return Response({"message": "That file is not a video."},
+        return Response({"message": "That file is not a video.", "code": "file_not_video"},
                         status=status.HTTP_400_BAD_REQUEST)
     # 50MB ceiling (contract). Videos are large; anything bigger should be hosted off-platform and
     # embedded via the editor's "Paste link" tab instead of uploaded here.
     if getattr(video, "size", 0) > 50 * 1024 * 1024:
         return Response({"message": "That video is too large (over 50MB). Please upload a shorter/"
-                                    "smaller clip, or paste a video link instead."},
+                                    "smaller clip, or paste a video link instead.", "code": "video_too_large_over"},
                         status=status.HTTP_400_BAD_REQUEST)
 
     # Persist to local MEDIA under news_videos/. No normalization for video (unlike images).
@@ -3239,12 +3170,12 @@ def get_news_detail(request):
     # news_id = request.data.get("news_id")
     slug = request.data.get("slug")
     if not slug:
-        return Response({"message": "Slug is required."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "Slug is required.", "code": "slug_required"}, status=status.HTTP_400_BAD_REQUEST)
 
     try:
         news = News.objects.get(slug=slug)
     except News.DoesNotExist:
-        return Response({"message": "News not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "News not found.", "code": "news_not_found"}, status=status.HTTP_404_NOT_FOUND)
 
     # Scheduled-publish visibility gate: a not-yet-published (scheduled) item must not be reachable by
     # direct slug for the public. Only a news admin may preview it (the admin detail/edit pages send a
@@ -3253,7 +3184,7 @@ def get_news_detail(request):
         auth = request.headers.get("Authorization", "")
         viewer = validate_token(auth.split(" ", 1)[1]) if auth.startswith("Bearer ") else None
         if not _is_news_admin(viewer):
-            return Response({"message": "News not found."}, status=status.HTTP_404_NOT_FOUND)
+            return Response({"message": "News not found.", "code": "news_not_found"}, status=status.HTTP_404_NOT_FOUND)
 
     news_views = NewsViews.objects.filter(news=news).count()
 
@@ -3304,10 +3235,10 @@ def delete_news(request):
     session_token = request.headers.get("Authorization")
 
     if not session_token:
-        return Response({'status': 'error', 'message': 'Authorization header is required'}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'status': 'error', 'message': 'Authorization header is required', "code": "authorization_header_required"}, status=status.HTTP_400_BAD_REQUEST)
 
     if not session_token.startswith("Bearer "):
-        return Response({'status': 'error', 'message': 'Invalid token format'}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'status': 'error', 'message': 'Invalid token format', "code": "invalid_token_format"}, status=status.HTTP_400_BAD_REQUEST)
 
     session_token = session_token.split(" ")[1]
 
@@ -3315,7 +3246,7 @@ def delete_news(request):
     user = validate_token(session_token)
     if not user:
         return Response(
-            {"message": "Invalid or expired session token."},
+            {"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"},
             status=status.HTTP_401_UNAUTHORIZED
         )
     
@@ -3323,19 +3254,19 @@ def delete_news(request):
     # Extract news ID
     news_id = request.data.get("news_id")
     if not news_id:
-        return Response({"message": "News ID is required."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "News ID is required.", "code": "news_required"}, status=status.HTTP_400_BAD_REQUEST)
 
     # Fetch news
     try:
         news = News.objects.get(news_id=news_id)
     except News.DoesNotExist:
-        return Response({"message": "News not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "News not found.", "code": "news_not_found"}, status=status.HTTP_404_NOT_FOUND)
 
     # Check if user is the author or an admin
     if news.author != user and user.role != "admin":
         if user.userroles.filter(role__role_name='head_admin').exists() or user.userroles.filter(role__role_name='news_admin').exists():
             pass  # User has news_editor role, allow deletion
-        return Response({"message": "You do not have permission to delete this news."}, status=status.HTTP_403_FORBIDDEN)
+        return Response({"message": "You do not have permission to delete this news.", "code": "not_permission_delete_news"}, status=status.HTTP_403_FORBIDDEN)
 
     set_audit(request, f"Deleted the news '{news.news_title}'")
     news.delete()
@@ -3548,10 +3479,10 @@ def edit_profile(request):
     session_token = request.headers.get("Authorization")
 
     if not session_token:
-        return Response({'status': 'error', 'message': 'Authorization header is required'}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'status': 'error', 'message': 'Authorization header is required', "code": "authorization_header_required"}, status=status.HTTP_400_BAD_REQUEST)
 
     if not session_token.startswith("Bearer "):
-        return Response({'status': 'error', 'message': 'Invalid token format'}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'status': 'error', 'message': 'Invalid token format', "code": "invalid_token_format"}, status=status.HTTP_400_BAD_REQUEST)
 
     session_token = session_token.split(" ")[1]
 
@@ -3559,7 +3490,7 @@ def edit_profile(request):
     user = validate_token(session_token)
     if not user:
         return Response(
-            {"message": "Invalid or expired session token."},
+            {"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"},
             status=status.HTTP_401_UNAUTHORIZED
         )
 
@@ -3587,7 +3518,7 @@ def edit_profile(request):
 
     # Validate required fields
     if not all([full_name, in_game_name, email]):
-        return Response({"message": "All fields are required."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "All fields are required.", "code": "fields_required"}, status=status.HTTP_400_BAD_REQUEST)
 
     # IDENTITY LOCK (owner 2026-06-15): a player committed to a LIVE event (upcoming/ongoing) cannot
     # change their in-game name or UID - those identify them for match-result / leaderboard
@@ -3617,18 +3548,18 @@ def edit_profile(request):
     # (hundreds of them) and wrongly report "already in use", blocking the save. Only a real
     # uid value needs the collision check.
     if uid and User.objects.exclude(pk=user.pk).filter(uid=uid).exists():
-        return Response({"message": "UID is already in use by another user."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "UID is already in use by another user.", "code": "uid_already_use_user"}, status=status.HTTP_400_BAD_REQUEST)
 
     if User.objects.exclude(pk=user.pk).filter(email=email).exists():
-        return Response({"message": "Email is already registered to another user."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "Email is already registered to another user.", "code": "email_already_registered_user"}, status=status.HTTP_400_BAD_REQUEST)
 
     is_valid, email_error = is_valid_email(email)
 
     if not is_valid:
-        return Response({"error": email_error}, status=400)
+        return Response({"error": email_error, "code": "edit_profile_refused"}, status=400)
 
     if User.objects.exclude(pk=user.pk).filter(username=in_game_name).exists():
-        return Response({"message": "In-game name is already taken."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "In-game name is already taken.", "code": "game_name_already_taken"}, status=status.HTTP_400_BAD_REQUEST)
 
     # ── CROSS-COLUMN conflict (owner 2026-08-07) ──
     # The three checks above compare each field against its own column only, which is all the DB
@@ -3644,7 +3575,7 @@ def edit_profile(request):
             # Does not name the holder: this is a normal player editing their own profile, and
             # naming another account would confirm its existence to them.
             return Response(
-                {"message": anonymous_conflict_message(_field, _held_as)},
+                {"message": anonymous_conflict_message(_field, _held_as), "code": "edit_profile_refused"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -3729,7 +3660,12 @@ def edit_profile(request):
     if "whatsapp_number" in request.data:
         _wa_number, _wa_error = require_international(request.data.get("whatsapp_number"))
         if _wa_error:
-            return Response({"message": _wa_error}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"message": _wa_error, "code": "edit_profile_refused"}, status=status.HTTP_400_BAD_REQUEST)
+        # One account per WhatsApp number (owner 2026-09-14, inbox #21). Re-saving your own
+        # number is not a clash (exclude_pk); the holder is never named to a player.
+        if _wa_number and whatsapp_number_holder(_wa_number, exclude_pk=user.pk) is not None:
+            return Response({"message": WHATSAPP_TAKEN_MESSAGE, "code": WHATSAPP_TAKEN_CODE},
+                            status=status.HTTP_400_BAD_REQUEST)
         # Stored NORMALISED (E.164), not as typed. Every other player number on the site is stored
         # raw and normalised at send time, and the result is 34 of 133 rows that cannot be resolved
         # without knowing the country. This field is a way back into an account, so it is cleaned
@@ -3779,10 +3715,10 @@ def edit_profile(request):
 #     session_token = request.headers.get("Authorization")
 
 #     if not session_token:
-#         return Response({'status': 'error', 'message': 'Authorization header is required'}, status=status.HTTP_400_BAD_REQUEST)
+#         return Response({'status': 'error', 'message': 'Authorization header is required', "code": "authorization_header_required"}, status=status.HTTP_400_BAD_REQUEST)
 
 #     if not session_token.startswith("Bearer "):
-#         return Response({'status': 'error', 'message': 'Invalid token format'}, status=status.HTTP_400_BAD_REQUEST)
+#         return Response({'status': 'error', 'message': 'Invalid token format', "code": "invalid_token_format"}, status=status.HTTP_400_BAD_REQUEST)
 
 #     session_token = session_token.split(" ")[1]
 
@@ -3847,17 +3783,17 @@ def get_user_profile(request):
     # ---------------- AUTH ----------------
     session_token = request.headers.get("Authorization")
     if not session_token:
-        return Response({'status': 'error', 'message': 'Authorization header is required'},
+        return Response({'status': 'error', 'message': 'Authorization header is required', "code": "authorization_header_required"},
                         status=status.HTTP_400_BAD_REQUEST)
 
     if not session_token.startswith("Bearer "):
-        return Response({'status': 'error', 'message': 'Invalid token format'},
+        return Response({'status': 'error', 'message': 'Invalid token format', "code": "invalid_token_format"},
                         status=status.HTTP_400_BAD_REQUEST)
 
     token = session_token.split(" ")[1]
     user = validate_token(token)
     if not user:
-        return Response({"message": "Invalid or expired session token."},
+        return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"},
                         status=status.HTTP_401_UNAUTHORIZED)
 
     # ---------------- PROFILE PIC + ESPORT IMAGE ----------------
@@ -4128,17 +4064,17 @@ def mark_welcome_seen(request):
     # ---------------- AUTH (mirrors get_user_profile) ----------------
     session_token = request.headers.get("Authorization")
     if not session_token:
-        return Response({'status': 'error', 'message': 'Authorization header is required'},
+        return Response({'status': 'error', 'message': 'Authorization header is required', "code": "authorization_header_required"},
                         status=status.HTTP_400_BAD_REQUEST)
 
     if not session_token.startswith("Bearer "):
-        return Response({'status': 'error', 'message': 'Invalid token format'},
+        return Response({'status': 'error', 'message': 'Invalid token format', "code": "invalid_token_format"},
                         status=status.HTTP_400_BAD_REQUEST)
 
     token = session_token.split(" ")[1]
     user = validate_token(token)
     if not user:
-        return Response({"message": "Invalid or expired session token."},
+        return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"},
                         status=status.HTTP_401_UNAUTHORIZED)
 
     # ---------------- FLIP THE FLAG (idempotent) ----------------
@@ -4182,17 +4118,17 @@ def mark_dashboard_intro_seen(request):
     # ---------------- AUTH (mirrors mark_welcome_seen) ----------------
     session_token = request.headers.get("Authorization")
     if not session_token:
-        return Response({'status': 'error', 'message': 'Authorization header is required'},
+        return Response({'status': 'error', 'message': 'Authorization header is required', "code": "authorization_header_required"},
                         status=status.HTTP_400_BAD_REQUEST)
 
     if not session_token.startswith("Bearer "):
-        return Response({'status': 'error', 'message': 'Invalid token format'},
+        return Response({'status': 'error', 'message': 'Invalid token format', "code": "invalid_token_format"},
                         status=status.HTTP_400_BAD_REQUEST)
 
     token = session_token.split(" ")[1]
     user = validate_token(token)
     if not user:
-        return Response({"message": "Invalid or expired session token."},
+        return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"},
                         status=status.HTTP_401_UNAUTHORIZED)
 
     dashboard = (request.data.get("dashboard") or "").strip().lower()
@@ -4246,26 +4182,26 @@ def upload_esport_image(request):
     # ---------------- AUTH (mirrors edit_profile) ----------------
     session_token = request.headers.get("Authorization")
     if not session_token:
-        return Response({'status': 'error', 'message': 'Authorization header is required'},
+        return Response({'status': 'error', 'message': 'Authorization header is required', "code": "authorization_header_required"},
                         status=status.HTTP_400_BAD_REQUEST)
     if not session_token.startswith("Bearer "):
-        return Response({'status': 'error', 'message': 'Invalid token format'},
+        return Response({'status': 'error', 'message': 'Invalid token format', "code": "invalid_token_format"},
                         status=status.HTTP_400_BAD_REQUEST)
     user = validate_token(session_token.split(" ")[1])
     if not user:
-        return Response({"message": "Invalid or expired session token."},
+        return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"},
                         status=status.HTTP_401_UNAUTHORIZED)
 
     esport_image = request.FILES.get("esport_image")
     if not esport_image:
-        return Response({"message": "esport_image file is required."},
+        return Response({"message": "esport_image file is required.", "code": "esport_image_file_required"},
                         status=status.HTTP_400_BAD_REQUEST)
     # Clear size error (owner 2026-07-02: "make people know WHY images are not uploading").
     # 15MB ceiling here; the frontend also downscales before sending so normal phone photos
     # never hit this.
     if getattr(esport_image, "size", 0) > 15 * 1024 * 1024:
         return Response({"message": "That image is too large (over 15MB). Please upload a "
-                                    "smaller photo - a normal phone picture works fine."},
+                                    "smaller photo - a normal phone picture works fine.", "code": "image_too_large_over"},
                         status=status.HTTP_400_BAD_REQUEST)
 
     # HEIC/HEIF (iPhone default) -> JPEG before anything else (owner 2026-06-21): browsers
@@ -4345,7 +4281,7 @@ def send_verification_token(request):
     uid = request.data.get("uid")
 
     if not email and not uid:
-        return Response({"message": "Email or UID is required."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "Email or UID is required.", "code": "email_uid_required"}, status=status.HTTP_400_BAD_REQUEST)
     
     
     
@@ -4354,23 +4290,23 @@ def send_verification_token(request):
             is_valid, email_error = is_valid_email(email)
 
             if not is_valid:
-                return Response({"error": email_error}, status=400)
+                return Response({"error": email_error, "code": "send_verification_token_refused"}, status=400)
             pass
         elif not uid:
-            return Response({"message": "UID is required."}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"message": "UID is required.", "code": "uid_required"}, status=status.HTTP_400_BAD_REQUEST)
     
 
     try:
         if email:
             user = User.objects.get(email=email)
     except User.DoesNotExist:
-        return Response({"message": "User with this email does not exist."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "User with this email does not exist.", "code": "user_email_not_exist"}, status=status.HTTP_404_NOT_FOUND)
     
     try:
         if uid:
             user = User.objects.get(uid=uid)
     except User.DoesNotExist:
-        return Response({"message": "User with this UID does not exist."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "User with this UID does not exist.", "code": "user_uid_not_exist"}, status=status.HTTP_404_NOT_FOUND)
 
     # Generate a 6-digit token
     token = str(random.randint(100000, 999999))
@@ -4404,7 +4340,7 @@ def verify_token(request):
     token = request.data.get("token")
 
     if (not email and not uid) and not token:
-        return Response({"message": "Email or UID and token are required."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "Email or UID and token are required.", "code": "email_uid_token_required"}, status=status.HTTP_400_BAD_REQUEST)
 
     try:
         if email:
@@ -4413,10 +4349,10 @@ def verify_token(request):
             user = User.objects.get(uid=uid)
         reset_token = PasswordResetToken.objects.get(user=user, token=token)
     except (User.DoesNotExist, PasswordResetToken.DoesNotExist):
-        return Response({"message": "Invalid email or token."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "Invalid email or token.", "code": "invalid_email_token"}, status=status.HTTP_400_BAD_REQUEST)
 
     if not reset_token.is_valid():
-        return Response({"message": "Token has expired."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "Token has expired.", "code": "token_expired"}, status=status.HTTP_400_BAD_REQUEST)
 
     return Response({"message": "Token is valid."}, status=status.HTTP_200_OK)
 
@@ -4429,11 +4365,11 @@ def reset_password(request):
     new_password = request.data.get("new_password")
 
     if not email and not uid:
-        return Response({"message": "Email or UID is required."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "Email or UID is required.", "code": "email_uid_required"}, status=status.HTTP_400_BAD_REQUEST)
 
 
     if not all([token, new_password]):
-        return Response({"message": "Token, and new password are required."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "Token, and new password are required.", "code": "token_new_password_required"}, status=status.HTTP_400_BAD_REQUEST)
 
     try:
         if email:
@@ -4442,10 +4378,10 @@ def reset_password(request):
             user = User.objects.get(uid=uid)
         reset_token = PasswordResetToken.objects.get(user=user, token=token)
     except (User.DoesNotExist, PasswordResetToken.DoesNotExist):
-        return Response({"message": "Invalid email or token."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "Invalid email or token.", "code": "invalid_email_token"}, status=status.HTTP_400_BAD_REQUEST)
 
     if not reset_token.is_valid():
-        return Response({"message": "Token has expired."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "Token has expired.", "code": "token_expired"}, status=status.HTTP_400_BAD_REQUEST)
 
     user.set_password(new_password)
     user.save()
@@ -4476,22 +4412,22 @@ def resend_token(request):
     email = request.data.get("email")
 
     if not email:
-        return Response({"message": "Email is required."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "Email is required.", "code": "email_required"}, status=status.HTTP_400_BAD_REQUEST)
     
     is_valid, email_error = is_valid_email(email)
 
     if not is_valid:
-        return Response({"error": email_error}, status=400)
+        return Response({"error": email_error, "code": "resend_token_refused"}, status=400)
 
     try:
         user = User.objects.get(email=email)
     except User.DoesNotExist:
-        return Response({"message": "User with this email does not exist."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "User with this email does not exist.", "code": "user_email_not_exist"}, status=status.HTTP_404_NOT_FOUND)
     
 
     existing = PasswordResetToken.objects.filter(user=user).first()
     if existing and (timezone.now() - existing.created_at).seconds < 60:
-        return Response({"message": "You must wait at least 1 minute before requesting a new token."},
+        return Response({"message": "You must wait at least 1 minute before requesting a new token.", "code": "wait_least_minute_before"},
                         status=status.HTTP_429_TOO_MANY_REQUESTS)
 
 
@@ -4523,7 +4459,7 @@ def resend_token(request):
 def change_password(request):
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid token"}, status=400)
+        return Response({"message": "Invalid token", "code": "invalid_token"}, status=400)
 
     user = validate_token(auth.split(" ")[1])
 
@@ -4558,7 +4494,7 @@ def change_password(request):
         return Response({"message": "Password Changed Successfully."}, status=status.HTTP_200_OK)
 
     else:
-        return Response({"message": "You have Inputted the wrong password."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "You have Inputted the wrong password.", "code": "inputted_wrong_password"}, status=status.HTTP_400_BAD_REQUEST)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -4584,39 +4520,39 @@ def request_email_change(request):
     The switch happens in confirm_email_change. Rate-limited 60s (mirrors resend_token)."""
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
     user = validate_token(auth.split(" ")[1])
     if not user:
-        return Response({"message": "Invalid or expired session token."}, status=401)
+        return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
 
     old_email = (request.data.get("old_email") or "").strip()
     new_email = (request.data.get("new_email") or "").strip()
     current_password = request.data.get("current_password") or ""
 
     if not old_email or not new_email or not current_password:
-        return Response({"message": "Current email, new email, and password are all required."}, status=400)
+        return Response({"message": "Current email, new email, and password are all required.", "code": "current_email_new_email"}, status=400)
 
     # Re-auth 1: the OLD email typed must match the email on file (owner's chosen verification step).
     if old_email.lower() != (user.email or "").lower():
-        return Response({"message": "The current email you entered doesn't match the email on your account."}, status=400)
+        return Response({"message": "The current email you entered doesn't match the email on your account.", "code": "current_email_entered_doesn"}, status=400)
 
     # Re-auth 2: current password must be correct (closes the old no-reauth email-change hole).
     if not user.check_password(current_password):
-        return Response({"message": "Incorrect password."}, status=403)
+        return Response({"message": "Incorrect password.", "code": "incorrect_password"}, status=403)
 
     # New email must be well-formed, actually different, and not already taken by another account.
     is_valid, msg = is_valid_email(new_email)
     if not is_valid:
-        return Response({"error": msg}, status=400)
+        return Response({"error": msg, "code": "request_email_change_refused"}, status=400)
     if new_email.lower() == (user.email or "").lower():
-        return Response({"message": "That is already your email."}, status=400)
+        return Response({"message": "That is already your email.", "code": "already_email"}, status=400)
     if User.objects.exclude(pk=user.pk).filter(email__iexact=new_email).exists():
-        return Response({"message": "That email is already registered to another account."}, status=400)
+        return Response({"message": "That email is already registered to another account.", "code": "email_already_registered_account"}, status=400)
 
     # Rate limit: 60s cooldown between code requests (mirrors resend_token).
     existing = EmailChangeRequest.objects.filter(user=user).first()
     if existing and (timezone.now() - existing.created_at).total_seconds() < 60:
-        return Response({"message": "Please wait at least 1 minute before requesting another code."},
+        return Response({"message": "Please wait at least 1 minute before requesting another code.", "code": "wait_least_minute_before"},
                         status=status.HTTP_429_TOO_MANY_REQUESTS)
 
     token = str(random.randint(100000, 999999))
@@ -4642,26 +4578,26 @@ def confirm_email_change(request):
     deletes the request, and confirms to BOTH the old + new addresses (a tripwire for the old inbox)."""
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
     user = validate_token(auth.split(" ")[1])
     if not user:
-        return Response({"message": "Invalid or expired session token."}, status=401)
+        return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
 
     token = (request.data.get("token") or "").strip()
     if not token:
-        return Response({"message": "The confirmation code is required."}, status=400)
+        return Response({"message": "The confirmation code is required.", "code": "confirmation_code_required"}, status=400)
 
     req = EmailChangeRequest.objects.filter(user=user).first()
     if not req or req.token != token:
-        return Response({"message": "Invalid confirmation code."}, status=400)
+        return Response({"message": "Invalid confirmation code.", "code": "invalid_confirmation_code"}, status=400)
     if not req.is_valid():
-        return Response({"message": "This code has expired. Please request a new one."}, status=400)
+        return Response({"message": "This code has expired. Please request a new one.", "code": "code_expired_request_new"}, status=400)
 
     new_email = req.new_email
     # Re-check uniqueness at commit time (someone else may have taken it since the request).
     if User.objects.exclude(pk=user.pk).filter(email__iexact=new_email).exists():
         req.delete()
-        return Response({"message": "That email was just registered to another account. Try a different one."}, status=400)
+        return Response({"message": "That email was just registered to another account. Try a different one.", "code": "email_just_registered_account"}, status=400)
 
     old_email = user.email
     user.email = new_email
@@ -4792,10 +4728,10 @@ def get_admin_info(request):
     session_token = request.headers.get("Authorization")
 
     if not session_token:
-        return Response({'status': 'error', 'message': 'Authorization header is required'}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'status': 'error', 'message': 'Authorization header is required', "code": "authorization_header_required"}, status=status.HTTP_400_BAD_REQUEST)
 
     if not session_token.startswith("Bearer "):
-        return Response({'status': 'error', 'message': 'Invalid token format'}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'status': 'error', 'message': 'Invalid token format', "code": "invalid_token_format"}, status=status.HTTP_400_BAD_REQUEST)
 
     session_token = session_token.split(" ")[1]
 
@@ -4803,7 +4739,7 @@ def get_admin_info(request):
     user = validate_token(session_token)
     if not user:
         return Response(
-            {"message": "Invalid or expired session token."},
+            {"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"},
             status=status.HTTP_401_UNAUTHORIZED
         )
 
@@ -4812,7 +4748,7 @@ def get_admin_info(request):
     # `user.is_admin` raised AttributeError -> 500 on every call. Use the same
     # role check the rest of this module uses (user.role == "admin").
     if user.role != "admin":
-        return Response({"message": "User is not an admin."}, status=status.HTTP_403_FORBIDDEN)
+        return Response({"message": "User is not an admin.", "code": "user_not_admin"}, status=status.HTTP_403_FORBIDDEN)
 
     # Return admin information.
     # Fixes the AttributeError chain that previously 500'd this endpoint:
@@ -4891,10 +4827,10 @@ def search_users(request):
 
     auth = request.headers.get("Authorization", "")
     if not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=status.HTTP_400_BAD_REQUEST)
     requester = validate_token(auth.split(" ", 1)[1])
     if not requester:
-        return Response({"message": "Invalid or expired session token."}, status=status.HTTP_401_UNAUTHORIZED)
+        return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=status.HTTP_401_UNAUTHORIZED)
 
     q = request.GET.get("q", "").strip()
     if len(q) < 2:
@@ -4962,10 +4898,10 @@ def suspend_user(request):
     session_token = request.headers.get("Authorization")
 
     if not session_token:
-        return Response({'status': 'error', 'message': 'Authorization header is required'}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'status': 'error', 'message': 'Authorization header is required', "code": "authorization_header_required"}, status=status.HTTP_400_BAD_REQUEST)
 
     if not session_token.startswith("Bearer "):
-        return Response({'status': 'error', 'message': 'Invalid token format'}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'status': 'error', 'message': 'Invalid token format', "code": "invalid_token_format"}, status=status.HTTP_400_BAD_REQUEST)
 
     session_token = session_token.split(" ")[1]
 
@@ -4973,24 +4909,24 @@ def suspend_user(request):
     user = validate_token(session_token)
     if not user:
         return Response(
-            {"message": "Invalid or expired session token."},
+            {"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"},
             status=status.HTTP_401_UNAUTHORIZED
         )
     
     if user.role != "admin":
-        return Response({"message": "You do not have permission to suspend a user."}, status=status.HTTP_403_FORBIDDEN)
+        return Response({"message": "You do not have permission to suspend a user.", "code": "not_permission_suspend_user"}, status=status.HTTP_403_FORBIDDEN)
 
     user_id = request.data.get("user_id")
     if not user_id:
-        return Response({"message": "User ID is required."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "User ID is required.", "code": "user_required"}, status=status.HTTP_400_BAD_REQUEST)
 
     try:
         user = User.objects.get(user_id=user_id)
     except User.DoesNotExist:
-        return Response({"message": "User not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "User not found.", "code": "user_not_found"}, status=status.HTTP_404_NOT_FOUND)
 
     if user.status == "suspended":
-        return Response({"message": "User is Currently Suspended"}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "User is Currently Suspended", "code": "user_currently_suspended"}, status=status.HTTP_400_BAD_REQUEST)
 
     user.status = "suspended"
     user.save()
@@ -5019,10 +4955,10 @@ def activate_user(request):
     session_token = request.headers.get("Authorization")
 
     if not session_token:
-        return Response({'status': 'error', 'message': 'Authorization header is required'}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'status': 'error', 'message': 'Authorization header is required', "code": "authorization_header_required"}, status=status.HTTP_400_BAD_REQUEST)
 
     if not session_token.startswith("Bearer "):
-        return Response({'status': 'error', 'message': 'Invalid token format'}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'status': 'error', 'message': 'Invalid token format', "code": "invalid_token_format"}, status=status.HTTP_400_BAD_REQUEST)
 
     session_token = session_token.split(" ")[1]
 
@@ -5030,25 +4966,25 @@ def activate_user(request):
     user = validate_token(session_token)
     if not user:
         return Response(
-            {"message": "Invalid or expired session token."},
+            {"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"},
             status=status.HTTP_401_UNAUTHORIZED
         )
     
     if user.role != "admin":
-        return Response({"message": "You do not have permission to activate a user."}, status=status.HTTP_403_FORBIDDEN)
+        return Response({"message": "You do not have permission to activate a user.", "code": "not_permission_activate_user"}, status=status.HTTP_403_FORBIDDEN)
 
     user_id = request.data.get("user_id")
     if not user_id:
-        return Response({"message": "User ID is required."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "User ID is required.", "code": "user_required"}, status=status.HTTP_400_BAD_REQUEST)
 
     try:
         user = User.objects.get(user_id=user_id)
     except User.DoesNotExist:
-        return Response({"message": "User not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "User not found.", "code": "user_not_found"}, status=status.HTTP_404_NOT_FOUND)
 
     
     if user.status == "active":
-        return Response({"message": "User is currently active."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "User is currently active.", "code": "user_currently_active"}, status=status.HTTP_400_BAD_REQUEST)
 
     user.status = "active"
     user.save()
@@ -5077,10 +5013,10 @@ def activate_user(request):
 #     session_token = request.headers.get("Authorization")
 
 #     if not session_token:
-#         return Response({'status': 'error', 'message': 'Authorization header is required'}, status=status.HTTP_400_BAD_REQUEST)
+#         return Response({'status': 'error', 'message': 'Authorization header is required', "code": "authorization_header_required"}, status=status.HTTP_400_BAD_REQUEST)
 
 #     if not session_token.startswith("Bearer "):
-#         return Response({'status': 'error', 'message': 'Invalid token format'}, status=status.HTTP_400_BAD_REQUEST)
+#         return Response({'status': 'error', 'message': 'Invalid token format', "code": "invalid_token_format"}, status=status.HTTP_400_BAD_REQUEST)
 
 #     session_token = session_token.split(" ")[1]
 
@@ -5088,22 +5024,22 @@ def activate_user(request):
 #     try:
 #         admin_user = User.objects.get(session_token=session_token)
 #     except User.DoesNotExist:
-#         return Response({"message": "Invalid session token."}, status=status.HTTP_401_UNAUTHORIZED)
+#         return Response({"message": "Invalid session token.", "code": "invalid_session_token"}, status=status.HTTP_401_UNAUTHORIZED)
     
 #     if admin_user.role != "admin":
-#         return Response({"message": "You do not have permission to assign roles."}, status=status.HTTP_403_FORBIDDEN)
+#         return Response({"message": "You do not have permission to assign roles.", "code": "not_permission_assign_roles"}, status=status.HTTP_403_FORBIDDEN)
 
 #     username = request.data.get("username")
 #     email = request.data.get("email")
 #     role_ids = request.data.get("role_ids", [])
 
 #     if not email or not username or not role_ids:
-#         return Response({"message": "Email, username, and role IDs are required."}, status=status.HTTP_400_BAD_REQUEST)
+#         return Response({"message": "Email, username, and role IDs are required.", "code": "email_username_role_ids"}, status=status.HTTP_400_BAD_REQUEST)
 
 #     try:
 #         user = User.objects.get(email=email, username=username)
 #     except User.DoesNotExist:
-#         return Response({"message": "User not found."}, status=status.HTTP_404_NOT_FOUND)
+#         return Response({"message": "User not found.", "code": "user_not_found"}, status=status.HTTP_404_NOT_FOUND)
 
 #     for role_id in role_ids:
 #         try:
@@ -5122,7 +5058,7 @@ def assign_roles_to_user(request):
 
     if not session_token or not session_token.startswith("Bearer "):
         return Response(
-            {"status": "error", "message": "Authorization token is missing or invalid."},
+            {"status": "error", "message": "Authorization token is missing or invalid.", "code": "authorization_token_missing_invalid"},
             status=status.HTTP_400_BAD_REQUEST
         )
 
@@ -5132,13 +5068,13 @@ def assign_roles_to_user(request):
     admin_user = validate_token(session_token)
     if not admin_user:
         return Response(
-            {"message": "Invalid or expired session token."},
+            {"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"},
             status=status.HTTP_401_UNAUTHORIZED
         )
     
     if admin_user.role != "admin":
         return Response(
-            {"status": "error", "message": "You do not have permission to assign roles."},
+            {"status": "error", "message": "You do not have permission to assign roles.", "code": "not_permission_assign_roles"},
             status=status.HTTP_403_FORBIDDEN
         )
 
@@ -5148,7 +5084,7 @@ def assign_roles_to_user(request):
 
     if not email or not username or not role_ids:
         return Response(
-            {"status": "error", "message": "Email, username, and role IDs are required."},
+            {"status": "error", "message": "Email, username, and role IDs are required.", "code": "email_username_role_ids"},
             status=status.HTTP_400_BAD_REQUEST
         )
 
@@ -5156,7 +5092,7 @@ def assign_roles_to_user(request):
         user = User.objects.get(email=email, username=username)
     except User.DoesNotExist:
         return Response(
-            {"status": "error", "message": "User not found."},
+            {"status": "error", "message": "User not found.", "code": "user_not_found"},
             status=status.HTTP_404_NOT_FOUND
         )
 
@@ -5166,7 +5102,7 @@ def assign_roles_to_user(request):
     # Ensure role_ids is a list of integers
     if not isinstance(role_ids, list) or not all(isinstance(r, int) for r in role_ids):
         return Response(
-            {"status": "error", "message": "role_ids must be a list of integers."},
+            {"status": "error", "message": "role_ids must be a list of integers.", "code": "role_ids_list_integers"},
             status=status.HTTP_400_BAD_REQUEST
         )
 
@@ -5174,7 +5110,7 @@ def assign_roles_to_user(request):
     roles = Roles.objects.filter(role_id__in=role_ids)
     if len(roles) != len(role_ids):
         return Response(
-            {"status": "error", "message": "One or more role IDs are invalid."},
+            {"status": "error", "message": "One or more role IDs are invalid.", "code": "role_ids_invalid"},
             status=status.HTTP_404_NOT_FOUND
         )
 
@@ -5186,7 +5122,7 @@ def assign_roles_to_user(request):
         "super_admin" in new_role_names or "super_admin" in _user_role_names(user)
     ):
         return Response(
-            {"status": "error", "message": "Only a super admin can manage the super admin role."},
+            {"status": "error", "message": "Only a super admin can manage the super admin role.", "code": "super_admin_manage_super"},
             status=status.HTTP_403_FORBIDDEN,
         )
 
@@ -5227,10 +5163,10 @@ def edit_user_roles(request):
     session_token = request.headers.get("Authorization")
 
     if not session_token:
-        return Response({'status': 'error', 'message': 'Authorization header is required'}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'status': 'error', 'message': 'Authorization header is required', "code": "authorization_header_required"}, status=status.HTTP_400_BAD_REQUEST)
 
     if not session_token.startswith("Bearer "):
-        return Response({'status': 'error', 'message': 'Invalid token format'}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'status': 'error', 'message': 'Invalid token format', "code": "invalid_token_format"}, status=status.HTTP_400_BAD_REQUEST)
 
     session_token = session_token.split(" ")[1]
 
@@ -5238,24 +5174,24 @@ def edit_user_roles(request):
     admin_user = validate_token(session_token)
     if not admin_user:
         return Response(
-            {"message": "Invalid or expired session token."},
+            {"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"},
             status=status.HTTP_401_UNAUTHORIZED
         )
     
     if admin_user.role != "admin":
-        return Response({"message": "You do not have permission to edit user roles."}, status=status.HTTP_403_FORBIDDEN)
+        return Response({"message": "You do not have permission to edit user roles.", "code": "not_permission_edit_user"}, status=status.HTTP_403_FORBIDDEN)
 
     username = request.data.get("username")
     email = request.data.get("email")
     new_role_ids = request.data.get("new_role_ids", [])
 
     if not email or not username:
-        return Response({"message": "Email and username are required."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "Email and username are required.", "code": "email_username_required"}, status=status.HTTP_400_BAD_REQUEST)
 
     try:
         user = User.objects.get(email=email, username=username)
     except User.DoesNotExist:
-        return Response({"message": "User not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "User not found.", "code": "user_not_found"}, status=status.HTTP_404_NOT_FOUND)
 
     # super_admin protection: only a super_admin may grant/remove the super_admin role or modify a
     # user who already holds it. Runs before the role reset below so a head_admin can never strip a
@@ -5267,7 +5203,7 @@ def edit_user_roles(request):
         "super_admin" in new_role_names or "super_admin" in _user_role_names(user)
     ):
         return Response(
-            {"message": "Only a super admin can manage the super admin role."},
+            {"message": "Only a super admin can manage the super admin role.", "code": "super_admin_manage_super"},
             status=status.HTTP_403_FORBIDDEN,
         )
 
@@ -5339,10 +5275,10 @@ def add_role(request):
     session_token = request.headers.get("Authorization")
 
     if not session_token:
-        return Response({'status': 'error', 'message': 'Authorization header is required'}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'status': 'error', 'message': 'Authorization header is required', "code": "authorization_header_required"}, status=status.HTTP_400_BAD_REQUEST)
 
     if not session_token.startswith("Bearer "):
-        return Response({'status': 'error', 'message': 'Invalid token format'}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'status': 'error', 'message': 'Invalid token format', "code": "invalid_token_format"}, status=status.HTTP_400_BAD_REQUEST)
 
     session_token = session_token.split(" ")[1]
 
@@ -5350,24 +5286,24 @@ def add_role(request):
     admin_user = validate_token(session_token)
     if not admin_user:
         return Response(
-            {"message": "Invalid or expired session token."},
+            {"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"},
             status=status.HTTP_401_UNAUTHORIZED
         )
     
     if admin_user.role != "admin":
-        return Response({"message": "You do not have permission to add roles."}, status=status.HTTP_403_FORBIDDEN)
+        return Response({"message": "You do not have permission to add roles.", "code": "not_permission_add_roles"}, status=status.HTTP_403_FORBIDDEN)
     
     if not admin_user.userroles.filter(role__role_name='head_admin').exists():
-        return Response({"message": "You do not have permission to add roles."}, status=status.HTTP_403_FORBIDDEN)
+        return Response({"message": "You do not have permission to add roles.", "code": "not_permission_add_roles"}, status=status.HTTP_403_FORBIDDEN)
 
     role_name = request.data.get("role_name")
     description = request.data.get("description", "")
 
     if not role_name:
-        return Response({"message": "Role name is required."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "Role name is required.", "code": "role_name_required"}, status=status.HTTP_400_BAD_REQUEST)
 
     if Roles.objects.filter(role_name=role_name).exists():
-        return Response({"message": "Role name already exists."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "Role name already exists.", "code": "role_name_already_exists"}, status=status.HTTP_400_BAD_REQUEST)
 
     role = Roles.objects.create(role_name=role_name, description=description)
 
@@ -5392,10 +5328,10 @@ def delete_role(request):
     session_token = request.headers.get("Authorization")
 
     if not session_token:
-        return Response({'status': 'error', 'message': 'Authorization header is required'}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'status': 'error', 'message': 'Authorization header is required', "code": "authorization_header_required"}, status=status.HTTP_400_BAD_REQUEST)
 
     if not session_token.startswith("Bearer "):
-        return Response({'status': 'error', 'message': 'Invalid token format'}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'status': 'error', 'message': 'Invalid token format', "code": "invalid_token_format"}, status=status.HTTP_400_BAD_REQUEST)
 
     session_token = session_token.split(" ")[1]
 
@@ -5403,28 +5339,28 @@ def delete_role(request):
     admin_user = validate_token(session_token)
     if not admin_user:
         return Response(
-            {"message": "Invalid or expired session token."},
+            {"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"},
             status=status.HTTP_401_UNAUTHORIZED
         )
     
     if admin_user.role != "admin":
-        return Response({"message": "You do not have permission to delete roles."}, status=status.HTTP_403_FORBIDDEN)
+        return Response({"message": "You do not have permission to delete roles.", "code": "not_permission_delete_roles"}, status=status.HTTP_403_FORBIDDEN)
     
     if not admin_user.userroles.filter(role__role_name='head_admin').exists():
-        return Response({"message": "You do not have permission to delete roles."}, status=status.HTTP_403_FORBIDDEN)
+        return Response({"message": "You do not have permission to delete roles.", "code": "not_permission_delete_roles"}, status=status.HTTP_403_FORBIDDEN)
 
     role_id = request.data.get("role_id")
     if not role_id:
-        return Response({"message": "Role ID is required."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "Role ID is required.", "code": "role_required"}, status=status.HTTP_400_BAD_REQUEST)
 
     try:
         role = Roles.objects.get(role_id=role_id)
     except Roles.DoesNotExist:
-        return Response({"message": "Role not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "Role not found.", "code": "role_not_found"}, status=status.HTTP_404_NOT_FOUND)
     
     users_with_role = UserRoles.objects.filter(role=role)
     if users_with_role.exists():
-        return Response({"message": "Cannot delete role assigned to users. Remove role from users first."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "Cannot delete role assigned to users. Remove role from users first.", "code": "cannot_delete_role_assigned"}, status=status.HTTP_400_BAD_REQUEST)
 
     role_name = role.role_name
     role.delete()
@@ -5635,7 +5571,7 @@ def get_total_number_of_users(request):
 #     tournament_id = request.GET.get("tournament_id")
 
 #     if not session_token:
-#         return Response({"message": "session_token is required"}, status=400)
+#         return Response({"message": "session_token is required", "code": "session_token_required"}, status=400)
 
 #     client_id = settings.DISCORD_CLIENT_ID
 #     redirect_uri = settings.DISCORD_REDIRECT_URI
@@ -5660,7 +5596,7 @@ def connect_discord(request):
     invite_token = request.GET.get("invite_token")
 
     if not session_token or not tournament_id:
-        return Response({"message": "session_token and tournament_id required"}, status=400)
+        return Response({"message": "session_token and tournament_id required", "code": "session_token_tournament_required"}, status=400)
 
     client_id = settings.DISCORD_CLIENT_ID
     redirect_uri = settings.DISCORD_REDIRECT_URI
@@ -5725,16 +5661,16 @@ def connect_discord_account(request):
 
     header = request.headers.get("Authorization")
     if not header or not header.startswith("Bearer "):
-        return Response({"message": "Authorization header is required"}, status=400)
+        return Response({"message": "Authorization header is required", "code": "authorization_header_required"}, status=400)
 
     user = validate_token(header.split(" ")[1])
     if not user:
-        return Response({"message": "Invalid or expired session token."},
+        return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"},
                         status=status.HTTP_401_UNAUTHORIZED)
 
     provider = get_provider("discord")
     if not provider or not provider.enabled():
-        return Response({"message": "Discord is not configured."}, status=404)
+        return Response({"message": "Discord is not configured.", "code": "discord_not_configured"}, status=404)
 
     verifier = conn_oauth.make_code_verifier()
     nonce = conn_state.mint(
@@ -5755,17 +5691,17 @@ def disconnect_discord_account(request):
     # ---------------- AUTH ----------------
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid token."}, status=400)
+        return Response({"message": "Invalid token.", "code": "invalid_token"}, status=400)
 
     user = validate_token(auth.split(" ")[1])
     if not user:
-        return Response({"message": "Invalid session."}, status=401)
+        return Response({"message": "Invalid session.", "code": "invalid_session"}, status=401)
 
     # ---------------- CHECK ----------------
     if not user.discord_connected:
         return Response({
             "message": "No Discord account connected."
-        }, status=400)
+        , "code": "no_discord_account_connected"}, status=400)
 
     with transaction.atomic():
 
@@ -5797,13 +5733,13 @@ def is_discord_account_connected(request):
     # Auth (prefer header, not query param)
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
 
     session_token = auth.split(" ")[1]
 
     user = validate_token(session_token)
     if not user:
-        return Response({"message": "Invalid or expired session token."}, status=status.HTTP_401_UNAUTHORIZED)
+        return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=status.HTTP_401_UNAUTHORIZED)
     
     is_connected = bool(user.discord_connected)
 
@@ -5895,7 +5831,7 @@ def discord_bot_invite_url(request):
     auth = request.headers.get("Authorization")
     user = validate_token(auth.split(" ")[1]) if auth and auth.startswith("Bearer ") else None
     if not _discord_admin_or_organizer(user):
-        return Response({"message": "Unauthorized."}, status=403)
+        return Response({"message": "Unauthorized.", "code": "discord_bot_invite_url_unauthorized"}, status=403)
     client_id = settings.DISCORD_CLIENT_ID
     guild_id = (request.GET.get("guild_id") or "").strip()
     url = f"https://discord.com/oauth2/authorize?client_id={client_id}&scope=bot&permissions=268435456"
@@ -5912,10 +5848,10 @@ def verify_bot_in_guild(request):
     auth = request.headers.get("Authorization")
     user = validate_token(auth.split(" ")[1]) if auth and auth.startswith("Bearer ") else None
     if not _discord_admin_or_organizer(user):
-        return Response({"message": "Unauthorized."}, status=403)
+        return Response({"message": "Unauthorized.", "code": "verify_bot_in_guild_unauthorized"}, status=403)
     guild_id = (request.data.get("guild_id") or "").strip()
     if not guild_id:
-        return Response({"message": "guild_id is required."}, status=400)
+        return Response({"message": "guild_id is required.", "code": "guild_required"}, status=400)
     return Response({"in_guild": bot_is_in_guild(guild_id)})
 
 
@@ -6036,7 +5972,7 @@ def check_team_members_discord_membership(request):
     discord_ids = request.data.get("discord_ids", [])
 
     if not isinstance(discord_ids, list) or not discord_ids:
-        return Response({"message": "discord_ids must be a non-empty list"}, status=400)
+        return Response({"message": "discord_ids must be a non-empty list", "code": "discord_ids_non_empty"}, status=400)
 
     headers = {
         "Authorization": f"Bot {DISCORD_BOT_TOKEN}"
@@ -6183,13 +6119,13 @@ def discord_member_has_role(discord_id, role_id):
 #     tournament_id = request.GET.get("tournament_id")
 
 #     if not code or not session_token:
-#         return Response({"message": "Missing code or session_token"}, status=400)
+#         return Response({"message": "Missing code or session_token", "code": "missing_code_session_token"}, status=400)
 
 #     # Get user
 #     try:
 #         user = User.objects.get(session_token=session_token)
 #     except User.DoesNotExist:
-#         return Response({"message": "Invalid session"}, status=401)
+#         return Response({"message": "Invalid session", "code": "invalid_session"}, status=401)
 
 #     # Exchange code → access token
 #     data = {
@@ -6207,7 +6143,7 @@ def discord_member_has_role(discord_id, role_id):
 #     )
 
 #     if token_res.status_code != 200:
-#         return Response({"message": "Failed to get Discord token"}, status=400)
+#         return Response({"message": "Failed to get Discord token", "code": "failed_get_discord_token"}, status=400)
 
 #     token_data = token_res.json()
 #     access_token = token_data["access_token"]
@@ -6233,7 +6169,7 @@ def discord_member_has_role(discord_id, role_id):
 
 #     # (200, 201, 204) = success
 #     if join_res.status_code not in [200, 201, 204]:
-#         return Response({"message": "Failed to join Discord server"}, status=400)
+#         return Response({"message": "Failed to join Discord server", "code": "failed_join_discord_server"}, status=400)
 
 #     # Save Discord info
 #     user.discord_id = discord_id
@@ -6261,13 +6197,13 @@ def discord_member_has_role(discord_id, role_id):
 #         # Redirect back with success flag
 #         error_redirect = f"{return_url}?discord=failed"
 #         return redirect(error_redirect)
-#         # return Response({"message": "Missing code or state"}, status=400)
+#         # return Response({"message": "Missing code or state", "code": "missing_code_state"}, status=400)
 
 #     # Extract session_token and encoded return_url
 #     try:
 #         session_token, encoded_return_url = state.split("|")
 #     except ValueError:
-#         return Response({"message": "Invalid state format"}, status=400)
+#         return Response({"message": "Invalid state format", "code": "invalid_state_format"}, status=400)
 
 #     from urllib.parse import unquote
 #     return_url = unquote(encoded_return_url)
@@ -6276,7 +6212,7 @@ def discord_member_has_role(discord_id, role_id):
 #     try:
 #         user = User.objects.get(session_token=session_token)
 #     except User.DoesNotExist:
-#         return Response({"message": "Invalid session"}, status=401)
+#         return Response({"message": "Invalid session", "code": "invalid_session"}, status=401)
 
 #     # Exchange code → token
 #     data = {
@@ -6294,7 +6230,7 @@ def discord_member_has_role(discord_id, role_id):
 #     )
 
 #     if token_res.status_code != 200:
-#         return Response({"message": "Failed to get Discord token"}, status=400)
+#         return Response({"message": "Failed to get Discord token", "code": "failed_get_discord_token"}, status=400)
 
 #     access_token = token_res.json()["access_token"]
 
@@ -6316,7 +6252,7 @@ def discord_member_has_role(discord_id, role_id):
 #     )
 
 #     if join_res.status_code not in [200, 201, 204]:
-#         return Response({"message": "Failed to join Discord server"}, status=400)
+#         return Response({"message": "Failed to join Discord server", "code": "failed_join_discord_server"}, status=400)
 
 #     # Save Discord info
 #     user.discord_id = discord_id
@@ -6706,11 +6642,11 @@ def discord_sso_exchange(request):
     Consumed by frontend app/(auth)/discord/callback/page.tsx."""
     code = request.data.get("code")
     if not code:
-        return Response({"message": "code is required."}, status=400)
+        return Response({"message": "code is required.", "code": "code_required"}, status=400)
     key = f"discord_sso_handoff:{code}"
     entry = cache.get(key)
     if not entry:
-        return Response({"message": "This sign-in link has expired. Please try again."}, status=400)
+        return Response({"message": "This sign-in link has expired. Please try again.", "code": "sign_link_expired"}, status=400)
     cache.delete(key)  # one-time use
 
     # Back-compat for the ~90 second window across a deploy: handoffs minted by the previous
@@ -6757,7 +6693,7 @@ def get_user_login_history(request):
     email = request.data.get("email")
 
     if not username:
-        return Response({"message": "Username is required."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "Username is required.", "code": "username_required"}, status=status.HTTP_400_BAD_REQUEST)
     else:
         if username:
             pass
@@ -6770,7 +6706,7 @@ def get_user_login_history(request):
         if email:
             user = User.objects.get(email=email)
     except User.DoesNotExist:
-        return Response({"message": "User not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "User not found.", "code": "user_not_found"}, status=status.HTTP_404_NOT_FOUND)
 
     histories = LoginHistory.objects.filter(user=user).order_by('-created_at')
     history_data = []
@@ -6803,10 +6739,10 @@ def get_account_overlap(request):
     section. Reads afc_auth.LoginHistory grouped by ip_address."""
     user = validate_token((request.headers.get("Authorization") or "").replace("Bearer ", ""))
     if not user:
-        return Response({"message": "Invalid or expired session token."},
+        return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"},
                         status=status.HTTP_401_UNAUTHORIZED)
     if user.role != "admin":
-        return Response({"message": "Admins only."}, status=status.HTTP_403_FORBIDDEN)
+        return Response({"message": "Admins only.", "code": "get_account_overlap_admins"}, status=status.HTTP_403_FORBIDDEN)
 
     from django.db.models import Count
     # IPs with >1 DISTINCT user (skip blanks). Cap to keep the response sane.
@@ -6851,10 +6787,10 @@ def get_notifications(request):
     session_token = request.headers.get("Authorization")
 
     if not session_token:
-        return Response({'status': 'error', 'message': 'Authorization header is required'}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'status': 'error', 'message': 'Authorization header is required', "code": "authorization_header_required"}, status=status.HTTP_400_BAD_REQUEST)
 
     if not session_token.startswith("Bearer "):
-        return Response({'status': 'error', 'message': 'Invalid token format'}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'status': 'error', 'message': 'Invalid token format', "code": "invalid_token_format"}, status=status.HTTP_400_BAD_REQUEST)
 
     session_token = session_token.split(" ")[1]
 
@@ -6862,7 +6798,7 @@ def get_notifications(request):
     user = validate_token(session_token)
     if not user:
         return Response(
-            {"message": "Invalid or expired session token."},
+            {"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"},
             status=status.HTTP_401_UNAUTHORIZED
         )
 
@@ -6929,27 +6865,27 @@ def view_notification(request):
     session_token = request.headers.get("Authorization")
 
     if not session_token:
-        return Response({'status': 'error', 'message': 'Authorization header is required'}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'status': 'error', 'message': 'Authorization header is required', "code": "authorization_header_required"}, status=status.HTTP_400_BAD_REQUEST)
 
     if not session_token.startswith("Bearer "):
-        return Response({'status': 'error', 'message': 'Invalid token format'}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'status': 'error', 'message': 'Invalid token format', "code": "invalid_token_format"}, status=status.HTTP_400_BAD_REQUEST)
     session_token = session_token.split(" ")[1]
     user = validate_token(session_token)
     if not user:
         return Response(
-            {"message": "Invalid or expired session token."},
+            {"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"},
             status=status.HTTP_401_UNAUTHORIZED
         )
     
     notification_id = request.data.get("notification_id")
 
     if not notification_id:
-        return Response({"message": "Notification ID is required."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "Notification ID is required.", "code": "notification_required"}, status=status.HTTP_400_BAD_REQUEST)
 
     try:
         notification = Notifications.objects.get(notification_id=notification_id)
     except Notifications.DoesNotExist:
-        return Response({"message": "Notification not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "Notification not found.", "code": "notification_not_found"}, status=status.HTTP_404_NOT_FOUND)
 
     notification.is_read = True
     notification.save()
@@ -6973,15 +6909,15 @@ def view_all_notifications(request):
     session_token = request.headers.get("Authorization")
 
     if not session_token:
-        return Response({'status': 'error', 'message': 'Authorization header is required'}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'status': 'error', 'message': 'Authorization header is required', "code": "authorization_header_required"}, status=status.HTTP_400_BAD_REQUEST)
 
     if not session_token.startswith("Bearer "):
-        return Response({'status': 'error', 'message': 'Invalid token format'}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'status': 'error', 'message': 'Invalid token format', "code": "invalid_token_format"}, status=status.HTTP_400_BAD_REQUEST)
     session_token = session_token.split(" ")[1]
     user = validate_token(session_token)
     if not user:
         return Response(
-            {"message": "Invalid or expired session token."},
+            {"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"},
             status=status.HTTP_401_UNAUTHORIZED
         )
 
@@ -7040,20 +6976,20 @@ def send_notification(request):
     session_token = request.headers.get("Authorization")
 
     if not session_token:
-        return Response({'status': 'error', 'message': 'Authorization header is required'}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'status': 'error', 'message': 'Authorization header is required', "code": "authorization_header_required"}, status=status.HTTP_400_BAD_REQUEST)
 
     if not session_token.startswith("Bearer "):
-        return Response({'status': 'error', 'message': 'Invalid token format'}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'status': 'error', 'message': 'Invalid token format', "code": "invalid_token_format"}, status=status.HTTP_400_BAD_REQUEST)
     session_token = session_token.split(" ")[1]
     user = validate_token(session_token)
     if not user:
         return Response(
-            {"message": "Invalid or expired session token."},
+            {"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"},
             status=status.HTTP_401_UNAUTHORIZED
         )
 
     if user.role != "admin":
-        return Response({"message": "You do not have permission to send notifications."}, status=status.HTTP_403_FORBIDDEN)
+        return Response({"message": "You do not have permission to send notifications.", "code": "not_permission_send_notifications"}, status=status.HTTP_403_FORBIDDEN)
 
     recipient_id = request.data.get("recipient_id")
     message = request.data.get("message")
@@ -7061,12 +6997,12 @@ def send_notification(request):
     target_type, target_id = _parse_notification_target(request)
 
     if not recipient_id or not message:
-        return Response({"message": "Recipient ID and message are required."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "Recipient ID and message are required.", "code": "recipient_message_required"}, status=status.HTTP_400_BAD_REQUEST)
 
     try:
         recipient = User.objects.get(user_id=recipient_id)
     except User.DoesNotExist:
-        return Response({"message": "Recipient user not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "Recipient user not found.", "code": "recipient_user_not_found"}, status=status.HTTP_404_NOT_FOUND)
 
     notification = Notifications.objects.create(
         user=recipient,
@@ -7089,20 +7025,20 @@ def send_notification_to_multiple_users(request):
     session_token = request.headers.get("Authorization")
 
     if not session_token:
-        return Response({'status': 'error', 'message': 'Authorization header is required'}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'status': 'error', 'message': 'Authorization header is required', "code": "authorization_header_required"}, status=status.HTTP_400_BAD_REQUEST)
 
     if not session_token.startswith("Bearer "):
-        return Response({'status': 'error', 'message': 'Invalid token format'}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'status': 'error', 'message': 'Invalid token format', "code": "invalid_token_format"}, status=status.HTTP_400_BAD_REQUEST)
     session_token = session_token.split(" ")[1]
     user = validate_token(session_token)
     if not user:
         return Response(
-            {"message": "Invalid or expired session token."},
+            {"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"},
             status=status.HTTP_401_UNAUTHORIZED
         )
     
     if user.role != "admin":
-        return Response({"message": "You do not have permission to send notifications."}, status=status.HTTP_403_FORBIDDEN)
+        return Response({"message": "You do not have permission to send notifications.", "code": "not_permission_send_notifications"}, status=status.HTTP_403_FORBIDDEN)
 
     recipient_ids = request.data.get("recipient_ids", [])
     message = request.data.get("message")
@@ -7112,7 +7048,7 @@ def send_notification_to_multiple_users(request):
     targets = _parse_notification_targets(request)
 
     if not recipient_ids or not message:
-        return Response({"message": "Recipient IDs and message are required."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "Recipient IDs and message are required.", "code": "recipient_ids_message_required"}, status=status.HTTP_400_BAD_REQUEST)
 
     recipients = list(User.objects.filter(user_id__in=recipient_ids))
     # Route through the shared chokepoint so this send is (a) multi-target capable and (b) recorded in
@@ -7160,12 +7096,12 @@ def admin_send_message(request):
     # ── auth (mirror the sibling notification endpoints) ──
     session_token = request.headers.get("Authorization")
     if not session_token or not session_token.startswith("Bearer "):
-        return Response({"message": "Authorization header is required."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "Authorization header is required.", "code": "authorization_header_required"}, status=status.HTTP_400_BAD_REQUEST)
     user = validate_token(session_token.split(" ")[1])
     if not user:
-        return Response({"message": "Invalid or expired session token."}, status=status.HTTP_401_UNAUTHORIZED)
+        return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=status.HTTP_401_UNAUTHORIZED)
     if user.role != "admin":
-        return Response({"message": "You do not have permission to send messages."}, status=status.HTTP_403_FORBIDDEN)
+        return Response({"message": "You do not have permission to send messages.", "code": "not_permission_send_messages"}, status=status.HTTP_403_FORBIDDEN)
 
     # ── input ──
     target_type = (request.data.get("target_type") or "").strip().lower()
@@ -7178,13 +7114,13 @@ def admin_send_message(request):
     link_target_id = (request.data.get("link_target_id") or "").strip()
 
     if target_type not in ("player", "team"):
-        return Response({"message": "target_type must be 'player' or 'team'."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "target_type must be 'player' or 'team'.", "code": "target_type_player_team"}, status=status.HTTP_400_BAD_REQUEST)
     if not target_id:
-        return Response({"message": "target_id is required."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "target_id is required.", "code": "target_required"}, status=status.HTTP_400_BAD_REQUEST)
     if not message:
-        return Response({"message": "message is required."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "message is required.", "code": "message_required"}, status=status.HTTP_400_BAD_REQUEST)
     if delivery not in ("push", "email", "both"):
-        return Response({"message": "delivery must be 'push', 'email', or 'both'."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "delivery must be 'push', 'email', or 'both'.", "code": "delivery_push_email_both"}, status=status.HTTP_400_BAD_REQUEST)
 
     want_push = delivery in ("push", "both")
     want_email = delivery in ("email", "both")
@@ -7198,13 +7134,13 @@ def admin_send_message(request):
         try:
             recipients = [User.objects.get(user_id=target_id)]
         except User.DoesNotExist:
-            return Response({"message": "Player not found."}, status=status.HTTP_404_NOT_FOUND)
+            return Response({"message": "Player not found.", "code": "player_not_found"}, status=status.HTTP_404_NOT_FOUND)
         target_label = recipients[0].username
     else:
         try:
             team = Team.objects.get(team_id=target_id)
         except Team.DoesNotExist:
-            return Response({"message": "Team not found."}, status=status.HTTP_404_NOT_FOUND)
+            return Response({"message": "Team not found.", "code": "team_not_found"}, status=status.HTTP_404_NOT_FOUND)
         recipients = [
             tm.member
             for tm in TeamMembers.objects.filter(team=team).select_related("member")
@@ -7212,7 +7148,7 @@ def admin_send_message(request):
         ]
         target_label = team.team_name
         if not recipients:
-            return Response({"message": "This team has no members to message."}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"message": "This team has no members to message.", "code": "team_no_members_message"}, status=status.HTTP_400_BAD_REQUEST)
 
     # Multi deep-link targets (owner 2026-06-17): the composer may send a `link_targets` array
     # (multi-event picker); else fall back to the single link_target_type/link_target_id pair below.
@@ -7314,10 +7250,10 @@ def broadcast_letter_assignments(request):
     # ── auth (mirror admin_send_message) ──
     session_token = request.headers.get("Authorization")
     if not session_token or not session_token.startswith("Bearer "):
-        return Response({"message": "Authorization header is required."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "Authorization header is required.", "code": "authorization_header_required"}, status=status.HTTP_400_BAD_REQUEST)
     user = validate_token(session_token.split(" ")[1])
     if not user:
-        return Response({"message": "Invalid or expired session token."}, status=status.HTTP_401_UNAUTHORIZED)
+        return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=status.HTTP_401_UNAUTHORIZED)
 
     # ── resolve the event ──
     # Lazy imports: afc_tournament_and_scrims.seeding_management imports from afc_auth.views, so a
@@ -7333,23 +7269,23 @@ def broadcast_letter_assignments(request):
 
     event_id = request.data.get("event_id")
     if not event_id:
-        return Response({"message": "event_id is required."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "event_id is required.", "code": "event_required"}, status=status.HTTP_400_BAD_REQUEST)
     try:
         event = Event.objects.get(event_id=event_id)
     except Event.DoesNotExist:
-        return Response({"message": "Event not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "Event not found.", "code": "event_not_found"}, status=status.HTTP_404_NOT_FOUND)
 
     # ── gate: AFC event admin OR organizer with can_manage_registrations on the owning org ──
     if not _is_event_admin(user) and not org_can_event(user, "can_manage_registrations", event):
         return Response(
-            {"message": "You do not have permission to broadcast letter assignments for this event."},
+            {"message": "You do not have permission to broadcast letter assignments for this event.", "code": "not_permission_broadcast_letter"},
             status=status.HTTP_403_FORBIDDEN,
         )
 
     # ── input ──
     delivery = (request.data.get("delivery") or "both").strip().lower()
     if delivery not in ("push", "email", "both"):
-        return Response({"message": "delivery must be 'push', 'email', or 'both'."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "delivery must be 'push', 'email', or 'both'.", "code": "delivery_push_email_both"}, status=status.HTTP_400_BAD_REQUEST)
 
     raw_assignments = request.data.get("assignments")
     # Tolerate a JSON-string payload (FormData) as well as a real list (JSON body).
@@ -7359,7 +7295,7 @@ def broadcast_letter_assignments(request):
         except (ValueError, TypeError):
             raw_assignments = None
     if not isinstance(raw_assignments, (list, tuple)) or not raw_assignments:
-        return Response({"message": "assignments must be a non-empty list."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "assignments must be a non-empty list.", "code": "assignments_non_empty_list"}, status=status.HTTP_400_BAD_REQUEST)
 
     # Normalize + validate each assignment: keep only {team_id, single A-Z letter}. De-dupe by team_id
     # (last write wins) so a team is never messaged twice in one batch.
@@ -7373,7 +7309,7 @@ def broadcast_letter_assignments(request):
             continue
         valid[tid] = letter[0]  # exactly one letter per team for this event (plan Open Q g)
     if not valid:
-        return Response({"message": "No valid team/letter assignments to send."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "No valid team/letter assignments to send.", "code": "no_valid_team_letter"}, status=status.HTTP_400_BAD_REQUEST)
 
     # ── rate limit (check once for the whole batch, BEFORE sending) ──
     allowed, info = check_broadcast_rate(user)
@@ -7384,7 +7320,7 @@ def broadcast_letter_assignments(request):
             "resets_at": info.get("resets_at"),
             "remaining": info.get("remaining", 0),
             "limit": info.get("limit", RATE_LIMIT_PER_HOUR),
-        }, status=429)
+         "code": "broadcast_letter_assignments_refused"}, status=429)
 
     # ── deliver one personalized broadcast per team ──
     event_name = event.event_name
@@ -7422,7 +7358,7 @@ def broadcast_letter_assignments(request):
     if teams_notified == 0:
         # Every listed team was stale or empty -> nothing went out, so DON'T consume a rate slot.
         return Response(
-            {"message": "None of the selected teams had members to notify."},
+            {"message": "None of the selected teams had members to notify.", "code": "none_selected_teams_members"},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
@@ -7480,12 +7416,12 @@ def get_general_broadcast_history(request):
     Source rows: SentBroadcast written by deliver_broadcast (scope general/direct)."""
     session_token = request.headers.get("Authorization")
     if not session_token or not session_token.startswith("Bearer "):
-        return Response({"message": "Authorization header is required."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "Authorization header is required.", "code": "authorization_header_required"}, status=status.HTTP_400_BAD_REQUEST)
     user = validate_token(session_token.split(" ")[1])
     if not user:
-        return Response({"message": "Invalid or expired session token."}, status=status.HTTP_401_UNAUTHORIZED)
+        return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=status.HTTP_401_UNAUTHORIZED)
     if user.role != "admin":
-        return Response({"message": "You do not have permission to view broadcast history."}, status=status.HTTP_403_FORBIDDEN)
+        return Response({"message": "You do not have permission to view broadcast history.", "code": "not_permission_view_broadcast"}, status=status.HTTP_403_FORBIDDEN)
 
     try:
         limit = min(max(int(request.GET.get("limit", 20)), 1), 100)
@@ -7534,15 +7470,15 @@ def get_all_broadcasts(request):
     Consumed by: the admin "Broadcasts" audit page (frontend app/(a)/a/broadcasts)."""
     session_token = request.headers.get("Authorization")
     if not session_token or not session_token.startswith("Bearer "):
-        return Response({"message": "Authorization header is required."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "Authorization header is required.", "code": "authorization_header_required"}, status=status.HTTP_400_BAD_REQUEST)
     user = validate_token(session_token.split(" ")[1])
     if not user:
-        return Response({"message": "Invalid or expired session token."}, status=status.HTTP_401_UNAUTHORIZED)
+        return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=status.HTTP_401_UNAUTHORIZED)
     # Reuse the broadcast-admin definition (same set exempt from the organizer rate limit) so "who can
     # send unlimited" and "who can audit everything" stay one consistent notion of AFC admin.
     from .broadcast_ratelimit import is_broadcast_admin
     if not is_broadcast_admin(user):
-        return Response({"message": "You do not have permission to view broadcasts."}, status=status.HTTP_403_FORBIDDEN)
+        return Response({"message": "You do not have permission to view broadcasts.", "code": "not_permission_view_broadcasts"}, status=status.HTTP_403_FORBIDDEN)
 
     try:
         limit = min(max(int(request.GET.get("limit", 20)), 1), 100)
@@ -7656,7 +7592,7 @@ def get_top_mvp_player(request):
     )
 
     if not top:
-        return Response({"message": "No MVP records found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "No MVP records found.", "code": "no_mvp_records_found"}, status=status.HTTP_404_NOT_FOUND)
 
     return Response({
         "user_id": top.user_id,
@@ -7705,7 +7641,7 @@ def get_top_winner_player(request):
         wins_map[uid]["wins"] += r["wins"]
 
     if not wins_map:
-        return Response({"message": "No win records found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "No win records found.", "code": "no_win_records_found"}, status=status.HTTP_404_NOT_FOUND)
 
     top = max(wins_map.values(), key=lambda x: x["wins"])
 
@@ -7755,32 +7691,32 @@ def like_news(request):
     session_token = request.headers.get("Authorization")
 
     if not session_token:
-        return Response({'status': 'error', 'message': 'Authorization header is required'}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'status': 'error', 'message': 'Authorization header is required', "code": "authorization_header_required"}, status=status.HTTP_400_BAD_REQUEST)
 
     if not session_token.startswith("Bearer "):
-        return Response({'status': 'error', 'message': 'Invalid token format'}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'status': 'error', 'message': 'Invalid token format', "code": "invalid_token_format"}, status=status.HTTP_400_BAD_REQUEST)
     session_token = session_token.split(" ")[1]
     user = validate_token(session_token)
     if not user:
         return Response(
-            {"message": "Invalid or expired session token."},
+            {"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"},
             status=status.HTTP_401_UNAUTHORIZED
         )
     
     news_id = request.data.get("news_id")
 
     if not news_id:
-        return Response({"message": "News ID is required."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "News ID is required.", "code": "news_required"}, status=status.HTTP_400_BAD_REQUEST)
 
     try:
         news_item = News.objects.get(news_id=news_id)
     except News.DoesNotExist:
-        return Response({"message": "News item not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "News item not found.", "code": "news_item_not_found"}, status=status.HTTP_404_NOT_FOUND)
 
     # Check if user already liked this news
     existing_like = NewsLike.objects.filter(user=user, news=news_item).first()
     if existing_like:
-        return Response({"message": "You have already liked this news item."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "You have already liked this news item.", "code": "already_liked_news_item"}, status=status.HTTP_400_BAD_REQUEST)
     
     existing_dislike = NewsDislike.objects.filter(user=user, news=news_item).first()
     if existing_dislike:
@@ -7796,31 +7732,31 @@ def unlike_news(request):
     session_token = request.headers.get("Authorization")
 
     if not session_token:
-        return Response({'status': 'error', 'message': 'Authorization header is required'}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'status': 'error', 'message': 'Authorization header is required', "code": "authorization_header_required"}, status=status.HTTP_400_BAD_REQUEST)
 
     if not session_token.startswith("Bearer "):
-        return Response({'status': 'error', 'message': 'Invalid token format'}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'status': 'error', 'message': 'Invalid token format', "code": "invalid_token_format"}, status=status.HTTP_400_BAD_REQUEST)
     session_token = session_token.split(" ")[1]
     user = validate_token(session_token)
     if not user:
         return Response(
-            {"message": "Invalid or expired session token."},
+            {"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"},
             status=status.HTTP_401_UNAUTHORIZED
         )
     
     news_id = request.data.get("news_id")
 
     if not news_id:
-        return Response({"message": "News ID is required."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "News ID is required.", "code": "news_required"}, status=status.HTTP_400_BAD_REQUEST)
 
     try:
         news_item = News.objects.get(news_id=news_id)
     except News.DoesNotExist:
-        return Response({"message": "News item not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "News item not found.", "code": "news_item_not_found"}, status=status.HTTP_404_NOT_FOUND)
 
     existing_like = NewsLike.objects.filter(user=user, news=news_item).first()
     if not existing_like:
-        return Response({"message": "You have not liked this news item."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "You have not liked this news item.", "code": "not_liked_news_item"}, status=status.HTTP_400_BAD_REQUEST)
 
     existing_like.delete()
 
@@ -7832,27 +7768,27 @@ def dislike_news(request):
     session_token = request.headers.get("Authorization")
 
     if not session_token:
-        return Response({'status': 'error', 'message': 'Authorization header is required'}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'status': 'error', 'message': 'Authorization header is required', "code": "authorization_header_required"}, status=status.HTTP_400_BAD_REQUEST)
 
     if not session_token.startswith("Bearer "):
-        return Response({'status': 'error', 'message': 'Invalid token format'}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'status': 'error', 'message': 'Invalid token format', "code": "invalid_token_format"}, status=status.HTTP_400_BAD_REQUEST)
     session_token = session_token.split(" ")[1]
     user = validate_token(session_token)
     if not user:
         return Response(
-            {"message": "Invalid or expired session token."},
+            {"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"},
             status=status.HTTP_401_UNAUTHORIZED
         )
     
     news_id = request.data.get("news_id")
 
     if not news_id:
-        return Response({"message": "News ID is required."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "News ID is required.", "code": "news_required"}, status=status.HTTP_400_BAD_REQUEST)
 
     try:
         news_item = News.objects.get(news_id=news_id)
     except News.DoesNotExist:
-        return Response({"message": "News item not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "News item not found.", "code": "news_item_not_found"}, status=status.HTTP_404_NOT_FOUND)
 
     # Check if user already liked this news
     existing_like = NewsLike.objects.filter(user=user, news=news_item).first()
@@ -7862,7 +7798,7 @@ def dislike_news(request):
     # check if  already disliked
     existing_dislike = NewsDislike.objects.filter(user=user, news=news_item).first()
     if existing_dislike:
-        return Response({"message": "You have already disliked this news item."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "You have already disliked this news item.", "code": "already_disliked_news_item"}, status=status.HTTP_400_BAD_REQUEST)
 
     # Here you can implement a NewsDislike model similar to NewsLike if you want to track dislikes separately
     NewsDislike.objects.create(user=user, news=news_item)
@@ -7875,31 +7811,31 @@ def undislike_news(request):
     session_token = request.headers.get("Authorization")
 
     if not session_token:
-        return Response({'status': 'error', 'message': 'Authorization header is required'}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'status': 'error', 'message': 'Authorization header is required', "code": "authorization_header_required"}, status=status.HTTP_400_BAD_REQUEST)
 
     if not session_token.startswith("Bearer "):
-        return Response({'status': 'error', 'message': 'Invalid token format'}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'status': 'error', 'message': 'Invalid token format', "code": "invalid_token_format"}, status=status.HTTP_400_BAD_REQUEST)
     session_token = session_token.split(" ")[1]
     user = validate_token(session_token)
     if not user:
         return Response(
-            {"message": "Invalid or expired session token."},
+            {"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"},
             status=status.HTTP_401_UNAUTHORIZED
         )
     
     news_id = request.data.get("news_id")
 
     if not news_id:
-        return Response({"message": "News ID is required."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "News ID is required.", "code": "news_required"}, status=status.HTTP_400_BAD_REQUEST)
 
     try:
         news_item = News.objects.get(news_id=news_id)
     except News.DoesNotExist:
-        return Response({"message": "News item not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "News item not found.", "code": "news_item_not_found"}, status=status.HTTP_404_NOT_FOUND)
 
     existing_dislike = NewsDislike.objects.filter(user=user, news=news_item).first()
     if not existing_dislike:
-        return Response({"message": "You have not disliked this news item."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "You have not disliked this news item.", "code": "not_disliked_news_item"}, status=status.HTTP_400_BAD_REQUEST)
 
     existing_dislike.delete()
 
@@ -7913,7 +7849,7 @@ def get_news_likes_dislikes_count(request):
     try:
         news_item = News.objects.get(news_id=news_id)
     except News.DoesNotExist:
-        return Response({"message": "News item not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "News item not found.", "code": "news_item_not_found"}, status=status.HTTP_404_NOT_FOUND)
 
     likes_count = NewsLike.objects.filter(news=news_item).count()
     dislikes_count = NewsDislike.objects.filter(news=news_item).count()
@@ -7979,10 +7915,10 @@ def fx_rates(request):
 def set_preferred_currency(request):
     auth = request.headers.get("Authorization", "")
     if not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
     user = validate_token(auth.split(" ")[1])
     if not user:
-        return Response({"message": "Invalid or expired session token."}, status=401)
+        return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
     currency = (request.data.get("currency") or "").upper()[:3]
     user.preferred_currency = currency
     user.save(update_fields=["preferred_currency"])

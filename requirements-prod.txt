@@ -16,13 +16,13 @@ click-plugins==1.1.1.2
 click-repl==0.3.0
 cron-descriptor==1.4.5
 cryptography==50.0.0
-Django==5.2.7
+Django==5.2.17
 django-celery-beat==2.9.0
 django-cors-headers==4.9.0
 django-oauth-toolkit==3.4.0
 django-redis==7.0.0
 django-timezone-field==7.2.2
-djangorestframework==3.17.1
+djangorestframework==3.17.2
 dotenv==0.9.9
 et_xmlfile==2.0.0
 google-auth==2.32.0
@@ -37,10 +37,10 @@ oauthlib==3.3.1
 opencv-python-headless==4.10.0.84
 openpyxl==3.1.5
 packaging==26.2
-pillow==12.2.0
+pillow==12.3.0
 pillow_heif==1.4.0
 prompt_toolkit==3.0.52
-pyasn1==0.6.3
+pyasn1==0.6.4        # 2026-09-22 pip-audit: 6 advisories fixed here
 pyasn1_modules==0.4.2
 pycountry==26.2.16
 pycparser==3.0
@@ -57,7 +57,7 @@ redis==8.0.0
 requests==2.34.2
 rsa==4.9.1
 six==1.17.0
-sqlparse==0.5.5
+sqlparse==0.6.0      # 2026-09-22 pip-audit: 9 advisories fixed here
 sympy==1.14.0
 typing_extensions==4.15.0
 tzdata==2026.2

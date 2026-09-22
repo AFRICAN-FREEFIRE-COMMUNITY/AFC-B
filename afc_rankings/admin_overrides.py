@@ -108,7 +108,7 @@ def _get_season(season_id):
     season = Season.objects.filter(pk=season_id).first()
     if not season:
         return None, Response(
-            {"message": "Season not found."},
+            {"message": "Season not found.", "code": "season_not_found"},
             status=status.HTTP_404_NOT_FOUND,
         )
     return season, None
@@ -125,7 +125,7 @@ def _get_team_score(team_id, season):
              .filter(team_id=team_id, season=season).first())
     if not score:
         return None, Response(
-            {"message": "No quarterly score exists for this team in this season."},
+            {"message": "No quarterly score exists for this team in this season.", "code": "no_quarterly_score_exists"},
             status=status.HTTP_404_NOT_FOUND,
         )
     return score, None
@@ -138,7 +138,7 @@ def _get_player_score(player_id, season):
              .filter(player_id=player_id, season=season).first())
     if not score:
         return None, Response(
-            {"message": "No quarterly score exists for this player in this season."},
+            {"message": "No quarterly score exists for this player in this season.", "code": "no_quarterly_score_exists"},
             status=status.HTTP_404_NOT_FOUND,
         )
     return score, None
@@ -182,12 +182,12 @@ def team_tier_override(request, season_id, team_id):
         tier = int(raw_tier)
     except (TypeError, ValueError):
         return Response(
-            {"message": "A 'tier' (integer 0-3) is required."},
+            {"message": "A 'tier' (integer 0-3) is required.", "code": "tier_integer_required"},
             status=status.HTTP_400_BAD_REQUEST,
         )
     if tier not in VALID_TIERS:
         return Response(
-            {"message": "Invalid tier - must be one of 0 (Elite), 1 (Competitive), 2 (Rising), 3 (Entry)."},
+            {"message": "Invalid tier - must be one of 0 (Elite), 1 (Competitive), 2 (Rising), 3 (Entry).", "code": "invalid_tier_elite_competitive"},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
@@ -409,12 +409,12 @@ def deduct_points(request, season_id, team_id):
         points = int(raw_points)
     except (TypeError, ValueError):
         return Response(
-            {"message": "A 'points' value (integer >= 1) is required."},
+            {"message": "A 'points' value (integer >= 1) is required.", "code": "points_value_integer_required"},
             status=status.HTTP_400_BAD_REQUEST,
         )
     if points < 1:
         return Response(
-            {"message": "Deduction must be at least 1 point."},
+            {"message": "Deduction must be at least 1 point.", "code": "deduction_least_point"},
             status=status.HTTP_400_BAD_REQUEST,
         )
 

@@ -146,10 +146,10 @@ def _auth_user(request):
     (None, Response) carrying the 400 (missing/bad header) / 401 (invalid/expired token) error."""
     auth = request.headers.get("Authorization", "")
     if not auth.startswith("Bearer "):
-        return None, Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return None, Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
     user = validate_token(auth.split(" ", 1)[1])
     if not user:
-        return None, Response({"message": "Invalid or expired session token."}, status=401)
+        return None, Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
     return user, None
 
 
@@ -171,7 +171,7 @@ def resolve_leaderboard(request):
     from afc_auth.slugs import resolve_or_redirect
     lb, _moved = resolve_or_redirect(StandaloneLeaderboard, request.GET.get("ref"))
     if lb is None:
-        return Response({"message": "Leaderboard not found."}, status=404)
+        return Response({"message": "Leaderboard not found.", "code": "leaderboard_not_found"}, status=404)
     return Response({"id": lb.id, "slug": lb.slug, "name": lb.name}, status=200)
 
 
@@ -231,7 +231,7 @@ def _get_lb_or_404(lb_id):
     try:
         return StandaloneLeaderboard.objects.get(id=lb_id), None
     except StandaloneLeaderboard.DoesNotExist:
-        return None, Response({"message": "Leaderboard not found."}, status=404)
+        return None, Response({"message": "Leaderboard not found.", "code": "leaderboard_not_found"}, status=404)
 
 
 def _resolve_organization_for_create(user, organization_id):
@@ -249,24 +249,24 @@ def _resolve_organization_for_create(user, organization_id):
         try:
             return Organization.objects.get(organization_id=organization_id), None
         except Organization.DoesNotExist:
-            return None, Response({"message": "Organization not found."}, status=400)
+            return None, Response({"message": "Organization not found.", "code": "organization_not_found"}, status=400)
 
     # Organizer path: they MUST own/upload-to the org they pick.
     if organization_id in (None, "", 0):
         return None, Response(
-            {"message": "An organizer must create the leaderboard under their organization."},
+            {"message": "An organizer must create the leaderboard under their organization.", "code": "organizer_create_leaderboard_under"},
             status=403,
         )
     try:
         org = Organization.objects.get(organization_id=organization_id)
     except Organization.DoesNotExist:
-        return None, Response({"message": "Organization not found."}, status=400)
+        return None, Response({"message": "Organization not found.", "code": "organization_not_found"}, status=400)
 
     # Reuse org_can so the "owner implicitly, or sub_organizer with can_upload_results" rule stays
     # in one place.
     if not org_can(user, "can_upload_results", org):
         return None, Response(
-            {"message": "You do not have permission to create a leaderboard for this organization."},
+            {"message": "You do not have permission to create a leaderboard for this organization.", "code": "not_permission_create_leaderboard"},
             status=403,
         )
     return org, None
@@ -293,7 +293,7 @@ def _apply_rankings_feed_fields(lb, data, user):
         tier = (data.get("ranking_tier") or "").strip()
         if tier not in _VALID_RANKING_TIERS:
             return Response(
-                {"message": "ranking_tier must be one of 'tier_1', 'tier_2', or 'tier_3'."},
+                {"message": "ranking_tier must be one of 'tier_1', 'tier_2', or 'tier_3'.", "code": "ranking_tier_tier_tier"},
                 status=400,
             )
         lb.ranking_tier = tier
@@ -307,7 +307,7 @@ def _apply_rankings_feed_fields(lb, data, user):
                 lb.played_on = datetime.date.fromisoformat(str(raw).strip())
             except (TypeError, ValueError):
                 return Response(
-                    {"message": "played_on must be a date in YYYY-MM-DD format, or null."},
+                    {"message": "played_on must be a date in YYYY-MM-DD format, or null.", "code": "played_date_yyyy_format"},
                     status=400,
                 )
     return None
@@ -356,9 +356,9 @@ def create_leaderboard(request):
     name = (data.get("name") or "").strip()
     fmt = (data.get("format") or "").strip()
     if not name:
-        return Response({"message": "name is required."}, status=400)
+        return Response({"message": "name is required.", "code": "name_required"}, status=400)
     if fmt not in ("team", "solo"):
-        return Response({"message": "format must be 'team' or 'solo'."}, status=400)
+        return Response({"message": "format must be 'team' or 'solo'.", "code": "format_team_solo"}, status=400)
 
     # Ownership + org scoping (spec §5): AFC admin may own AFC-native (null) or any org; organizer
     # is forced to an org they can upload results to.
@@ -483,7 +483,7 @@ def leaderboard_detail(request, lb_id):
     manager = can_manage_standalone_lb(user, lb)
     if lb.status == "draft" and not manager:
         # A draft leaderboard is hidden from non-managers (spec §1.6 - published makes it viewable).
-        return Response({"message": "This leaderboard is not published."}, status=403)
+        return Response({"message": "This leaderboard is not published.", "code": "leaderboard_not_published"}, status=403)
 
     participants = (
         LeaderboardParticipant.objects
@@ -523,25 +523,25 @@ def edit_leaderboard(request, lb_id):
     if nf:
         return nf
     if not can_manage_standalone_lb(user, lb):
-        return Response({"message": "You do not have permission to edit this leaderboard."}, status=403)
+        return Response({"message": "You do not have permission to edit this leaderboard.", "code": "not_permission_edit_leaderboard"}, status=403)
 
     data = request.data or {}
 
     if "name" in data:
         name = (data.get("name") or "").strip()
         if not name:
-            return Response({"message": "name cannot be empty."}, status=400)
+            return Response({"message": "name cannot be empty.", "code": "name_cannot_empty"}, status=400)
         lb.name = name
 
     if "format" in data:
         fmt = (data.get("format") or "").strip()
         if fmt not in ("team", "solo"):
-            return Response({"message": "format must be 'team' or 'solo'."}, status=400)
+            return Response({"message": "format must be 'team' or 'solo'.", "code": "format_team_solo"}, status=400)
         # Changing format after participants/matches exist would orphan their entity columns, so
         # block it once the leaderboard has content (keep the team-XOR-solo invariant honest).
         if fmt != lb.format and (lb.participants.exists() or lb.matches.exists()):
             return Response(
-                {"message": "Cannot change format after participants or matches have been added."},
+                {"message": "Cannot change format after participants or matches have been added.", "code": "cannot_change_format_after"},
                 status=400,
             )
         lb.format = fmt
@@ -558,7 +558,7 @@ def edit_leaderboard(request, lb_id):
     if "status" in data:
         new_status = (data.get("status") or "").strip()
         if new_status not in ("draft", "published"):
-            return Response({"message": "status must be 'draft' or 'published'."}, status=400)
+            return Response({"message": "status must be 'draft' or 'published'.", "code": "status_draft_published"}, status=400)
         lb.status = new_status
 
     # Only AFC admins may flip the rankings flag; silently ignore the field for everyone else.
@@ -592,7 +592,7 @@ def delete_leaderboard(request, lb_id):
     if nf:
         return nf
     if not can_manage_standalone_lb(user, lb):
-        return Response({"message": "You do not have permission to delete this leaderboard."}, status=403)
+        return Response({"message": "You do not have permission to delete this leaderboard.", "code": "not_permission_delete_leaderboard"}, status=403)
     lb.delete()
     return Response({"message": "Leaderboard deleted."})
 
@@ -617,7 +617,7 @@ def leaderboard_graphic(request, lb_id):
         return nf
     if not can_manage_standalone_lb(user, lb):
         return Response(
-            {"message": "You do not have permission to export this leaderboard."}, status=403)
+            {"message": "You do not have permission to export this leaderboard.", "code": "not_permission_export_leaderboard"}, status=403)
 
     size = (request.GET.get("size") or "instagram").lower()
     if size not in ("instagram", "youtube"):
@@ -1001,12 +1001,12 @@ def add_participant(request, lb_id):
     if nf:
         return nf
     if not can_manage_standalone_lb(user, lb):
-        return Response({"message": "You do not have permission to edit this leaderboard."}, status=403)
+        return Response({"message": "You do not have permission to edit this leaderboard.", "code": "not_permission_edit_leaderboard"}, status=403)
 
     data = request.data or {}
     kind = (data.get("kind") or "").strip()
     if kind not in ("real", "ghost_new", "ghost_existing"):
-        return Response({"message": "kind must be 'real', 'ghost_new', or 'ghost_existing'."}, status=400)
+        return Response({"message": "kind must be 'real', 'ghost_new', or 'ghost_existing'.", "code": "kind_real_ghost_new"}, status=400)
 
     is_team = lb.format == "team"
 
@@ -1029,7 +1029,7 @@ def add_participant(request, lb_id):
     # this (it reuses the participant) - that divergence lives here, not in the shared helper.
     dup_msg = _duplicate_participant_message(lb, kind, resolution, is_team)
     if dup_msg:
-        return Response({"message": dup_msg}, status=400)
+        return Response({"message": dup_msg, "code": "add_participant_refused"}, status=400)
 
     with transaction.atomic():
         try:
@@ -1086,11 +1086,11 @@ def remove_participant(request, lb_id, pid):
     if nf:
         return nf
     if not can_manage_standalone_lb(user, lb):
-        return Response({"message": "You do not have permission to edit this leaderboard."}, status=403)
+        return Response({"message": "You do not have permission to edit this leaderboard.", "code": "not_permission_edit_leaderboard"}, status=403)
     try:
         p = LeaderboardParticipant.objects.get(id=pid, leaderboard=lb)
     except LeaderboardParticipant.DoesNotExist:
-        return Response({"message": "Participant not found."}, status=404)
+        return Response({"message": "Participant not found.", "code": "participant_not_found"}, status=404)
     p.delete()
     return Response({"message": "Participant removed."})
 
@@ -1117,7 +1117,7 @@ def add_match(request, lb_id):
     if nf:
         return nf
     if not can_manage_standalone_lb(user, lb):
-        return Response({"message": "You do not have permission to edit this leaderboard."}, status=403)
+        return Response({"message": "You do not have permission to edit this leaderboard.", "code": "not_permission_edit_leaderboard"}, status=403)
 
     data = request.data or {}
     match_number = data.get("match_number")
@@ -1129,7 +1129,7 @@ def add_match(request, lb_id):
         try:
             match_number = int(match_number)
         except (TypeError, ValueError):
-            return Response({"message": "match_number must be an integer."}, status=400)
+            return Response({"message": "match_number must be an integer.", "code": "match_number_integer"}, status=400)
 
     match = LeaderboardMatch.objects.create(
         leaderboard=lb,
@@ -1154,9 +1154,9 @@ def delete_match(request, mid):
     try:
         match = LeaderboardMatch.objects.select_related("leaderboard").get(id=mid)
     except LeaderboardMatch.DoesNotExist:
-        return Response({"message": "Match not found."}, status=404)
+        return Response({"message": "Match not found.", "code": "match_not_found"}, status=404)
     if not can_manage_standalone_lb(user, match.leaderboard):
-        return Response({"message": "You do not have permission to edit this leaderboard."}, status=403)
+        return Response({"message": "You do not have permission to edit this leaderboard.", "code": "not_permission_edit_leaderboard"}, status=403)
     match.delete()
     return Response({"message": "Match deleted."})
 
@@ -1295,14 +1295,14 @@ def save_match_results(request, mid):
     try:
         match = LeaderboardMatch.objects.select_related("leaderboard").get(id=mid)
     except LeaderboardMatch.DoesNotExist:
-        return Response({"message": "Match not found."}, status=404)
+        return Response({"message": "Match not found.", "code": "match_not_found"}, status=404)
     lb = match.leaderboard
     if not can_manage_standalone_lb(user, lb):
-        return Response({"message": "You do not have permission to edit this leaderboard."}, status=403)
+        return Response({"message": "You do not have permission to edit this leaderboard.", "code": "not_permission_edit_leaderboard"}, status=403)
 
     rows = (request.data or {}).get("results")
     if not isinstance(rows, list) or not rows:
-        return Response({"message": "results must be a non-empty list."}, status=400)
+        return Response({"message": "results must be a non-empty list.", "code": "results_non_empty_list"}, status=400)
 
     # Map participant_id → participant, restricted to THIS leaderboard so a caller cannot write a
     # result for a participant in someone else's leaderboard.
@@ -1347,13 +1347,13 @@ def participant_roster(request, lb_id, pid):
     try:
         lb = StandaloneLeaderboard.objects.get(id=lb_id)
     except StandaloneLeaderboard.DoesNotExist:
-        return Response({"message": "Leaderboard not found."}, status=404)
+        return Response({"message": "Leaderboard not found.", "code": "leaderboard_not_found"}, status=404)
     if not can_manage_standalone_lb(user, lb):
-        return Response({"message": "You do not have permission to view this leaderboard's rosters."}, status=403)
+        return Response({"message": "You do not have permission to view this leaderboard's rosters.", "code": "not_permission_view_leaderboard"}, status=403)
     try:
         participant = LeaderboardParticipant.objects.get(id=pid, leaderboard=lb)
     except LeaderboardParticipant.DoesNotExist:
-        return Response({"message": "Participant not found."}, status=404)
+        return Response({"message": "Participant not found.", "code": "participant_not_found"}, status=404)
 
     players = []
     if participant.team_id:
@@ -1554,17 +1554,17 @@ def ocr_extract(request, lb_id):
     if nf:
         return nf
     if not can_manage_standalone_lb(user, lb):
-        return Response({"message": "You do not have permission to edit this leaderboard."}, status=403)
+        return Response({"message": "You do not have permission to edit this leaderboard.", "code": "not_permission_edit_leaderboard"}, status=403)
 
     screenshot = request.FILES.get("screenshot")
     if not screenshot:
-        return Response({"message": "screenshot is required."}, status=400)
+        return Response({"message": "screenshot is required.", "code": "screenshot_required"}, status=400)
 
     # A8: validate the single upload (wrapped in a list) BEFORE the extract engine runs. The shared
     # validator rejects non-PNG/JPG/WEBP, HEIC, oversized (>10MB), and empty uploads with a friendly
     # client message so a bad image never wastes a Gemini call.
     if (image_err := validate_ocr_images([screenshot])):
-        return Response({"message": image_err}, status=400)
+        return Response({"message": image_err, "code": "ocr_extract_refused"}, status=400)
 
     is_team = lb.format == "team"
     event_type = "team" if is_team else "solo"
@@ -1652,22 +1652,22 @@ def results_file_extract(request, lb_id):
     if nf:
         return nf
     if not can_manage_standalone_lb(user, lb):
-        return Response({"message": "You do not have permission to edit this leaderboard."}, status=403)
+        return Response({"message": "You do not have permission to edit this leaderboard.", "code": "not_permission_edit_leaderboard"}, status=403)
     if lb.format != "team":
         return Response(
-            {"message": "Result-file upload is for TEAM leaderboards. Use manual entry or OCR for solo."},
+            {"message": "Result-file upload is for TEAM leaderboards. Use manual entry or OCR for solo.", "code": "result_file_upload_team"},
             status=400,
         )
 
     uploaded = request.FILES.get("file")
     if not uploaded:
-        return Response({"message": "file is required."}, status=400)
+        return Response({"message": "file is required.", "code": "file_required"}, status=400)
 
     text = uploaded.read().decode("utf-8", errors="ignore")
     parsed = parse_team_match_log(text)
     if not parsed:
         return Response(
-            {"message": "No team data could be parsed from this file. Is it the game's match-log export?"},
+            {"message": "No team data could be parsed from this file. Is it the game's match-log export?", "code": "no_team_data_could"},
             status=400,
         )
 
@@ -1737,7 +1737,7 @@ def ocr_apply(request, lb_id):
     if nf:
         return nf
     if not can_manage_standalone_lb(user, lb):
-        return Response({"message": "You do not have permission to edit this leaderboard."}, status=403)
+        return Response({"message": "You do not have permission to edit this leaderboard.", "code": "not_permission_edit_leaderboard"}, status=403)
 
     data = request.data or {}
     # A4 idempotency guard: the legacy single-shot apply is stateless, so a retry (double-click, network
@@ -1858,7 +1858,7 @@ def _get_job_or_404(lb, job_id):
     try:
         return LeaderboardOcrJob.objects.get(id=job_id, leaderboard=lb), None
     except (LeaderboardOcrJob.DoesNotExist, ValueError, ValidationError):
-        return None, Response({"message": "OCR job not found."}, status=404)
+        return None, Response({"message": "OCR job not found.", "code": "ocr_job_not_found"}, status=404)
 
 
 @api_view(["POST"])
@@ -1879,17 +1879,17 @@ def ocr_job_create(request, lb_id):
     if nf:
         return nf
     if not can_manage_standalone_lb(user, lb):
-        return Response({"message": "You do not have permission to edit this leaderboard."}, status=403)
+        return Response({"message": "You do not have permission to edit this leaderboard.", "code": "not_permission_edit_leaderboard"}, status=403)
 
     files = request.FILES.getlist("images")
     if not files:
-        return Response({"message": "Attach at least one screenshot for this map."}, status=400)
+        return Response({"message": "Attach at least one screenshot for this map.", "code": "attach_least_screenshot_map"}, status=400)
 
     # A8: validate every upload BEFORE the job or any LeaderboardOcrImage is persisted. The shared
     # validator rejects non-PNG/JPG/WEBP, HEIC, oversized (>10MB), and empty/over-count uploads with a
     # friendly client message so we never store a bad batch or waste a Gemini call on it.
     if (image_err := validate_ocr_images(files)):
-        return Response({"message": image_err}, status=400)
+        return Response({"message": image_err, "code": "ocr_job_create_refused"}, status=400)
 
     map_label = (request.data.get("map_label") or "").strip()[:120]
     job = LeaderboardOcrJob.objects.create(leaderboard=lb, map_label=map_label, created_by=user)
@@ -1914,7 +1914,7 @@ def ocr_job_run(request, lb_id, job_id):
     if nf:
         return nf
     if not can_manage_standalone_lb(user, lb):
-        return Response({"message": "You do not have permission to edit this leaderboard."}, status=403)
+        return Response({"message": "You do not have permission to edit this leaderboard.", "code": "not_permission_edit_leaderboard"}, status=403)
     job, jnf = _get_job_or_404(lb, job_id)
     if jnf:
         return jnf
@@ -1949,7 +1949,7 @@ def ocr_run_all(request, lb_id):
     if nf:
         return nf
     if not can_manage_standalone_lb(user, lb):
-        return Response({"message": "You do not have permission to edit this leaderboard."}, status=403)
+        return Response({"message": "You do not have permission to edit this leaderboard.", "code": "not_permission_edit_leaderboard"}, status=403)
     # Own-key OCR (owner 2026-09-12): the same up-front answer as run/ above.
     from afc_ocr.services.extract import OcrKeyRequired, key_available
     from afc_ocr.views import key_required_response
@@ -1982,7 +1982,7 @@ def ocr_job_list(request, lb_id):
     if nf:
         return nf
     if not can_manage_standalone_lb(user, lb):
-        return Response({"message": "You do not have permission to view this leaderboard."}, status=403)
+        return Response({"message": "You do not have permission to view this leaderboard.", "code": "not_permission_view_leaderboard"}, status=403)
     jobs = lb.ocr_jobs.prefetch_related("images").all()
     return Response({"jobs": [_serialize_job(j, image_count=j.images.count()) for j in jobs]})
 
@@ -2007,7 +2007,7 @@ def ocr_job_apply(request, lb_id, job_id):
     if nf:
         return nf
     if not can_manage_standalone_lb(user, lb):
-        return Response({"message": "You do not have permission to edit this leaderboard."}, status=403)
+        return Response({"message": "You do not have permission to edit this leaderboard.", "code": "not_permission_edit_leaderboard"}, status=403)
     job, jnf = _get_job_or_404(lb, job_id)
     if jnf:
         return jnf
@@ -2055,7 +2055,7 @@ def ocr_job_delete(request, lb_id, job_id):
     if nf:
         return nf
     if not can_manage_standalone_lb(user, lb):
-        return Response({"message": "You do not have permission to edit this leaderboard."}, status=403)
+        return Response({"message": "You do not have permission to edit this leaderboard.", "code": "not_permission_edit_leaderboard"}, status=403)
     job, jnf = _get_job_or_404(lb, job_id)
     if jnf:
         return jnf

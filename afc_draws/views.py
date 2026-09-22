@@ -39,17 +39,17 @@ def _auth_user(request, required=True):
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
         if required:
-            return None, Response({"message": "Invalid or missing Authorization token."}, status=400)
+            return None, Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
         return None, None
     user = validate_token(auth.split(" ", 1)[1])
     if not user:
-        return None, Response({"message": "Invalid or expired session token."}, status=401)
+        return None, Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
     return user, None
 
 
 def _manager_or_403(user, stage):
     if not services.user_may_run_draw(user, stage):
-        return Response({"message": "You do not have permission to run this stage's draw."}, status=403)
+        return Response({"message": "You do not have permission to run this stage's draw.", "code": "not_permission_run_stage"}, status=403)
     return None
 
 
@@ -106,7 +106,7 @@ def open_draw(request, draw_id):
         return denied
     closes_at = _parse_when(request.data.get("closes_at"))
     if closes_at is None:
-        return Response({"message": "closes_at must be an ISO 8601 datetime."}, status=400)
+        return Response({"message": "closes_at must be an ISO 8601 datetime.", "code": "closes_iso_datetime"}, status=400)
     auto_place = _as_bool(request.data.get("auto_place_at_close"), default=True)
     draw, err = _run(services.open_draw, draw, closes_at, auto_place)
     if err:
@@ -129,7 +129,7 @@ def update_window(request, draw_id):
     raw_when = request.data.get("closes_at")
     closes_at = _parse_when(raw_when)
     if raw_when and closes_at is None:
-        return Response({"message": "closes_at must be an ISO 8601 datetime."}, status=400)
+        return Response({"message": "closes_at must be an ISO 8601 datetime.", "code": "closes_iso_datetime"}, status=400)
     auto_place = _as_bool(request.data.get("auto_place_at_close"))
     visibility = request.data.get("visibility")
     draw, err = _run(services.update_window, draw, closes_at, auto_place, str(visibility) if visibility else None)

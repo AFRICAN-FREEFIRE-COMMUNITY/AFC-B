@@ -47,6 +47,7 @@ from rest_framework import status
 from rest_framework.decorators import api_view, authentication_classes, parser_classes
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.response import Response
+from afc_auth.bot_protection import require_human
 
 from afc_sso.provisioning import (
     _clean_logo_upload, _clean_outbound_url, _clean_redirect_uris, _clean_url,
@@ -295,7 +296,7 @@ def _load_by_token(reference, token):
     endpoint into an oracle for which organisations have applied to AFC.
     """
     not_found = Response(
-        {"message": "We could not find that application. Check the link in your email."},
+        {"message": "We could not find that application. Check the link in your email.", "code": "could_not_find_application"},
         status=status.HTTP_404_NOT_FOUND,
     )
     token = (token or "").strip()
@@ -362,39 +363,47 @@ def submit_application(request):
     what makes it evidence that the address is theirs. A caller who mistyped their email gets a
     reference and no way in, which is the correct outcome and is why the form asks them to check.
     """
+    # Bot protection (owner 2026-09-22). FIRST, before anything is written or emailed:
+    # this form is open to the whole internet and a script filling it costs a queue, a
+    # database row and mail quota. Verified server side against Cloudflare Turnstile; with
+    # no key configured it allows the request and the checker counts that as debt.
+    refused = require_human(request, where="partner_application")
+    if refused is not None:
+        return refused
+
     ip_hash = _client_ip_hash(request)
     allowed, info = check_apply_rate(ip_hash)
     if not allowed:
         return Response(
-            {"message": info["message"], "reason": info["reason"], "resets_at": info["resets_at"]},
+            {"message": info["message"], "reason": info["reason"], "resets_at": info["resets_at"], "code": "submit_application_refused"},
             status=status.HTTP_429_TOO_MANY_REQUESTS,
         )
 
     organisation_name = str(request.data.get("organisation_name") or "").strip()
     if not organisation_name:
-        return Response({"message": "Your organisation name is required."},
+        return Response({"message": "Your organisation name is required.", "code": "organisation_name_required"},
                         status=status.HTTP_400_BAD_REQUEST)
 
     contact_name = str(request.data.get("contact_name") or "").strip()
     if not contact_name:
-        return Response({"message": "A contact name is required."},
+        return Response({"message": "A contact name is required.", "code": "contact_name_required"},
                         status=status.HTTP_400_BAD_REQUEST)
 
     contact_email, err = _clean_email(request.data.get("contact_email"))
     if err:
-        return Response({"message": err}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": err, "code": "submit_application_refused"}, status=status.HTTP_400_BAD_REQUEST)
 
     # REQUIRED as of 2026-08-05 (owner). It was optional free text, which is how User.country
     # ended up holding the same country under several spellings; the form now posts a value
     # picked from the shared list, and an empty one is refused rather than stored blank.
     country = str(request.data.get("country") or "").strip()
     if not country:
-        return Response({"message": "Your country is required."},
+        return Response({"message": "Your country is required.", "code": "country_required"},
                         status=status.HTTP_400_BAD_REQUEST)
 
     contact_whatsapp, err = _clean_whatsapp(request.data.get("contact_whatsapp"))
     if err:
-        return Response({"message": err}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": err, "code": "submit_application_refused"}, status=status.HTTP_400_BAD_REQUEST)
 
     # ── One open application per contact email ──
     # Checked BEFORE any other work: a second submission from an organisation that already has one
@@ -420,9 +429,9 @@ def submit_application(request):
 
     homepage_url, err = _clean_url(request.data.get("homepage_url"), "Your website")
     if err:
-        return Response({"message": err}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": err, "code": "submit_application_refused"}, status=status.HTTP_400_BAD_REQUEST)
     if not homepage_url:
-        return Response({"message": "Your website address is required."},
+        return Response({"message": "Your website address is required.", "code": "website_address_required"},
                         status=status.HTTP_400_BAD_REQUEST)
 
     # ── The product, which is no longer a question (owner 2026-08-05) ──
@@ -447,12 +456,12 @@ def submit_application(request):
     # behind `if wants_sso`, which was correct while the Data API was an option on the form.
     redirect_uris, err = _clean_redirect_uris(request.data.get("redirect_uris"))
     if err:
-        return Response({"message": err}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": err, "code": "submit_application_refused"}, status=status.HTTP_400_BAD_REQUEST)
     post_logout_redirect_uris, err = _clean_redirect_uris(
         request.data.get("post_logout_redirect_uris"),
         required=False, label="post-logout redirect URI")
     if err:
-        return Response({"message": err}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": err, "code": "submit_application_refused"}, status=status.HTTP_400_BAD_REQUEST)
 
     # _clean_outbound_url, NOT _clean_url. This form is public and unauthenticated, and this is
     # the one field on it that AFC's own server later fetches from inside AFC's network, so it
@@ -460,14 +469,14 @@ def submit_application(request):
     deletion_webhook_url, err = _clean_outbound_url(
         request.data.get("deletion_webhook_url"), "Disconnection webhook URL")
     if err:
-        return Response({"message": err}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": err, "code": "submit_application_refused"}, status=status.HTTP_400_BAD_REQUEST)
 
     use_case, err = _clean_prose(request.data.get("use_case"), "What you are building")
     if err:
-        return Response({"message": err}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": err, "code": "submit_application_refused"}, status=status.HTTP_400_BAD_REQUEST)
     data_needed, err = _clean_prose(request.data.get("data_needed"), "What you need from AFC")
     if err:
-        return Response({"message": err}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": err, "code": "submit_application_refused"}, status=status.HTTP_400_BAD_REQUEST)
 
     # ── The logo, through the consent-screen-grade guard ──
     logo_file = None
@@ -475,7 +484,7 @@ def submit_application(request):
     if uploaded is not None:
         logo_file, err = _clean_logo_upload(uploaded)
         if err:
-            return Response({"message": err}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"message": err, "code": "submit_application_refused"}, status=status.HTTP_400_BAD_REQUEST)
 
     application = PartnerApplication.objects.create(
         reference=generate_reference(),
@@ -577,7 +586,7 @@ def application_status(request, reference):
                     "This application cannot be edited right now. It is only editable while AFC "
                     "has asked you for changes."
                 )
-            },
+            , "code": "application_status_refused"},
             status=status.HTTP_409_CONFLICT,
         )
 
@@ -598,7 +607,7 @@ def application_status(request, reference):
     if "country" in data:
         country = str(data.get("country") or "").strip()[:80]
         if not country:
-            return Response({"message": "Your country is required."},
+            return Response({"message": "Your country is required.", "code": "country_required"},
                             status=status.HTTP_400_BAD_REQUEST)
         application.country = country
         updated.append("country")
@@ -609,7 +618,7 @@ def application_status(request, reference):
     if "contact_whatsapp" in data:
         cleaned, err_msg = _clean_whatsapp(data.get("contact_whatsapp"))
         if err_msg:
-            return Response({"message": err_msg}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"message": err_msg, "code": "application_status_refused"}, status=status.HTTP_400_BAD_REQUEST)
         application.contact_whatsapp = cleaned
         updated.append("contact_whatsapp")
 
@@ -621,9 +630,9 @@ def application_status(request, reference):
     if "homepage_url" in data:
         cleaned, err_msg = _clean_url(data.get("homepage_url"), "Your website")
         if err_msg:
-            return Response({"message": err_msg}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"message": err_msg, "code": "application_status_refused"}, status=status.HTTP_400_BAD_REQUEST)
         if not cleaned:
-            return Response({"message": "Your website address is required."},
+            return Response({"message": "Your website address is required.", "code": "website_address_required"},
                             status=status.HTTP_400_BAD_REQUEST)
         application.homepage_url = cleaned
         updated.append("homepage_url")
@@ -633,7 +642,7 @@ def application_status(request, reference):
         cleaned, err_msg = _clean_redirect_uris(
             data.get("redirect_uris"), required=application.wants_sso)
         if err_msg:
-            return Response({"message": err_msg}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"message": err_msg, "code": "application_status_refused"}, status=status.HTTP_400_BAD_REQUEST)
         application.redirect_uris = cleaned
         updated.append("redirect_uris")
 
@@ -642,7 +651,7 @@ def application_status(request, reference):
             data.get("post_logout_redirect_uris"), required=False,
             label="post-logout redirect URI")
         if err_msg:
-            return Response({"message": err_msg}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"message": err_msg, "code": "application_status_refused"}, status=status.HTTP_400_BAD_REQUEST)
         application.post_logout_redirect_uris = cleaned
         updated.append("post_logout_redirect_uris")
 
@@ -652,7 +661,7 @@ def application_status(request, reference):
         cleaned, err_msg = _clean_outbound_url(
             data.get("deletion_webhook_url"), "Disconnection webhook URL")
         if err_msg:
-            return Response({"message": err_msg}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"message": err_msg, "code": "application_status_refused"}, status=status.HTTP_400_BAD_REQUEST)
         application.deletion_webhook_url = cleaned
         updated.append("deletion_webhook_url")
 
@@ -662,12 +671,12 @@ def application_status(request, reference):
         if field in data:
             cleaned, err_msg = _clean_prose(data.get(field), label)
             if err_msg:
-                return Response({"message": err_msg}, status=status.HTTP_400_BAD_REQUEST)
+                return Response({"message": err_msg, "code": "application_status_refused"}, status=status.HTTP_400_BAD_REQUEST)
             setattr(application, field, cleaned)
             updated.append(field)
 
     if not updated:
-        return Response({"message": "Nothing was changed."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "Nothing was changed.", "code": "nothing_changed"}, status=status.HTTP_400_BAD_REQUEST)
 
     # Back into the owner's queue, and clear the note: it described the old answers, and leaving
     # it on screen would tell the applicant they still have something to fix.
@@ -725,7 +734,7 @@ def claim_credentials(request, reference):
     """
     token = (request.GET.get("token") or "").strip()
     not_found = Response(
-        {"message": "We could not find that credentials link. Check the link in your email."},
+        {"message": "We could not find that credentials link. Check the link in your email.", "code": "could_not_find_credentials"},
         status=status.HTTP_404_NOT_FOUND,
     )
     if not token:
@@ -741,7 +750,7 @@ def claim_credentials(request, reference):
 
     if application.status != PartnerApplication.APPROVED:
         return Response(
-            {"message": "This application has not been approved."},
+            {"message": "This application has not been approved.", "code": "application_not_approved"},
             status=status.HTTP_409_CONFLICT,
         )
     if not application.claim_is_open():
@@ -755,7 +764,7 @@ def claim_credentials(request, reference):
                     "This credentials link has expired. Ask AFC to send a new one."
                 ),
                 "reason": "claimed" if already else "expired",
-            },
+             "code": "claim_credentials_refused"},
             status=status.HTTP_409_CONFLICT,
         )
 
@@ -838,7 +847,7 @@ def integration_guide(request):
 
     if not os.path.exists(GUIDE_PATH):
         return Response(
-            {"message": "The integration guide is not available on this server."},
+            {"message": "The integration guide is not available on this server.", "code": "integration_guide_not_available"},
             status=status.HTTP_404_NOT_FOUND,
         )
 

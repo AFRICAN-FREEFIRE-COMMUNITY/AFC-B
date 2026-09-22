@@ -53,10 +53,10 @@ TEST_WINDOW_SECONDS = 600
 def _auth(request):
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return None, Response({"message": "Authorization header is required"}, status=400)
+        return None, Response({"message": "Authorization header is required", "code": "authorization_header_required"}, status=400)
     user = validate_token(auth.split(" ")[1])
     if not user:
-        return None, Response({"message": "Invalid or expired session token."}, status=401)
+        return None, Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
     return user, None
 
 
@@ -75,10 +75,10 @@ def _org_and_gate(request, slug):
         return None, None, err
     org = Organization.objects.filter(slug=slug).first()
     if not org:
-        return None, None, Response({"message": "Organization not found."}, status=404)
+        return None, None, Response({"message": "Organization not found.", "code": "organization_not_found"}, status=404)
     if not may_manage_key(user, org):
         return None, None, Response(
-            {"message": "Only the organization's owner or a member who manages the organization can change its AI key."},
+            {"message": "Only the organization's owner or a member who manages the organization can change its AI key.", "code": "organization_owner_member_who"},
             status=403)
     return user, org, None
 
@@ -218,7 +218,7 @@ def ai_key(request, slug):
 
     if request.method == "DELETE":
         if key is None:
-            return Response({"message": "No key is connected."}, status=404)
+            return Response({"message": "No key is connected.", "code": "no_key_connected"}, status=404)
         provider, last_four = key.provider, key.last_four
         key.delete()
         _log(org, user, "disconnected", provider, last_four)
@@ -228,20 +228,20 @@ def ai_key(request, slug):
     data = request.data or {}
     provider = str(data.get("provider") or "").strip()
     if provider not in registry.BY_ID:
-        return Response({"message": "Pick a provider from the list."}, status=400)
+        return Response({"message": "Pick a provider from the list.", "code": "pick_provider_list"}, status=400)
     plain = str(data.get("key") or "").strip()
     if len(plain) < 8:
-        return Response({"message": "That does not look like a key."}, status=400)
+        return Response({"message": "That does not look like a key.", "code": "not_look_like_key"}, status=400)
     model = str(data.get("model") or "").strip() or registry.get(provider).get("recommended_model", "")
     base_url = str(data.get("base_url") or "").strip()
     if provider != "custom":
         base_url = ""
     if _rate_limited(org):
-        return Response({"message": "Five tests in ten minutes is the limit. Give it a moment."}, status=429)
+        return Response({"message": "Five tests in ten minutes is the limit. Give it a moment.", "code": "five_tests_ten_minutes"}, status=429)
     ok, message, rows, ms = run_test(provider, model, base_url, plain)
     if not ok:
         _log(org, user, "tested", provider, plain[-4:], f"failed: {message}")
-        return Response({"message": message, "ok": False, "rows": rows, "ms": ms}, status=400)
+        return Response({"message": message, "ok": False, "rows": rows, "ms": ms, "code": "ai_key_refused"}, status=400)
     action = "changed" if key is not None else "connected"
     if key is None:
         key = OrganizationAiKey(organization=org)
@@ -265,22 +265,22 @@ def ai_key_test(request, slug):
     if err:
         return err
     if _rate_limited(org):
-        return Response({"message": "Five tests in ten minutes is the limit. Give it a moment."}, status=429)
+        return Response({"message": "Five tests in ten minutes is the limit. Give it a moment.", "code": "five_tests_ten_minutes"}, status=429)
     data = request.data or {}
     plain = str(data.get("key") or "").strip()
     key = OrganizationAiKey.objects.filter(organization=org).first()
     if plain:
         provider = str(data.get("provider") or "").strip()
         if provider not in registry.BY_ID:
-            return Response({"message": "Pick a provider from the list."}, status=400)
+            return Response({"message": "Pick a provider from the list.", "code": "pick_provider_list"}, status=400)
         model = str(data.get("model") or "").strip() or registry.get(provider).get("recommended_model", "")
         base_url = str(data.get("base_url") or "").strip() if provider == "custom" else ""
     elif key is not None:
         provider, model, base_url, plain = key.provider, key.model, key.base_url, key.get_key()
         if not plain:
-            return Response({"message": "The saved key cannot be opened any more. Paste it again.", "ok": False}, status=400)
+            return Response({"message": "The saved key cannot be opened any more. Paste it again.", "ok": False, "code": "saved_key_cannot_opened"}, status=400)
     else:
-        return Response({"message": "Paste a key first.", "ok": False}, status=400)
+        return Response({"message": "Paste a key first.", "ok": False, "code": "paste_key_first"}, status=400)
     ok, message, rows, ms = run_test(provider, model, base_url, plain)
     if key is not None and not data.get("key"):
         key.last_tested_at = timezone.now()
@@ -319,7 +319,7 @@ def _admin_gate(request):
     if err:
         return None, err
     if not is_platform_org_admin(user):
-        return None, Response({"message": "Admins only."}, status=403)
+        return None, Response({"message": "Admins only.", "code": "admin_gate_admins"}, status=403)
     return user, None
 
 
@@ -365,13 +365,13 @@ def admin_set_allowance(request, org_id):
         return err
     org = Organization.objects.filter(pk=org_id).first()
     if not org:
-        return Response({"message": "Organization not found."}, status=404)
+        return Response({"message": "Organization not found.", "code": "organization_not_found"}, status=404)
     try:
         n = int(request.data.get("free_reads_left"))
     except (TypeError, ValueError):
-        return Response({"message": "free_reads_left must be a whole number."}, status=400)
+        return Response({"message": "free_reads_left must be a whole number.", "code": "free_reads_left_whole"}, status=400)
     if n < 0 or n > 100000:
-        return Response({"message": "free_reads_left must be between 0 and 100000."}, status=400)
+        return Response({"message": "free_reads_left must be between 0 and 100000.", "code": "free_reads_left_between"}, status=400)
     org.ocr_free_reads_left = n
     org.save(update_fields=["ocr_free_reads_left"])
     _log(org, user, "allowance", detail=f"free reads set to {n}")
@@ -385,7 +385,7 @@ def admin_set_ocr_disabled(request, org_id):
         return err
     org = Organization.objects.filter(pk=org_id).first()
     if not org:
-        return Response({"message": "Organization not found."}, status=404)
+        return Response({"message": "Organization not found.", "code": "organization_not_found"}, status=404)
     disabled = str(request.data.get("disabled", "")).strip().lower() in ("1", "true", "yes", "on")
     org.ocr_disabled = disabled
     org.save(update_fields=["ocr_disabled"])

@@ -54,6 +54,13 @@ def broadcast_kit_download(request, event_id):
     caster_uid = (request.data.get("caster_uid") or "").strip() or None
 
     billboard = request.FILES.get("billboard")
+    # Broadcast art is rendered into the stream overlay, so decode the bytes (R70, 2026-09-22).
+    if billboard is not None:
+        from afc_auth.image_utils import require_image_upload
+        billboard, bad_image = require_image_upload(billboard)
+        if bad_image:
+            return Response({"message": "The billboard must be a JPEG, PNG, WEBP or GIF under 10 MB.",
+                             "code": bad_image}, status=400)
     skybox = request.FILES.get("skybox")
     billboard_bytes = billboard.read() if billboard else None
     skybox_bytes = skybox.read() if skybox else None

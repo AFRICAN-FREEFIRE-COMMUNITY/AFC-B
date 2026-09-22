@@ -143,7 +143,7 @@ def _get_season_or_404(season_id):
     """
     season = Season.objects.filter(pk=season_id).first()
     if not season:
-        return None, Response({"message": "Season not found."}, status=status.HTTP_404_NOT_FOUND)
+        return None, Response({"message": "Season not found.", "code": "season_not_found"}, status=status.HTTP_404_NOT_FOUND)
     return season, None
 
 
@@ -151,7 +151,7 @@ def _get_team_or_404(team_id):
     """Resolve the team. Returns ``(team, None)`` or ``(None, Response)``."""
     team = Team.objects.filter(pk=team_id).first()
     if not team:
-        return None, Response({"message": "Team not found."}, status=status.HTTP_404_NOT_FOUND)
+        return None, Response({"message": "Team not found.", "code": "team_not_found"}, status=status.HTTP_404_NOT_FOUND)
     return team, None
 
 
@@ -356,7 +356,7 @@ def social_verify(request, season_id, team_id):
     snap = TeamSocialSnapshot.objects.filter(team=team, season=season).first()
     if not snap:
         return Response(
-            {"message": "No social snapshot to verify - the team must connect (or an admin must enter counts) first."},
+            {"message": "No social snapshot to verify - the team must connect (or an admin must enter counts) first.", "code": "no_social_snapshot_verify"},
             status=status.HTTP_404_NOT_FOUND,
         )
 
@@ -413,7 +413,7 @@ def social_unverify(request, season_id, team_id):
     snap = TeamSocialSnapshot.objects.filter(team=team, season=season).first()
     if not snap:
         return Response(
-            {"message": "No social snapshot to unverify."},
+            {"message": "No social snapshot to unverify.", "code": "no_social_snapshot_unverify"},
             status=status.HTTP_404_NOT_FOUND,
         )
 
@@ -481,7 +481,7 @@ def social_connect(request, season_id, team_id):
     tt_handle = (data.get("tiktok_handle") or "").strip()
     if not ig_handle and not tt_handle:
         return Response(
-            {"message": "At least one of instagram_handle / tiktok_handle is required to connect."},
+            {"message": "At least one of instagram_handle / tiktok_handle is required to connect.", "code": "least_instagram_handle_tiktok"},
             status=status.HTTP_400_BAD_REQUEST,
         )
 

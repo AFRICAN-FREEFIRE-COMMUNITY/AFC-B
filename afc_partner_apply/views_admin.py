@@ -83,21 +83,21 @@ def _require_apply_admin(request):
     """
     session_token = request.headers.get("Authorization")
     if not session_token:
-        return None, Response({"message": "Authorization header is required"},
+        return None, Response({"message": "Authorization header is required", "code": "authorization_header_required"},
                              status=status.HTTP_400_BAD_REQUEST)
     if not session_token.startswith("Bearer "):
-        return None, Response({"message": "Invalid token format"},
+        return None, Response({"message": "Invalid token format", "code": "invalid_token_format"},
                              status=status.HTTP_400_BAD_REQUEST)
 
     from afc_auth.views import validate_token  # local import: avoids an app-loading cycle
 
     user = validate_token(session_token.split(" ")[1])
     if not user:
-        return None, Response({"message": "Invalid or expired session token."},
+        return None, Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"},
                              status=status.HTTP_401_UNAUTHORIZED)
     if not _is_apply_admin(user):
         return None, Response(
-            {"message": "You do not have permission to review partner applications."},
+            {"message": "You do not have permission to review partner applications.", "code": "not_permission_review_partner"},
             status=status.HTTP_403_FORBIDDEN,
         )
     return user, None
@@ -106,7 +106,7 @@ def _require_apply_admin(request):
 def _application_or_404(application_id):
     application = PartnerApplication.objects.filter(pk=application_id).first()
     if not application:
-        return None, Response({"message": "Application not found."},
+        return None, Response({"message": "Application not found.", "code": "application_not_found"},
                               status=status.HTTP_404_NOT_FOUND)
     return application, None
 
@@ -333,7 +333,7 @@ def decide_application(request, application_id):
     action = str(request.data.get("action") or "").strip()
     if action not in ("approve", "reject", "request_changes"):
         return Response(
-            {"message": "Action must be approve, reject or request_changes."},
+            {"message": "Action must be approve, reject or request_changes.", "code": "action_approve_reject_request"},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
@@ -351,7 +351,7 @@ def decide_application(request, application_id):
                 "message": (
                     "Tell the applicant why. This note is the whole email they receive."
                 )
-            },
+            , "code": "decide_application_refused"},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
@@ -427,7 +427,7 @@ def decide_application(request, application_id):
         if err_msg:
             # Nothing has been written yet, so the application stays exactly as it was and the
             # owner can fix the offending value on the review screen and press approve again.
-            return Response({"message": err_msg}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"message": err_msg, "code": "field_refused"}, status=status.HTTP_400_BAD_REQUEST)
         # The secret generated during provisioning is deliberately DISCARDED. It was hashed on
         # save and is unrecoverable anyway; the applicant's real secret is minted when they open
         # the claim link (afc_partner_apply/views_public.py claim_credentials).
@@ -523,7 +523,7 @@ def resend_credentials(request, application_id):
 
     if application.status != PartnerApplication.APPROVED:
         return Response(
-            {"message": "Only an approved application has credentials to collect."},
+            {"message": "Only an approved application has credentials to collect.", "code": "approved_application_credentials_collect"},
             status=status.HTTP_409_CONFLICT,
         )
 

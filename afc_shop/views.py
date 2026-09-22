@@ -204,18 +204,26 @@ def add_product(request):
         try:
             variants = json.loads(variants)
         except (ValueError, TypeError):
-            return Response({"message": "variants must be a valid JSON list."}, status=400)
+            return Response({"message": "variants must be a valid JSON list.", "code": "variants_valid_json_list"}, status=400)
 
     # GENERALISED guard: require a name + a non-empty type/category (no whitelist).
     if not name or not product_type:
-        return Response({"message": "name and a product_type or category are required."}, status=400)
+        return Response({"message": "name and a product_type or category are required.", "code": "name_product_type_category"}, status=400)
 
     if not isinstance(variants, list) or len(variants) == 0:
-        return Response({"message": "variants must be a non-empty list."}, status=400)
+        return Response({"message": "variants must be a non-empty list.", "code": "variants_non_empty_list"}, status=400)
 
     # Optional primary image (multipart). Additional images/videos are uploaded
     # separately via add_product_media after the product exists.
     image = request.FILES.get("image")
+    # R70 (2026-09-22): a product picture is served to every shopper, so the bytes are decoded
+    # before they are stored. The vendor path already did this (afc_shop/vendors.py).
+    if image is not None:
+        from afc_auth.image_utils import require_image_upload
+        image, bad_image = require_image_upload(image)
+        if bad_image:
+            return Response({"message": "The product image must be a JPEG, PNG, WEBP or GIF "
+                                        "under 10 MB.", "code": bad_image}, status=400)
 
     # Selling currency (owner 2026-07-04): multi-currency ROUTE only - normalised + validated against
     # the currently-chargeable set. Today that is NGN only (shipping is Nigeria-only, and the store
@@ -239,7 +247,7 @@ def add_product(request):
         sku = v.get("sku")
         price = v.get("price")
         if not sku or price is None:
-            return Response({"message": "Each variant needs sku and price."}, status=400)
+            return Response({"message": "Each variant needs sku and price.", "code": "variant_needs_sku_price"}, status=400)
 
         pv = ProductVariant.objects.create(
             product=product,
@@ -425,7 +433,7 @@ def edit_product(request):
 
     product_id = request.data.get("product_id")
     if not product_id:
-        return Response({"message": "product_id is required."}, status=400)
+        return Response({"message": "product_id is required.", "code": "product_required"}, status=400)
 
     product = get_object_or_404(Product, id=product_id)
 
@@ -490,10 +498,10 @@ def edit_product(request):
         try:
             variants = json.loads(variants)
         except (ValueError, TypeError):
-            return Response({"message": "variants must be a valid JSON list."}, status=400)
+            return Response({"message": "variants must be a valid JSON list.", "code": "variants_valid_json_list"}, status=400)
     if variants is not None:
         if not isinstance(variants, list):
-            return Response({"message": "variants must be a list."}, status=400)
+            return Response({"message": "variants must be a list.", "code": "variants_list"}, status=400)
 
         for v in variants:
             vid = v.get("id")
@@ -539,14 +547,14 @@ def add_product_variant(request):
 
     product_id = request.data.get("product_id")
     if not product_id:
-        return Response({"message": "product_id is required."}, status=400)
+        return Response({"message": "product_id is required.", "code": "product_required"}, status=400)
 
     product = get_object_or_404(Product, id=product_id)
 
     sku = request.data.get("sku")
     price = request.data.get("price")
     if not sku or price is None:
-        return Response({"message": "sku and price are required."}, status=400)
+        return Response({"message": "sku and price are required.", "code": "sku_price_required"}, status=400)
 
     pv = ProductVariant.objects.create(
         product=product,
@@ -573,7 +581,7 @@ def delete_product_variant(request):
         return err
     variant_id = request.data.get("variant_id")
     if not variant_id:
-        return Response({"message": "variant_id is required."}, status=400)
+        return Response({"message": "variant_id is required.", "code": "variant_required"}, status=400)
     variant = get_object_or_404(ProductVariant, id=variant_id)
 
     old_data = {
@@ -620,7 +628,7 @@ def delete_product(request):
 
     product_id = request.data.get("product_id")
     if not product_id:
-        return Response({"message": "product_id is required."}, status=400)
+        return Response({"message": "product_id is required.", "code": "product_required"}, status=400)
 
     product = get_object_or_404(Product, id=product_id)
     product_name = product.name
@@ -663,7 +671,7 @@ def deactivate_product(request):
 
     product_id = request.data.get("product_id")
     if not product_id:
-        return Response({"message": "product_id is required."}, status=400)
+        return Response({"message": "product_id is required.", "code": "product_required"}, status=400)
 
     product = get_object_or_404(Product, id=product_id)
     old_status = product.status
@@ -693,7 +701,7 @@ def activate_product(request):
 
     product_id = request.data.get("product_id")
     if not product_id:
-        return Response({"message": "product_id is required."}, status=400)
+        return Response({"message": "product_id is required.", "code": "product_required"}, status=400)
 
     product = get_object_or_404(Product, id=product_id)
     old_status = product.status
@@ -911,12 +919,12 @@ def create_coupon(request):
     discount_value = request.data.get("discount_value")
 
     if not code or discount_type not in ["percent", "fixed"] or discount_value is None:
-        return Response({"message": "code, discount_type, discount_value are required."}, status=400)
+        return Response({"message": "code, discount_type, discount_value are required.", "code": "code_discount_type_discount"}, status=400)
 
     #check if similar code has ever been used before, if yes and it's inactive, we can allow reuse but if it's active we should reject
     existing = Coupon.objects.filter(code=code).first()
     if existing:
-        return Response({"message": "A coupon with this code already exists."}, status=400)
+        return Response({"message": "A coupon with this code already exists.", "code": "coupon_code_already_exists"}, status=400)
     
 
     c = Coupon.objects.create(
@@ -951,7 +959,7 @@ def view_product_details(request):
     ref = request.GET.get("ref") or request.GET.get("product_id")
     product, moved_to_slug = resolve_or_redirect(Product, ref)
     if product is None:
-        return Response({"message": "Product not found."}, status=404)
+        return Response({"message": "Product not found.", "code": "product_not_found"}, status=404)
     product = (
         Product.objects.select_related("category").prefetch_related("variants", "media").get(pk=product.pk)
     )
@@ -992,11 +1000,11 @@ def add_to_cart(request):
     # ---------------- AUTH ----------------
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
 
     user = validate_token(auth.split(" ")[1])
     if not user:
-        return Response({"message": "Invalid or expired session token."}, status=status.HTTP_401_UNAUTHORIZED)
+        return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=status.HTTP_401_UNAUTHORIZED)
 
     # ---------------- INPUT ----------------
     variant_id = request.data.get("variant_id")
@@ -1004,27 +1012,27 @@ def add_to_cart(request):
     coupon_code = request.data.get("coupon_code", "").strip().upper()
 
     if not variant_id:
-        return Response({"message": "variant_id is required."}, status=400)
+        return Response({"message": "variant_id is required.", "code": "variant_required"}, status=400)
 
     try:
         quantity = int(quantity)
     except:
-        return Response({"message": "quantity must be a number."}, status=400)
+        return Response({"message": "quantity must be a number.", "code": "quantity_number"}, status=400)
 
     if quantity <= 0:
-        return Response({"message": "quantity must be at least 1."}, status=400)
+        return Response({"message": "quantity must be at least 1.", "code": "quantity_least"}, status=400)
 
     variant = get_object_or_404(ProductVariant, id=variant_id)
 
     # ---------------- VALIDATION ----------------
     if not variant.is_active:
-        return Response({"message": "This product variant is not available."}, status=400)
+        return Response({"message": "This product variant is not available.", "code": "product_variant_not_available"}, status=400)
 
     if variant.product.status != "active":
-        return Response({"message": "This product is not available."}, status=400)
+        return Response({"message": "This product is not available.", "code": "product_not_available"}, status=400)
 
     if not variant.is_in_stock():
-        return Response({"message": "This item is out of stock."}, status=400)
+        return Response({"message": "This item is out of stock.", "code": "item_out_stock"}, status=400)
 
     # ---------------- STOCK CHECK ----------------
     if variant.product.is_limited_stock:
@@ -1039,9 +1047,9 @@ def add_to_cart(request):
     if coupon_code:
         coupon = Coupon.objects.filter(code=coupon_code).first()
         if not coupon:
-            return Response({"message": "Invalid coupon code."}, status=400)
+            return Response({"message": "Invalid coupon code.", "code": "invalid_coupon_code"}, status=400)
         if not coupon.is_valid_now():
-            return Response({"message": "This coupon is not valid at the moment."}, status=400)
+            return Response({"message": "This coupon is not valid at the moment.", "code": "coupon_not_valid_moment"}, status=400)
 
     # ---------------- CREATE / UPDATE CART ----------------
     with transaction.atomic():
@@ -1104,11 +1112,11 @@ def get_my_cart(request):
     # -------- AUTH --------
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
 
     user = validate_token(auth.split(" ")[1])
     if not user:
-        return Response({"message": "Invalid or expired session token."}, status=401)
+        return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
 
     cart = Cart.objects.filter(user=user).first()
 
@@ -1157,23 +1165,23 @@ def get_my_cart(request):
 def remove_from_cart(request):
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
 
     user = validate_token(auth.split(" ")[1])
     if not user:
-        return Response({"message": "Invalid or expired session token."}, status=401)
+        return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
 
     cart_item_id = request.data.get("cart_item_id")
     if not cart_item_id:
-        return Response({"message": "cart_item_id is required."}, status=400)
+        return Response({"message": "cart_item_id is required.", "code": "cart_item_required"}, status=400)
 
     cart = Cart.objects.filter(user=user).first()
     if not cart:
-        return Response({"message": "Cart not found."}, status=404)
+        return Response({"message": "Cart not found.", "code": "cart_not_found"}, status=404)
 
     cart_item = CartItem.objects.filter(id=cart_item_id, cart=cart).first()
     if not cart_item:
-        return Response({"message": "Item not found in your cart."}, status=404)
+        return Response({"message": "Item not found in your cart.", "code": "item_not_found_cart"}, status=404)
 
     cart_item.delete()
 
@@ -1184,26 +1192,26 @@ def remove_from_cart(request):
 def update_cart_item_quantity(request):
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
 
     user = validate_token(auth.split(" ")[1])
     if not user:
-        return Response({"message": "Invalid or expired session token."}, status=401)
+        return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
 
     cart_item_id = request.data.get("cart_item_id")
     quantity = request.data.get("quantity")
 
     if not cart_item_id or quantity is None:
-        return Response({"message": "cart_item_id and quantity are required."}, status=400)
+        return Response({"message": "cart_item_id and quantity are required.", "code": "cart_item_quantity_required"}, status=400)
 
     try:
         quantity = int(quantity)
     except:
-        return Response({"message": "quantity must be a number."}, status=400)
+        return Response({"message": "quantity must be a number.", "code": "quantity_number"}, status=400)
 
     cart = Cart.objects.filter(user=user).first()
     if not cart:
-        return Response({"message": "Cart not found."}, status=404)
+        return Response({"message": "Cart not found.", "code": "cart_not_found"}, status=404)
 
     cart_item = CartItem.objects.select_related("variant__product").filter(
         id=cart_item_id,
@@ -1211,7 +1219,7 @@ def update_cart_item_quantity(request):
     ).first()
 
     if not cart_item:
-        return Response({"message": "Item not found in your cart."}, status=404)
+        return Response({"message": "Item not found in your cart.", "code": "item_not_found_cart"}, status=404)
 
     variant = cart_item.variant
 
@@ -1234,11 +1242,11 @@ def update_cart_item_quantity(request):
 def clear_cart(request):
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
 
     user = validate_token(auth.split(" ")[1])
     if not user:
-        return Response({"message": "Invalid or expired session token."}, status=401)
+        return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
 
     cart = Cart.objects.filter(user=user).first()
     if not cart:
@@ -1262,16 +1270,16 @@ from decimal import Decimal, ROUND_HALF_UP
 # def buy_now(request):
 #     auth = request.headers.get("Authorization")
 #     if not auth or not auth.startswith("Bearer "):
-#         return Response({"message": "Invalid token"}, status=400)
+#         return Response({"message": "Invalid token", "code": "invalid_token"}, status=400)
 
 #     user = validate_token(auth.split(" ")[1])
 #     if not user:
-#         return Response({"message": "Invalid session"}, status=401)
+#         return Response({"message": "Invalid session", "code": "invalid_session"}, status=401)
 
 #     items = request.data.get("items", [])
 
 #     if not isinstance(items, list) or not items:
-#         return Response({"message": "Items are required."}, status=400)
+#         return Response({"message": "Items are required.", "code": "items_required"}, status=400)
 
 #     # -------- Customer Info --------
 #     required_fields = [
@@ -1297,7 +1305,7 @@ from decimal import Decimal, ROUND_HALF_UP
 #         coupon_code = item.get("coupon_code")
 
 #         if quantity <= 0:
-#             return Response({"message": "Invalid quantity."}, status=400)
+#             return Response({"message": "Invalid quantity.", "code": "invalid_quantity"}, status=400)
 
 #         try:
 #             variant = ProductVariant.objects.select_related("product").get(
@@ -1432,7 +1440,7 @@ from decimal import Decimal, ROUND_HALF_UP
 #     if not data.get("status"):
 #         order.status = "failed"
 #         order.save(update_fields=["status"])
-#         return Response({"message": "Payment initialization failed."}, status=400)
+#         return Response({"message": "Payment initialization failed.", "code": "payment_initialization_failed"}, status=400)
 
 #     return Response({
 #         "authorization_url": data["data"]["authorization_url"],
@@ -1450,15 +1458,15 @@ def buy_now(request):
     auth = request.headers.get("Authorization")
 
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid token"}, status=400)
+        return Response({"message": "Invalid token", "code": "invalid_token"}, status=400)
 
     user = validate_token(auth.split(" ")[1])
     if not user:
-        return Response({"message": "Invalid session"}, status=401)
+        return Response({"message": "Invalid session", "code": "invalid_session"}, status=401)
 
     items = request.data.get("items", [])
     if not items:
-        return Response({"message": "Items required"}, status=400)
+        return Response({"message": "Items required", "code": "items_required"}, status=400)
 
     required_fields = ["first_name","last_name","email","phone_number","address","city","state","postcode"]
 
@@ -1475,15 +1483,15 @@ def buy_now(request):
     for item in items:
         variant = ProductVariant.objects.filter(id=item["variant_id"], is_active=True).first()
         if not variant:
-            return Response({"message": "Invalid product"}, status=404)
+            return Response({"message": "Invalid product", "code": "invalid_product"}, status=404)
 
         quantity = int(item.get("quantity", 1))
 
         if quantity <= 0:
-            return Response({"message": "Invalid quantity"}, status=400)
+            return Response({"message": "Invalid quantity", "code": "invalid_quantity"}, status=400)
 
         if variant.product.is_limited_stock and variant.stock_qty < quantity:
-            return Response({"message": "Insufficient stock"}, status=400)
+            return Response({"message": "Insufficient stock", "code": "insufficient_stock"}, status=400)
 
         base_price = (variant.price * quantity).quantize(Decimal("0.01"))
         tax = (base_price * TAX_RATE).quantize(Decimal("0.01"))
@@ -1517,9 +1525,9 @@ def buy_now(request):
     if coupon_code:
         coupon = Coupon.objects.filter(code=coupon_code).first()
         if not coupon:
-            return Response({"message": "Invalid coupon code."}, status=400)
+            return Response({"message": "Invalid coupon code.", "code": "invalid_coupon_code"}, status=400)
         if not coupon.is_valid_now():
-            return Response({"message": "This coupon is not valid at the moment."}, status=400)
+            return Response({"message": "This coupon is not valid at the moment.", "code": "coupon_not_valid_moment"}, status=400)
         if subtotal < coupon.min_order_amount:
             return Response(
                 {"message": f"This coupon needs a minimum order of {coupon.min_order_amount}."},
@@ -1602,7 +1610,7 @@ def buy_now(request):
     ).json()
 
     if not response.get("status"):
-        return Response({"message": "Payment init failed"}, status=400)
+        return Response({"message": "Payment init failed", "code": "payment_init_failed"}, status=400)
 
     return Response({
         "authorization_url": response["data"]["authorization_url"],
@@ -1621,7 +1629,7 @@ from .services.mintroute import get_brands, get_denominations, purchase_voucher
 #     reference = request.data.get("reference")
 
 #     if not reference:
-#         return Response({"message": "reference is required."}, status=400)
+#         return Response({"message": "reference is required.", "code": "reference_required"}, status=400)
 
 #     headers = {
 #         "Authorization": f"Bearer {settings.PAYSTACK_SECRET_KEY}",
@@ -1632,12 +1640,12 @@ from .services.mintroute import get_brands, get_denominations, purchase_voucher
 #     paystack_response = response.json()
 
 #     if not paystack_response.get("status"):
-#         return Response({"message": "Verification failed."}, status=400)
+#         return Response({"message": "Verification failed.", "code": "verification_failed"}, status=400)
 
 #     data = paystack_response.get("data", {})
 
 #     if data.get("status") != "success":
-#         return Response({"message": "Payment not successful."}, status=400)
+#         return Response({"message": "Payment not successful.", "code": "payment_not_successful"}, status=400)
 
 #     metadata = data.get("metadata", {})
 #     order_id = metadata.get("order_id")
@@ -1647,7 +1655,7 @@ from .services.mintroute import get_brands, get_denominations, purchase_voucher
 #     ).filter(id=order_id).first()
 
 #     if not order:
-#         return Response({"message": "Order not found."}, status=404)
+#         return Response({"message": "Order not found.", "code": "order_not_found"}, status=404)
 
 #     if order.status == "paid":
 #         return Response({"message": "Already verified."}, status=200)
@@ -1655,7 +1663,7 @@ from .services.mintroute import get_brands, get_denominations, purchase_voucher
 #     expected_amount_kobo = int(order.total * 100)
 
 #     if data.get("amount") != expected_amount_kobo:
-#         return Response({"message": "Amount mismatch."}, status=400)
+#         return Response({"message": "Amount mismatch.", "code": "amount_mismatch"}, status=400)
 
 #     # -------- Extract Paystack Info --------
 #     transaction_id = str(data.get("id"))
@@ -1724,7 +1732,7 @@ from .services.mintroute import get_brands, get_denominations, purchase_voucher
 #                 if variant.stock_qty < item.quantity:
 #                     order.status = "failed"
 #                     order.save(update_fields=["status"])
-#                     return Response({"message": "Stock inconsistency"}, status=400)
+#                     return Response({"message": "Stock inconsistency", "code": "stock_inconsistency"}, status=400)
 
 #                 variant.stock_qty -= item.quantity
 #                 variant.save(update_fields=["stock_qty"])
@@ -1781,7 +1789,7 @@ def verify_paystack_payment(request):
     reference = request.data.get("reference")
 
     if not reference:
-        return Response({"message": "Reference required"}, status=400)
+        return Response({"message": "Reference required", "code": "reference_required"}, status=400)
 
     verify = requests.get(
         f"https://api.paystack.co/transaction/verify/{reference}",
@@ -1789,19 +1797,19 @@ def verify_paystack_payment(request):
     ).json()
 
     if not verify.get("status"):
-        return Response({"message": "Verification failed"}, status=400)
+        return Response({"message": "Verification failed", "code": "verification_failed"}, status=400)
 
     data = verify["data"]
 
     if data["status"] != "success":
-        return Response({"message": "Payment not successful"}, status=400)
+        return Response({"message": "Payment not successful", "code": "payment_not_successful"}, status=400)
 
     order_id = data["metadata"]["order_id"]
 
     order = Order.objects.prefetch_related("items__variant").filter(id=order_id).first()
 
     if not order:
-        return Response({"message": "Order not found"}, status=404)
+        return Response({"message": "Order not found", "code": "order_not_found"}, status=404)
 
     if order.status == "paid":
         return Response({"message": "Already processed"}, status=200)
@@ -1868,7 +1876,7 @@ def verify_paystack_payment(request):
 #     ).hexdigest()
 
 #     if signature != computed_signature:
-#         return Response({"message": "Invalid signature"}, status=400)
+#         return Response({"message": "Invalid signature", "code": "invalid_signature"}, status=400)
 
 #     payload = json.loads(body)
 #     event = payload.get("event")
@@ -1885,7 +1893,7 @@ def verify_paystack_payment(request):
 #     try:
 #         order = Order.objects.select_related().prefetch_related("items__variant__product").get(id=order_id)
 #     except Order.DoesNotExist:
-#         return Response({"message": "Order not found"}, status=404)
+#         return Response({"message": "Order not found", "code": "order_not_found"}, status=404)
 
 #     # Prevent double processing
 #     if order.status == "paid":
@@ -1940,7 +1948,7 @@ def verify_paystack_payment(request):
 #                 if variant.stock_qty < item.quantity:
 #                     order.status = "failed"
 #                     order.save(update_fields=["status"])
-#                     return Response({"message": "Stock inconsistency"}, status=400)
+#                     return Response({"message": "Stock inconsistency", "code": "stock_inconsistency"}, status=400)
 
 #                 variant.stock_qty -= item.quantity
 #                 variant.save(update_fields=["stock_qty"])
@@ -1990,14 +1998,14 @@ def paystack_webhook(request):
     # Paystack webhook, so reject before doing any work. (Prevents the later
     # `signature != computed` from silently passing on a None secret env.)
     if not signature:
-        return Response({"message": "Missing signature"}, status=400)
+        return Response({"message": "Missing signature", "code": "missing_signature"}, status=400)
 
     # Guard: PAYSTACK_SECRET_KEY may be unset in the environment (os.getenv -> None).
     # Calling .encode() on None raises AttributeError ('NoneType' has no attribute
     # 'encode'); treat an unconfigured key as a request we cannot verify -> 400.
     secret = settings.PAYSTACK_SECRET_KEY
     if not secret:
-        return Response({"message": "Webhook verification unavailable"}, status=400)
+        return Response({"message": "Webhook verification unavailable", "code": "webhook_verification_unavailable"}, status=400)
 
     computed = hmac.new(
         secret.encode(),
@@ -2008,16 +2016,16 @@ def paystack_webhook(request):
     # Constant-time compare (owner rule R72): `!=` returns at the first differing byte, which
     # lets a patient caller learn the signature one byte at a time. compare_digest does not.
     if not hmac.compare_digest(signature, computed):
-        return Response({"message": "Invalid signature"}, status=400)
+        return Response({"message": "Invalid signature", "code": "invalid_signature"}, status=400)
 
     # Guard: an empty or non-JSON body makes json.loads raise (ValueError /
     # JSONDecodeError). Bad payload -> 400, never 500.
     try:
         payload = json.loads(request.body)
     except (ValueError, TypeError):
-        return Response({"message": "Invalid payload"}, status=400)
+        return Response({"message": "Invalid payload", "code": "invalid_payload"}, status=400)
     if not isinstance(payload, dict):
-        return Response({"message": "Invalid payload"}, status=400)
+        return Response({"message": "Invalid payload", "code": "invalid_payload"}, status=400)
 
     if payload.get("event") != "charge.success":
         return Response({"message": "Ignored"}, status=200)
@@ -2028,11 +2036,11 @@ def paystack_webhook(request):
     # is missing rather than letting the lookup explode.
     data = payload.get("data") or {}
     if not isinstance(data, dict):
-        return Response({"message": "Invalid payload"}, status=400)
+        return Response({"message": "Invalid payload", "code": "invalid_payload"}, status=400)
     metadata = data.get("metadata") or {}
     order_id = metadata.get("order_id") if isinstance(metadata, dict) else None
     if not order_id:
-        return Response({"message": "order_id is required"}, status=400)
+        return Response({"message": "order_id is required", "code": "order_required"}, status=400)
 
     order = Order.objects.prefetch_related("items__variant").filter(id=order_id).first()
 
@@ -2097,11 +2105,11 @@ def test_brands(request):
 def get_all_fulfillments(request):
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
 
     user = validate_token(auth.split(" ")[1])
     if not user:
-        return Response({"message": "Invalid or expired session token."}, status=401)
+        return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
     
     fulfillments = Fulfillment.objects.all().order_by("-id")
 
@@ -2123,11 +2131,11 @@ def get_all_fulfillments(request):
 def get_my_orders(request):
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
 
     user = validate_token(auth.split(" ")[1])
     if not user:
-        return Response({"message": "Invalid or expired session token."}, status=401)
+        return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
 
     # prefetch items -> variant -> product so the new per-item product thumbnail (below) is
     # resolved without an N+1 across orders. OrderItem.variant is PROTECTed, so item.variant
@@ -2171,11 +2179,11 @@ def get_my_orders(request):
 def get_order_details(request):
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
 
     user = validate_token(auth.split(" ")[1])
     if not user:
-        return Response({"message": "Invalid or expired session token."}, status=401)
+        return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
 
     # `ref` is the order's public token or a legacy numeric id (owner rule R22); `order_id` stays
     # accepted for older callers. A legacy id answers the order PLUS `moved_to`, its token address,
@@ -2183,10 +2191,10 @@ def get_order_details(request):
     from afc_auth.slugs import resolve_by_token
     ref = request.GET.get("ref") or request.GET.get("order_id")
     if not ref:
-        return Response({"message": "ref is required."}, status=400)
+        return Response({"message": "ref is required.", "code": "ref_required"}, status=400)
     resolved, moved_to_token = resolve_by_token(Order, ref, "o", user=user)
     if resolved is None:
-        return Response({"message": "Order not found."}, status=404)
+        return Response({"message": "Order not found.", "code": "order_not_found"}, status=404)
     order = Order.objects.select_related("user").prefetch_related("items__variant__product").get(pk=resolved.pk)
 
     data = {
@@ -2223,21 +2231,21 @@ def get_order_details(request):
 def get_order_details_for_admin(request):
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
 
     user = validate_token(auth.split(" ")[1])
     if not user or not user.role == "admin":
-        return Response({"message": "Unauthorized access."}, status=403)
+        return Response({"message": "Unauthorized access.", "code": "unauthorized_access"}, status=403)
 
     # `ref` is the order's public token or a legacy numeric id (owner rule R22); `order_id`
     # stays accepted for older callers. A legacy id answers the order PLUS `moved_to`.
     from afc_auth.slugs import resolve_by_token
     ref = request.GET.get("ref") or request.GET.get("order_id")
     if not ref:
-        return Response({"message": "ref is required."}, status=400)
+        return Response({"message": "ref is required.", "code": "ref_required"}, status=400)
     resolved, moved_to_token = resolve_by_token(Order, ref, "o")
     if resolved is None:
-        return Response({"message": "Order not found."}, status=404)
+        return Response({"message": "Order not found.", "code": "order_not_found"}, status=404)
     order = Order.objects.select_related("user").prefetch_related("items__variant__product").get(pk=resolved.pk)
 
     data = {
@@ -2280,22 +2288,22 @@ def get_order_details_for_admin(request):
 def mark_order_as_paid(request):
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
 
     user = validate_token(auth.split(" ")[1])
     if not user or not user.role == "admin":
-        return Response({"message": "Unauthorized access."}, status=403)
+        return Response({"message": "Unauthorized access.", "code": "unauthorized_access"}, status=403)
 
     order_id = request.data.get("order_id")
     if not order_id:
-        return Response({"message": "order_id is required."}, status=400)
+        return Response({"message": "order_id is required.", "code": "order_required"}, status=400)
 
     try:
         order = Order.objects.select_related().prefetch_related("items__variant__product").get(
             id=order_id
         )
     except Order.DoesNotExist:
-        return Response({"message": "Order not found."}, status=404)
+        return Response({"message": "Order not found.", "code": "order_not_found"}, status=404)
     
     old_status = order.status
 
@@ -2346,20 +2354,20 @@ def mark_order_as_paid(request):
 def delete_coupon(request):
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
 
     user = validate_token(auth.split(" ")[1])
     if not user or not user.role == "admin":
-        return Response({"message": "Unauthorized access."}, status=403)
+        return Response({"message": "Unauthorized access.", "code": "unauthorized_access"}, status=403)
 
     coupon_id = request.data.get("coupon_id")
     if not coupon_id:
-        return Response({"message": "coupon_id is required."}, status=400)
+        return Response({"message": "coupon_id is required.", "code": "coupon_required"}, status=400)
 
     try:
         coupon = Coupon.objects.get(id=coupon_id)
     except Coupon.DoesNotExist:
-        return Response({"message": "Coupon not found."}, status=404)
+        return Response({"message": "Coupon not found.", "code": "coupon_not_found"}, status=404)
 
     coupon.delete()
 
@@ -2370,20 +2378,20 @@ def delete_coupon(request):
 def deactivate_coupon(request):
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
 
     user = validate_token(auth.split(" ")[1])
     if not user or not user.role == "admin":
-        return Response({"message": "Unauthorized access."}, status=403)
+        return Response({"message": "Unauthorized access.", "code": "unauthorized_access"}, status=403)
 
     coupon_id = request.data.get("coupon_id")
     if not coupon_id:
-        return Response({"message": "coupon_id is required."}, status=400)
+        return Response({"message": "coupon_id is required.", "code": "coupon_required"}, status=400)
 
     try:
         coupon = Coupon.objects.get(id=coupon_id)
     except Coupon.DoesNotExist:
-        return Response({"message": "Coupon not found."}, status=404)
+        return Response({"message": "Coupon not found.", "code": "coupon_not_found"}, status=404)
 
     coupon.is_active = False
     coupon.save(update_fields=["is_active"])
@@ -2395,20 +2403,20 @@ def deactivate_coupon(request):
 def activate_coupon(request):
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
 
     user = validate_token(auth.split(" ")[1])
     if not user or not user.role == "admin":
-        return Response({"message": "Unauthorized access."}, status=403)
+        return Response({"message": "Unauthorized access.", "code": "unauthorized_access"}, status=403)
 
     coupon_id = request.data.get("coupon_id")
     if not coupon_id:
-        return Response({"message": "coupon_id is required."}, status=400)
+        return Response({"message": "coupon_id is required.", "code": "coupon_required"}, status=400)
 
     try:
         coupon = Coupon.objects.get(id=coupon_id)
     except Coupon.DoesNotExist:
-        return Response({"message": "Coupon not found."}, status=404)
+        return Response({"message": "Coupon not found.", "code": "coupon_not_found"}, status=404)
 
     coupon.is_active = True
     coupon.save(update_fields=["is_active"])
@@ -2420,20 +2428,20 @@ def activate_coupon(request):
 def edit_coupon(request):
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
 
     user = validate_token(auth.split(" ")[1])
     if not user or not user.role == "admin":
-        return Response({"message": "Unauthorized access."}, status=403)
+        return Response({"message": "Unauthorized access.", "code": "unauthorized_access"}, status=403)
 
     coupon_id = request.data.get("coupon_id")
     if not coupon_id:
-        return Response({"message": "coupon_id is required."}, status=400)
+        return Response({"message": "coupon_id is required.", "code": "coupon_required"}, status=400)
 
     try:
         coupon = Coupon.objects.get(id=coupon_id)
     except Coupon.DoesNotExist:
-        return Response({"message": "Coupon not found."}, status=404)
+        return Response({"message": "Coupon not found.", "code": "coupon_not_found"}, status=404)
     
     old_coupon = {
         "code": coupon.code,
@@ -2461,22 +2469,22 @@ def edit_coupon(request):
         try:
             coupon.discount_value = Decimal(discount_value)
         except:
-            return Response({"message": "Invalid discount_value."}, status=400)
+            return Response({"message": "Invalid discount_value.", "code": "invalid_discount_value"}, status=400)
     if max_uses is not None:
         try:
             coupon.max_uses = int(max_uses)
         except:
-            return Response({"message": "Invalid max_uses."}, status=400)
+            return Response({"message": "Invalid max_uses.", "code": "invalid_max_uses"}, status=400)
     if min_order_amount is not None:
         try:
             coupon.min_order_amount = Decimal(min_order_amount)
         except:
-            return Response({"message": "Invalid min_order_amount."}, status=400)
+            return Response({"message": "Invalid min_order_amount.", "code": "invalid_min_order_amount"}, status=400)
     if expiry_date:
         try:
             coupon.end_at = timezone.datetime.fromisoformat(expiry_date)
         except:
-            return Response({"message": "Invalid expiry_date format."}, status=400)
+            return Response({"message": "Invalid expiry_date format.", "code": "invalid_expiry_date_format"}, status=400)
     if description is not None:
         coupon.description = description
         
@@ -2502,20 +2510,20 @@ def edit_coupon(request):
 def get_total_customer_savings(request):
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
 
     user = validate_token(auth.split(" ")[1])
     if not user or not user.role == "admin":
-        return Response({"message": "Unauthorized access."}, status=403)
+        return Response({"message": "Unauthorized access.", "code": "unauthorized_access"}, status=403)
 
     coupon_id = request.data.get("coupon_id")
     if not coupon_id:
-        return Response({"message": "coupon_id is required."}, status=400)
+        return Response({"message": "coupon_id is required.", "code": "coupon_required"}, status=400)
 
     try:
         coupon = Coupon.objects.get(id=coupon_id)
     except Coupon.DoesNotExist:
-        return Response({"message": "Coupon not found."}, status=404)
+        return Response({"message": "Coupon not found.", "code": "coupon_not_found"}, status=404)
 
 
     # get total savings without using Sum aggregation to avoid Decimal issues
@@ -2536,19 +2544,19 @@ def get_total_customer_savings(request):
 def get_total_coupon_uses(request):
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
 
     user = validate_token(auth.split(" ")[1])
     if not user or not user.role == "admin":
-        return Response({"message": "Unauthorized access."}, status=403)
+        return Response({"message": "Unauthorized access.", "code": "unauthorized_access"}, status=403)
 
     from afc_auth.slugs import resolve_or_redirect
     ref = request.data.get("ref") or request.data.get("coupon_id")
     if not ref:
-        return Response({"message": "ref is required."}, status=400)
+        return Response({"message": "ref is required.", "code": "ref_required"}, status=400)
     coupon, _moved = resolve_or_redirect(Coupon, ref)
     if coupon is None:
-        return Response({"message": "Coupon not found."}, status=404)
+        return Response({"message": "Coupon not found.", "code": "coupon_not_found"}, status=404)
 
     total_uses = Redemption.objects.filter(coupon=coupon).count()
 
@@ -2563,20 +2571,20 @@ def get_total_coupon_uses(request):
 def get_total_revenue_generated(request):
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
 
     user = validate_token(auth.split(" ")[1])
     if not user or not user.role == "admin":
-        return Response({"message": "Unauthorized access."}, status=403)
+        return Response({"message": "Unauthorized access.", "code": "unauthorized_access"}, status=403)
 
     coupon_id = request.data.get("coupon_id")
     if not coupon_id:
-        return Response({"message": "coupon_id is required."}, status=400)
+        return Response({"message": "coupon_id is required.", "code": "coupon_required"}, status=400)
 
     try:
         coupon = Coupon.objects.get(id=coupon_id)
     except Coupon.DoesNotExist:
-        return Response({"message": "Coupon not found."}, status=404)
+        return Response({"message": "Coupon not found.", "code": "coupon_not_found"}, status=404)
 
     total_revenue = Redemption.objects.filter(coupon=coupon).aggregate(
         total_revenue=models.Sum("final_amount_after_discount")
@@ -2593,20 +2601,20 @@ def get_total_revenue_generated(request):
 def get_weekly_usage_and_saving_generated(request):
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
 
     user = validate_token(auth.split(" ")[1])
     if not user or not user.role == "admin":
-        return Response({"message": "Unauthorized access."}, status=403)
+        return Response({"message": "Unauthorized access.", "code": "unauthorized_access"}, status=403)
 
     coupon_id = request.data.get("coupon_id")
     if not coupon_id:
-        return Response({"message": "coupon_id is required."}, status=400)
+        return Response({"message": "coupon_id is required.", "code": "coupon_required"}, status=400)
 
     try:
         coupon = Coupon.objects.get(id=coupon_id)
     except Coupon.DoesNotExist:
-        return Response({"message": "Coupon not found."}, status=404)
+        return Response({"message": "Coupon not found.", "code": "coupon_not_found"}, status=404)
 
     one_week_ago = timezone.now() - timezone.timedelta(days=7)
 
@@ -2643,7 +2651,7 @@ def get_coupon_conversion_rate(request):
     # Read the coupon slug from the query string instead: GET ?slug=<coupon-slug>.
     slug = request.GET.get("slug")
     if not slug:
-        return Response({"message": "slug query param is required."}, status=400)
+        return Response({"message": "slug query param is required.", "code": "slug_query_param_required"}, status=400)
 
     coupon = get_object_or_404(Coupon, slug=slug)
 
@@ -2684,21 +2692,21 @@ def get_coupon_conversion_rate(request):
 def get_coupon_details(request):
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
 
     user = validate_token(auth.split(" ")[1])
     if not user or not user.role == "admin":
-        return Response({"message": "Unauthorized access."}, status=403)
+        return Response({"message": "Unauthorized access.", "code": "unauthorized_access"}, status=403)
 
     # `ref` is the coupon's slug, a retired slug or a legacy numeric id (owner rule R22);
     # `coupon_id` stays accepted for older callers. A move comes back as `moved_to`.
     from afc_auth.slugs import resolve_or_redirect
     ref = request.data.get("ref") or request.data.get("coupon_id")
     if not ref:
-        return Response({"message": "ref is required."}, status=400)
+        return Response({"message": "ref is required.", "code": "ref_required"}, status=400)
     coupon, moved_to_slug = resolve_or_redirect(Coupon, ref)
     if coupon is None:
-        return Response({"message": "Coupon not found."}, status=404)
+        return Response({"message": "Coupon not found.", "code": "coupon_not_found"}, status=404)
 
     data = {
         "id": coupon.id,
@@ -2724,20 +2732,20 @@ def get_coupon_details(request):
 def get_coupon_details_with_code(request):
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
 
     user = validate_token(auth.split(" ")[1])
     if not user or not user.role == "admin":
-        return Response({"message": "Unauthorized access."}, status=403)
+        return Response({"message": "Unauthorized access.", "code": "unauthorized_access"}, status=403)
 
     coupon_code = request.data.get("coupon_code")
     if not coupon_code:
-        return Response({"message": "coupon_code is required."}, status=400)
+        return Response({"message": "coupon_code is required.", "code": "coupon_code_required"}, status=400)
 
     try:
         coupon = Coupon.objects.get(code=coupon_code)
     except Coupon.DoesNotExist:
-        return Response({"message": "Coupon not found."}, status=404)
+        return Response({"message": "Coupon not found.", "code": "coupon_not_found"}, status=404)
 
     data = {
         "id": coupon.id,
@@ -2836,12 +2844,12 @@ def create_category(request):
 
     name = (request.data.get("name") or "").strip()
     if not name:
-        return Response({"message": "name is required."}, status=400)
+        return Response({"message": "name is required.", "code": "name_required"}, status=400)
 
     # Reject duplicates up front for a clean message (the unique constraint would
     # otherwise surface as a 500 IntegrityError).
     if Category.objects.filter(name__iexact=name).exists():
-        return Response({"message": "A category with this name already exists."}, status=400)
+        return Response({"message": "A category with this name already exists.", "code": "category_name_already_exists"}, status=400)
 
     category = Category.objects.create(
         name=name,
@@ -2877,7 +2885,7 @@ def edit_category(request):
 
     category_id = request.data.get("category_id")
     if not category_id:
-        return Response({"message": "category_id is required."}, status=400)
+        return Response({"message": "category_id is required.", "code": "category_required"}, status=400)
 
     category = get_object_or_404(Category, id=category_id)
 
@@ -2885,10 +2893,10 @@ def edit_category(request):
     if name is not None:
         name = name.strip()
         if not name:
-            return Response({"message": "name cannot be empty."}, status=400)
+            return Response({"message": "name cannot be empty.", "code": "name_cannot_empty"}, status=400)
         # Guard against renaming onto another category's name.
         if Category.objects.filter(name__iexact=name).exclude(id=category.id).exists():
-            return Response({"message": "Another category already uses this name."}, status=400)
+            return Response({"message": "Another category already uses this name.", "code": "category_already_uses_name"}, status=400)
         category.name = name
 
     if "description" in request.data:
@@ -2901,7 +2909,7 @@ def edit_category(request):
         try:
             category.ordering = int(request.data.get("ordering") or 0)
         except (ValueError, TypeError):
-            return Response({"message": "ordering must be a number."}, status=400)
+            return Response({"message": "ordering must be a number.", "code": "ordering_number"}, status=400)
 
     category.save()
 
@@ -2931,7 +2939,7 @@ def delete_category(request):
 
     category_id = request.data.get("category_id")
     if not category_id:
-        return Response({"message": "category_id is required."}, status=400)
+        return Response({"message": "category_id is required.", "code": "category_required"}, status=400)
 
     category = get_object_or_404(Category, id=category_id)
 
@@ -3022,14 +3030,14 @@ def add_product_media(request):
 
     product_id = request.data.get("product_id")
     if not product_id:
-        return Response({"message": "product_id is required."}, status=400)
+        return Response({"message": "product_id is required.", "code": "product_required"}, status=400)
 
     product = get_object_or_404(Product, id=product_id)
 
     # Accept the field under `files` (multi) or fall back to a single `file`.
     files = request.FILES.getlist("files") or request.FILES.getlist("file")
     if not files:
-        return Response({"message": "No files uploaded."}, status=400)
+        return Response({"message": "No files uploaded.", "code": "no_files_uploaded"}, status=400)
 
     created, err = _attach_media(request, product, files)
     if err:
@@ -3053,7 +3061,7 @@ def delete_product_media(request):
 
     media_id = request.data.get("media_id")
     if not media_id:
-        return Response({"message": "media_id is required."}, status=400)
+        return Response({"message": "media_id is required.", "code": "media_required"}, status=400)
 
     media = get_object_or_404(ProductMedia, id=media_id)
     media.delete()

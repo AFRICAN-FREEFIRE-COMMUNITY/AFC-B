@@ -64,10 +64,10 @@ def _bearer_user(request):
     the auth failure modes are identical across the whole afc_auth surface."""
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return None, Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return None, Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
     user = validate_token(auth.split(" ")[1])
     if not user:
-        return None, Response({"message": "Invalid or expired session token."}, status=401)
+        return None, Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
     return user, None
 
 
@@ -203,7 +203,7 @@ def two_factor_verify(request):
 
     challenge = two_factor.get_challenge(token, purpose="login")
     if challenge is None:
-        return Response({"message": _GENERIC_CHALLENGE_ERROR}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": _GENERIC_CHALLENGE_ERROR, "code": "two_factor_verify_refused"}, status=status.HTTP_400_BAD_REQUEST)
 
     user = challenge.user
 
@@ -219,10 +219,10 @@ def two_factor_verify(request):
         challenge.save(update_fields=["attempts"])
         if challenge.attempts >= TwoFactorChallenge.MAX_ATTEMPTS:
             challenge.consume()
-            return Response({"message": _GENERIC_CHALLENGE_ERROR, "attempts_left": 0},
+            return Response({"message": _GENERIC_CHALLENGE_ERROR, "attempts_left": 0, "code": "two_factor_verify_refused"},
                             status=status.HTTP_429_TOO_MANY_REQUESTS)
         return Response({"message": _GENERIC_CHALLENGE_ERROR,
-                         "attempts_left": two_factor.attempts_left(challenge)},
+                         "attempts_left": two_factor.attempts_left(challenge), "code": "two_factor_verify_refused"},
                         status=status.HTTP_400_BAD_REQUEST)
 
     # ── Path B: the emailed code. ──
@@ -231,10 +231,10 @@ def two_factor_verify(request):
         return Response(_verified_session(request, user), status=status.HTTP_200_OK)
 
     if reason == "locked":
-        return Response({"message": _GENERIC_CHALLENGE_ERROR, "attempts_left": 0},
+        return Response({"message": _GENERIC_CHALLENGE_ERROR, "attempts_left": 0, "code": "two_factor_verify_refused"},
                         status=status.HTTP_429_TOO_MANY_REQUESTS)
     return Response({"message": _GENERIC_CHALLENGE_ERROR,
-                     "attempts_left": two_factor.attempts_left(challenge)},
+                     "attempts_left": two_factor.attempts_left(challenge), "code": "two_factor_verify_refused"},
                     status=status.HTTP_400_BAD_REQUEST)
 
 
@@ -256,7 +256,7 @@ def two_factor_resend(request):
     token = (request.data.get("challenge_token") or "").strip()
     challenge = two_factor.get_challenge(token, purpose="login")
     if challenge is None:
-        return Response({"message": _GENERIC_CHALLENGE_ERROR}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": _GENERIC_CHALLENGE_ERROR, "code": "two_factor_resend_refused"}, status=status.HTTP_400_BAD_REQUEST)
 
     issued = two_factor.issue_challenge(challenge.user, purpose="login")
     fresh = issued["challenge"] or challenge
@@ -328,15 +328,15 @@ def two_factor_send_code(request):
 
     purpose = (request.data.get("purpose") or "").strip()
     if purpose not in ("enable", "disable"):
-        return Response({"message": "purpose must be 'enable' or 'disable'."},
+        return Response({"message": "purpose must be 'enable' or 'disable'.", "code": "purpose_enable_disable"},
                         status=status.HTTP_400_BAD_REQUEST)
 
     already_on = two_factor.is_enabled_for(user)
     if purpose == "enable" and already_on:
-        return Response({"message": "Two-factor authentication is already on for this account."},
+        return Response({"message": "Two-factor authentication is already on for this account.", "code": "two_factor_authentication_already"},
                         status=status.HTTP_409_CONFLICT)
     if purpose == "disable" and not already_on:
-        return Response({"message": "Two-factor authentication is not on for this account."},
+        return Response({"message": "Two-factor authentication is not on for this account.", "code": "two_factor_authentication_not"},
                         status=status.HTTP_409_CONFLICT)
 
     # WHICH METHOD PROVES IT. For "disable" it must be the method actually guarding the account, so
@@ -358,10 +358,10 @@ def two_factor_send_code(request):
             "We have no verified email address for this account."
             if two_factor.get_method(issued["method"]).requires_delivery
             else "This account has no confirmed authenticator app."
-        )}, status=status.HTTP_400_BAD_REQUEST)
+        ), "code": "two_factor_send_code_refused"}, status=status.HTTP_400_BAD_REQUEST)
     if issued["challenge"] is None:
         return Response({"message": "Too many codes requested. Please try again in an hour.",
-                         "retry_after": issued["retry_after"]},
+                         "retry_after": issued["retry_after"], "code": "too_many_codes_requested"},
                         status=status.HTTP_429_TOO_MANY_REQUESTS)
 
     return Response({
@@ -400,19 +400,19 @@ def two_factor_enable(request):
         return err
 
     if two_factor.is_enabled_for(user):
-        return Response({"message": "Two-factor authentication is already on for this account."},
+        return Response({"message": "Two-factor authentication is already on for this account.", "code": "two_factor_authentication_already"},
                         status=status.HTTP_409_CONFLICT)
 
     challenge = two_factor.get_challenge(
         (request.data.get("challenge_token") or "").strip(), purpose="enable")
     # Belt and braces: the token must belong to THIS user, not merely be a valid enable challenge.
     if challenge is None or challenge.user_id != user.user_id:
-        return Response({"message": _GENERIC_CHALLENGE_ERROR}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": _GENERIC_CHALLENGE_ERROR, "code": "two_factor_enable_refused"}, status=status.HTTP_400_BAD_REQUEST)
 
     ok, _reason = two_factor.verify_code(challenge, request.data.get("code"))
     if not ok:
         return Response({"message": _wrong_code_message(user),
-                         "attempts_left": two_factor.attempts_left(challenge)},
+                         "attempts_left": two_factor.attempts_left(challenge), "code": "two_factor_enable_refused"},
                         status=status.HTTP_400_BAD_REQUEST)
 
     row, _created = TwoFactorSettings.objects.get_or_create(user=user)
@@ -456,24 +456,24 @@ def two_factor_disable(request):
         return err
 
     if not two_factor.is_enabled_for(user):
-        return Response({"message": "Two-factor authentication is not on for this account."},
+        return Response({"message": "Two-factor authentication is not on for this account.", "code": "two_factor_authentication_not"},
                         status=status.HTTP_409_CONFLICT)
 
     backup_code = (request.data.get("backup_code") or "").strip()
     if backup_code:
         if not two_factor.consume_backup_code(user, backup_code):
-            return Response({"message": "That recovery code is not valid."},
+            return Response({"message": "That recovery code is not valid.", "code": "recovery_code_not_valid"},
                             status=status.HTTP_400_BAD_REQUEST)
     else:
         challenge = two_factor.get_challenge(
             (request.data.get("challenge_token") or "").strip(), purpose="disable")
         if challenge is None or challenge.user_id != user.user_id:
-            return Response({"message": _GENERIC_CHALLENGE_ERROR},
+            return Response({"message": _GENERIC_CHALLENGE_ERROR, "code": "two_factor_disable_refused"},
                             status=status.HTTP_400_BAD_REQUEST)
         ok, _reason = two_factor.verify_code(challenge, request.data.get("code"))
         if not ok:
             return Response({"message": _wrong_code_message(user),
-                             "attempts_left": two_factor.attempts_left(challenge)},
+                             "attempts_left": two_factor.attempts_left(challenge), "code": "two_factor_disable_refused"},
                             status=status.HTTP_400_BAD_REQUEST)
 
     TwoFactorSettings.objects.filter(user=user).update(
@@ -519,18 +519,18 @@ def two_factor_regenerate_backup_codes(request):
         return err
 
     if not two_factor.is_enabled_for(user):
-        return Response({"message": "Two-factor authentication is not on for this account."},
+        return Response({"message": "Two-factor authentication is not on for this account.", "code": "two_factor_authentication_not"},
                         status=status.HTTP_409_CONFLICT)
 
     challenge = two_factor.get_challenge(
         (request.data.get("challenge_token") or "").strip(), purpose="disable")
     if challenge is None or challenge.user_id != user.user_id:
-        return Response({"message": _GENERIC_CHALLENGE_ERROR}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": _GENERIC_CHALLENGE_ERROR, "code": "two_factor_regenerate_backup_codes_refused"}, status=status.HTTP_400_BAD_REQUEST)
 
     ok, _reason = two_factor.verify_code(challenge, request.data.get("code"))
     if not ok:
         return Response({"message": _wrong_code_message(user),
-                         "attempts_left": two_factor.attempts_left(challenge)},
+                         "attempts_left": two_factor.attempts_left(challenge), "code": "two_factor_regenerate_backup_codes_refused"},
                         status=status.HTTP_400_BAD_REQUEST)
 
     codes = two_factor.generate_backup_codes(user)
@@ -647,7 +647,7 @@ def totp_confirm(request):
     # Fail before spending anything if there is nothing to confirm. A stale or missing enrolment is
     # a "press setup again" problem, not a wrong-code problem, so it says so.
     if not two_factor.pending_totp_secret(user):
-        return Response({"message": "That authenticator setup has expired. Start it again."},
+        return Response({"message": "That authenticator setup has expired. Start it again.", "code": "authenticator_setup_expired_start"},
                         status=status.HTTP_400_BAD_REQUEST)
 
     already_on = two_factor.is_enabled_for(user)
@@ -662,14 +662,14 @@ def totp_confirm(request):
     step = two_factor.check_totp_enrolment(user, request.data.get("code"))
     if step is None:
         return Response({"message": "That code from your authenticator app is not correct. Wait "
-                                    "for the next code and try again."},
+                                    "for the next code and try again.", "code": "code_authenticator_app_not"},
                         status=status.HTTP_400_BAD_REQUEST)
 
     # ── Step 2: prove the account AS IT STANDS. Always, in both cases (see the §3 header). ──
     backup_code = (request.data.get("backup_code") or "").strip()
     if backup_code:
         if not two_factor.consume_backup_code(user, backup_code):
-            return Response({"message": "That recovery code is not valid."},
+            return Response({"message": "That recovery code is not valid.", "code": "recovery_code_not_valid"},
                             status=status.HTTP_400_BAD_REQUEST)
     else:
         proof = two_factor.get_challenge(
@@ -679,16 +679,16 @@ def totp_confirm(request):
         # never be spendable as proof on an authenticated surface.
         if (proof is None or proof.user_id != user.user_id
                 or proof.purpose not in ("enable", "disable")):
-            return Response({"message": _GENERIC_CHALLENGE_ERROR},
+            return Response({"message": _GENERIC_CHALLENGE_ERROR, "code": "totp_confirm_refused"},
                             status=status.HTTP_400_BAD_REQUEST)
         ok, reason = two_factor.verify_code(proof, request.data.get("proof_code"))
         if not ok:
             if reason == "locked":
-                return Response({"message": _GENERIC_CHALLENGE_ERROR, "attempts_left": 0},
+                return Response({"message": _GENERIC_CHALLENGE_ERROR, "attempts_left": 0, "code": "totp_confirm_refused"},
                                 status=status.HTTP_429_TOO_MANY_REQUESTS)
             return Response({"message": "That confirmation code is not correct. Check the latest "
                                         "code and try again.",
-                             "attempts_left": two_factor.attempts_left(proof)},
+                             "attempts_left": two_factor.attempts_left(proof), "code": "confirmation_code_not_correct"},
                             status=status.HTTP_400_BAD_REQUEST)
 
     # ── Step 3: both proofs are in, so NOW the account changes. ──

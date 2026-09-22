@@ -207,7 +207,7 @@ def _get_ghost_or_404(ghost_team_id):
              .prefetch_related(GHOST_ROSTER_PREFETCH)
              .filter(pk=ghost_team_id).first())
     if not ghost:
-        return None, Response({"message": "Ghost team not found."}, status=status.HTTP_404_NOT_FOUND)
+        return None, Response({"message": "Ghost team not found.", "code": "ghost_team_not_found"}, status=status.HTTP_404_NOT_FOUND)
     return ghost, None
 
 
@@ -231,7 +231,7 @@ def _clean_players(raw):
         ign = str(ign).strip()
         if not ign:
             return None, Response(
-                {"message": "Every player must have a non-empty ign."},
+                {"message": "Every player must have a non-empty ign.", "code": "player_non_empty_ign"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
         cleaned.append({"ign": ign})
@@ -251,11 +251,11 @@ def _auth_user(request):
     """
     auth = request.headers.get("Authorization", "")
     if not auth.startswith("Bearer "):
-        return None, Response({"message": "Invalid or missing Authorization token."},
+        return None, Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"},
                               status=status.HTTP_400_BAD_REQUEST)
     user = validate_token(auth.split(" ", 1)[1])
     if not user:
-        return None, Response({"message": "Invalid or expired session token."},
+        return None, Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"},
                               status=status.HTTP_401_UNAUTHORIZED)
     return user, None
 
@@ -361,9 +361,9 @@ def ghost_create(request):
     country = (request.data.get("country") or "").strip()
     external_id = (request.data.get("external_id") or "").strip() or None
     if not team_name:
-        return Response({"message": "team_name is required."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "team_name is required.", "code": "team_name_required"}, status=status.HTTP_400_BAD_REQUEST)
     if not country:
-        return Response({"message": "country is required."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "country is required.", "code": "country_required"}, status=status.HTTP_400_BAD_REQUEST)
 
     players, err = _clean_players(request.data.get("players"))
     if err:
@@ -436,7 +436,7 @@ def ghost_player_create(request, ghost_team_id):
     # one ign, non-blank - same normalisation rule _clean_players applies per entry.
     ign = (request.data.get("ign") or "").strip()
     if not ign:
-        return Response({"message": "ign is required."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "ign is required.", "code": "ign_required"}, status=status.HTTP_400_BAD_REQUEST)
 
     with transaction.atomic():
         before = serialize_ghost(ghost)
@@ -473,7 +473,7 @@ def _get_player_or_404(player_id):
     """
     player = GhostPlayer.objects.select_related("ghost_team").filter(pk=player_id).first()
     if not player:
-        return None, Response({"message": "Ghost player not found."}, status=status.HTTP_404_NOT_FOUND)
+        return None, Response({"message": "Ghost player not found.", "code": "ghost_player_not_found"}, status=status.HTTP_404_NOT_FOUND)
     return player, None
 
 
@@ -514,7 +514,7 @@ def ghost_player_create_flat(request):
     # one ign, non-blank - same normalisation rule the nested route + _clean_players apply.
     ign = (request.data.get("ign") or "").strip()
     if not ign:
-        return Response({"message": "ign is required."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "ign is required.", "code": "ign_required"}, status=status.HTTP_400_BAD_REQUEST)
 
     # ghost_team_id is OPTIONAL: blank/absent => standalone parked player.
     ghost_team_id = (request.data.get("ghost_team_id") or "").strip() or None
@@ -647,12 +647,12 @@ def ghost_update(request, ghost_team_id):
         if "team_name" in request.data:
             team_name = (request.data.get("team_name") or "").strip()
             if not team_name:
-                return Response({"message": "team_name cannot be blank."}, status=status.HTTP_400_BAD_REQUEST)
+                return Response({"message": "team_name cannot be blank.", "code": "team_name_cannot_blank"}, status=status.HTTP_400_BAD_REQUEST)
             ghost.team_name = team_name
         if "country" in request.data:
             country = (request.data.get("country") or "").strip()
             if not country:
-                return Response({"message": "country cannot be blank."}, status=status.HTTP_400_BAD_REQUEST)
+                return Response({"message": "country cannot be blank.", "code": "country_cannot_blank"}, status=status.HTTP_400_BAD_REQUEST)
             ghost.country = country
         if "external_id" in request.data:
             ghost.external_id = (request.data.get("external_id") or "").strip() or None
@@ -695,7 +695,7 @@ def ghost_delete(request, ghost_team_id):
 
     if ghost.claim_status == "claimed":
         return Response(
-            {"message": "Cannot delete a claimed ghost team. Revoke the claim first."},
+            {"message": "Cannot delete a claimed ghost team. Revoke the claim first.", "code": "cannot_delete_claimed_ghost"},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
@@ -744,7 +744,7 @@ def ghost_approve_claim(request, ghost_team_id):
     # there must be a PENDING claim with a target team to approve (set by the request endpoint).
     if ghost.claim_status != "pending" or not ghost.claimed_by_id:
         return Response(
-            {"message": "No pending claim to approve."},
+            {"message": "No pending claim to approve.", "code": "no_pending_claim_approve"},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
@@ -755,7 +755,7 @@ def ghost_approve_claim(request, ghost_team_id):
         try:
             summary = claims.reattribute_ghost_team(ghost, ghost.claimed_by, user)
         except claims.ClaimConflict as conflict:
-            return Response({"message": str(conflict)}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"message": str(conflict), "code": "ghost_approve_claim_refused"}, status=status.HTTP_400_BAD_REQUEST)
 
         # only after a clean re-attribution: mark the ghost claimed.
         ghost.claim_status = "claimed"
@@ -796,11 +796,11 @@ def _read_claim_evidence(request):
         return None, None
     if f.size > MAX_CLAIM_EVIDENCE_BYTES:
         return None, Response(
-            {"message": "That image is larger than 5MB. Please upload a smaller one."},
+            {"message": "That image is larger than 5MB. Please upload a smaller one.", "code": "image_larger_upload_smaller"},
             status=status.HTTP_400_BAD_REQUEST)
     if (getattr(f, "content_type", "") or "").lower() not in _CLAIM_EVIDENCE_TYPES:
         return None, Response(
-            {"message": "Please upload an image (PNG, JPEG, WEBP or GIF)."},
+            {"message": "Please upload an image (PNG, JPEG, WEBP or GIF).", "code": "upload_image_png_jpeg"},
             status=status.HTTP_400_BAD_REQUEST)
     return f, None
 
@@ -839,13 +839,13 @@ def ghost_team_request_claim(request, ghost_team_id):
     from afc_team.models import Team
     team_id = request.data.get("team_id")
     if not team_id:
-        return Response({"message": "team_id is required."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "team_id is required.", "code": "team_required"}, status=status.HTTP_400_BAD_REQUEST)
     team = Team.objects.filter(pk=team_id).first()
     if not team:
-        return Response({"message": "Team not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "Team not found.", "code": "team_not_found"}, status=status.HTTP_404_NOT_FOUND)
     if not _user_can_act_for_team(user, team):
         return Response(
-            {"message": "You must be the owner, captain, or a manager of this team to claim for it."},
+            {"message": "You must be the owner, captain, or a manager of this team to claim for it.", "code": "owner_captain_manager_team"},
             status=status.HTTP_403_FORBIDDEN,
         )
 
@@ -917,7 +917,7 @@ def ghost_reject_claim(request, ghost_team_id):
 
     if ghost.claim_status != "pending":
         return Response(
-            {"message": "No pending claim to reject."},
+            {"message": "No pending claim to reject.", "code": "no_pending_claim_reject"},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
@@ -1028,7 +1028,7 @@ def ghost_player_approve_claim(request, player_id):
 
     if player.claim_status != "pending" or not player.claimed_by_id:
         return Response(
-            {"message": "No pending claim to approve."},
+            {"message": "No pending claim to approve.", "code": "no_pending_claim_approve"},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
@@ -1037,7 +1037,7 @@ def ghost_player_approve_claim(request, player_id):
         try:
             summary = claims.reattribute_ghost_player(player, player.claimed_by, user)
         except claims.ClaimConflict as conflict:
-            return Response({"message": str(conflict)}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"message": str(conflict), "code": "ghost_player_approve_claim_refused"}, status=status.HTTP_400_BAD_REQUEST)
 
         player.claim_status = "claimed"
         player.claimed_at = timezone.now()
@@ -1075,7 +1075,7 @@ def ghost_player_reject_claim(request, player_id):
 
     if player.claim_status != "pending":
         return Response(
-            {"message": "No pending claim to reject."},
+            {"message": "No pending claim to reject.", "code": "no_pending_claim_reject"},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
@@ -1122,7 +1122,7 @@ def ghost_revoke_claim(request, ghost_team_id):
 
     if ghost.claim_status == "unclaimed":
         return Response(
-            {"message": "Ghost team is not claimed; nothing to revoke."},
+            {"message": "Ghost team is not claimed; nothing to revoke.", "code": "ghost_team_not_claimed"},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
@@ -1210,11 +1210,11 @@ def _resolve_real_team(team_id):
     """(team, error_response). One place turns a posted team_id into a real afc_team.Team."""
     from afc_team.models import Team
     if not team_id:
-        return None, Response({"message": "team_id is required."},
+        return None, Response({"message": "team_id is required.", "code": "team_required"},
                               status=status.HTTP_400_BAD_REQUEST)
     team = Team.objects.filter(pk=team_id).first()
     if team is None:
-        return None, Response({"message": "No team with that id."},
+        return None, Response({"message": "No team with that id.", "code": "no_team"},
                               status=status.HTTP_400_BAD_REQUEST)
     return team, None
 
@@ -1257,7 +1257,7 @@ def ghost_attribute(request, ghost_team_id):
     try:
         after = _attribute_one(ghost, team, user, reason, move_history)
     except claims.ClaimConflict as conflict:
-        return Response({"message": str(conflict)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": str(conflict), "code": "ghost_attribute_refused"}, status=status.HTTP_400_BAD_REQUEST)
     return Response(after)
 
 
@@ -1283,7 +1283,7 @@ def ghost_attribute_bulk(request):
 
     items = request.data.get("items")
     if not isinstance(items, list) or not items:
-        return Response({"message": "items must be a non-empty list."},
+        return Response({"message": "items must be a non-empty list.", "code": "items_non_empty_list"},
                         status=status.HTTP_400_BAD_REQUEST)
 
     # ONE choice for the whole batch: this endpoint IS the "apply to all" answer, so a per-item
