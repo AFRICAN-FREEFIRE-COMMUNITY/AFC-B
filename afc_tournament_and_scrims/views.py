@@ -26,6 +26,7 @@ from afc_tournament_and_scrims import scoring as scoring_lib
 # The ONE place a team's per-map result becomes stats rows, shared with the team
 # submission approval endpoint so both produce identical rows. See result_writes.py.
 from afc_tournament_and_scrims import result_writes
+from afc_tournament_and_scrims import capture_rich_stats
 # Open-roster events (owner 2026-09-11): the save-time side effect and the one-team-per-player
 # check every roster door shares. See afc_tournament_and_scrims/open_roster.py.
 from afc_tournament_and_scrims import open_roster
@@ -14660,6 +14661,9 @@ def get_all_leaderboard_details_for_event(request):
                                 "kills",
                                 "damage",
                                 "assists",
+                                # the rich per-player stats (AFC Capture / debugger backfill), one
+                                # declaration in capture_rich_stats.RICH_PLAYER_FIELDS (R24)
+                                *capture_rich_stats.RICH_PLAYER_FIELDS,
                             )
                         )
 
@@ -20557,12 +20561,48 @@ def _design_row_capacity(design, size):
         return design.max_rows or 16
 
 
-def _overlay_rows_from_standings(standings, max_rows, request):
+def _overlay_rich_team_sums(stats_filter):
+    """Per-team sums of the rich per-player stats (AFC Capture / debugger backfill) over the player
+    rows matching ``stats_filter`` (TournamentPlayerMatchStats filter kwargs naming the matches in
+    scope). ``{tournament_team_id: {deaths, knockdowns, knocked, headshots, assists, revives_received,
+    grenades_used, grenade_kills, gloowall_used, medkit_used, survival_time, most_used_weapon}}``.
+    survival_time = the sum over the team's maps of its longest-surviving player; most_used_weapon =
+    the weapon id most of its players' rows name ("" when none). Only rows with rich_stats_filled
+    count, so a map uploaded by hand contributes nothing rather than zeros. Owner 2026-09-22 (inbox
+    #36): the site-side home for what the capture client counts."""
+    from collections import Counter as _Counter
+    from django.db.models import Max as _Max
+    qs = TournamentPlayerMatchStats.objects.filter(rich_stats_filled=True, **stats_filter)
+    sums = {}
+    agg = {f: Sum(f) for f in capture_rich_stats.RICH_TEAM_SUM_FIELDS}
+    for row in qs.values("team_stats__tournament_team_id").annotate(**agg):
+        tt = row["team_stats__tournament_team_id"]
+        sums[tt] = {f: int(row.get(f) or 0) for f in capture_rich_stats.RICH_TEAM_SUM_FIELDS}
+        sums[tt]["survival_time"] = 0
+        sums[tt]["most_used_weapon"] = ""
+    for row in (qs.values("team_stats__tournament_team_id", "team_stats_id")
+                  .annotate(longest=_Max("survival_seconds"))):
+        tt = row["team_stats__tournament_team_id"]
+        if tt in sums:
+            sums[tt]["survival_time"] += int(row["longest"] or 0)
+    weapons = {}
+    for tt, weapon in qs.exclude(most_used_weapon="").values_list(
+            "team_stats__tournament_team_id", "most_used_weapon"):
+        weapons.setdefault(tt, _Counter())[weapon] += 1
+    for tt, counter in weapons.items():
+        if tt in sums:
+            sums[tt]["most_used_weapon"] = counter.most_common(1)[0][0]
+    return sums
+
+
+def _overlay_rows_from_standings(standings, max_rows, request, stats_filter=None):
     """Map an already-aggregated round_robin standings list -> the overlay feed's field_type rows
-    (team logos as ABSOLUTE URLs, the 8 live-only rich stats defaulted to 0/""). SHARED by the
-    per-group/stage path (_overlay_standings_rows) and the broadcast CUMULATIVE path
-    (_overlay_cumulative_rows), so every overlay standings surface emits identical row shapes."""
+    (team logos as ABSOLUTE URLs, the rich stats summed from the maps in scope when ``stats_filter``
+    names them, else 0/""). SHARED by the per-group/stage path (_overlay_standings_rows) and the
+    broadcast CUMULATIVE path (_overlay_cumulative_rows), so every overlay standings surface emits
+    identical row shapes."""
     standings = standings[: max(1, max_rows)]
+    rich_by_tt = _overlay_rich_team_sums(stats_filter) if stats_filter else {}
 
     # Team logos in bulk -> absolute URLs (tournament_team_id -> URL). Mirrors event_stage_graphic's
     # logo_by_tt, but returns .url (build_absolute_uri) instead of .path for the browser overlay.
@@ -20596,6 +20636,7 @@ def _overlay_rows_from_standings(standings, max_rows, request):
     rows = []
     for i, r in enumerate(standings):
         tt_id = r["tournament_team_id"]
+        rich = rich_by_tt.get(tt_id, {})
         rows.append({
             "pos": i + 1,
             "team_name": r.get("team_name") or "-",
@@ -20620,21 +20661,24 @@ def _overlay_rows_from_standings(standings, max_rows, request):
             # single group/stage slice; 0 on the cumulative path. Lets a design place a dedicated
             # "rush points" column; total_points already includes it either way.
             "carry_over_points": r.get("carry_over_points", 0),
-            # ── LIVE-ONLY rich stats (owner 2026-07-01, spec §12) ──────────────────────────────────
-            # These 8 exist ONLY in the Tier-2 debugger stream (the live_push snapshot); the OFFICIAL
-            # per-round standings do NOT carry them - MatchResult_*.log / round_robin standings are
-            # kills-only (see memory project_freefire_live_capture §2b). We still emit them here,
-            # defaulted to 0 (blank for the textual most_used_weapon), so a design column bound to one
-            # renders 0/"" rather than "undefined" in official mode. In LIVE mode the pushed snapshot
-            # already carries the real values as-is and this official mapping isn't used.
-            "deaths": 0,
-            "knockdowns": 0,
-            "headshots": 0,
-            "most_used_weapon": "",
-            "survival_time": 0,
-            "revives_received": 0,
-            "gloowall_used": 0,
-            "medkit_used": 0,
+            # ── rich stats (owner 2026-07-01 spec §12; stored on the site since 2026-09-22) ──────
+            # In LIVE mode the pushed snapshot carries them as the capture client counts them. In
+            # OFFICIAL mode they are the per-team sums of the player rows of the maps in scope that a
+            # capture upload (or a debugger-log backfill) filled; a map entered by hand contributes
+            # nothing, so a column reads 0/"" rather than "undefined". Same keys on both paths.
+            "deaths": rich.get("deaths", 0),
+            "knockdowns": rich.get("knockdowns", 0),
+            "knocked": rich.get("knocked", 0),
+            "headshots": rich.get("headshots", 0),
+            "assists": rich.get("assists", 0),
+            "most_used_weapon": rich.get("most_used_weapon", ""),
+            "survival_time": rich.get("survival_time", 0),
+            "revives_received": rich.get("revives_received", 0),
+            "revives": rich.get("revives_received", 0),
+            "gloowall_used": rich.get("gloowall_used", 0),
+            "medkit_used": rich.get("medkit_used", 0),
+            "grenades_used": rich.get("grenades_used", 0),
+            "grenade_kills": rich.get("grenade_kills", 0),
         })
     return rows
 
@@ -20733,7 +20777,9 @@ def _overlay_standings_rows(event, stage, group, max_rows, request):
     # Team events only carry standings + Point-Rush seeding/carry (solo overlay returns [] upstream).
     if event.participant_type != "solo":
         standings = _overlay_seed_and_carry(list(standings), event, carry_stage, group)
-    return _overlay_rows_from_standings(standings, max_rows, request)
+    stats_filter = ({"team_stats__match__group": group} if group is not None
+                    else {"team_stats__match__group__stage": stage})
+    return _overlay_rows_from_standings(standings, max_rows, request, stats_filter=stats_filter)
 
 
 def _overlay_cumulative_rows(event, group_ids, max_rows, request):
@@ -20746,12 +20792,14 @@ def _overlay_cumulative_rows(event, group_ids, max_rows, request):
     from .models import TournamentTeamMatchStats
     if group_ids is None:
         qs = TournamentTeamMatchStats.objects.filter(match__group__stage__event=event)
+        stats_filter = {"team_stats__match__group__stage__event": event}
     else:
         qs = TournamentTeamMatchStats.objects.filter(match__group_id__in=group_ids)
+        stats_filter = {"team_stats__match__group_id__in": group_ids}
     # event-level tie-breakers apply to the cumulative scopes (owner 2026-07-02); the per-group and
     # per-stage overlay slices go through group_standings/cumulative_standings which resolve their own.
     standings = round_robin._aggregate_team_standings(qs, event=event)
-    return _overlay_rows_from_standings(standings, max_rows, request)
+    return _overlay_rows_from_standings(standings, max_rows, request, stats_filter=stats_filter)
 
 
 # ── Per-overlay COMBINE spec (owner 2026-07-05, complaint C) ──────────────────────────────────────
@@ -22347,6 +22395,24 @@ def upload_team_match_result(request):
 
         match.result_inputted = True
         match.save(update_fields=["result_inputted"])
+        # ── AFC Capture rich stats (owner 2026-09-22, inbox #36): the capture client attaches its
+        # per-player snapshot of this map as `rich_stats` beside the file; fill the rows the writer just
+        # created, matched by UID. Best-effort: a bad payload is reported, never fatal. See
+        # capture_rich_stats.py for the payload and the rules.
+        rich_stats_applied = 0
+        rich_stats_error = ""
+        if not dry_run:
+            _rich_payload, _rich_reason = capture_rich_stats.parse_rich_stats(request.data.get("rich_stats"))
+            if _rich_payload is not None:
+                try:
+                    rich_stats_applied = capture_rich_stats.apply_capture_rich_stats(match, _rich_payload)
+                except Exception:
+                    import logging
+                    logging.getLogger("afc_tournament_and_scrims").exception(
+                        "capture rich stats failed for match %s", match.match_id)
+                    rich_stats_error = "apply_failed"
+            elif _rich_reason != "absent":
+                rich_stats_error = _rich_reason
 
         # AUDIT TRAIL (owner 2026-07-07 "store the match files so they can be checked later if needed"):
         # keep the exact .log that produced this result. Append a MatchResultLog per real upload (not on
@@ -22458,6 +22524,8 @@ def upload_team_match_result(request):
         "parsed_teams": len(parsed_teams),
         "saved_teams": len(created_team_stats),        # on dry_run: teams that WOULD be saved
         "saved_players": len(credited_player_rows),    # on dry_run: players that WOULD be credited
+        "rich_stats_applied": rich_stats_applied,      # player rows filled from the capture client's `rich_stats`
+        "rich_stats_error": rich_stats_error,          # "" | not_json | bad_shape | apply_failed (never fatal)
         "missing_teams": missing_teams[:20],          # team blocks where NO player UID matched + name unknown
         # Every team registered for this event (id + name) so the FE missing-teams resolver can offer an
         # "attribute these points to..." dropdown (owner 2026-06-30). Re-uploading with the chosen ids in

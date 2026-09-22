@@ -889,9 +889,18 @@ def _booyah_player_rows(event, win, team_row, request):
             # (rich_stats_filled), 0 otherwise - the same contract the leaderboard columns carry.
             "deaths": getattr(stats, "deaths", 0),
             "knockdowns": getattr(stats, "knockdowns", 0),
+            "knocked": getattr(stats, "knocked", 0),
             "headshots": getattr(stats, "headshots", 0),
             "revives_received": getattr(stats, "revives_received", 0),
+            "revives": getattr(stats, "revives_received", 0),
             "survival_time": getattr(stats, "survival_seconds", 0),
+            # AFC Capture 1.4.0 additions (owner 2026-09-22): thrown / grenade kills / items / weapon.
+            "grenades_used": getattr(stats, "grenades_used", 0),
+            "grenade_kills": getattr(stats, "grenade_kills", 0),
+            "gloowall_used": getattr(stats, "gloowall_used", 0),
+            "medkit_used": getattr(stats, "medkit_used", 0),
+            "most_used_weapon": getattr(stats, "most_used_weapon", "") or "",
+            "rich_stats_filled": bool(getattr(stats, "rich_stats_filled", False)),
         }
 
     played = list(

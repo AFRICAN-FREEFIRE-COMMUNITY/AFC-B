@@ -1695,6 +1695,23 @@ class TournamentPlayerMatchStats(models.Model):
     revives_received = models.PositiveIntegerField(default=0)
     survival_seconds = models.PositiveIntegerField(default=0)
     rich_stats_filled = models.BooleanField(default=False)
+    # ── the stats AFC Capture 1.4.0 counts live (owner 2026-09-22, inbox #36) ──────────────────────
+    # Written by capture_rich_stats.apply_capture_rich_stats when the capture client attaches its
+    # per-player snapshot (`rich_stats`) to the map's MatchResult upload, matched by player UID.
+    # knocked = times this player was knocked; grenades_used = throwables thrown (every GRENADE*
+    # counter drop); grenade_kills = kills the game tagged with a grenade weapon id (a lower bound:
+    # ~60% of kills carry a weapon id); gloowall / medkit = items used; most_used_weapon = the
+    # weapon id behind most of the player's kills ("" when none carried one). `assists` above is
+    # reused for KNOCK assists (this player knocked, a teammate or anyone else finished) since the
+    # game logs no damage. rich_stats_source says which path filled the row so a screen can say so.
+    knocked = models.PositiveIntegerField(default=0)
+    grenades_used = models.PositiveIntegerField(default=0)
+    grenade_kills = models.PositiveIntegerField(default=0)
+    gloowall_used = models.PositiveIntegerField(default=0)
+    medkit_used = models.PositiveIntegerField(default=0)
+    most_used_weapon = models.CharField(max_length=16, blank=True, default="")
+    RICH_STATS_SOURCES = (("", "none"), ("backfill", "debugger log upload"), ("capture", "AFC Capture"))
+    rich_stats_source = models.CharField(max_length=16, blank=True, default="", choices=RICH_STATS_SOURCES)
 
     # ── the in-game role this player held WHEN THIS MATCH WAS PLAYED (owner 2026-08-04) ──────────
     # The precise anchor for role history: the per-match stats row is written at the moment a result
