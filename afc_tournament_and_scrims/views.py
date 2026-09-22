@@ -667,7 +667,7 @@ def validate_placements(placements, noun="team"):
 #     session_token = request.headers.get("Authorization")
     
 #     if not session_token:
-#         return Response({"error": "Unauthorized"}, status=status.HTTP_401_UNAUTHORIZED)
+#         return Response({"error": "Unauthorized", "code": "validate_placements_refused"}, status=status.HTTP_401_UNAUTHORIZED)
 
 #     user = validate_token(session_token)
 #     if not user:
@@ -678,7 +678,7 @@ def validate_placements(placements, noun="team"):
 
 #     # Ensure only admins and moderators can create leaderboards
 #     if user.role not in ["admin", "moderator"]:
-#         return Response({"error": "Permission denied"}, status=status.HTTP_403_FORBIDDEN)
+#         return Response({"error": "Permission denied", "code": "validate_placements_refused"}, status=status.HTTP_403_FORBIDDEN)
 
 #     leaderboard_name = request.data.get("leaderboard_name")
 #     event_id = request.data.get("event_id")
@@ -686,12 +686,12 @@ def validate_placements(placements, noun="team"):
 #     group = request.data.get("group", None)  # Optional field
 
 #     if not all([leaderboard_name, event_id, stage]):
-#         return Response({"error": "Missing required fields"}, status=status.HTTP_400_BAD_REQUEST)
+#         return Response({"error": "Missing required fields", "code": "validate_placements_refused"}, status=status.HTTP_400_BAD_REQUEST)
 
 #     try:
 #         event = Event.objects.get(event_id=event_id)
 #     except ObjectDoesNotExist:
-#         return Response({"error": "Event not found"}, status=status.HTTP_404_NOT_FOUND)
+#         return Response({"error": "Event not found", "code": "validate_placements_refused"}, status=status.HTTP_404_NOT_FOUND)
 
 #     leaderboard = Leaderboard.objects.create(
 #         leaderboard_name=leaderboard_name,
@@ -2027,17 +2027,17 @@ def set_event_tier(request, event_id):
     """
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
     user = validate_token(auth.split(" ")[1])
     if not user:
-        return Response({"message": "Invalid or expired session token."}, status=401)
+        return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
     # Gate: only a super admin or head_admin may touch the tier (not event_admins/organizers).
     if not _is_head_or_super_admin(user):
-        return Response({"message": "Only a head or super admin can override an event's tier."}, status=403)
+        return Response({"message": "Only a head or super admin can override an event's tier.", "code": "head_super_admin_override"}, status=403)
 
     event = Event.objects.filter(event_id=event_id).first()
     if not event:
-        return Response({"message": "Event not found."}, status=404)
+        return Response({"message": "Event not found.", "code": "event_not_found"}, status=404)
 
     if request.data.get("reset"):
         # Clear the manual lock + re-classify from the rules.
@@ -2061,12 +2061,12 @@ def create_event(request):
     # ---------------- AUTH ----------------
     session_token = request.headers.get("Authorization")
     if not session_token or not session_token.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
 
     token = session_token.split(" ")[1]
     user = validate_token(token)
     if not user:
-        return Response({"message": "Invalid or expired session token."}, status=status.HTTP_401_UNAUTHORIZED)
+        return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=status.HTTP_401_UNAUTHORIZED)
 
     # ── org-aware permission gate ──
     # AFC event admins can always create native (org=None) events. If an organization_id is
@@ -2079,11 +2079,11 @@ def create_event(request):
     if organization_id:
         org = Organization.objects.filter(organization_id=organization_id).first()
         if not org:
-            return Response({"message": "Organization not found."}, status=404)
+            return Response({"message": "Organization not found.", "code": "organization_not_found"}, status=404)
         if not (is_admin_creator or org_can(user, "can_create_events", org)):
-            return Response({"message": "You do not have permission to create events for this organization."}, status=403)
+            return Response({"message": "You do not have permission to create events for this organization.", "code": "not_permission_create_events"}, status=403)
     elif not is_admin_creator:
-        return Response({"message": "You do not have permission to create an event."}, status=403)
+        return Response({"message": "You do not have permission to create an event.", "code": "not_permission_create_event"}, status=403)
 
     # ---------------- REQUIRED FIELDS ----------------
     required_fields = [
@@ -2122,13 +2122,13 @@ def create_event(request):
 
     if is_sponsored:
         if not sponsor_name:
-            return Response({"message": "sponsor_name is required for sponsored events."}, status=400)
+            return Response({"message": "sponsor_name is required for sponsored events.", "code": "sponsor_name_required_sponsored"}, status=400)
         
         if not sponsor_usernames:
-            return Response({"message": "sponsor_usernames is required for sponsored events."}, status=400)
+            return Response({"message": "sponsor_usernames is required for sponsored events.", "code": "sponsor_usernames_required_sponsored"}, status=400)
 
         if not sponsor_field_label:
-            return Response({"message": "sponsor_field_label is required for sponsored events."}, status=400)
+            return Response({"message": "sponsor_field_label is required for sponsored events.", "code": "sponsor_field_label_required"}, status=400)
 
     
     if is_waitlist_enabled := request.data.get("is_waitlist_enabled", False):
@@ -2138,13 +2138,13 @@ def create_event(request):
         waitlist_discord_role_id = request.data.get("waitlist_discord_role_id")
         if is_waitlist_enabled:
             if not waitlist_capacity:
-                return Response({"message": "waitlist_capacity is required when waitlist is enabled."}, status=400)
+                return Response({"message": "waitlist_capacity is required when waitlist is enabled.", "code": "waitlist_capacity_required_waitlist"}, status=400)
             try:
                 waitlist_capacity = int(waitlist_capacity)
             except ValueError:
-                return Response({"message": "waitlist_capacity must be an integer."}, status=400)
+                return Response({"message": "waitlist_capacity must be an integer.", "code": "waitlist_capacity_integer"}, status=400)
             if waitlist_capacity <= 0:
-                return Response({"message": "waitlist_capacity must be greater than 0."}, status=400)
+                return Response({"message": "waitlist_capacity must be greater than 0.", "code": "waitlist_capacity_greater"}, status=400)
             # waitlist_discord_role_id is optional
 
     # ---------------- PARSE DATES ----------------
@@ -2154,13 +2154,13 @@ def create_event(request):
     close_date = parse_date(request.data.get("registration_end_date"))
 
     if not start_date or not end_date or not open_date or not close_date:
-        return Response({"message": "Invalid date format provided."}, status=400)
+        return Response({"message": "Invalid date format provided.", "code": "invalid_date_format_provided"}, status=400)
 
     if open_date > close_date:
-        return Response({"message": "Registration open date cannot be after registration end date."}, status=400)
+        return Response({"message": "Registration open date cannot be after registration end date.", "code": "registration_open_date_cannot"}, status=400)
 
     if start_date > end_date:
-        return Response({"message": "Event start date cannot be after event end date."}, status=400)
+        return Response({"message": "Event start date cannot be after event end date.", "code": "event_start_date_cannot"}, status=400)
 
     # ---------------- PRIZEPOOL ----------------
     
@@ -2170,7 +2170,7 @@ def create_event(request):
     try:
         prizepool_cash_value = float(request.data.get("prizepool_cash_value", 0) or 0)
     except Exception:
-        return Response({"message": "prizepool_cash_value must be a number."}, status=400)
+        return Response({"message": "prizepool_cash_value must be a number.", "code": "prizepool_cash_value_number"}, status=400)
 
     # Prize currency (owner 2026-07-01): AFC enters prize pools in USD (the platform's base currency
     # for the multi-currency <Money> layer), so DEFAULT to USD instead of the model's legacy NGN
@@ -2187,7 +2187,7 @@ def create_event(request):
     # ---------------- PRIZE DISTRIBUTION ----------------
     prize_distribution = _maybe_json(request.data.get("prize_distribution"), default={})
     if not isinstance(prize_distribution, dict):
-        return Response({"message": "prize_distribution must be a JSON object."}, status=400)
+        return Response({"message": "prize_distribution must be a JSON object.", "code": "prize_distribution_json_object"}, status=400)
 
     # ---------------- REGISTRATION RESTRICTION ----------------
     registration_restriction = request.data.get("registration_restriction", "none")
@@ -2197,7 +2197,7 @@ def create_event(request):
     restricted_countries = _as_list(request.data.get("restricted_countries"))
 
     if registration_restriction not in ["none", "by_region", "by_country"]:
-        return Response({"message": "registration_restriction must be one of: none, by_region, by_country."}, status=400)
+        return Response({"message": "registration_restriction must be one of: none, by_region, by_country.", "code": "registration_restriction_none_region"}, status=400)
 
     if registration_restriction == "none":
         restriction_mode = None
@@ -2205,19 +2205,19 @@ def create_event(request):
         restricted_countries = []
     else:
         if restriction_mode not in ["allow_only", "block_selected"]:
-            return Response({"message": "restriction_mode must be allow_only or block_selected."}, status=400)
+            return Response({"message": "restriction_mode must be allow_only or block_selected.", "code": "restriction_mode_allow_block"}, status=400)
 
         if registration_restriction == "by_region":
         #     if not restricted_regions:
-        #         return Response({"message": "restricted_regions is required when registration_restriction=by_region."}, status=400)
+        #         return Response({"message": "restricted_regions is required when registration_restriction=by_region.", "code": "restricted_regions_required_registration"}, status=400)
 
         #     # You’ll enforce using countries, so countries MUST be sent too (final list after frontend removals)
             if not restricted_countries:
-                return Response({"message": "restricted_countries is required when restricting by region (final selected countries list)."}, status=400)
+                return Response({"message": "restricted_countries is required when restricting by region (final selected countries list).", "code": "restricted_countries_required_restrictin"}, status=400)
 
         if registration_restriction == "by_country":
             if not restricted_countries:
-                return Response({"message": "restricted_countries is required when registration_restriction=by_country."}, status=400)
+                return Response({"message": "restricted_countries is required when registration_restriction=by_country.", "code": "restricted_countries_required_registrati"}, status=400)
             # regions optional here
             restricted_regions = []
 
@@ -2231,19 +2231,19 @@ def create_event(request):
     # fails fast with a 400 and never writes a half-built event.
     scoring_mode_error = _validate_scoring_modes(stages_data)
     if scoring_mode_error:
-        return Response({"message": scoring_mode_error}, status=400)
+        return Response({"message": scoring_mode_error, "code": "create_event_refused"}, status=400)
 
     # Same pre-transaction guard for round-robin base groups: a team must belong to exactly
     # one base group (Task 4 landmine #3). Fails fast with a 400 before any write.
     round_robin_groups_error = _validate_round_robin_groups(stages_data)
     if round_robin_groups_error:
-        return Response({"message": round_robin_groups_error}, status=400)
+        return Response({"message": round_robin_groups_error, "code": "create_event_refused"}, status=400)
 
     # Branching advancement rules (feature #9): no cycles, no overlap, valid target/group indices.
     # Resolved to StageAdvancementRule rows in the second pass below (after every stage+group exists).
     advancement_rules_error = _validate_advancement_rules(stages_data)
     if advancement_rules_error:
-        return Response({"message": advancement_rules_error}, status=400)
+        return Response({"message": advancement_rules_error, "code": "create_event_refused"}, status=400)
 
     is_draft = request.data.get("is_draft", True)
     if isinstance(is_draft, str):
@@ -2262,7 +2262,7 @@ def create_event(request):
     discord_server_id = (request.data.get("discord_server_id") or "").strip() or None
     discord_invite_link = (request.data.get("discord_invite_link") or "").strip() or None
     if require_discord and not discord_invite_link:
-        return Response({"message": "A Discord invite link is required when 'Require Discord to register' is on."}, status=400)
+        return Response({"message": "A Discord invite link is required when 'Require Discord to register' is on.", "code": "discord_invite_link_required"}, status=400)
 
     # ── Paid registration parse + validate (feature "paid-events", 2026-06-08) ──
     # "free" keeps instant registration; "paid" requires a positive fee, and for an
@@ -2274,14 +2274,14 @@ def create_event(request):
     registration_fee_currency = (request.data.get("registration_fee_currency") or "USD").upper()[:3]
     registration_fee = None
     if registration_type not in ("free", "paid"):
-        return Response({"error": "registration_type must be 'free' or 'paid'."}, status=400)
+        return Response({"error": "registration_type must be 'free' or 'paid'.", "code": "create_event_refused"}, status=400)
     if registration_type == "paid":
         try:
             registration_fee = Decimal(str(request.data.get("registration_fee")))
         except (InvalidOperation, TypeError):
-            return Response({"error": "A valid registration_fee is required for a paid event."}, status=400)
+            return Response({"error": "A valid registration_fee is required for a paid event.", "code": "create_event_refused"}, status=400)
         if registration_fee <= 0:
-            return Response({"error": "registration_fee must be greater than 0 for a paid event."}, status=400)
+            return Response({"error": "registration_fee must be greater than 0 for a paid event.", "code": "create_event_refused"}, status=400)
         # Organizer paid events: require + record acceptance of the paid-event terms (once per org).
         if org is not None and not org.paid_terms_accepted_at:
             accepted = str(request.data.get("paid_terms_accepted", "")).lower() in ("true", "1", "yes")
@@ -2302,7 +2302,7 @@ def create_event(request):
     if registration_type == "paid":
         country_payment_rules, _cpr_err = _parse_country_payment_rules(request.data.get("country_payment_rules"))
         if _cpr_err:
-            return Response({"error": _cpr_err}, status=400)
+            return Response({"error": _cpr_err, "code": "create_event_refused"}, status=400)
 
     # ---------------- WAITLIST FIELDS (owner 2026-06-17) ----------------
     # create_event previously VALIDATED waitlist input (block above) but never PERSISTED it, so an
@@ -2326,7 +2326,7 @@ def create_event(request):
             request.data.get("required_connections")
         )
     except ValueError as exc:
-        return Response({"message": str(exc)}, status=400)
+        return Response({"message": str(exc), "code": "create_event_refused"}, status=400)
 
     # ---------------- CREATE EVERYTHING ----------------
     try:
@@ -2352,7 +2352,7 @@ def create_event(request):
             try:
                 apply_event_writes(event, request.data, role=ADMIN)
             except WriteRefused as exc:
-                return Response({"message": exc.message, "field": exc.field}, status=400)
+                return Response({"message": exc.message, "field": exc.field, "code": "create_event_refused"}, status=400)
 
             # ── pre-validated values, which OVERRIDE the contract ──
             # Organizer events are ALWAYS internal: off-platform "external" registration is an
@@ -2723,17 +2723,17 @@ def duplicate_event(request, event_id):
     # Same bearer-token shape as create_event / edit_event (no DRF auth classes are wired).
     session_token = request.headers.get("Authorization")
     if not session_token or not session_token.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
 
     token = session_token.split(" ")[1]
     user = validate_token(token)
     if not user:
-        return Response({"message": "Invalid or expired session token."}, status=status.HTTP_401_UNAUTHORIZED)
+        return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=status.HTTP_401_UNAUTHORIZED)
 
     # ---------------- LOAD SOURCE ----------------
     source = Event.objects.filter(event_id=event_id).first()
     if not source:
-        return Response({"message": "Event not found."}, status=404)
+        return Response({"message": "Event not found.", "code": "event_not_found"}, status=404)
 
     # ── permission gate (org-aware) ──
     # AFC event admins may duplicate ANY event. Otherwise the event must belong to an org the
@@ -2744,7 +2744,7 @@ def duplicate_event(request, event_id):
     if not is_admin_actor:
         if source.organization_id is None or not org_can(user, "can_create_events", source.organization):
             return Response(
-                {"message": "You do not have permission to duplicate this event."}, status=403
+                {"message": "You do not have permission to duplicate this event.", "code": "not_permission_duplicate_event"}, status=403
             )
 
     # ---------------- DEEP COPY ----------------
@@ -2889,7 +2889,7 @@ def duplicate_event(request, event_id):
 #     session_token = request.headers.get("Authorization")
 
 #     if not session_token or not session_token.startswith("Bearer "):
-#         return Response({"message": "Invalid or missing Authorization token."}, status=400)
+#         return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
 
 #     token = session_token.split(" ")[1]
 
@@ -2903,7 +2903,7 @@ def duplicate_event(request, event_id):
 
 #     # Permissions
 #     if user.role not in ["admin", "moderator", "support"] and not user.userroles.filter(role_name__in=["event_admin", "head_admin"]).exists():
-#         return Response({"message": "You do not have permission to create an event."}, status=403)
+#         return Response({"message": "You do not have permission to create an event.", "code": "not_permission_create_event"}, status=403)
 
 #     # Extract event data
 #     required_fields = [
@@ -2925,16 +2925,16 @@ def duplicate_event(request, event_id):
 #     close_date = parse_date(request.data.get("registration_end_date"))
 
 #     if open_date > close_date:
-#         return Response({"message": "Registration open date cannot be after end date."}, status=400)
+#         return Response({"message": "Registration open date cannot be after end date.", "code": "registration_open_date_cannot"}, status=400)
 
 #     if start_date > end_date:
-#         return Response({"message": "Event start date cannot be after end date."}, status=400)
+#         return Response({"message": "Event start date cannot be after end date.", "code": "event_start_date_cannot"}, status=400)
 
 #     # Parse prizepool
 #     try:
 #         prizepool_cash_value = float(request.data.get("prizepool_cash_value", 0))
 #     except:
-#         return Response({"message": "Prizepool must be a number."}, status=400)
+#         return Response({"message": "Prizepool must be a number.", "code": "prizepool_number"}, status=400)
     
 #     prizepool = float(request.data.get("prizepool"))
 
@@ -2942,7 +2942,7 @@ def duplicate_event(request, event_id):
 #     prize_distribution = request.data.get("prize_distribution")
 #     prize_distribution = json.loads(prize_distribution) if isinstance(prize_distribution, str) else prize_distribution
 #     if not isinstance(prize_distribution, dict):
-#         return Response({"message": "Prize distribution must be a JSON object."}, status=400)
+#         return Response({"message": "Prize distribution must be a JSON object.", "code": "prize_distribution_json_object"}, status=400)
 
 #     # Create Event
 #     event = Event.objects.create(
@@ -3044,7 +3044,7 @@ def delete_event(request):
     session_token = request.headers.get("Authorization")
 
     if not session_token or not session_token.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
 
     token = session_token.split(" ")[1]
 
@@ -3052,7 +3052,7 @@ def delete_event(request):
     user = validate_token(token)
     if not user:
         return Response(
-            {"message": "Invalid or expired session token."},
+            {"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"},
             status=status.HTTP_401_UNAUTHORIZED
         )
 
@@ -3061,12 +3061,12 @@ def delete_event(request):
 
     event_id = request.data.get("event_id")
     if not event_id:
-        return Response({"message": "event_id is required."}, status=400)
+        return Response({"message": "event_id is required.", "code": "event_required"}, status=400)
 
     try:
         event = Event.objects.get(event_id=event_id)
     except Event.DoesNotExist:
-        return Response({"message": "Event not found."}, status=404)
+        return Response({"message": "Event not found.", "code": "event_not_found"}, status=404)
 
     # AFC admins may delete any event; an org member needs can_edit_events on the event's
     # owning org. org_can_event treats native (org=None) events as admin-only, so org
@@ -3082,7 +3082,7 @@ def delete_event(request):
         and not is_creator_draft
         and not org_can_event(user, "can_edit_events", event)
     ):
-        return Response({"message": "You do not have permission to modify this event."}, status=403)
+        return Response({"message": "You do not have permission to modify this event.", "code": "not_permission_modify_event"}, status=403)
 
     set_audit(request, f"Deleted the event {event.event_name}")
     AdminHistory.objects.create(
@@ -3102,7 +3102,7 @@ def delete_event(request):
 #     session_token = request.headers.get("Authorization")
 
 #     if not session_token or not session_token.startswith("Bearer "):
-#         return Response({"message": "Invalid or missing Authorization token."}, status=400)
+#         return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
 
 #     token = session_token.split(" ")[1]
 
@@ -3110,22 +3110,22 @@ def delete_event(request):
 #     try:
 #         user = User.objects.get(session_token=token)
 #     except User.DoesNotExist:
-#         return Response({"message": "Invalid session token."}, status=401)
+#         return Response({"message": "Invalid session token.", "code": "invalid_session_token"}, status=401)
 
 #     # Permission check
 #     if user.role not in ["admin", "moderator", "support"] and not user.userroles.filter(role_name__in=["event_admin", "head_admin"]).exists():
-#         return Response({"message": "You do not have permission to edit an event."}, status=403)
+#         return Response({"message": "You do not have permission to edit an event.", "code": "not_permission_edit_event"}, status=403)
 
 #     # Event ID needed
 #     event_id = request.data.get("event_id")
 #     if not event_id:
-#         return Response({"message": "event_id is required."}, status=400)
+#         return Response({"message": "event_id is required.", "code": "event_required"}, status=400)
 
 #     # Fetch event
 #     try:
 #         event = Event.objects.get(event_id=event_id)
 #     except Event.DoesNotExist:
-#         return Response({"message": "Event not found."}, status=404)
+#         return Response({"message": "Event not found.", "code": "event_not_found"}, status=404)
 
 #     # Helper function to update only if provided
 #     def update_field(field_name, parser=None):
@@ -3156,24 +3156,24 @@ def delete_event(request):
 
 #     # Validate dates
 #     if event.registration_open_date > event.registration_end_date:
-#         return Response({"message": "Registration open date cannot be after registration end date."}, status=400)
+#         return Response({"message": "Registration open date cannot be after registration end date.", "code": "registration_open_date_cannot"}, status=400)
 
 #     if event.start_date > event.end_date:
-#         return Response({"message": "Event start date cannot be after end date."}, status=400)
+#         return Response({"message": "Event start date cannot be after end date.", "code": "event_start_date_cannot"}, status=400)
 
 #     # Prizepool
 #     if "prizepool" in request.data:
 #         try:
 #             event.prizepool = float(request.data.get("prizepool"))
 #         except:
-#             return Response({"message": "Prizepool must be a number."}, status=400)
+#             return Response({"message": "Prizepool must be a number.", "code": "prizepool_number"}, status=400)
 
 #     # Prize distribution
 #     if "prize_distribution" in request.data:
 #         prize_distribution = request.data.get("prize_distribution")
 #         prize_distribution = json.loads(prize_distribution) if isinstance(prize_distribution, str) else prize_distribution
 #         if not isinstance(prize_distribution, dict):
-#             return Response({"message": "Prize distribution must be a JSON object."}, status=400)
+#             return Response({"message": "Prize distribution must be a JSON object.", "code": "prize_distribution_json_object"}, status=400)
 #         event.prize_distribution = prize_distribution
 
 #     # Update event banner (optional)
@@ -3239,7 +3239,7 @@ def delete_event(request):
 #     session_token = request.headers.get("Authorization")
 
 #     if not session_token or not session_token.startswith("Bearer "):
-#         return Response({"message": "Invalid or missing Authorization token."}, status=400)
+#         return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
 
 #     token = session_token.split(" ")[1]
 
@@ -3253,18 +3253,18 @@ def delete_event(request):
 
 #     # Permission check
 #     if user.role not in ["admin", "moderator", "support"] and not user.userroles.filter(role_name__in=["event_admin", "head_admin"]).exists():
-#         return Response({"message": "You do not have permission to edit an event."}, status=403)
+#         return Response({"message": "You do not have permission to edit an event.", "code": "not_permission_edit_event"}, status=403)
 
 #     # Event ID needed
 #     event_id = request.data.get("event_id")
 #     if not event_id:
-#         return Response({"message": "event_id is required."}, status=400)
+#         return Response({"message": "event_id is required.", "code": "event_required"}, status=400)
 
 #     # Fetch event
 #     try:
 #         event = Event.objects.get(event_id=event_id)
 #     except Event.DoesNotExist:
-#         return Response({"message": "Event not found."}, status=404)
+#         return Response({"message": "Event not found.", "code": "event_not_found"}, status=404)
 
 #     # Helper function to update only if provided
 #     def update_field(field_name, parser=None):
@@ -3293,18 +3293,18 @@ def delete_event(request):
 #     # Date validation
 #     if event.registration_open_date and event.registration_end_date:
 #         if event.registration_open_date > event.registration_end_date:
-#             return Response({"message": "Registration open date cannot be after registration end date."}, status=400)
+#             return Response({"message": "Registration open date cannot be after registration end date.", "code": "registration_open_date_cannot"}, status=400)
 
 #     if event.start_date and event.end_date:
 #         if event.start_date > event.end_date:
-#             return Response({"message": "Event start date cannot be after end date."}, status=400)
+#             return Response({"message": "Event start date cannot be after end date.", "code": "event_start_date_cannot"}, status=400)
 
 #     # Prizepool
 #     if "prizepool" in request.data:
 #         try:
 #             event.prizepool = float(request.data.get("prizepool"))
 #         except:
-#             return Response({"message": "Prizepool must be a number."}, status=400)
+#             return Response({"message": "Prizepool must be a number.", "code": "prizepool_number"}, status=400)
 
 #     # Prize distribution
 #     if "prize_distribution" in request.data:
@@ -3312,7 +3312,7 @@ def delete_event(request):
 #         if isinstance(prize_distribution, str):
 #             prize_distribution = json.loads(prize_distribution)
 #         if not isinstance(prize_distribution, dict):
-#             return Response({"message": "Prize distribution must be a JSON object."}, status=400)
+#             return Response({"message": "Prize distribution must be a JSON object.", "code": "prize_distribution_json_object"}, status=400)
 #         event.prize_distribution = prize_distribution
 
 #     # Banner
@@ -3554,23 +3554,23 @@ def diff_stages(old_stages, new_stages):
 def edit_event(request):
     session_token = request.headers.get("Authorization")
     if not session_token or not session_token.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
 
     token = session_token.split(" ")[1]
     user = validate_token(token)
     if not user:
-        return Response({"message": "Invalid or expired session token."}, status=status.HTTP_401_UNAUTHORIZED)
+        return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=status.HTTP_401_UNAUTHORIZED)
 
     # Permission check (org-aware, resolved AFTER we have the event below)
     is_admin = _is_event_admin(user)
 
     event_id = request.data.get("event_id")
     if not event_id:
-        return Response({"message": "event_id is required."}, status=400)
+        return Response({"message": "event_id is required.", "code": "event_required"}, status=400)
 
     event = Event.objects.filter(event_id=event_id).first()
     if not event:
-        return Response({"message": "Event not found."}, status=404)
+        return Response({"message": "Event not found.", "code": "event_not_found"}, status=404)
     # Remember the name BEFORE the update loop applies any rename, so we can re-slug the event
     # when the name changes (owner 2026-06-29: a duplicated event was stuck with its "...-copy"
     # slug after being renamed, because Event.save() only auto-slugs when the slug is blank).
@@ -3582,7 +3582,7 @@ def edit_event(request):
     # (covers native/legacy/admin-created events with no organization, and sub_organizers
     # who can create but not edit).
     if not is_admin and not _is_event_creator(user, event) and not org_can_event(user, "can_edit_events", event):
-        return Response({"message": "You do not have permission to modify this event."}, status=403)
+        return Response({"message": "You do not have permission to modify this event.", "code": "not_permission_modify_event"}, status=403)
 
     old_snapshot = snapshot_event(event)
 
@@ -3638,15 +3638,15 @@ def edit_event(request):
     try:
         apply_event_writes(event, request.data, role=ADMIN)
     except WriteRefused as exc:
-        return Response({"message": exc.message, "field": exc.field}, status=400)
+        return Response({"message": exc.message, "field": exc.field, "code": "as_list_refused"}, status=400)
 
     if event.registration_open_date and event.registration_end_date:
         if event.registration_open_date > event.registration_end_date:
-            return Response({"message": "registration_open_date cannot be after registration_end_date."}, status=400)
+            return Response({"message": "registration_open_date cannot be after registration_end_date.", "code": "registration_open_date_cannot"}, status=400)
 
     if event.start_date and event.end_date:
         if event.start_date > event.end_date:
-            return Response({"message": "start_date cannot be after end_date."}, status=400)
+            return Response({"message": "start_date cannot be after end_date.", "code": "start_date_cannot_after"}, status=400)
 
 
 
@@ -3664,7 +3664,7 @@ def edit_event(request):
 
     # A paid event must end up with a positive fee.
     if event.registration_type == "paid" and (event.registration_fee is None or event.registration_fee <= 0):
-        return Response({"message": "A paid event needs a registration_fee greater than 0."}, status=400)
+        return Response({"message": "A paid event needs a registration_fee greater than 0.", "code": "paid_event_needs_registration"}, status=400)
 
     # PER-COUNTRY payment rules (owner 2026-06-24). PATCH-style: only touched when the key is present.
     # Sending null/empty clears the rules (everyone pays base). A FREE event always has null rules, and
@@ -3675,7 +3675,7 @@ def edit_event(request):
     elif "country_payment_rules" in request.data:
         parsed, _cpr_err = _parse_country_payment_rules(request.data.get("country_payment_rules"))
         if _cpr_err:
-            return Response({"message": _cpr_err}, status=400)
+            return Response({"message": _cpr_err, "code": "as_list_refused"}, status=400)
         event.country_payment_rules = parsed
 
     if "event_banner" in request.FILES:
@@ -3688,7 +3688,7 @@ def edit_event(request):
 
     # A join link is required whenever Discord is required (so players know where to join).
     if event.require_discord and not event.discord_invite_link:
-        return Response({"message": "A Discord invite link is required when 'Require Discord to register' is on."}, status=400)
+        return Response({"message": "A Discord invite link is required when 'Require Discord to register' is on.", "code": "discord_invite_link_required"}, status=400)
 
     if "is_sponsored" in request.data:
 
@@ -3751,7 +3751,7 @@ def edit_event(request):
             event.event_type = "internal"
     elif "event_type" in request.data and request.data.get("event_type") != event.event_type:
         if event.start_date and event.start_date <= timezone.now().date():
-            return Response({"message": "Cannot change event_type after the event has started."}, status=400)
+            return Response({"message": "Cannot change event_type after the event has started.", "code": "cannot_change_event_type"}, status=400)
 
         else:
             # delete all current registred teams/players if changing type, as they would be invalid,check if its a solo or team event and delete accordingly
@@ -3777,7 +3777,7 @@ def edit_event(request):
         if registration_restriction not in ["none", "by_region", "by_country"]:
             return Response({
                 "message": "registration_restriction must be none, by_region, or by_country."
-            }, status=400)
+            , "code": "registration_restriction_none_region"}, status=400)
 
         event.registration_restriction = registration_restriction
 
@@ -3790,14 +3790,14 @@ def edit_event(request):
             if restriction_mode not in ["allow_only", "block_selected"]:
                 return Response({
                     "message": "restriction_mode must be allow_only or block_selected."
-                }, status=400)
+                , "code": "restriction_mode_allow_block"}, status=400)
 
             restricted_countries = as_list(request.data.get("restricted_countries"))
 
             if not restricted_countries:
                 return Response({
                     "message": "restricted_countries is required when restriction is enabled."
-                }, status=400)
+                , "code": "restricted_countries_required_restrictio"}, status=400)
 
             event.restriction_mode = restriction_mode
             event.restricted_countries = restricted_countries
@@ -3814,19 +3814,19 @@ def edit_event(request):
     if "stages" in request.data:
         scoring_mode_error = _validate_scoring_modes(as_list(request.data.get("stages")))
         if scoring_mode_error:
-            return Response({"message": scoring_mode_error}, status=400)
+            return Response({"message": scoring_mode_error, "code": "as_list_refused"}, status=400)
 
         # Same pre-transaction guard for round-robin base groups: a team must belong to
         # exactly one base group (Task 4 landmine #3). Fails fast before the edit commits.
         round_robin_groups_error = _validate_round_robin_groups(as_list(request.data.get("stages")))
         if round_robin_groups_error:
-            return Response({"message": round_robin_groups_error}, status=400)
+            return Response({"message": round_robin_groups_error, "code": "as_list_refused"}, status=400)
 
         # Branching advancement rules (feature #9): no cycles/overlap, valid indices. Resolved to
         # StageAdvancementRule rows in the second pass below (after every stage is upserted).
         advancement_rules_error = _validate_advancement_rules(as_list(request.data.get("stages")))
         if advancement_rules_error:
-            return Response({"message": advancement_rules_error}, status=400)
+            return Response({"message": advancement_rules_error, "code": "as_list_refused"}, status=400)
 
     # Re-slug when the name actually changed, so the URL follows the rename (owner 2026-06-29).
     # Mirrors Event.save()'s generator (slugify + a -2/-3 uniqueness suffix), but runs on rename
@@ -4226,25 +4226,25 @@ def edit_event(request):
 # def edit_event(request):
 #     session_token = request.headers.get("Authorization")
 #     if not session_token or not session_token.startswith("Bearer "):
-#         return Response({"message": "Invalid or missing Authorization token."}, status=400)
+#         return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
 
 #     token = session_token.split(" ")[1]
 #     user = validate_token(token)
 #     if not user:
-#         return Response({"message": "Invalid or expired session token."}, status=status.HTTP_401_UNAUTHORIZED)
+#         return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=status.HTTP_401_UNAUTHORIZED)
 
 #     if user.role not in ["admin", "moderator", "support"] and not user.userroles.filter(
 #         role_name__in=["event_admin", "head_admin"]
 #     ).exists():
-#         return Response({"message": "You do not have permission to edit an event."}, status=403)
+#         return Response({"message": "You do not have permission to edit an event.", "code": "not_permission_edit_event"}, status=403)
 
 #     event_id = request.data.get("event_id")
 #     if not event_id:
-#         return Response({"message": "event_id is required."}, status=400)
+#         return Response({"message": "event_id is required.", "code": "event_required"}, status=400)
 
 #     event = Event.objects.filter(event_id=event_id).first()
 #     if not event:
-#         return Response({"message": "Event not found."}, status=404)
+#         return Response({"message": "Event not found.", "code": "event_not_found"}, status=404)
 
 #     def maybe_json(val):
 #         if isinstance(val, str):
@@ -4276,30 +4276,30 @@ def edit_event(request):
 #     # validate dates (only if both exist)
 #     if event.registration_open_date and event.registration_end_date:
 #         if event.registration_open_date > event.registration_end_date:
-#             return Response({"message": "registration_open_date cannot be after registration_end_date."}, status=400)
+#             return Response({"message": "registration_open_date cannot be after registration_end_date.", "code": "registration_open_date_cannot"}, status=400)
 
 #     if event.start_date and event.end_date:
 #         if event.start_date > event.end_date:
-#             return Response({"message": "start_date cannot be after end_date."}, status=400)
+#             return Response({"message": "start_date cannot be after end_date.", "code": "start_date_cannot_after"}, status=400)
 
 #     if "prizepool" in request.data:
 #         try:
 #             event.prizepool = str(request.data.get("prizepool"))
 #         except Exception:
-#             return Response({"message": "prizepool."}, status=400)
+#             return Response({"message": "prizepool.", "code": "as_list_prizepool"}, status=400)
     
     
 #     if "prizepool_cash_value" in request.data:
 #         try:
 #             event.prizepool_cash_value = float(request.data.get("prizepool_cash_value"))
 #         except Exception:
-#             return Response({"message": "prizepool_cash_value must be a number."}, status=400)
+#             return Response({"message": "prizepool_cash_value must be a number.", "code": "prizepool_cash_value_number"}, status=400)
 
 
 #     if "prize_distribution" in request.data:
 #         pd = maybe_json(request.data.get("prize_distribution"))
 #         if not isinstance(pd, dict):
-#             return Response({"message": "prize_distribution must be a JSON object."}, status=400)
+#             return Response({"message": "prize_distribution must be a JSON object.", "code": "prize_distribution_json_object"}, status=400)
 #         event.prize_distribution = pd
 
 #     if "event_banner" in request.FILES:
@@ -4331,7 +4331,7 @@ def edit_event(request):
 #         if "stages" in request.data:
 #             stages_data = maybe_json(request.data.get("stages"))
 #             if not isinstance(stages_data, list):
-#                 return Response({"message": "stages must be a JSON list."}, status=400)
+#                 return Response({"message": "stages must be a JSON list.", "code": "stages_json_list"}, status=400)
 
 #             kept_stage_ids = []
 #             kept_group_ids = []
@@ -4563,7 +4563,7 @@ def get_most_popular_event_format(request):
 # def get_event_details(request):
 #     event_id = request.data.get("event_id")
 #     if not event_id:
-#         return Response({"message": "event_id is required."}, status=400)
+#         return Response({"message": "event_id is required.", "code": "event_required"}, status=400)
 
 #     try:
 #         event = (
@@ -4575,7 +4575,7 @@ def get_most_popular_event_format(request):
 #             .get(event_id=event_id)
 #         )
 #     except Event.DoesNotExist:
-#         return Response({"message": "Event not found."}, status=404)
+#         return Response({"message": "Event not found.", "code": "event_not_found"}, status=404)
 
 #     # Base Event Data
 #     event_data = {
@@ -4641,7 +4641,7 @@ def get_most_popular_event_format(request):
 # def get_event_details(request):
 #     event_id = request.data.get("event_id")
 #     if not event_id:
-#         return Response({"message": "event_id is required."}, status=400)
+#         return Response({"message": "event_id is required.", "code": "event_required"}, status=400)
 
 #     try:
 #         event = Event.objects.prefetch_related(
@@ -4649,7 +4649,7 @@ def get_most_popular_event_format(request):
 #             "stages__groups__leaderboards__matches__team_stats__player_stats"
 #         ).get(event_id=event_id)
 #     except Event.DoesNotExist:
-#         return Response({"message": "Event not found."}, status=404)
+#         return Response({"message": "Event not found.", "code": "event_not_found"}, status=404)
 
 #     # Base Event Data
 #     event_data = {
@@ -4726,7 +4726,7 @@ def get_most_popular_event_format(request):
 #     session_token = request.headers.get("Authorization")
 
 #     if not session_token or not session_token.startswith("Bearer "):
-#         return Response({"message": "Invalid or missing Authorization token."}, status=400)
+#         return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
 
 #     token = session_token.split(" ")[1]
 
@@ -4740,7 +4740,7 @@ def get_most_popular_event_format(request):
     
 #     event_id = request.data.get("event_id")
 #     if not event_id:
-#         return Response({"message": "event_id is required."}, status=400)
+#         return Response({"message": "event_id is required.", "code": "event_required"}, status=400)
 
 #     try:
 #         event = (
@@ -4759,7 +4759,7 @@ def get_most_popular_event_format(request):
 #             .get(event_id=event_id)
 #         )
 #     except Event.DoesNotExist:
-#         return Response({"message": "Event not found."}, status=404)
+#         return Response({"message": "Event not found.", "code": "event_not_found"}, status=404)
     
 #     # check if user is registered for the event
 #     is_registered = False
@@ -4951,13 +4951,13 @@ def resolve_event(request):
     """
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
     if not validate_token(auth.split(" ")[1]):
-        return Response({"message": "Invalid or expired session token."}, status=401)
+        return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
     from afc_auth.slugs import resolve_or_redirect
     event, _moved = resolve_or_redirect(Event, request.GET.get("ref"))
     if event is None:
-        return Response({"message": "Event not found."}, status=404)
+        return Response({"message": "Event not found.", "code": "event_not_found"}, status=404)
     return Response({"event_id": event.event_id, "slug": event.slug, "event_name": event.event_name}, status=200)
 
 
@@ -4972,14 +4972,14 @@ def get_event_details(request):
         user = validate_token(token)
         if not user:
             return Response(
-                {"message": "Invalid or expired session token."},
+                {"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"},
                 status=status.HTTP_401_UNAUTHORIZED
             )
 
     # -------- INPUT --------
     slug = request.data.get("slug")
     if not slug:
-        return Response({"message": "slug is required."}, status=400)
+        return Response({"message": "slug is required.", "code": "slug_required"}, status=400)
 
     # select_related("organization") avoids an extra query when we echo the owning
     # org's id/name/slug below (used by the organizer edit page's ownership guard).
@@ -4991,7 +4991,7 @@ def get_event_details(request):
     # here (404) for everyone except an AFC admin (who manages via the admin surface and may still need
     # to preview). AFC-native events (no org) are unaffected. Mirrors _ACTIVE_ORG_EVENT on the lists.
     if _org_hidden(event) and not (user and _is_event_admin(user)):
-        return Response({"message": "Event not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "Event not found.", "code": "event_not_found"}, status=status.HTTP_404_NOT_FOUND)
 
     # Per-event results visibility (owner 2026-06-29): when results_published is False, the public
     # standings are withheld (overall_leaderboard returned as [] for every group below) so an
@@ -5717,7 +5717,7 @@ def get_event_details(request):
 #     # -------- INPUT --------
 #     slug = request.data.get("slug")
 #     if not slug:
-#         return Response({"message": "slug is required."}, status=400)
+#         return Response({"message": "slug is required.", "code": "slug_required"}, status=400)
 
 #     event = get_object_or_404(Event, slug=slug)
 
@@ -5862,16 +5862,16 @@ def get_event_details(request):
 #             token = session_token.split(" ")[1]
 #             user = validate_token(token)
 #             if not user:
-#                 return Response({"message": "Invalid or expired session token."}, status=status.HTTP_401_UNAUTHORIZED)
+#                 return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=status.HTTP_401_UNAUTHORIZED)
 
 #     # if not session_token or not session_token.startswith("Bearer "):
-#     #     return Response({"message": "Invalid or missing Authorization token."}, status=400)
+#     #     return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
 
 
 #     # event_id = request.data.get("event_id")
 #     slug = request.data.get("slug")
 #     if not slug:
-#         return Response({"message": "slug is required."}, status=400)
+#         return Response({"message": "slug is required.", "code": "slug_required"}, status=400)
 
 #     event = get_object_or_404(Event, slug=slug)
 
@@ -5994,14 +5994,14 @@ def get_event_details(request):
 def get_event_details_not_logged_in(request):
     slug = request.data.get("slug")
     if not slug:
-        return Response({"message": "slug is required."}, status=400)
+        return Response({"message": "slug is required.", "code": "slug_required"}, status=400)
 
     event = get_object_or_404(Event.objects.select_related("organization"), slug=slug)
 
     # Owner rule 2026-06-11: a suspended/deleted org's events must not show publicly. This is the
     # logged-out public detail endpoint, so a hidden org always 404s here. AFC-native events unaffected.
     if _org_hidden(event):
-        return Response({"message": "Event not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "Event not found.", "code": "event_not_found"}, status=status.HTTP_404_NOT_FOUND)
 
     # Per-event results visibility (owner 2026-06-29): same rule as get_event_details. False withholds
     # every group's overall_leaderboard (returned []) and echoes results_published so the public
@@ -6999,14 +6999,14 @@ def register_for_event(request):
     # -------------------------
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
 
     user = validate_token(auth.split(" ")[1])
     if not user:
-        return Response({"message": "Invalid or expired session token."}, status=status.HTTP_401_UNAUTHORIZED)
+        return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=status.HTTP_401_UNAUTHORIZED)
 
     if user.status != "active":
-        return Response({"message": "Your account is not active."}, status=403)
+        return Response({"message": "Your account is not active.", "code": "account_not_active"}, status=403)
 
     # -------------------------
     # INPUT
@@ -7017,7 +7017,7 @@ def register_for_event(request):
     sponsor_ids = _maybe_json(request.data.get("sponsor_ids"), default={})
 
     if not event_id:
-        return Response({"message": "event_id is required."}, status=400)
+        return Response({"message": "event_id is required.", "code": "event_required"}, status=400)
 
     event = get_object_or_404(Event, event_id=event_id)
     participant_type = event.participant_type  # solo/duo/squad
@@ -7035,7 +7035,7 @@ def register_for_event(request):
     # every registration on an event the page correctly showed as open. effective_event_status()
     # resolves that, and still reports completed/cancelled for events that really are.
     if effective_event_status(event) in ("cancelled", "completed"):
-        return Response({"message": "This event is no longer open for registration."}, status=403)
+        return Response({"message": "This event is no longer open for registration.", "code": "event_no_longer_open"}, status=403)
 
     # -------------------------
     # REG WINDOW CHECK
@@ -7046,7 +7046,7 @@ def register_for_event(request):
     # entirely, so the gate disagreed with what the event page told the user. See
     # registration_is_open() for the full write-up.
     if not registration_is_open(event):
-        return Response({"message": "Registration is closed."}, status=403)
+        return Response({"message": "Registration is closed.", "code": "registration_closed"}, status=403)
 
     # -------------------------
     # PAID EVENT GATE (feature "paid-events", Phase 1)
@@ -7104,15 +7104,15 @@ def register_for_event(request):
     if participant_type == "solo":
         # ✅ restriction enforcement
         if not _passes_event_country_restriction(event, user.country):
-            return Response({"message": "You are not eligible to register for this event (country restriction)."}, status=403)
+            return Response({"message": "You are not eligible to register for this event (country restriction).", "code": "not_eligible_register_event"}, status=403)
 
         existing_registration = RegisteredCompetitors.objects.filter(event=event, user=user).first()
         if existing_registration and existing_registration.status != "registered":
-            return Response({"message": "You cannot rejoin this event."}, status=400)
+            return Response({"message": "You cannot rejoin this event.", "code": "cannot_rejoin_event"}, status=400)
         
         # Check If the player is banned
         if BannedPlayer.objects.filter(banned_player=user, is_active=True).exists():
-            return Response({"message": "You are banned from registering for this event."}, status=403)
+            return Response({"message": "You are banned from registering for this event.", "code": "banned_registering_event"}, status=403)
 
         # ── organizer blacklist guard, SOLO path (afc_organizers.OrganizerBlacklist) ──
         # An organizer can blacklist a PLAYER directly (owner backlog item 1, 2026-08-03), or the
@@ -7130,7 +7130,7 @@ def register_for_event(request):
                 event.organization, None, [user.user_id]
             )
             if solo_blacklist_message:
-                return Response({"message": solo_blacklist_message}, status=403)
+                return Response({"message": solo_blacklist_message, "code": "register_for_event_refused"}, status=403)
 
         # ── PER-PLAYER REGISTRATION REQUIREMENTS (F3, owner 2026-06-19) ──
         # esports image / profile image / Free Fire UID / WhatsApp number, each gated by its own event
@@ -7186,7 +7186,7 @@ def register_for_event(request):
                 if _has_pending_invitation(event, user, team=None):
                     invite = None
                 else:
-                    return Response({"message": "invite_token is required for private events."}, status=400)
+                    return Response({"message": "invite_token is required for private events.", "code": "invite_token_required_private"}, status=400)
             else:
                 # Fetch the token row ONCE so shared/expiry checks all read the same record.
                 invite = EventInviteToken.objects.filter(event=event, token=invite_token).first()
@@ -7195,25 +7195,25 @@ def register_for_event(request):
             # consume, because the credential is the addressed invitation itself.
             if invite_token:
                 if not invite:
-                    return Response({"message": "Invalid invite token."}, status=403)
+                    return Response({"message": "Invalid invite token.", "code": "invalid_invite_token"}, status=403)
 
                 # Enforce expiry (previously ignored): an expired link cannot register anyone.
                 if invite.expires_at and timezone.now() > invite.expires_at:
-                    return Response({"message": "This invite link has expired."}, status=403)
+                    return Response({"message": "This invite link has expired.", "code": "invite_link_expired"}, status=403)
 
                 # Single-use tokens are consumed after one registration; a SHARED token is the
                 # reusable FCFS link, so it is accepted regardless of is_used. The event's
                 # capacity check below (active_count >= max_teams_or_players) is what closes a
                 # shared link once all slots are filled.
                 if not invite.is_shared and invite.is_used:
-                    return Response({"message": "Invite token has already been used."}, status=403)
+                    return Response({"message": "Invite token has already been used.", "code": "invite_token_already_used"}, status=403)
 
         # Discord checks
         if not user.discord_connected or not user.discord_id:
-            return Response({"message": "Connect your Discord account first."}, status=403)
+            return Response({"message": "Connect your Discord account first.", "code": "connect_discord_account_first"}, status=403)
 
         if not check_discord_membership(user.discord_id):
-            return Response({"message": "You must join the Discord server before registering."}, status=403)
+            return Response({"message": "You must join the Discord server before registering.", "code": "join_discord_server_before"}, status=403)
 
         # NOTE (Bug C, duplicate registration race): the "already registered" duplicate check used to
         # live HERE, OUTSIDE the atomic block. It has been MOVED inside the `with transaction.atomic():`
@@ -7246,7 +7246,7 @@ def register_for_event(request):
             if len(provided_ids) != len(set(provided_ids)):
                 return Response({
                     "message": "Duplicate sponsor IDs detected in roster."
-                }, status=400)
+                , "code": "duplicate_sponsor_ids_detected"}, status=400)
 
             # Check duplicates already registered in this event
             existing_ids = set(
@@ -7260,7 +7260,7 @@ def register_for_event(request):
                 return Response({
                     "message": "Some sponsor IDs are already used in this event.",
                     "conflicting_ids": list(existing_ids)
-                }, status=409)
+                , "code": "sponsor_ids_already_used"}, status=409)
 
         with transaction.atomic():
             # Bug C: lock the event row + re-check for an existing solo registration INSIDE the atomic
@@ -7268,7 +7268,7 @@ def register_for_event(request):
             # lock, then sees the row and 409s) instead of both creating a RegisteredCompetitors row.
             event = Event.objects.select_for_update().get(pk=event.pk)
             if RegisteredCompetitors.objects.filter(event=event, user=user).exists():
-                return Response({"message": "You are already registered."}, status=409)
+                return Response({"message": "You are already registered.", "code": "already_registered"}, status=409)
 
             active_count = RegisteredCompetitors.objects.filter(
                 event=event,
@@ -7279,7 +7279,7 @@ def register_for_event(request):
             if active_count >= event.max_teams_or_players:
 
                 if not event.is_waitlist_enabled:
-                    return Response({"message": "Registration limit reached."}, status=403)
+                    return Response({"message": "Registration limit reached.", "code": "registration_limit_reached"}, status=403)
 
                 waitlist_count = RegisteredCompetitors.objects.filter(
                     event=event,
@@ -7287,7 +7287,7 @@ def register_for_event(request):
                 ).count()
 
                 if event.waitlist_capacity and waitlist_count >= event.waitlist_capacity:
-                    return Response({"message": "Waitlist is full."}, status=403)
+                    return Response({"message": "Waitlist is full.", "code": "waitlist_full"}, status=403)
 
                 # CREATE WAITLIST ENTRY
                 competitor = RegisteredCompetitors.objects.create(
@@ -7421,7 +7421,7 @@ def register_for_event(request):
     # -------------------------
     if participant_type in ["duo", "squad"]:
         if not team_id:
-            return Response({"message": "team_id is required for duo/squad."}, status=400)
+            return Response({"message": "team_id is required for duo/squad.", "code": "team_required_duo_squad"}, status=400)
 
         team = get_object_or_404(Team, team_id=team_id)
 
@@ -7430,7 +7430,7 @@ def register_for_event(request):
         # button to every member but pops this same rule when a non-privileged member clicks.
         if not _user_can_register_team(user, team):
             return Response(
-                {"message": "Only the team owner, captain, vice-captain, manager, or coach can register the team."},
+                {"message": "Only the team owner, captain, vice-captain, manager, or coach can register the team.", "code": "team_owner_captain_vice"},
                 status=403,
             )
 
@@ -7448,9 +7448,9 @@ def register_for_event(request):
         waived = _waived_codes_for_team(event, team=team)
 
         if team.is_banned:
-            return Response({"message": "Your team is banned and cannot register for events."}, status=403)
+            return Response({"message": "Your team is banned and cannot register for events.", "code": "team_banned_cannot_register"}, status=403)
         if BannedPlayer.objects.filter(banned_player=user, is_active=True, ban_end_date__gt=timezone.now()).exists():
-            return Response({"message": "You are banned and cannot register for events."}, status=403)
+            return Response({"message": "You are banned and cannot register for events.", "code": "banned_cannot_register_events"}, status=403)
 
         # ── TEAM-LOGO CRITERIA (owner 2026-06-12) ──
         # When the event creator required team logos, a team cannot register until its logo is
@@ -7467,7 +7467,7 @@ def register_for_event(request):
 
         # Ensure requester is in team
         if not TeamMembers.objects.filter(team=team, member=user).exists():
-            return Response({"message": "You are not a member of this team."}, status=403)
+            return Response({"message": "You are not a member of this team.", "code": "not_member_team"}, status=403)
 
         # ── this team's existing entry, if it has one ──
         # (event, team) is unique, so at most one row exists and its status says exactly what
@@ -7492,18 +7492,18 @@ def register_for_event(request):
             if not sponsor_ids:
                 return Response({
                     "message": "Sponsor IDs are required for sponsored events."
-                }, status=400)
+                , "code": "sponsor_ids_required_sponsored"}, status=400)
 
         # if event.is_waitlist_enabled:
         #     # check the waitlist capacity and ensure it isnt  full before allowing team to register (either active or waitlist)
         #     active_count = TournamentTeam.objects.filter(event=event, status="registered").count()
         #     if active_count >= event.max_teams_or_players:
-        #         return Response({"message": "Waitlist is full."}, status=403)
+        #         return Response({"message": "Waitlist is full.", "code": "waitlist_full"}, status=403)
 
         # # Capacity check
         # else:
         #     if RegisteredCompetitors.objects.filter(event=event, status="registered").count() >= event.max_teams_or_players:
-        #         return Response({"message": "Registration limit reached."}, status=403)
+        #         return Response({"message": "Registration limit reached.", "code": "registration_limit_reached"}, status=403)
 
         # roster rules
         if participant_type == "duo":
@@ -7512,7 +7512,7 @@ def register_for_event(request):
             min_size, max_size = 4, 6
 
         if not roster_member_ids:
-            return Response({"message": "roster_member_ids is required for team events."}, status=400)
+            return Response({"message": "roster_member_ids is required for team events.", "code": "roster_member_ids_required"}, status=400)
 
         roster_member_ids = list(dict.fromkeys(roster_member_ids))
 
@@ -7542,7 +7542,7 @@ def register_for_event(request):
         # exclusion (only ever matches club staff), per-player requirements, bans, the
         # one-team-per-event conflict check, and the blacklist.
         if not event.open_roster and not set(roster_member_ids).issubset(team_member_ids):
-            return Response({"message": "One or more roster players are not members of this team."}, status=400)
+            return Response({"message": "One or more roster players are not members of this team.", "code": "roster_players_not_members"}, status=400)
 
         # ── EXCLUDE STAFF FROM THE EVENT ROSTER (roster-rules, 2026-06-15) ──
         # Coach / manager / analyst are support-only (STAFF_ROLES, imported from afc_team.views):
@@ -7619,12 +7619,12 @@ def register_for_event(request):
 
         roster_users = list(User.objects.filter(user_id__in=roster_member_ids))
         if roster_users is None or len(roster_users) == 0:
-            return Response({"message": "Roster users not found."}, status=400)
+            return Response({"message": "Roster users not found.", "code": "roster_users_not_found"}, status=400)
         roster_users_by_id = {u.user_id: u for u in roster_users}
 
         missing_ids = [uid for uid in roster_member_ids if uid not in roster_users_by_id]
         if missing_ids:
-            return Response({"message": "Some roster users do not exist.", "missing_user_ids": missing_ids}, status=400)
+            return Response({"message": "Some roster users do not exist.", "missing_user_ids": missing_ids, "code": "roster_users_not_exist"}, status=400)
 
         # ── ban guard: per-roster-member (afc_auth.BannedPlayer) ──
         # No banned player may be entered onto a tournament roster. Now that the roster users are
@@ -7666,7 +7666,7 @@ def register_for_event(request):
                 event.organization, team, roster_member_ids
             )
             if blacklist_message:
-                return Response({"message": blacklist_message}, status=403)
+                return Response({"message": blacklist_message, "code": "register_for_event_refused"}, status=403)
 
         # check team country and then check the restrictions
         team_country = determine_team_country(roster_users, user)
@@ -7712,7 +7712,7 @@ def register_for_event(request):
         #     return Response({
         #         "message": "One or more roster players are not eligible for this event (country restriction).",
         #         "restricted_players": restricted
-        #     }, status=403)
+        #     , "code": "roster_players_not_eligible"}, status=403)
 
         # Discord checks
         # for u in roster_users:
@@ -7736,7 +7736,7 @@ def register_for_event(request):
                 if _has_pending_invitation(event, user, team=team):
                     invite = None
                 else:
-                    return Response({"message": "invite_token is required for private events."}, status=400)
+                    return Response({"message": "invite_token is required for private events.", "code": "invite_token_required_private"}, status=400)
             else:
                 # Fetch the token row ONCE so shared/expiry checks all read the same record.
                 invite = EventInviteToken.objects.filter(event=event, token=invite_token).first()
@@ -7745,18 +7745,18 @@ def register_for_event(request):
             # consume, because the credential is the addressed invitation itself.
             if invite_token:
                 if not invite:
-                    return Response({"message": "Invalid invite token."}, status=403)
+                    return Response({"message": "Invalid invite token.", "code": "invalid_invite_token"}, status=403)
 
                 # Enforce expiry (previously ignored): an expired link cannot register anyone.
                 if invite.expires_at and timezone.now() > invite.expires_at:
-                    return Response({"message": "This invite link has expired."}, status=403)
+                    return Response({"message": "This invite link has expired.", "code": "invite_link_expired"}, status=403)
 
                 # Single-use tokens are consumed after one registration; a SHARED token is the
                 # reusable FCFS link, so it is accepted regardless of is_used. The event's
                 # capacity check below (active_count >= max_teams_or_players) is what closes a
                 # shared link once all slots are filled.
                 if not invite.is_shared and invite.is_used:
-                    return Response({"message": "Invite token has already been used."}, status=403)
+                    return Response({"message": "Invite token has already been used.", "code": "invite_token_already_used"}, status=403)
 
 
         # ── Bug A (waitlist 500) HOIST ──────────────────────────────────────────────────────────────
@@ -7805,7 +7805,7 @@ def register_for_event(request):
             if active_count >= event.max_teams_or_players:
 
                 if not event.is_waitlist_enabled:
-                    return Response({"message": "Registration limit reached."}, status=403)
+                    return Response({"message": "Registration limit reached.", "code": "registration_limit_reached"}, status=403)
 
                 waitlist_count = TournamentTeam.objects.filter(
                     event=event,
@@ -7813,7 +7813,7 @@ def register_for_event(request):
                 ).count()
 
                 if event.waitlist_capacity and waitlist_count >= event.waitlist_capacity:
-                    return Response({"message": "Waitlist is full."}, status=403)
+                    return Response({"message": "Waitlist is full.", "code": "waitlist_full"}, status=403)
 
                 # CREATE WAITLIST TEAM
                 # Bug C IntegrityError guard: the uniq_event_team_registration constraint rejects a
@@ -7828,7 +7828,7 @@ def register_for_event(request):
                     )
                 except IntegrityError:
                     transaction.set_rollback(True)
-                    return Response({"message": "This team is already registered for this event."}, status=409)
+                    return Response({"message": "This team is already registered for this event.", "code": "team_already_registered_event"}, status=409)
 
                 TournamentTeamMember.objects.bulk_create([
                     TournamentTeamMember(
@@ -7935,7 +7935,7 @@ def register_for_event(request):
                 )
             except IntegrityError:
                 transaction.set_rollback(True)
-                return Response({"message": "This team is already registered for this event."}, status=409)
+                return Response({"message": "This team is already registered for this event.", "code": "team_already_registered_event"}, status=409)
 
             # TournamentTeamMember.objects.bulk_create(
             #     [TournamentTeamMember(tournament_team=tt, user=roster_users_by_id[uid], event=event) for uid in roster_member_ids],
@@ -7983,10 +7983,10 @@ def register_for_event(request):
                         uid = int(uid_str)
                     except (TypeError, ValueError):
                         transaction.set_rollback(True)
-                        return Response({"message": "Bad sponsorships payload."}, status=400)
+                        return Response({"message": "Bad sponsorships payload.", "code": "bad_sponsorships_payload"}, status=400)
                     if uid not in roster_users_by_id:
                         transaction.set_rollback(True)
-                        return Response({"message": "Sponsor submission for a non-rostered player."}, status=400)
+                        return Response({"message": "Sponsor submission for a non-rostered player.", "code": "sponsor_submission_non_rostered"}, status=400)
                     for sub in (subs or []):
                         team_payloads[uid].append({
                             "sponsorship_id": sp_entry.get("sponsorship_id"),
@@ -8067,7 +8067,7 @@ def register_for_event(request):
             "roster_size": len(roster_member_ids),
         }, status=201)
 
-    return Response({"message": "Invalid participant type."}, status=400)
+    return Response({"message": "Invalid participant type.", "code": "invalid_participant_type"}, status=400)
 
 def check_and_activate_team(tournament_team):
     # Re-derive the TEAM-level approval state from its members' statuses.
@@ -8326,11 +8326,11 @@ def confirm_player(request):
     # ---------------- AUTH ----------------
     session_token = request.headers.get("Authorization")
     if not session_token or not session_token.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
 
     user = validate_token(session_token.split(" ")[1])
     if not user:
-        return Response({"message": "Invalid or expired session token."}, status=status.HTTP_401_UNAUTHORIZED)
+        return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=status.HTTP_401_UNAUTHORIZED)
 
     member_id = request.data.get("member_id")
     member = get_object_or_404(TournamentTeamMember, id=member_id)
@@ -8340,7 +8340,7 @@ def confirm_player(request):
     # AFC admins manage registrations for any event; org members need
     # can_manage_registrations on the event's owning org (native AFC events stay admin-only).
     if not _is_event_admin(user) and not org_can_event(user, "can_manage_registrations", event):
-        return Response({"message": "You do not have permission to manage registrations for this event."}, status=403)
+        return Response({"message": "You do not have permission to manage registrations for this event.", "code": "not_permission_manage_registrations"}, status=403)
 
     # جلوگیری از تکرار
     if member.status == "active":
@@ -8604,11 +8604,11 @@ def reject_player(request):
     # ---------------- AUTH ----------------
     session_token = request.headers.get("Authorization")
     if not session_token or not session_token.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
 
     user = validate_token(session_token.split(" ")[1])
     if not user:
-        return Response({"message": "Invalid or expired session token."}, status=status.HTTP_401_UNAUTHORIZED)
+        return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=status.HTTP_401_UNAUTHORIZED)
 
     member_id = request.data.get("member_id")
     reason = request.data.get("reason", "No reason provided")
@@ -8620,7 +8620,7 @@ def reject_player(request):
     # AFC admins manage registrations for any event; org members need
     # can_manage_registrations on the event's owning org (native AFC events stay admin-only).
     if not _is_event_admin(user) and not org_can_event(user, "can_manage_registrations", event):
-        return Response({"message": "You do not have permission to manage registrations for this event."}, status=403)
+        return Response({"message": "You do not have permission to manage registrations for this event.", "code": "not_permission_manage_registrations"}, status=403)
 
     # Prevent duplicate rejection
     if member.status == "rejected":
@@ -8915,17 +8915,17 @@ def get_all_competitors_and_their_sponsor_id(request):
     """
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
     user = validate_token(auth.split(" ")[1])
     if not user:
-        return Response({"message": "Invalid or expired session token."}, status=401)
+        return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
 
     event_id = request.data.get("event_id")
     event = get_object_or_404(Event, event_id=event_id)
 
     # ── access gate (org-aware, resolved after we have the event) ──
     if not _is_event_admin(user) and not org_can_event(user, "can_manage_registrations", event):
-        return Response({"message": "You do not have permission to view competitors for this event."}, status=403)
+        return Response({"message": "You do not have permission to view competitors for this event.", "code": "not_permission_view_competitors"}, status=403)
 
     competitors = TournamentTeamMember.objects.filter(event=event).select_related(
         "user", "tournament_team__team", "tournament_team__ghost_team").all()
@@ -9157,14 +9157,14 @@ def assign_stage_roles_for_team_task(self, progress_id, stage_id, user_ids, batc
 #     # -------------------------
 #     auth = request.headers.get("Authorization")
 #     if not auth or not auth.startswith("Bearer "):
-#         return Response({"message": "Invalid or missing Authorization token."}, status=400)
+#         return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
 
 #     user = validate_token(auth.split(" ")[1])
 #     if not user:
-#         return Response({"message": "Invalid or expired session token."}, status=status.HTTP_401_UNAUTHORIZED)
+#         return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=status.HTTP_401_UNAUTHORIZED)
 
 #     if user.status != "active":
-#         return Response({"message": "Your account is not active."}, status=403)
+#         return Response({"message": "Your account is not active.", "code": "account_not_active"}, status=403)
 
 #     # -------------------------
 #     # INPUT
@@ -9174,7 +9174,7 @@ def assign_stage_roles_for_team_task(self, progress_id, stage_id, user_ids, batc
 #     roster_member_ids = _maybe_json_list(request.data.get("roster_member_ids"))
 
 #     if not event_id:
-#         return Response({"message": "event_id is required."}, status=400)
+#         return Response({"message": "event_id is required.", "code": "event_required"}, status=400)
 
 #     event = get_object_or_404(Event, event_id=event_id)
 #     participant_type = event.participant_type  # solo/duo/squad
@@ -9184,7 +9184,7 @@ def assign_stage_roles_for_team_task(self, progress_id, stage_id, user_ids, batc
 #     # -------------------------
 #     today = date.today()
 #     if not (event.registration_open_date <= today <= event.registration_end_date):
-#         return Response({"message": "Registration is closed."}, status=403)
+#         return Response({"message": "Registration is closed.", "code": "registration_closed"}, status=403)
 
 #     # -------------------------
 #     # SOLO
@@ -9192,18 +9192,18 @@ def assign_stage_roles_for_team_task(self, progress_id, stage_id, user_ids, batc
 #     if participant_type == "solo":
 #         # Discord checks
 #         if not user.discord_connected or not user.discord_id:
-#             return Response({"message": "Connect your Discord account first."}, status=403)
+#             return Response({"message": "Connect your Discord account first.", "code": "connect_discord_account_first"}, status=403)
 
 #         if not check_discord_membership(user.discord_id):
-#             return Response({"message": "You must join the Discord server before registering."}, status=403)
+#             return Response({"message": "You must join the Discord server before registering.", "code": "join_discord_server_before"}, status=403)
 
 #         # Prevent duplicate solo registration
 #         if RegisteredCompetitors.objects.filter(event=event, user=user).exists():
-#             return Response({"message": "You are already registered."}, status=409)
+#             return Response({"message": "You are already registered.", "code": "already_registered"}, status=409)
 
 #         # Capacity check
 #         if RegisteredCompetitors.objects.filter(event=event, status="registered").count() >= event.max_teams_or_players:
-#             return Response({"message": "Registration limit reached."}, status=403)
+#             return Response({"message": "Registration limit reached.", "code": "registration_limit_reached"}, status=403)
 
 #         with transaction.atomic():
 #             competitor = RegisteredCompetitors.objects.create(
@@ -9223,25 +9223,25 @@ def assign_stage_roles_for_team_task(self, progress_id, stage_id, user_ids, batc
 #     # -------------------------
 #     if participant_type in ["duo", "squad"]:
 #         if not team_id:
-#             return Response({"message": "team_id is required for duo/squad."}, status=400)
+#             return Response({"message": "team_id is required for duo/squad.", "code": "team_required_duo_squad"}, status=400)
 
 #         team = get_object_or_404(Team, team_id=team_id)
 
 #         # captain/owner check
 #         if not _user_is_team_captain_or_owner(user, team):
-#             return Response({"message": "Only captain/vice-captain/team owner can register the team."}, status=403)
+#             return Response({"message": "Only captain/vice-captain/team owner can register the team.", "code": "captain_vice_captain_team"}, status=403)
 
 #         # Ensure user is in team
 #         if not TeamMembers.objects.filter(team=team, member=user).exists():
-#             return Response({"message": "You are not a member of this team."}, status=403)
+#             return Response({"message": "You are not a member of this team.", "code": "not_member_team"}, status=403)
 
 #         # Prevent duplicate team registration (same team already registered)
 #         if RegisteredCompetitors.objects.filter(event=event, team=team).exists():
-#             return Response({"message": "Team already registered."}, status=409)
+#             return Response({"message": "Team already registered.", "code": "team_already_registered"}, status=409)
 
 #         # Capacity check (by number of registered teams)
 #         if RegisteredCompetitors.objects.filter(event=event, status="registered").count() >= event.max_teams_or_players:
-#             return Response({"message": "Registration limit reached."}, status=403)
+#             return Response({"message": "Registration limit reached.", "code": "registration_limit_reached"}, status=403)
 
 #         # roster rules
 #         if participant_type == "duo":
@@ -9250,7 +9250,7 @@ def assign_stage_roles_for_team_task(self, progress_id, stage_id, user_ids, batc
 #             min_size, max_size = 4, 6
 
 #         if not roster_member_ids:
-#             return Response({"message": "roster_member_ids is required for team events."}, status=400)
+#             return Response({"message": "roster_member_ids is required for team events.", "code": "roster_member_ids_required"}, status=400)
 
 #         # remove duplicates while keeping order
 #         roster_member_ids = list(dict.fromkeys(roster_member_ids))
@@ -9263,7 +9263,7 @@ def assign_stage_roles_for_team_task(self, progress_id, stage_id, user_ids, batc
 #             TeamMembers.objects.filter(team=team).values_list("member_id", flat=True)
 #         )
 #         if not set(roster_member_ids).issubset(team_member_ids):
-#             return Response({"message": "One or more roster players are not members of this team."}, status=400)
+#             return Response({"message": "One or more roster players are not members of this team.", "code": "roster_players_not_members"}, status=400)
 
 
 #         # Fetch users and discord checks
@@ -9273,7 +9273,7 @@ def assign_stage_roles_for_team_task(self, progress_id, stage_id, user_ids, batc
 #         # Ensure all ids exist
 #         missing_ids = [uid for uid in roster_member_ids if uid not in roster_users_by_id]
 #         if missing_ids:
-#             return Response({"message": "Some roster users do not exist.", "missing_user_ids": missing_ids}, status=400)
+#             return Response({"message": "Some roster users do not exist.", "missing_user_ids": missing_ids, "code": "roster_users_not_exist"}, status=400)
 
 #         for u in roster_users:
 #             if u.status != "active":
@@ -9319,7 +9319,7 @@ def assign_stage_roles_for_team_task(self, progress_id, stage_id, user_ids, batc
 #             "roster_size": len(roster_member_ids),
 #         }, status=201)
 
-#     return Response({"message": "Invalid participant type."}, status=400)
+#     return Response({"message": "Invalid participant type.", "code": "invalid_participant_type"}, status=400)
 
 
 from rest_framework.decorators import api_view
@@ -9345,14 +9345,14 @@ def validate_team_roster_discord(request):
     # -------- AUTH --------
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
 
     user = validate_token(auth.split(" ")[1])
     if not user:
-        return Response({"message": "Invalid or expired session token."}, status=status.HTTP_401_UNAUTHORIZED)
+        return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=status.HTTP_401_UNAUTHORIZED)
 
     if user.status != "active":
-        return Response({"message": "Your account is not active."}, status=403)
+        return Response({"message": "Your account is not active.", "code": "account_not_active"}, status=403)
 
     # -------- INPUT --------
     event_id = request.data.get("event_id")
@@ -9360,27 +9360,27 @@ def validate_team_roster_discord(request):
     roster_member_ids = _maybe_json_list(request.data.get("roster_member_ids"))
 
     if not event_id or not team_id:
-        return Response({"message": "event_id and team_id are required."}, status=400)
+        return Response({"message": "event_id and team_id are required.", "code": "event_team_required"}, status=400)
 
     if not roster_member_ids:
-        return Response({"message": "roster_member_ids is required."}, status=400)
+        return Response({"message": "roster_member_ids is required.", "code": "roster_member_ids_required"}, status=400)
 
     # remove duplicates while keeping order
     roster_member_ids = list(dict.fromkeys(roster_member_ids))
 
     event = get_object_or_404(Event, event_id=event_id)
     if event.participant_type not in ["duo", "squad"]:
-        return Response({"message": "This validation is for duo/squad events only."}, status=400)
+        return Response({"message": "This validation is for duo/squad events only.", "code": "validation_duo_squad_events"}, status=400)
 
     team = get_object_or_404(Team, team_id=team_id)
 
     # captain/owner check (optional but recommended, so random members can’t spam checks)
     if not _user_is_team_captain_or_owner(user, team):
-        return Response({"message": "Only captain/vice-captain/team owner can validate the roster."}, status=403)
+        return Response({"message": "Only captain/vice-captain/team owner can validate the roster.", "code": "captain_vice_captain_team"}, status=403)
 
     # ensure requester is in team
     if not TeamMembers.objects.filter(team=team, member=user).exists():
-        return Response({"message": "You are not a member of this team."}, status=403)
+        return Response({"message": "You are not a member of this team.", "code": "not_member_team"}, status=403)
 
     # -------- ROSTER SIZE RULES --------
     if event.participant_type == "duo":
@@ -9401,14 +9401,14 @@ def validate_team_roster_discord(request):
         return Response({
             "message": "One or more roster players are not members of this team.",
             "not_in_team_user_ids": not_in_team
-        }, status=400)
+        , "code": "roster_players_not_members"}, status=400)
 
     # -------- FETCH USERS --------
     roster_users = list(User.objects.filter(user_id__in=roster_member_ids))
     by_id = {u.user_id: u for u in roster_users}
     missing_ids = [uid for uid in roster_member_ids if uid not in by_id]
     if missing_ids:
-        return Response({"message": "Some roster users do not exist.", "missing_user_ids": missing_ids}, status=400)
+        return Response({"message": "Some roster users do not exist.", "missing_user_ids": missing_ids, "code": "roster_users_not_exist"}, status=400)
 
     # -------- DISCORD CHECKS (DETAILED) --------
     results = []
@@ -9479,10 +9479,10 @@ def validate_team_roster_discord(request):
 #     session_token = request.headers.get("Authorization")
 
 #     if not session_token:
-#         return Response({'status': 'error', 'message': 'Authorization header is required'}, status=400)
+#         return Response({'status': 'error', 'message': 'Authorization header is required', "code": "authorization_header_required"}, status=400)
 
 #     if not session_token.startswith("Bearer "):
-#         return Response({'status': 'error', 'message': 'Invalid token format'}, status=400)
+#         return Response({'status': 'error', 'message': 'Invalid token format', "code": "invalid_token_format"}, status=400)
 
 #     session_token = session_token.split(" ")[1]
 
@@ -9501,13 +9501,13 @@ def validate_team_roster_discord(request):
 #     team_id = request.data.get("team_id")  # only for team events
 
 #     if not event_id:
-#         return Response({"message": "event_id is required"}, status=400)
+#         return Response({"message": "event_id is required", "code": "event_required"}, status=400)
 
 #     # Fetch event
 #     try:
 #         event = Event.objects.get(event_id=event_id)
 #     except Event.DoesNotExist:
-#         return Response({"message": "Event not found"}, status=404)
+#         return Response({"message": "Event not found", "code": "event_not_found"}, status=404)
 
 #     participant_type = event.participant_type  # solo, duo, squad
 
@@ -9516,7 +9516,7 @@ def validate_team_roster_discord(request):
 #     # -------------------------
 #     today = date.today()
 #     if not (event.registration_open_date <= today <= event.registration_end_date):
-#         return Response({"message": "Registration is closed."}, status=403)
+#         return Response({"message": "Registration is closed.", "code": "registration_closed"}, status=403)
 
 #     # ======================================================
 #     #                    SOLO REGISTRATION
@@ -9525,19 +9525,19 @@ def validate_team_roster_discord(request):
 
 #         # Discord must be connected
 #         if not user.discord_connected:
-#             return Response({"message": "Connect your Discord account first."}, status=403)
+#             return Response({"message": "Connect your Discord account first.", "code": "connect_discord_account_first"}, status=403)
 
 #         # Must join the Discord server
 #         if not check_discord_membership(user.discord_id):
-#             return Response({"message": "You must join the Discord server before registering."}, status=403)
+#             return Response({"message": "You must join the Discord server before registering.", "code": "join_discord_server_before"}, status=403)
 
 #         # Prevent duplicate registration
 #         if RegisteredCompetitors.objects.filter(event=event, user=user).exists():
-#             return Response({"message": "You are already registered."}, status=409)
+#             return Response({"message": "You are already registered.", "code": "already_registered"}, status=409)
 
 #         # Check event capacity
 #         if RegisteredCompetitors.objects.filter(event=event).count() >= event.max_teams_or_players:
-#             return Response({"message": "Registration limit reached."}, status=403)
+#             return Response({"message": "Registration limit reached.", "code": "registration_limit_reached"}, status=403)
 
 #         # Register user
 #         competitor = RegisteredCompetitors.objects.create(event=event, user=user)
@@ -9556,24 +9556,24 @@ def validate_team_roster_discord(request):
 #     if participant_type in ["duo", "squad"]:
 
 #         if not team_id:
-#             return Response({"message": "team_id is required."}, status=400)
+#             return Response({"message": "team_id is required.", "code": "team_required"}, status=400)
 
 #         try:
 #             team = Team.objects.get(team_id=team_id)
 #         except Team.DoesNotExist:
-#             return Response({"message": "Team not found"}, status=404)
+#             return Response({"message": "Team not found", "code": "team_not_found"}, status=404)
 
 #         # The user must be part of the team
 #         if not TeamMembers.objects.filter(team=team, user=user).exists():
-#             return Response({"message": "You are not a member of this team."}, status=403)
+#             return Response({"message": "You are not a member of this team.", "code": "not_member_team"}, status=403)
 
 #         # Prevent duplicate team registration
 #         if RegisteredCompetitors.objects.filter(event=event, team=team).exists():
-#             return Response({"message": "Team already registered."}, status=409)
+#             return Response({"message": "Team already registered.", "code": "team_already_registered"}, status=409)
 
 #         # Check event capacity
 #         if RegisteredCompetitors.objects.filter(event=event).count() >= event.max_teams_or_players:
-#             return Response({"message": "Registration limit reached."}, status=403)
+#             return Response({"message": "Registration limit reached.", "code": "registration_limit_reached"}, status=403)
 
 #         # Validate Discord for all team members
 #         members = TeamMembers.objects.filter(team=team)
@@ -9603,7 +9603,7 @@ def validate_team_roster_discord(request):
 #             "registration_id": competitor.id
 #         }, status=201)
 
-#     return Response({"message": "Invalid event participant type."}, status=400)
+#     return Response({"message": "Invalid event participant type.", "code": "invalid_event_participant_type"}, status=400)
 
 
 from rest_framework.decorators import api_view
@@ -9615,7 +9615,7 @@ from django.shortcuts import get_object_or_404
 def sync_event_registrations_with_discord_roles(request):
     event_id = request.data.get("event_id")
     if not event_id:
-        return Response({"message": "event_id is required"}, status=400)
+        return Response({"message": "event_id is required", "code": "event_required"}, status=400)
 
     event = get_object_or_404(Event, event_id=event_id)
     # #8 (2026-07-06 organizer parity): was AFC-super-admin-only (admin.role != "admin"), which locked
@@ -9628,7 +9628,7 @@ def sync_event_registrations_with_discord_roles(request):
     if event.participant_type == "solo":
         role_id = getattr(settings, "DISCORD_TOURNAMENT_SOLO_ROLE_ID", None)
         if not role_id:
-            return Response({"message": "Solo role id not configured."}, status=400)
+            return Response({"message": "Solo role id not configured.", "code": "solo_role_not_configured"}, status=400)
 
         regs = RegisteredCompetitors.objects.select_related("user").filter(event=event, user__isnull=False, status="registered")
 
@@ -9660,7 +9660,7 @@ def sync_event_registrations_with_discord_roles(request):
     # duo/squad
     role_id = getattr(settings, "DISCORD_TOURNAMENT_TEAM_ROLE_ID", None)
     if not role_id:
-        return Response({"message": "Team role id not configured."}, status=400)
+        return Response({"message": "Team role id not configured.", "code": "team_role_not_configured"}, status=400)
 
     # take from TournamentTeam roster (the actual event roster)
     members = TournamentTeamMember.objects.select_related("user", "tournament_team").filter(
@@ -9739,27 +9739,27 @@ def assign_event_roles_from_db_task(self, batch_size=10):
 #     # --- auth + basic checks ---
 #     session_token = request.headers.get("Authorization")
 #     if not session_token or not session_token.startswith("Bearer "):
-#         return Response({"message": "Invalid or missing Authorization token."}, status=400)
+#         return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
 #     token = session_token.split(" ")[1]
 
 #     try:
 #         admin = User.objects.get(session_token=token)
 #     except User.DoesNotExist:
-#         return Response({"message": "Invalid session token."}, status=401)
+#         return Response({"message": "Invalid session token.", "code": "invalid_session_token"}, status=401)
 
 #     # TODO: optionally check admin role here
 #     if admin.role != "admin":
-#         return Response({"message": "You do not have permission to access this data."}, status=403)
+#         return Response({"message": "You do not have permission to access this data.", "code": "not_permission_access_data"}, status=403)
 #     # if not admin.is_staff: return 403 etc.
 
 #     event_id = request.data.get("event_id")
 #     if not event_id:
-#         return Response({"message": "event_id is required."}, status=400)
+#         return Response({"message": "event_id is required.", "code": "event_required"}, status=400)
 
 #     try:
 #         event = Event.objects.get(event_id=event_id)
 #     except Event.DoesNotExist:
-#         return Response({"message": "Event not found."}, status=404)
+#         return Response({"message": "Event not found.", "code": "event_not_found"}, status=404)
 
 #     # --- Overview metrics ---
 #     # total registered competitors (only count active registrations)
@@ -9930,26 +9930,26 @@ def assign_event_roles_from_db_task(self, batch_size=10):
 #     # ---------------- AUTH ----------------
 #     session_token = request.headers.get("Authorization")
 #     if not session_token or not session_token.startswith("Bearer "):
-#         return Response({"message": "Invalid or missing Authorization token."}, status=400)
+#         return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
 
 #     token = session_token.split(" ")[1]
 
 #     try:
 #         admin = User.objects.get(session_token=token)
 #     except User.DoesNotExist:
-#         return Response({"message": "Invalid session token."}, status=401)
+#         return Response({"message": "Invalid session token.", "code": "invalid_session_token"}, status=401)
 
 #     if admin.role != "admin":
-#         return Response({"message": "You do not have permission to access this data."}, status=403)
+#         return Response({"message": "You do not have permission to access this data.", "code": "not_permission_access_data"}, status=403)
 
 #     event_id = request.data.get("event_id")
 #     if not event_id:
-#         return Response({"message": "event_id is required."}, status=400)
+#         return Response({"message": "event_id is required.", "code": "event_required"}, status=400)
 
 #     try:
 #         event = Event.objects.get(event_id=event_id)
 #     except Event.DoesNotExist:
-#         return Response({"message": "Event not found."}, status=404)
+#         return Response({"message": "Event not found.", "code": "event_not_found"}, status=404)
 
 #     today = timezone.localdate()
 
@@ -10082,25 +10082,25 @@ def assign_event_roles_from_db_task(self, batch_size=10):
 #     # ---------------- AUTH ----------------
 #     session_token = request.headers.get("Authorization")
 #     if not session_token or not session_token.startswith("Bearer "):
-#         return Response({"message": "Invalid or missing Authorization token."}, status=400)
+#         return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
 #     token = session_token.split(" ")[1]
 
 #     try:
 #         admin = User.objects.get(session_token=token)
 #     except User.DoesNotExist:
-#         return Response({"message": "Invalid session token."}, status=401)
+#         return Response({"message": "Invalid session token.", "code": "invalid_session_token"}, status=401)
 
 #     if admin.role != "admin":
-#         return Response({"message": "You do not have permission to access this data."}, status=403)
+#         return Response({"message": "You do not have permission to access this data.", "code": "not_permission_access_data"}, status=403)
 
 #     event_id = request.data.get("event_id")
 #     if not event_id:
-#         return Response({"message": "event_id is required."}, status=400)
+#         return Response({"message": "event_id is required.", "code": "event_required"}, status=400)
 
 #     try:
 #         event = Event.objects.get(event_id=event_id)
 #     except Event.DoesNotExist:
-#         return Response({"message": "Event not found."}, status=404)
+#         return Response({"message": "Event not found.", "code": "event_not_found"}, status=404)
 
 #     today = timezone.localdate()
 
@@ -10228,27 +10228,27 @@ def assign_event_roles_from_db_task(self, batch_size=10):
 #     # ---------------- AUTH ----------------
 #     session_token = request.headers.get("Authorization")
 #     if not session_token or not session_token.startswith("Bearer "):
-#         return Response({"message": "Invalid or missing Authorization token."}, status=400)
+#         return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
 #     token = session_token.split(" ")[1]
 
 #     try:
 #         admin = User.objects.get(session_token=token)
 #     except User.DoesNotExist:
-#         return Response({"message": "Invalid session token."}, status=401)
+#         return Response({"message": "Invalid session token.", "code": "invalid_session_token"}, status=401)
 
 #     if admin.role != "admin":
-#         return Response({"message": "You do not have permission to access this data."}, status=403)
+#         return Response({"message": "You do not have permission to access this data.", "code": "not_permission_access_data"}, status=403)
 
 #     event_id = request.data.get("event_id")
 #     if not event_id:
-#         return Response({"message": "event_id is required."}, status=400)
+#         return Response({"message": "event_id is required.", "code": "event_required"}, status=400)
 
 #     try:
 #         event = Event.objects.prefetch_related(
 #             "stages__groups__leaderboards__matches__team_stats"
 #         ).get(event_id=event_id)
 #     except Event.DoesNotExist:
-#         return Response({"message": "Event not found."}, status=404)
+#         return Response({"message": "Event not found.", "code": "event_not_found"}, status=404)
 
 #     today = timezone.localdate()
 
@@ -10370,7 +10370,7 @@ def assign_event_roles_from_db_task(self, batch_size=10):
 #     # ---------------- AUTH ----------------
 #     session_token = request.headers.get("Authorization")
 #     if not session_token or not session_token.startswith("Bearer "):
-#         return Response({"message": "Invalid or missing Authorization token."}, status=400)
+#         return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
 #     token = session_token.split(" ")[1]
 
 #     admin = validate_token(token)
@@ -10381,16 +10381,16 @@ def assign_event_roles_from_db_task(self, batch_size=10):
 #         )
 
 #     if admin.role != "admin":
-#         return Response({"message": "You do not have permission to access this data."}, status=403)
+#         return Response({"message": "You do not have permission to access this data.", "code": "not_permission_access_data"}, status=403)
 
 #     event_id = request.data.get("event_id")
 #     if not event_id:
-#         return Response({"message": "event_id is required."}, status=400)
+#         return Response({"message": "event_id is required.", "code": "event_required"}, status=400)
 
 #     try:
 #         event = Event.objects.get(event_id=event_id)
 #     except Event.DoesNotExist:
-#         return Response({"message": "Event not found."}, status=404)
+#         return Response({"message": "Event not found.", "code": "event_not_found"}, status=404)
 
 #     today = timezone.localdate()
 
@@ -10532,21 +10532,21 @@ from rest_framework import status
 #     # ---------------- AUTH ----------------
 #     session_token = request.headers.get("Authorization")
 #     if not session_token or not session_token.startswith("Bearer "):
-#         return Response({"message": "Invalid or missing Authorization token."}, status=400)
+#         return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
 
 #     token = session_token.split(" ")[1]
 #     admin = validate_token(token)
 
 #     if not admin:
-#         return Response({"message": "Invalid or expired session token."}, status=status.HTTP_401_UNAUTHORIZED)
+#         return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=status.HTTP_401_UNAUTHORIZED)
 
 #     if admin.role != "admin":
-#         return Response({"message": "You do not have permission to access this data."}, status=status.HTTP_403_FORBIDDEN)
+#         return Response({"message": "You do not have permission to access this data.", "code": "not_permission_access_data"}, status=status.HTTP_403_FORBIDDEN)
 
 #     # ---------------- EVENT ----------------
 #     event_id = request.data.get("event_id")
 #     if not event_id:
-#         return Response({"message": "event_id is required."}, status=400)
+#         return Response({"message": "event_id is required.", "code": "event_required"}, status=400)
 
 #     event = get_object_or_404(Event, event_id=event_id)
 #     today = timezone.localdate()
@@ -10742,17 +10742,17 @@ def get_event_details_for_admin(request):
     """
     session_token = request.headers.get("Authorization")
     if not session_token or not session_token.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
 
     token = session_token.split(" ")[1]
     admin = validate_token(token)
     if not admin:
-        return Response({"message": "Invalid or expired session token."}, status=status.HTTP_401_UNAUTHORIZED)
+        return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=status.HTTP_401_UNAUTHORIZED)
 
     # event_id = request.data.get("event_id")
     slug = request.data.get("slug")
     if not slug:
-        return Response({"message": "slug is required."}, status=400)
+        return Response({"message": "slug is required.", "code": "slug_required"}, status=400)
 
     event = get_object_or_404(Event, slug=slug)
 
@@ -10763,7 +10763,7 @@ def get_event_details_for_admin(request):
         org_can_event(admin, "can_view_metrics", event)
         or org_can_event(admin, "can_edit_events", event)
     ):
-        return Response({"message": "You do not have permission to access this data."}, status=status.HTTP_403_FORBIDDEN)
+        return Response({"message": "You do not have permission to access this data.", "code": "not_permission_access_data"}, status=status.HTTP_403_FORBIDDEN)
 
     today = timezone.localdate()
 
@@ -11145,7 +11145,7 @@ def remove_group_role_task(self, discord_id, role_id):
 def discord_role_progress(request):
     stage_id = request.data.get("stage_id")
     if not stage_id:
-        return Response({"message": "stage_id is required."}, status=400)
+        return Response({"message": "stage_id is required.", "code": "stage_required"}, status=400)
     # SECURITY (#8 audit 2026-07-06): was UNAUTHENTICATED. Gate to staff OR the owning organizer.
     stage = get_object_or_404(Stages, stage_id=stage_id)
     user, err = _get_event_action_user(request, event=stage.event, org_perm="can_manage_registrations")
@@ -11210,7 +11210,7 @@ def get_all_role_progress(request):
 def retry_failed_discord_roles(request):
     stage_id = request.data.get("stage_id")
     if not stage_id:
-        return Response({"message": "stage_id is required."}, status=400)
+        return Response({"message": "stage_id is required.", "code": "stage_required"}, status=400)
     # SECURITY (#8 audit 2026-07-06): was completely UNAUTHENTICATED - any anonymous caller could
     # re-dispatch Discord role tasks. Gate: AFC staff OR the owning organizer (can_manage_registrations).
     stage = get_object_or_404(Stages, stage_id=stage_id)
@@ -11627,27 +11627,27 @@ def assign_group_roles_from_db_task(self, stage_id, batch_size=10):
 #     # ---------------- AUTH ----------------
 #     auth = request.headers.get("Authorization")
 #     if not auth or not auth.startswith("Bearer "):
-#         return Response({"message": "Invalid or missing Authorization token."}, status=400)
+#         return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
 
 #     token = auth.split(" ")[1]
 #     admin = validate_token(token)
 
 #     if not admin:
-#         return Response({"message": "Invalid or expired session token."}, status=401)
+#         return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
 
 #     if admin.role != "admin":
-#         return Response({"message": "You do not have permission to perform this action."}, status=403)
+#         return Response({"message": "You do not have permission to perform this action.", "code": "not_permission_perform_action"}, status=403)
 
 #     event_id = request.data.get("event_id")
 #     stage_id = request.data.get("stage_id")
 
 #     if not event_id or not stage_id:
-#         return Response({"message": "event_id and stage_id are required."}, status=400)
+#         return Response({"message": "event_id and stage_id are required.", "code": "event_stage_required"}, status=400)
 
 #     event = get_object_or_404(Event, event_id=event_id)
 
 #     if event.participant_type != "solo":
-#         return Response({"message": "This event is not a solo event."}, status=400)
+#         return Response({"message": "This event is not a solo event.", "code": "event_not_solo_event"}, status=400)
 
 #     stage = get_object_or_404(Stages, stage_id=stage_id, event=event)
 
@@ -11712,22 +11712,22 @@ def assign_group_roles_from_db_task(self, stage_id, batch_size=10):
 # def seed_solo_players_to_stage(request):
 #     auth = request.headers.get("Authorization")
 #     if not auth or not auth.startswith("Bearer "):
-#         return Response({"message": "Invalid or missing Authorization token."}, status=400)
+#         return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
 
 #     admin = validate_token(auth.split(" ")[1])
 #     if not admin:
-#         return Response({"message": "Invalid or expired session token."}, status=401)
+#         return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
 #     if admin.role != "admin":
-#         return Response({"message": "You do not have permission to perform this action."}, status=403)
+#         return Response({"message": "You do not have permission to perform this action.", "code": "not_permission_perform_action"}, status=403)
 
 #     event_id = request.data.get("event_id")
 #     stage_id = request.data.get("stage_id")
 #     if not event_id or not stage_id:
-#         return Response({"message": "event_id and stage_id are required."}, status=400)
+#         return Response({"message": "event_id and stage_id are required.", "code": "event_stage_required"}, status=400)
 
 #     event = get_object_or_404(Event, event_id=event_id)
 #     if event.participant_type != "solo":
-#         return Response({"message": "This event is not a solo event."}, status=400)
+#         return Response({"message": "This event is not a solo event.", "code": "event_not_solo_event"}, status=400)
 
 #     stage = get_object_or_404(Stages, stage_id=stage_id, event=event)
 
@@ -11742,7 +11742,7 @@ def assign_group_roles_from_db_task(self, stage_id, batch_size=10):
 #     )
 
 #     if not solo_regs:
-#         return Response({"message": "No solo registrations found."}, status=400)
+#         return Response({"message": "No solo registrations found.", "code": "no_solo_registrations_found"}, status=400)
 
 #     # Existing StageCompetitors -> avoid duplicates without per-row get_or_create
 #     existing_reg_ids = set(
@@ -11824,26 +11824,26 @@ def seed_solo_players_to_stage(request):
     """
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
 
     admin = validate_token(auth.split(" ")[1])
     if not admin:
-        return Response({"message": "Unauthorized"}, status=403)
+        return Response({"message": "Unauthorized", "code": "seed_solo_players_to_stage_unauthorized"}, status=403)
 
     event_id = request.data.get("event_id")
     stage_id = request.data.get("stage_id")
     if not event_id or not stage_id:
-        return Response({"message": "event_id and stage_id are required."}, status=400)
+        return Response({"message": "event_id and stage_id are required.", "code": "event_stage_required"}, status=400)
 
     event = get_object_or_404(Event, event_id=event_id)
     stage = get_object_or_404(Stages, stage_id=stage_id, event=event)
 
     # ── seeding gate (org-aware, resolved after we have the event) ──
     if not _is_event_admin(admin) and not org_can_event(admin, "can_manage_registrations", event):
-        return Response({"message": "Unauthorized"}, status=403)
+        return Response({"message": "Unauthorized", "code": "seed_solo_players_to_stage_unauthorized"}, status=403)
 
     if event.participant_type != "solo":
-        return Response({"message": "This event is not a solo event."}, status=400)
+        return Response({"message": "This event is not a solo event.", "code": "event_not_solo_event"}, status=400)
 
     solo_players = RegisteredCompetitors.objects.select_related("user").filter(
         event=event,
@@ -11854,7 +11854,7 @@ def seed_solo_players_to_stage(request):
 
     total = solo_players.count()
     if total == 0:
-        return Response({"message": "No registered solo players found."}, status=400)
+        return Response({"message": "No registered solo players found.", "code": "no_registered_solo_players"}, status=400)
 
     assignments = []
     created_stagecompetitors = 0
@@ -11915,22 +11915,22 @@ def seed_solo_players_to_stage(request):
 # def seed_solo_players_to_stage(request):
 #     auth = request.headers.get("Authorization")
 #     if not auth or not auth.startswith("Bearer "):
-#         return Response({"message": "Invalid or missing Authorization token."}, status=400)
+#         return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
 
 #     admin = validate_token(auth.split(" ")[1])
 #     if not admin or admin.role != "admin":
-#         return Response({"message": "Unauthorized"}, status=403)
+#         return Response({"message": "Unauthorized", "code": "seed_solo_players_to_stage_unauthorized"}, status=403)
 
 #     event_id = request.data.get("event_id")
 #     stage_id = request.data.get("stage_id")
 #     if not event_id or not stage_id:
-#         return Response({"message": "event_id and stage_id are required."}, status=400)
+#         return Response({"message": "event_id and stage_id are required.", "code": "event_stage_required"}, status=400)
 
 #     event = get_object_or_404(Event, event_id=event_id)
 #     stage = get_object_or_404(Stages, stage_id=stage_id, event=event)
 
 #     if event.participant_type != "solo":
-#         return Response({"message": "This event is not a solo event."}, status=400)
+#         return Response({"message": "This event is not a solo event.", "code": "event_not_solo_event"}, status=400)
 
 #     solo_players = RegisteredCompetitors.objects.select_related("user").filter(
 #         event=event,
@@ -11941,7 +11941,7 @@ def seed_solo_players_to_stage(request):
 
 #     total = solo_players.count()
 #     if total == 0:
-#         return Response({"message": "No registered solo players found."}, status=400)
+#         return Response({"message": "No registered solo players found.", "code": "no_registered_solo_players"}, status=400)
 
 #     # ✅ create ONE progress row
 #     progress = DiscordStageRoleAssignmentProgress.objects.create(
@@ -11997,22 +11997,22 @@ def seed_solo_players_to_stage(request):
 #     # ---------------- AUTH ----------------
 #     auth = request.headers.get("Authorization")
 #     if not auth or not auth.startswith("Bearer "):
-#         return Response({"message": "Invalid or missing Authorization token."}, status=400)
+#         return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
 
 #     admin = validate_token(auth.split(" ")[1])
 #     if not admin:
-#         return Response({"message": "Invalid or expired session token."}, status=401)
+#         return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
 #     if admin.role != "admin":
-#         return Response({"message": "You do not have permission to perform this action."}, status=403)
+#         return Response({"message": "You do not have permission to perform this action.", "code": "not_permission_perform_action"}, status=403)
 
 #     event_id = request.data.get("event_id")
 #     stage_id = request.data.get("stage_id")
 #     if not event_id or not stage_id:
-#         return Response({"message": "event_id and stage_id are required."}, status=400)
+#         return Response({"message": "event_id and stage_id are required.", "code": "event_stage_required"}, status=400)
 
 #     event = get_object_or_404(Event, event_id=event_id)
 #     if event.participant_type != "solo":
-#         return Response({"message": "This event is not a solo event."}, status=400)
+#         return Response({"message": "This event is not a solo event.", "code": "event_not_solo_event"}, status=400)
 
 #     stage = get_object_or_404(Stages, stage_id=stage_id, event=event)
 
@@ -12025,7 +12025,7 @@ def seed_solo_players_to_stage(request):
 
 #     total = solo_players_qs.count()
 #     if total == 0:
-#         return Response({"message": "No registered solo players found."}, status=400)
+#         return Response({"message": "No registered solo players found.", "code": "no_registered_solo_players"}, status=400)
 
 #     # ✅ Create ONE progress row
 #     progress = DiscordStageRoleAssignmentProgress.objects.create(
@@ -12082,7 +12082,7 @@ def seed_solo_players_to_stage(request):
 #     # ---------------- AUTH ----------------
 #     auth = request.headers.get("Authorization")
 #     if not auth or not auth.startswith("Bearer "):
-#         return Response({"message": "Invalid or missing Authorization token."}, status=400)
+#         return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
 
 #     token = auth.split(" ")[1]
 #     admin = validate_token(token)
@@ -12104,13 +12104,13 @@ def seed_solo_players_to_stage(request):
 #     stage_id = request.data.get("stage_id")
 
 #     if not event_id or not stage_id:
-#         return Response({"message": "event_id and stage_id are required."}, status=400)
+#         return Response({"message": "event_id and stage_id are required.", "code": "event_stage_required"}, status=400)
 
 #     event = get_object_or_404(Event, event_id=event_id)
 
 #     # ✅ ENSURE SOLO EVENT
 #     if event.participant_type != "solo":
-#         return Response({"message": "This event is not a solo event."}, status=400)
+#         return Response({"message": "This event is not a solo event.", "code": "event_not_solo_event"}, status=400)
 
 #     stage = get_object_or_404(Stages, stage_id=stage_id, event=event)
 
@@ -12150,7 +12150,7 @@ from afc_tournament_and_scrims.models import StageGroups, StageCompetitor, Stage
 #     # ---------------- AUTH ----------------
 #     auth = request.headers.get("Authorization")
 #     if not auth or not auth.startswith("Bearer "):
-#         return Response({"message": "Invalid or missing Authorization token."}, status=400)
+#         return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
 
 #     token = auth.split(" ")[1]
 #     admin = validate_token(token)
@@ -12168,20 +12168,20 @@ from afc_tournament_and_scrims.models import StageGroups, StageCompetitor, Stage
 #         )
 #     stage_id = request.data.get("stage_id")
 #     if not stage_id:
-#         return Response({"message": "stage_id is required."}, status=400)
+#         return Response({"message": "stage_id is required.", "code": "stage_required"}, status=400)
 
 #     stage = get_object_or_404(Stages, stage_id=stage_id)
 
 #     groups = list(stage.groups.all())
 #     if not groups:
-#         return Response({"message": "No groups found for this stage."}, status=400)
+#         return Response({"message": "No groups found for this stage.", "code": "no_groups_found_stage"}, status=400)
 
 #     competitors = list(
 #         stage.competitors.filter(status="active", player__isnull=False)
 #     )
 
 #     if not competitors:
-#         return Response({"message": "No competitors found to seed."}, status=400)
+#         return Response({"message": "No competitors found to seed.", "code": "no_competitors_found_seed"}, status=400)
 
 #     shuffle(competitors)
 
@@ -12215,29 +12215,29 @@ from afc_tournament_and_scrims.models import StageGroups, StageCompetitor, Stage
 #     # ---------------- AUTH ----------------
 #     auth = request.headers.get("Authorization")
 #     if not auth or not auth.startswith("Bearer "):
-#         return Response({"message": "Invalid or missing Authorization token."}, status=400)
+#         return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
 
 #     token = auth.split(" ")[1]
 #     admin = validate_token(token)
 
 #     if not admin:
-#         return Response({"message": "Invalid or expired session token."}, status=401)
+#         return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
 #     if admin.role != "admin":
-#         return Response({"message": "You do not have permission to perform this action."}, status=403)
+#         return Response({"message": "You do not have permission to perform this action.", "code": "not_permission_perform_action"}, status=403)
 
 #     stage_id = request.data.get("stage_id")
 #     if not stage_id:
-#         return Response({"message": "stage_id is required."}, status=400)
+#         return Response({"message": "stage_id is required.", "code": "stage_required"}, status=400)
 
 #     stage = get_object_or_404(Stages, stage_id=stage_id)
 #     groups = list(stage.groups.all())
 #     if not groups:
-#         return Response({"message": "No groups found for this stage."}, status=400)
+#         return Response({"message": "No groups found for this stage.", "code": "no_groups_found_stage"}, status=400)
 
 #     # Get all active StageCompetitors (players only)
 #     competitors = list(stage.competitors.filter(status="active", player__isnull=False))
 #     if not competitors:
-#         return Response({"message": "No competitors found to seed."}, status=400)
+#         return Response({"message": "No competitors found to seed.", "code": "no_competitors_found_seed"}, status=400)
 
 #     shuffle(competitors)  # randomize
 
@@ -12270,32 +12270,32 @@ from afc_tournament_and_scrims.models import StageGroups, StageCompetitor, Stage
 #     # ---------------- AUTH ----------------
 #     auth = request.headers.get("Authorization")
 #     if not auth or not auth.startswith("Bearer "):
-#         return Response({"message": "Invalid or missing Authorization token."}, status=400)
+#         return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
 
 #     token = auth.split(" ")[1]
 #     admin = validate_token(token)
 
 #     if not admin:
-#         return Response({"message": "Invalid or expired session token."}, status=401)
+#         return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
 #     if admin.role != "admin":
-#         return Response({"message": "You do not have permission to perform this action."}, status=403)
+#         return Response({"message": "You do not have permission to perform this action.", "code": "not_permission_perform_action"}, status=403)
 
 #     stage_id = request.data.get("stage_id")
 #     if not stage_id:
-#         return Response({"message": "stage_id is required."}, status=400)
+#         return Response({"message": "stage_id is required.", "code": "stage_required"}, status=400)
 
 #     stage = get_object_or_404(Stages, stage_id=stage_id)
 #     groups = list(stage.groups.all())
 
 #     if not groups:
-#         return Response({"message": "No groups found for this stage."}, status=400)
+#         return Response({"message": "No groups found for this stage.", "code": "no_groups_found_stage"}, status=400)
 
 #     competitors = list(
 #         stage.competitors.filter(status="active", player__isnull=False)
 #     )
 
 #     if not competitors:
-#         return Response({"message": "No competitors found to seed."}, status=400)
+#         return Response({"message": "No competitors found to seed.", "code": "no_competitors_found_seed"}, status=400)
 
 #     shuffle(competitors)
 
@@ -12353,22 +12353,22 @@ from afc_tournament_and_scrims.models import StageGroups, StageCompetitor, Stage
 # def seed_stage_competitors_to_groups(request):
 #     auth = request.headers.get("Authorization")
 #     if not auth or not auth.startswith("Bearer "):
-#         return Response({"message": "Invalid or missing Authorization token."}, status=400)
+#         return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
 
 #     admin = validate_token(auth.split(" ")[1])
 #     if not admin:
-#         return Response({"message": "Invalid or expired session token."}, status=401)
+#         return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
 #     if admin.role != "admin":
-#         return Response({"message": "You do not have permission to perform this action."}, status=403)
+#         return Response({"message": "You do not have permission to perform this action.", "code": "not_permission_perform_action"}, status=403)
 
 #     stage_id = request.data.get("stage_id")
 #     if not stage_id:
-#         return Response({"message": "stage_id is required."}, status=400)
+#         return Response({"message": "stage_id is required.", "code": "stage_required"}, status=400)
 
 #     stage = get_object_or_404(Stages, stage_id=stage_id)
 #     groups = list(stage.groups.all().order_by("group_id"))
 #     if not groups:
-#         return Response({"message": "No groups found for this stage."}, status=400)
+#         return Response({"message": "No groups found for this stage.", "code": "no_groups_found_stage"}, status=400)
 
 #     # stage competitors (solo)
 #     competitors = list(
@@ -12377,7 +12377,7 @@ from afc_tournament_and_scrims.models import StageGroups, StageCompetitor, Stage
 #         )
 #     )
 #     if not competitors:
-#         return Response({"message": "No competitors found to seed."}, status=400)
+#         return Response({"message": "No competitors found to seed.", "code": "no_competitors_found_seed"}, status=400)
 
 #     # players already seeded into ANY group in THIS stage
 #     already_seeded_ids = set(
@@ -12435,35 +12435,35 @@ from django.shortcuts import get_object_or_404
 def seed_stage_competitors_to_groups(request):
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
 
     admin = validate_token(auth.split(" ")[1])
     if not admin:
-        return Response({"message": "Invalid or expired session token."}, status=401)
+        return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
 
     stage_id = request.data.get("stage_id")
     if not stage_id:
-        return Response({"message": "stage_id is required."}, status=400)
+        return Response({"message": "stage_id is required.", "code": "stage_required"}, status=400)
 
     stage = get_object_or_404(Stages, stage_id=stage_id)
     # Group draw (owner 2026-09-12): while the teams are picking their own groups, the random
     # seeder must not deal over them. Close or reset the draw first (afc_draws.services).
     from afc_draws.services import draw_is_open as _draw_is_open
     if _draw_is_open(stage):
-        return Response({"message": "A group draw is open for this stage. Close or reset it before seeding."}, status=409)
+        return Response({"message": "A group draw is open for this stage. Close or reset it before seeding.", "code": "group_draw_open_stage"}, status=409)
     # Organizer parity (owner 2026-07-04): owning organizer (can_manage_registrations) may act on their OWN event.
     if not _is_event_admin(admin) and not org_can_event(admin, "can_manage_registrations", stage.event):
-        return Response({"message": "You do not have permission to perform this action."}, status=403)
+        return Response({"message": "You do not have permission to perform this action.", "code": "not_permission_perform_action"}, status=403)
     groups = list(stage.groups.all().order_by("group_id"))
     if not groups:
-        return Response({"message": "No groups found for this stage."}, status=400)
+        return Response({"message": "No groups found for this stage.", "code": "no_groups_found_stage"}, status=400)
 
     competitors = list(
         stage.competitors.select_related("player__user")
         .filter(status="active", player__isnull=False)
     )
     if not competitors:
-        return Response({"message": "No competitors found to seed."}, status=400)
+        return Response({"message": "No competitors found to seed.", "code": "no_competitors_found_seed"}, status=400)
 
     # already in ANY group for this stage
     already_seeded_player_ids = set(
@@ -12488,7 +12488,7 @@ def seed_stage_competitors_to_groups(request):
     try:
         targets = plan_placements(stage, groups, len(to_seed))
     except GroupCapacityError as e:
-        return Response({"message": str(e)}, status=400)
+        return Response({"message": str(e), "code": "seed_stage_competitors_to_groups_refused"}, status=400)
 
     sgc_rows = []
     role_rows = []
@@ -12536,26 +12536,26 @@ def seed_stage_competitors_to_groups(request):
 # def seed_stage_competitors_to_groups(request):
 #     auth = request.headers.get("Authorization")
 #     if not auth or not auth.startswith("Bearer "):
-#         return Response({"message": "Invalid or missing Authorization token."}, status=400)
+#         return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
 
 #     admin = validate_token(auth.split(" ")[1])
 #     if not admin:
-#         return Response({"message": "Invalid or expired session token."}, status=401)
+#         return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
 #     if admin.role != "admin":
-#         return Response({"message": "You do not have permission to perform this action."}, status=403)
+#         return Response({"message": "You do not have permission to perform this action.", "code": "not_permission_perform_action"}, status=403)
 
 #     stage_id = request.data.get("stage_id")
 #     if not stage_id:
-#         return Response({"message": "stage_id is required."}, status=400)
+#         return Response({"message": "stage_id is required.", "code": "stage_required"}, status=400)
 
 #     stage = get_object_or_404(Stages, stage_id=stage_id)
 #     groups = list(stage.groups.all())
 #     if not groups:
-#         return Response({"message": "No groups found for this stage."}, status=400)
+#         return Response({"message": "No groups found for this stage.", "code": "no_groups_found_stage"}, status=400)
 
 #     competitors = list(stage.competitors.select_related("player__user").filter(status="active", player__isnull=False))
 #     if not competitors:
-#         return Response({"message": "No competitors found to seed."}, status=400)
+#         return Response({"message": "No competitors found to seed.", "code": "no_competitors_found_seed"}, status=400)
 
 #     shuffle(competitors)
 
@@ -12597,7 +12597,7 @@ def seed_stage_competitors_to_groups(request):
 def sync_group_discord_roles(request):
     group_id = request.data.get("group_id")
     if not group_id:
-        return Response({"message": "group_id is required"}, status=400)
+        return Response({"message": "group_id is required", "code": "group_required"}, status=400)
 
     group = get_object_or_404(StageGroups, group_id=group_id)
     # #8 (2026-07-06 organizer parity): was AFC-super-admin-only; now the owning organizer
@@ -12608,7 +12608,7 @@ def sync_group_discord_roles(request):
 
     role_id = group.group_discord_role_id
     if not role_id:
-        return Response({"message": "This group has no discord role id."}, status=400)
+        return Response({"message": "This group has no discord role id.", "code": "group_no_discord_role"}, status=400)
 
     competitors = StageGroupCompetitor.objects.select_related("player__user").filter(
         stage_group=group, player__isnull=False, status="active"
@@ -12660,19 +12660,19 @@ def disqualify_registered_competitor(request):
     # ---------------- AUTH ----------------
     session_token = request.headers.get("Authorization")
     if not session_token or not session_token.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
     token = session_token.split(" ")[1]
     admin = validate_token(token)
     if not admin:
         return Response(
-            {"message": "Invalid or expired session token."},
+            {"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"},
             status=status.HTTP_401_UNAUTHORIZED
         )
     competitor_id = request.data.get("competitor_id")
     event_id = request.data.get("event_id")
 
     if not competitor_id or not event_id:
-        return Response({"message": "competitor_id, event_id, and stage_id are required."}, status=400)
+        return Response({"message": "competitor_id, event_id, and stage_id are required.", "code": "competitor_event_stage_required"}, status=400)
 
     # REQUIRED, not optional (owner backlog item 35). A disqualification is the harshest thing an
     # organizer can do to a competitor, and one with no stated reason is what turns into a dispute
@@ -12681,7 +12681,7 @@ def disqualify_registered_competitor(request):
     reason = (request.data.get("reason") or "").strip()
     if not reason:
         return Response(
-            {"message": "A reason is required. The competitor is shown it, so say why."},
+            {"message": "A reason is required. The competitor is shown it, so say why.", "code": "reason_required_competitor_shown"},
             status=400)
 
     user = get_object_or_404(User, user_id=competitor_id)
@@ -12691,7 +12691,7 @@ def disqualify_registered_competitor(request):
     # the event loads: AFC admins always; organizers with can_manage_registrations on the owning org.
     # Matches disqualify_team's gate (native AFC events stay admin-only via org_can_event).
     if not _is_event_admin(admin) and not org_can_event(admin, "can_manage_registrations", event):
-        return Response({"message": "You do not have permission to manage registrations for this event."}, status=403)
+        return Response({"message": "You do not have permission to manage registrations for this event.", "code": "not_permission_manage_registrations"}, status=403)
     competitor = get_object_or_404(RegisteredCompetitors, user=user, event=event)
 
     
@@ -12729,25 +12729,25 @@ def reactivate_registered_competitor(request):
     # ---------------- AUTH ----------------
     session_token = request.headers.get("Authorization")
     if not session_token or not session_token.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
     token = session_token.split(" ")[1]
     admin = validate_token(token)
     if not admin:
         return Response(
-            {"message": "Invalid or expired session token."},
+            {"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"},
             status=status.HTTP_401_UNAUTHORIZED
         )
     competitor_id = request.data.get("competitor_id")
     event_id = request.data.get("event_id")
 
     if not competitor_id or not event_id:
-        return Response({"message": "competitor_id and event_id are required."}, status=400)
+        return Response({"message": "competitor_id and event_id are required.", "code": "competitor_event_required"}, status=400)
 
     user = get_object_or_404(User, user_id=competitor_id)
     event = get_object_or_404(Event, event_id=event_id)
     # Registration gate (owner 2026-06-22: organizers may manage solo reactivation too) - org-aware.
     if not _is_event_admin(admin) and not org_can_event(admin, "can_manage_registrations", event):
-        return Response({"message": "You do not have permission to manage registrations for this event."}, status=403)
+        return Response({"message": "You do not have permission to manage registrations for this event.", "code": "not_permission_manage_registrations"}, status=403)
 
     competitor = get_object_or_404(RegisteredCompetitors, user=user, event=event)
 
@@ -12764,28 +12764,28 @@ def reactivate_registered_competitor(request):
 #     # ---------------- AUTH ----------------
 #     session_token = request.headers.get("Authorization")
 #     if not session_token or not session_token.startswith("Bearer "):
-#         return Response({"message": "Invalid or missing Authorization token."}, status=400)
+#         return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
     
 #     token = session_token.split(" ")[1]
 #     admin = validate_token(token)
 #     if not admin:
-#         return Response({"message": "Invalid or expired session token."}, status=401)
+#         return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
     
 #     if admin.role != "admin":
-#         return Response({"message": "You do not have permission to perform this action."}, status=403)
+#         return Response({"message": "You do not have permission to perform this action.", "code": "not_permission_perform_action"}, status=403)
 
 #     # ---------------- EVENT ----------------
 #     event_id = request.data.get("event_id")
 #     group_id = request.data.get("group_id")
 #     if not event_id:
-#         return Response({"message": "event_id is required."}, status=400)
+#         return Response({"message": "event_id is required.", "code": "event_required"}, status=400)
 
 #     event = get_object_or_404(Event, event_id=event_id)
 
 #     # ---------------- GET MATCHES ----------------
 #     matches = Match.objects.filter(group=group_id)
 #     if not matches.exists():
-#         return Response({"message": "No matches found for this event."}, status=400)
+#         return Response({"message": "No matches found for this event.", "code": "no_matches_found_event"}, status=400)
 
 #     total_notifications = 0
 
@@ -12804,28 +12804,28 @@ def reactivate_registered_competitor(request):
 #     # ---------------- AUTH ----------------
 #     auth = request.headers.get("Authorization")
 #     if not auth or not auth.startswith("Bearer "):
-#         return Response({"message": "Invalid or missing Authorization token."}, status=400)
+#         return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
 
 #     admin = validate_token(auth.split(" ")[1])
 #     if not admin:
-#         return Response({"message": "Invalid or expired session token."}, status=401)
+#         return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
 
 #     if admin.role != "admin":
-#         return Response({"message": "You do not have permission to perform this action."}, status=403)
+#         return Response({"message": "You do not have permission to perform this action.", "code": "not_permission_perform_action"}, status=403)
 
 #     # ---------------- INPUT ----------------
 #     event_id = request.data.get("event_id")
 #     group_id = request.data.get("group_id")
 
 #     if not event_id or not group_id:
-#         return Response({"message": "event_id and group_id are required."}, status=400)
+#         return Response({"message": "event_id and group_id are required.", "code": "event_group_required"}, status=400)
 
 #     event = get_object_or_404(Event, event_id=event_id)
 #     group = get_object_or_404(StageGroups, group_id=group_id)
 
 #     matches = Match.objects.filter(group=group)
 #     if not matches.exists():
-#         return Response({"message": "No matches found for this group."}, status=400)
+#         return Response({"message": "No matches found for this group.", "code": "no_matches_found_group"}, status=400)
 
 #     total_notifications = 0
 
@@ -12892,16 +12892,16 @@ def reactivate_registered_competitor(request):
 def send_match_room_details_notification_to_competitor(request):
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
 
     admin = validate_token(auth.split(" ")[1])
     if not admin:
-        return Response({"message": "Invalid or expired session token."}, status=401)
+        return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
 
     event_id = request.data.get("event_id")
     group_id = request.data.get("group_id")
     if not event_id or not group_id:
-        return Response({"message": "event_id and group_id are required."}, status=400)
+        return Response({"message": "event_id and group_id are required.", "code": "event_group_required"}, status=400)
 
     event = get_object_or_404(Event, event_id=event_id)
     group = get_object_or_404(StageGroups, group_id=group_id)
@@ -12911,18 +12911,18 @@ def send_match_room_details_notification_to_competitor(request):
     # can_upload_results on THEIR event could pass a group_id belonging to ANOTHER event and push that
     # other event's room details. A group's owning event is group.stage.event.
     if group.stage.event_id != event.event_id:
-        return Response({"message": "That group does not belong to this event."}, status=400)
+        return Response({"message": "That group does not belong to this event.", "code": "group_not_belong_event"}, status=400)
 
     # Organizer parity (owner 2026-07-05): the owning organizer (can_upload_results) may push this map's
     # room details for THEIR OWN event. Was role != "admin" = AFC-staff-only, so an organizer got 403.
     # Resolved the event first (mirrors complete_event) so org_can_event can check the owning org; native
     # (org=None) events stay admin-only. Matches the current broadcast_to_group room-details gate.
     if not (_is_event_admin(admin) or org_can_event(admin, "can_upload_results", event)):
-        return Response({"message": "You do not have permission to manage results for this event."}, status=403)
+        return Response({"message": "You do not have permission to manage results for this event.", "code": "not_permission_manage_results"}, status=403)
 
     matches = Match.objects.filter(group=group).order_by("match_number")
     if not matches.exists():
-        return Response({"message": "No matches found for this group."}, status=400)
+        return Response({"message": "No matches found for this group.", "code": "no_matches_found_group"}, status=400)
 
     total_notifications = 0
 
@@ -12985,7 +12985,7 @@ def remove_all_stage_competitors_from_groups_and_their_discord_roles(request):
     # ---------------- AUTH ----------------
     stage_id = request.data.get("stage_id")
     if not stage_id:
-        return Response({"message": "stage_id is required."}, status=400)
+        return Response({"message": "stage_id is required.", "code": "stage_required"}, status=400)
 
     stage = get_object_or_404(Stages, stage_id=stage_id)
     # #8 (2026-07-06 organizer parity): was AFC-super-admin-only; this DESTRUCTIVE action (clears every
@@ -13017,23 +13017,23 @@ def delete_stage(request):
     # ---------------- AUTH ----------------
     session_token = request.headers.get("Authorization")
     if not session_token or not session_token.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
     token = session_token.split(" ")[1]
     admin = validate_token(token)
     if not admin:
         return Response(
-            {"message": "Invalid or expired session token."},
+            {"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"},
             status=status.HTTP_401_UNAUTHORIZED
         )
     
     stage_id = request.data.get("stage_id")
     if not stage_id:
-        return Response({"message": "stage_id is required."}, status=400)
+        return Response({"message": "stage_id is required.", "code": "stage_required"}, status=400)
 
     stage = get_object_or_404(Stages, stage_id=stage_id)
     # Organizer parity (owner 2026-07-04): owning organizer (can_manage_registrations) may act on their OWN event.
     if not _is_event_admin(admin) and not org_can_event(admin, "can_manage_registrations", stage.event):
-        return Response({"message": "You do not have permission to perform this action."}, status=403)
+        return Response({"message": "You do not have permission to perform this action.", "code": "not_permission_perform_action"}, status=403)
 
     # Remove all group roles from competitors
     groups = stage.groups.all()
@@ -13056,23 +13056,23 @@ def delete_group(request):
     # ---------------- AUTH ----------------
     session_token = request.headers.get("Authorization")
     if not session_token or not session_token.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
     token = session_token.split(" ")[1]
     admin = validate_token(token)
     if not admin:
         return Response(
-            {"message": "Invalid or expired session token."},
+            {"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"},
             status=status.HTTP_401_UNAUTHORIZED
         )
     
     group_id = request.data.get("group_id")
     if not group_id:
-        return Response({"message": "group_id is required."}, status=400)
+        return Response({"message": "group_id is required.", "code": "group_required"}, status=400)
 
     group = get_object_or_404(StageGroups, group_id=group_id)
     # Organizer parity (owner 2026-07-04): owning organizer (can_manage_registrations) may act on their OWN event.
     if not _is_event_admin(admin) and not org_can_event(admin, "can_manage_registrations", group.stage.event):
-        return Response({"message": "You do not have permission to perform this action."}, status=403)
+        return Response({"message": "You do not have permission to perform this action.", "code": "not_permission_perform_action"}, status=403)
 
     # Remove all group roles from competitors
     competitors = StageGroupCompetitor.objects.filter(stage_group=group)
@@ -13092,7 +13092,7 @@ def delete_group(request):
 def get_all_user_id_in_stage(request):
     stage_id = request.data.get("stage_id")
     if not stage_id:
-        return Response({"message": "stage_id is required."}, status=400)
+        return Response({"message": "stage_id is required.", "code": "stage_required"}, status=400)
 
     stage = get_object_or_404(Stages, stage_id=stage_id)
     # SECURITY (#8 audit 2026-07-06): was UNAUTHENTICATED (enumerated every user in a stage). Gate to
@@ -13123,7 +13123,7 @@ def get_all_user_id_in_stage(request):
 def get_all_user_id_in_group(request):
     group_id = request.data.get("group_id")
     if not group_id:
-        return Response({"message": "group_id is required."}, status=400)
+        return Response({"message": "group_id is required.", "code": "group_required"}, status=400)
 
     group = get_object_or_404(StageGroups, group_id=group_id)
     # SECURITY (#8 audit 2026-07-06): was UNAUTHENTICATED. Gate to AFC staff OR the owning organizer.
@@ -13153,7 +13153,7 @@ def get_all_user_id_in_group(request):
 def delete_notifications_from_users_in_a_group(request):
     group_id = request.data.get("group_id")
     if not group_id:
-        return Response({"message": "group_id is required."}, status=400)
+        return Response({"message": "group_id is required.", "code": "group_required"}, status=400)
 
     group = get_object_or_404(StageGroups, group_id=group_id)
     # SECURITY (#8 audit 2026-07-06): was UNAUTHENTICATED + DESTRUCTIVE (deleted notifications for every
@@ -13192,7 +13192,7 @@ def check_if_user_registered_in_event(request):
     event_id = request.data.get("event_id")
 
     if not email or not event_id:
-        return Response({"message": "email and event_id are required."}, status=400)
+        return Response({"message": "email and event_id are required.", "code": "email_event_required"}, status=400)
     event = get_object_or_404(Event, event_id=event_id)
     user = get_object_or_404(User, email=email)
     is_registered = RegisteredCompetitors.objects.filter(
@@ -13222,11 +13222,11 @@ def create_leaderboard(request):
     # (UpdatedConfigurePointSystem) is dead code. Retained only to avoid churn.
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
 
     admin = validate_token(auth.split(" ")[1])
     if not admin:
-        return Response({"message": "Invalid or expired session token."}, status=401)
+        return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
 
     # NOTE: permission is finalised below, once the owning event is resolved from event_id - 
     # org members with can_upload_results may create leaderboards for THEIR org's events.
@@ -13239,7 +13239,7 @@ def create_leaderboard(request):
     file_type = request.data.get("file_type")  # optional
 
     if not event_id or not stage_id or not group_id:
-        return Response({"message": "event_id, stage_id and group_id are required."}, status=400)
+        return Response({"message": "event_id, stage_id and group_id are required.", "code": "event_stage_group_required"}, status=400)
 
     event = get_object_or_404(Event, event_id=event_id)
     stage = get_object_or_404(Stages, stage_id=stage_id, event=event)
@@ -13250,7 +13250,7 @@ def create_leaderboard(request):
     # members holding can_upload_results on the event's owning org. org_can_event treats
     # native (org=None) events as admin-only, so organizers never touch events outside their org.
     if not _is_event_admin(admin) and not org_can_event(admin, "can_upload_results", event):
-        return Response({"message": "You do not have permission to manage results for this event."}, status=403)
+        return Response({"message": "You do not have permission to manage results for this event.", "code": "not_permission_manage_results"}, status=403)
 
     if not leaderboard_name:
         leaderboard_name = f"{event.event_name} - {stage.stage_name} - {group.group_name}"
@@ -13309,13 +13309,13 @@ def create_leaderboard(request):
 # def create_leaderboard(request):
 #     auth = request.headers.get("Authorization")
 #     if not auth or not auth.startswith("Bearer "):
-#         return Response({"message": "Invalid or missing Authorization token."}, status=400)
+#         return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
 
 #     admin = validate_token(auth.split(" ")[1])
 #     if not admin:
-#         return Response({"message": "Invalid or expired session token."}, status=401)
+#         return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
 #     if admin.role != "admin":
-#         return Response({"message": "You do not have permission to perform this action."}, status=403)
+#         return Response({"message": "You do not have permission to perform this action.", "code": "not_permission_perform_action"}, status=403)
 
 #     event_id = request.data.get("event_id")
 #     stage_id = request.data.get("stage_id")
@@ -13325,7 +13325,7 @@ def create_leaderboard(request):
 #     file_type = request.data.get("file_type")  # optional
 
 #     if not event_id or not stage_id or not group_id:
-#         return Response({"message": "event_id, stage_id and group_id are required."}, status=400)
+#         return Response({"message": "event_id, stage_id and group_id are required.", "code": "event_stage_group_required"}, status=400)
 
 #     event = get_object_or_404(Event, event_id=event_id)
 #     stage = get_object_or_404(Stages, stage_id=stage_id, event=event)
@@ -13373,21 +13373,21 @@ def create_leaderboard(request):
 # def upload_solo_match_result(request):
 #     auth = request.headers.get("Authorization")
 #     if not auth or not auth.startswith("Bearer "):
-#         return Response({"message": "Invalid or missing Authorization token."}, status=400)
+#         return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
 
 #     admin = validate_token(auth.split(" ")[1])
 #     if not admin:
-#         return Response({"message": "Invalid or expired session token."}, status=401)
+#         return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
 #     if admin.role != "admin":
-#         return Response({"message": "You do not have permission to perform this action."}, status=403)
+#         return Response({"message": "You do not have permission to perform this action.", "code": "not_permission_perform_action"}, status=403)
 
 #     match_id = request.data.get("match_id")
 #     if not match_id:
-#         return Response({"message": "match_id is required."}, status=400)
+#         return Response({"message": "match_id is required.", "code": "match_required"}, status=400)
 
 #     uploaded_file = request.FILES.get("file")
 #     if not uploaded_file:
-#         return Response({"message": "file is required."}, status=400)
+#         return Response({"message": "file is required.", "code": "file_required"}, status=400)
 
 #     # placement_points can be JSON string or omitted (use default)
 #     placement_points_raw = request.data.get("placement_points")
@@ -13406,10 +13406,10 @@ def create_leaderboard(request):
 #     match = get_object_or_404(Match, match_id=match_id)
 #     event = match.group.stage.event if match.group else (match.leaderboard.event if match.leaderboard else None)
 #     if not event:
-#         return Response({"message": "Match is not linked to a group/leaderboard with an event."}, status=400)
+#         return Response({"message": "Match is not linked to a group/leaderboard with an event.", "code": "match_not_linked_group"}, status=400)
 
 #     if event.participant_type != "solo":
-#         return Response({"message": "This API is for SOLO events only."}, status=400)
+#         return Response({"message": "This API is for SOLO events only.", "code": "api_solo_events"}, status=400)
 
 #     text = uploaded_file.read().decode("utf-8", errors="ignore")
 
@@ -13428,7 +13428,7 @@ def create_leaderboard(request):
 #     if not parsed:
 #         return Response({
 #             "message": "No results parsed from file. File format may not match expected SOLO layout."
-#         }, status=400)
+#         , "code": "no_results_parsed_file"}, status=400)
 
 #     # Map uid -> RegisteredCompetitors
 #     uids = [p["uid"] for p in parsed]
@@ -13511,32 +13511,32 @@ def create_leaderboard(request):
 #     # ---------------- AUTH ----------------
 #     auth = request.headers.get("Authorization")
 #     if not auth or not auth.startswith("Bearer "):
-#         return Response({"message": "Invalid or missing Authorization token."}, status=400)
+#         return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
 
 #     admin = validate_token(auth.split(" ")[1])
 #     if not admin:
-#         return Response({"message": "Invalid or expired session token."}, status=401)
+#         return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
 #     if admin.role != "admin":
-#         return Response({"message": "You do not have permission to perform this action."}, status=403)
+#         return Response({"message": "You do not have permission to perform this action.", "code": "not_permission_perform_action"}, status=403)
 
 #     # ---------------- INPUT ----------------
 #     match_id = request.data.get("match_id")
 #     if not match_id:
-#         return Response({"message": "match_id is required."}, status=400)
+#         return Response({"message": "match_id is required.", "code": "match_required"}, status=400)
 
 #     uploaded_file = request.FILES.get("file")
 #     if not uploaded_file:
-#         return Response({"message": "file is required."}, status=400)
+#         return Response({"message": "file is required.", "code": "file_required"}, status=400)
 
 #     match = get_object_or_404(Match, match_id=match_id)
 
 #     # ---------------- EVENT + LEADERBOARD ----------------
 #     if not match.group:
-#         return Response({"message": "This match is not linked to a group."}, status=400)
+#         return Response({"message": "This match is not linked to a group.", "code": "match_not_linked_group"}, status=400)
 
 #     event = match.group.stage.event
 #     if event.participant_type != "solo":
-#         return Response({"message": "This API is for SOLO events only."}, status=400)
+#         return Response({"message": "This API is for SOLO events only.", "code": "api_solo_events"}, status=400)
 
 #     # Prefer match.leaderboard; else use unique leaderboard (event, stage, group)
 #     leaderboard = match.leaderboard
@@ -13656,11 +13656,11 @@ def upload_solo_match_result(request):
     # ---------------- AUTH ----------------
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
 
     admin = validate_token(auth.split(" ")[1])
     if not admin:
-        return Response({"message": "Invalid or expired session token."}, status=401)
+        return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
 
     # NOTE: auth is finalised below, after the owning event is resolved - org members with
     # can_upload_results may upload for THEIR org's events, so we need the event in hand first.
@@ -13668,11 +13668,11 @@ def upload_solo_match_result(request):
     # ---------------- INPUT ----------------
     match_id = request.data.get("match_id")
     if not match_id:
-        return Response({"message": "match_id is required."}, status=400)
+        return Response({"message": "match_id is required.", "code": "match_required"}, status=400)
 
     uploaded_file = request.FILES.get("file")
     if not uploaded_file:
-        return Response({"message": "file is required."}, status=400)
+        return Response({"message": "file is required.", "code": "file_required"}, status=400)
 
     # DRY-RUN preview (owner 2026-06-25, multi-map .log upload for SOLO events): when truthy, do the
     # FULL parse + RegisteredCompetitors mapping + scoring and build the SAME response summary, but
@@ -13687,7 +13687,7 @@ def upload_solo_match_result(request):
     # ---------------- EVENT + LEADERBOARD ----------------
     # In your DB, SOLO matches should be linked to a group
     if not match.group:
-        return Response({"message": "This match is not linked to a group."}, status=400)
+        return Response({"message": "This match is not linked to a group.", "code": "match_not_linked_group"}, status=400)
 
     event = match.group.stage.event
 
@@ -13695,10 +13695,10 @@ def upload_solo_match_result(request):
     # holding can_upload_results on the event's owning org. org_can_event treats native
     # (org=None) events as admin-only, so organizers can never touch events outside their org.
     if not _is_event_admin(admin) and not org_can_event(admin, "can_upload_results", event):
-        return Response({"message": "You do not have permission to perform this action."}, status=403)
+        return Response({"message": "You do not have permission to perform this action.", "code": "not_permission_perform_action"}, status=403)
 
     if event.participant_type != "solo":
-        return Response({"message": "This API is for SOLO events only."}, status=400)
+        return Response({"message": "This API is for SOLO events only.", "code": "api_solo_events"}, status=400)
 
     # Find leaderboard (match.leaderboard preferred)
     leaderboard = match.leaderboard
@@ -13711,7 +13711,7 @@ def upload_solo_match_result(request):
 
     if not leaderboard:
         return Response(
-            {"message": "No leaderboard found for this group. Create leaderboard first."},
+            {"message": "No leaderboard found for this group. Create leaderboard first.", "code": "no_leaderboard_found_group"},
             status=400
         )
 
@@ -13749,7 +13749,7 @@ def upload_solo_match_result(request):
 
     if not parsed:
         return Response(
-            {"message": "No results parsed. Your log format may differ from SOLO_BLOCK_RE."},
+            {"message": "No results parsed. Your log format may differ from SOLO_BLOCK_RE.", "code": "no_results_parsed_log"},
             status=400
         )
 
@@ -13874,10 +13874,10 @@ def get_all_leaderboards(request):
 
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
     user = validate_token(auth.split(" ")[1])
     if not user:
-        return Response({"message": "Invalid or expired session token."}, status=401)
+        return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
 
     is_staff = user.role in ["admin", "moderator", "support"] or \
         user.userroles.filter(role__role_name__in=["event_admin", "head_admin"]).exists()
@@ -13894,7 +13894,7 @@ def get_all_leaderboards(request):
         org_ids = list(OrganizationMember.objects.filter(user=user, status="active")
                        .values_list("organization_id", flat=True))
         if not org_ids:
-            return Response({"message": "You do not have permission."}, status=403)
+            return Response({"message": "You do not have permission.", "code": "not_permission"}, status=403)
         leaderboards = leaderboards.filter(event__organization_id__in=org_ids)
     data = []
     for lb in leaderboards:
@@ -13935,20 +13935,20 @@ def get_all_leaderboards(request):
 # def reconcile_group_discord_roles(request):
 #     auth = request.headers.get("Authorization")
 #     if not auth or not auth.startswith("Bearer "):
-#         return Response({"message": "Invalid or missing Authorization token."}, status=400)
+#         return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
 
 #     admin = validate_token(auth.split(" ")[1])
 #     if not admin or admin.role != "admin":
-#         return Response({"message": "Unauthorized."}, status=403)
+#         return Response({"message": "Unauthorized.", "code": "get_all_leaderboards_unauthorized"}, status=403)
 
 #     group_id = request.data.get("group_id")
 #     if not group_id:
-#         return Response({"message": "group_id is required."}, status=400)
+#         return Response({"message": "group_id is required.", "code": "group_required"}, status=400)
 
 #     group = get_object_or_404(StageGroups, group_id=group_id)
 #     role_id = group.group_discord_role_id
 #     if not role_id:
-#         return Response({"message": "This group has no group_discord_role_id set."}, status=400)
+#         return Response({"message": "This group has no group_discord_role_id set.", "code": "group_no_group_discord"}, status=400)
 
 #     competitors = (
 #         StageGroupCompetitor.objects
@@ -14016,7 +14016,7 @@ def get_all_leaderboards(request):
 def reconcile_group_roles(request):
     stage_id = request.data.get("stage_id")
     if not stage_id:
-        return Response({"message": "stage_id is required."}, status=400)
+        return Response({"message": "stage_id is required.", "code": "stage_required"}, status=400)
 
     stage = get_object_or_404(Stages, stage_id=stage_id)
     # #8 (2026-07-06 organizer parity): was AFC-super-admin-only; now the owning organizer
@@ -14098,14 +14098,14 @@ def _normalize_points_json(points_raw):
 #     # ---------------- AUTH ----------------
 #     auth = request.headers.get("Authorization")
 #     if not auth or not auth.startswith("Bearer "):
-#         return Response({"message": "Invalid or missing Authorization token."}, status=400)
+#         return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
 #     admin = validate_token(auth.split(" ")[1])
 #     if not admin or admin.role != "admin":
-#         return Response({"message": "Unauthorized."}, status=401)
+#         return Response({"message": "Unauthorized.", "code": "normalize_points_json_unauthorized"}, status=401)
 
 #     event_id = request.data.get("event_id")
 #     if not event_id:
-#         return Response({"message": "event_id is required."}, status=400)
+#         return Response({"message": "event_id is required.", "code": "event_required"}, status=400)
 
 #     event = get_object_or_404(Event, event_id=event_id)
 
@@ -14269,17 +14269,17 @@ from django.shortcuts import get_object_or_404
 # def get_all_leaderboard_details_for_event(request):
 #     auth = request.headers.get("Authorization")
 #     if not auth or not auth.startswith("Bearer "):
-#         return Response({"message": "Invalid or missing Authorization token."}, status=400)
+#         return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
 
 #     admin = validate_token(auth.split(" ")[1])
 #     if not admin:
-#         return Response({"message": "Invalid or expired session token."}, status=401)
+#         return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
 #     if admin.role != "admin":
-#         return Response({"message": "You do not have permission."}, status=403)
+#         return Response({"message": "You do not have permission.", "code": "not_permission"}, status=403)
 
 #     event_id = request.data.get("event_id")
 #     if not event_id:
-#         return Response({"message": "event_id is required."}, status=400)
+#         return Response({"message": "event_id is required.", "code": "event_required"}, status=400)
 
 #     event = get_object_or_404(Event, event_id=event_id)
 
@@ -14532,11 +14532,11 @@ def _fold_carry_over(rows, stage, participant_type, *, id_key, metric_key, sort_
 def get_all_leaderboard_details_for_event(request):
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
 
     admin = validate_token(auth.split(" ")[1])
     if not admin:
-        return Response({"message": "Invalid or expired session token."}, status=401)
+        return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
 
     # NOTE: permission is finalised below, once the owning event is resolved from event_id.
     # This is a READ of the full per-event leaderboard detail (admin/organizer surface), so we
@@ -14544,7 +14544,7 @@ def get_all_leaderboard_details_for_event(request):
 
     event_id = request.data.get("event_id")
     if not event_id:
-        return Response({"message": "event_id is required."}, status=400)
+        return Response({"message": "event_id is required.", "code": "event_required"}, status=400)
 
     event = get_object_or_404(Event, event_id=event_id)
 
@@ -14552,7 +14552,7 @@ def get_all_leaderboard_details_for_event(request):
     # admins always pass; otherwise allow org members holding can_upload_results on the event's
     # owning org. Native (org=None) events stay admin-only.
     if not _is_event_admin(admin) and not org_can_event(admin, "can_upload_results", event):
-        return Response({"message": "You do not have permission to manage results for this event."}, status=403)
+        return Response({"message": "You do not have permission to manage results for this event.", "code": "not_permission_manage_results"}, status=403)
 
     stages_payload = []
     # Display order (reorder feature, owner 2026-06-15): saved manual order (stage_order/group_order,
@@ -15080,11 +15080,11 @@ def get_event_group_rosters(request):
     # ── AUTH: identical preamble to get_all_leaderboard_details_for_event ──
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
 
     admin = validate_token(auth.split(" ")[1])
     if not admin:
-        return Response({"message": "Invalid or expired session token."}, status=401)
+        return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
 
     # Resolve the event from EITHER event_id (preferred) OR slug (fallback). event_id
     # wins when both are present, matching how the organizer FE sends slug while the
@@ -15096,7 +15096,7 @@ def get_event_group_rosters(request):
     elif slug:
         event = get_object_or_404(Event, slug=slug)
     else:
-        return Response({"message": "event_id or slug is required."}, status=400)
+        return Response({"message": "event_id or slug is required.", "code": "event_slug_required"}, status=400)
 
     # ── AUTH gate (event-scoped, read): AFC event admins always pass; otherwise the
     # caller must hold can_manage_registrations on the event's owning org. org_can_event
@@ -15105,7 +15105,7 @@ def get_event_group_rosters(request):
     # truth) rather than re-reading role rows inline. ──
     if not _is_event_admin(admin) and not org_can_event(admin, "can_manage_registrations", event):
         return Response(
-            {"message": "You do not have permission to view rosters for this event."},
+            {"message": "You do not have permission to view rosters for this event.", "code": "not_permission_view_rosters"},
             status=403,
         )
 
@@ -15347,11 +15347,11 @@ def get_event_combined_standings(request):
 
     event_id = request.data.get("event_id")
     if not event_id:
-        return Response({"message": "event_id is required."}, status=400)
+        return Response({"message": "event_id is required.", "code": "event_required"}, status=400)
     event = get_object_or_404(Event, event_id=event_id)
     if _org_hidden(event):
         # A suspended/deleted org's event is invisible to the public (mirrors the detail view).
-        return Response({"message": "Event not found."}, status=404)
+        return Response({"message": "Event not found.", "code": "event_not_found"}, status=404)
     if event.participant_type == "solo":
         # The team aggregator is team-scoped; solo combined standings are a separate (future) surface.
         return Response({"event_id": event.event_id, "participant_type": "solo",
@@ -15425,16 +15425,16 @@ def get_round_robin_standings(request):
 
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
 
     user = validate_token(auth.split(" ")[1])
     if not user:
-        return Response({"message": "Invalid or expired session token."}, status=401)
+        return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
 
     event_id = request.data.get("event_id")
     stage_id = request.data.get("stage_id")
     if not event_id or not stage_id:
-        return Response({"message": "event_id and stage_id are required."}, status=400)
+        return Response({"message": "event_id and stage_id are required.", "code": "event_stage_required"}, status=400)
 
     event = get_object_or_404(Event, event_id=event_id)
     # Scope the stage to the event so a mismatched pair can't read another event's stage.
@@ -15444,7 +15444,7 @@ def get_round_robin_standings(request):
     # organizer from reading THEIR OWN event's round-robin standings. Now staff OR the owning organizer
     # with can_upload_results (the same results-read gate get_all_leaderboard_details_for_event uses).
     if not _is_event_admin(user) and not org_can_event(user, "can_upload_results", event):
-        return Response({"message": "You do not have permission."}, status=403)
+        return Response({"message": "You do not have permission.", "code": "not_permission"}, status=403)
 
     # (1) Base-group structure (A/B/C…). RoundRobinGroup has Meta.ordering = ["order"], so
     # `round_robin_groups.all()` is already A→B→C; we just echo label + member team names.
@@ -15495,17 +15495,17 @@ def get_round_robin_standings(request):
 # def get_all_leaderboard_details_for_event(request):
 #     auth = request.headers.get("Authorization")
 #     if not auth or not auth.startswith("Bearer "):
-#         return Response({"message": "Invalid or missing Authorization token."}, status=400)
+#         return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
 
 #     admin = validate_token(auth.split(" ")[1])
 #     if not admin:
-#         return Response({"message": "Invalid or expired session token."}, status=401)
+#         return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
 #     if admin.role != "admin":
-#         return Response({"message": "You do not have permission."}, status=403)
+#         return Response({"message": "You do not have permission.", "code": "not_permission"}, status=403)
 
 #     event_id = request.data.get("event_id")
 #     if not event_id:
-#         return Response({"message": "event_id is required."}, status=400)
+#         return Response({"message": "event_id is required.", "code": "event_required"}, status=400)
 
 #     event = get_object_or_404(Event, event_id=event_id)
 
@@ -15584,10 +15584,10 @@ def _get_group_leaderboard(event, stage, group):
 #     # ---------------- AUTH ----------------
 #     auth = request.headers.get("Authorization")
 #     if not auth or not auth.startswith("Bearer "):
-#         return Response({"message": "Invalid or missing Authorization token."}, status=400)
+#         return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
 #     admin = validate_token(auth.split(" ")[1])
 #     if not admin or admin.role != "admin":
-#         return Response({"message": "Unauthorized."}, status=401)
+#         return Response({"message": "Unauthorized.", "code": "get_group_leaderboard_unauthorized"}, status=401)
 
 #     event_id = request.data.get("event_id")
 #     group_id = request.data.get("group_id")
@@ -15595,25 +15595,25 @@ def _get_group_leaderboard(event, stage, group):
 #     remove_old_group_role = bool(request.data.get("remove_old_group_role", False))
 
 #     if not event_id or not group_id or not next_stage_id:
-#         return Response({"message": "event_id, group_id, next_stage_id are required."}, status=400)
+#         return Response({"message": "event_id, group_id, next_stage_id are required.", "code": "event_group_next_stage"}, status=400)
 
 #     event = get_object_or_404(Event, event_id=event_id)
 #     group = get_object_or_404(StageGroups, group_id=group_id)
 #     current_stage = group.stage
 
 #     if current_stage.event_id != event.event_id:
-#         return Response({"message": "This group does not belong to the provided event."}, status=400)
+#         return Response({"message": "This group does not belong to the provided event.", "code": "group_not_belong_provided"}, status=400)
 
 #     next_stage = get_object_or_404(Stages, stage_id=next_stage_id, event=event)
 
 #     matches = list(group.matches.all().order_by("match_number"))
 #     if not matches:
-#         return Response({"message": "No matches found for this group."}, status=400)
+#         return Response({"message": "No matches found for this group.", "code": "no_matches_found_group"}, status=400)
 
 
 #     leaderboard = _get_group_leaderboard(event, current_stage, group)
 #     if not leaderboard:
-#         return Response({"message": "Leaderboard not found for this group."}, status=400)
+#         return Response({"message": "Leaderboard not found for this group.", "code": "leaderboard_not_found_group"}, status=400)
 
 #     placement_points = _normalize_points_json(leaderboard.placement_points or {})
 #     kill_point = float(leaderboard.kill_point or 1.0)
@@ -15673,7 +15673,7 @@ def _get_group_leaderboard(event, stage, group):
 #         qualified = ranked[:qualifying_n]
 
 #     if qualifying_n <= 0:
-#         return Response({"message": "group.teams_qualifying must be > 0."}, status=400)
+#         return Response({"message": "group.teams_qualifying must be > 0.", "code": "group_teams_qualifying"}, status=400)
 
 #     # Seed into next stage + queue Discord role assignments
 #     created_stage_competitors = 0
@@ -15759,20 +15759,20 @@ from django.db.models import Q
 # def advance_group_competitors_to_next_stage(request):
 #     auth = request.headers.get("Authorization")
 #     if not auth or not auth.startswith("Bearer "):
-#         return Response({"message": "Invalid or missing Authorization token."}, status=400)
+#         return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
 
 #     admin = validate_token(auth.split(" ")[1])
 #     if not admin:
-#         return Response({"message": "Invalid or expired session token."}, status=401)
+#         return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
 #     if admin.role != "admin":
-#         return Response({"message": "You do not have permission."}, status=403)
+#         return Response({"message": "You do not have permission.", "code": "not_permission"}, status=403)
 
 #     event_id = request.data.get("event_id")
 #     group_id = request.data.get("group_id")
 #     # next_stage_id = request.data.get("next_stage_id")
 
 #     if not event_id or not group_id:
-#         return Response({"message": "event_id and group_id are required."}, status=400)
+#         return Response({"message": "event_id and group_id are required.", "code": "event_group_required"}, status=400)
 
 #     event = get_object_or_404(Event, event_id=event_id)
 #     group = get_object_or_404(StageGroups, group_id=group_id, stage__event=event)
@@ -15781,14 +15781,14 @@ from django.db.models import Q
 #     # 1) ensure all match results uploaded
 #     matches = Match.objects.filter(group=group).order_by("match_number")
 #     if not matches.exists():
-#         return Response({"message": "No matches in this group."}, status=400)
+#         return Response({"message": "No matches in this group.", "code": "no_matches_group"}, status=400)
 
 #     not_done = matches.filter(result_inputted=False).count()
 #     if not_done > 0:
 #         return Response({
 #             "message": "Cannot advance yet. Some matches have no results uploaded.",
 #             "missing_results_matches_count": not_done
-#         }, status=400)
+#         , "code": "cannot_advance_matches_no"}, status=400)
 
 #     # 2) get next stage
 #     next_stage = (Stages.objects
@@ -15798,11 +15798,11 @@ from django.db.models import Q
 #     # if next_stage_id:
 #     #     next_stage = get_object_or_404(Stages, stage_id=next_stage_id, event=event)
 #     if not next_stage:
-#         return Response({"message": "No next stage found after this stage."}, status=400)
+#         return Response({"message": "No next stage found after this stage.", "code": "no_next_stage_found"}, status=400)
 
 #     qualify_n = int(group.teams_qualifying or 0)
 #     if qualify_n <= 0:
-#         return Response({"message": "group.teams_qualifying must be > 0."}, status=400)
+#         return Response({"message": "group.teams_qualifying must be > 0.", "code": "group_teams_qualifying"}, status=400)
 
 #     # 3) compute winners
 #     if event.participant_type == "solo":
@@ -15823,7 +15823,7 @@ from django.db.models import Q
 #         winner_ids = [row["tournament_team_id"] for row in overall]  # TournamentTeam IDs
 
 #     if not winner_ids:
-#         return Response({"message": "No winners found (no stats?)."}, status=400)
+#         return Response({"message": "No winners found (no stats?).", "code": "no_winners_found_no"}, status=400)
 
 #     # 4) seed into next stage + queue discord roles
 #     created_count = 0
@@ -15867,16 +15867,16 @@ from django.shortcuts import get_object_or_404
 def advance_group_competitors_to_next_stage(request):
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
 
     admin = validate_token(auth.split(" ")[1])
     if not admin:
-        return Response({"message": "Invalid or expired session token."}, status=401)
+        return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
 
     event_id = request.data.get("event_id")
     group_id = request.data.get("group_id")
     if not event_id or not group_id:
-        return Response({"message": "event_id and group_id are required."}, status=400)
+        return Response({"message": "event_id and group_id are required.", "code": "event_group_required"}, status=400)
 
     event = get_object_or_404(Event, event_id=event_id)
     group = get_object_or_404(StageGroups, group_id=group_id, stage__event=event)
@@ -15884,19 +15884,19 @@ def advance_group_competitors_to_next_stage(request):
     # Organizer parity (owner 2026-07-04): the owning organizer (can_manage_registrations) advances
     # their OWN event, matching advance_stage_by_rules / _seeding_gate. Native events stay admin-only.
     if not _is_event_admin(admin) and not org_can_event(admin, "can_manage_registrations", event):
-        return Response({"message": "You do not have permission."}, status=403)
+        return Response({"message": "You do not have permission.", "code": "not_permission"}, status=403)
 
     # 1) Ensure all match results uploaded
     matches = Match.objects.filter(group=group).order_by("match_number")
     if not matches.exists():
-        return Response({"message": "No matches in this group."}, status=400)
+        return Response({"message": "No matches in this group.", "code": "no_matches_group"}, status=400)
 
     not_done = matches.filter(result_inputted=False).count()
     if not_done > 0:
         return Response({
             "message": "Cannot advance yet. Some matches have no results uploaded.",
             "missing_results_matches_count": not_done,
-        }, status=400)
+         "code": "cannot_advance_matches_no"}, status=400)
 
     # 2) Find next stage - follow the CANONICAL display order so advancement honours a manual
     #    reorder (owner 2026-06-15). order_by("stage_order", "start_date", "stage_id") is the same
@@ -15913,11 +15913,11 @@ def advance_group_competitors_to_next_stage(request):
             break
 
     if not next_stage:
-        return Response({"message": "No next stage found after this stage."}, status=400)
+        return Response({"message": "No next stage found after this stage.", "code": "no_next_stage_found"}, status=400)
 
     qualify_n = int(group.teams_qualifying or 0)
     if qualify_n <= 0:
-        return Response({"message": "group.teams_qualifying must be > 0."}, status=400)
+        return Response({"message": "group.teams_qualifying must be > 0.", "code": "group_teams_qualifying"}, status=400)
 
     created_count = 0
     queued_roles = 0
@@ -15946,7 +15946,7 @@ def advance_group_competitors_to_next_stage(request):
 
             winner_ids = [row["competitor_id"] for row in overall]
             if not winner_ids:
-                return Response({"message": "No winners found (no stats?)."}, status=400)
+                return Response({"message": "No winners found (no stats?).", "code": "no_winners_found_no"}, status=400)
 
             already_ids = set(
                 StageCompetitor.objects.filter(stage=next_stage, player_id__in=winner_ids)
@@ -15998,7 +15998,7 @@ def advance_group_competitors_to_next_stage(request):
 
             winner_ids = [row["tournament_team_id"] for row in overall]
             if not winner_ids:
-                return Response({"message": "No winners found (no stats?)."}, status=400)
+                return Response({"message": "No winners found (no stats?).", "code": "no_winners_found_no"}, status=400)
 
             already_ids = set(
                 StageCompetitor.objects.filter(stage=next_stage, tournament_team_id__in=winner_ids)
@@ -16085,32 +16085,32 @@ def advance_round_robin(request):
 
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
 
     user = validate_token(auth.split(" ")[1])
     if not user:
-        return Response({"message": "Invalid or expired session token."}, status=401)
+        return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
 
     event_id = request.data.get("event_id")
     stage_id = request.data.get("stage_id")
     if not event_id or not stage_id:
-        return Response({"message": "event_id and stage_id are required."}, status=400)
+        return Response({"message": "event_id and stage_id are required.", "code": "event_stage_required"}, status=400)
 
     # mode + qualify_per_group drive per-group vs overall selection.
     mode = request.data.get("mode", "overall")
     if mode not in ("overall", "per_group"):
-        return Response({"message": "mode must be 'overall' or 'per_group'."}, status=400)
+        return Response({"message": "mode must be 'overall' or 'per_group'.", "code": "mode_overall_per_group"}, status=400)
 
     event = get_object_or_404(Event, event_id=event_id)
     # Organizer parity (owner 2026-07-04): the owning organizer (can_manage_registrations) advances
     # top-N from their OWN event's round-robin table, matching advance_stage_by_rules / _advance_gate.
     # Native (org=None) events stay admin-only via org_can_event.
     if not _is_event_admin(user) and not org_can_event(user, "can_manage_registrations", event):
-        return Response({"message": "You do not have permission."}, status=403)
+        return Response({"message": "You do not have permission.", "code": "not_permission"}, status=403)
     # Scope the stage to the event so a mismatched pair can't advance another event's stage.
     stage = get_object_or_404(Stages, stage_id=stage_id, event=event)
     if stage.stage_format != "br - round robin":
-        return Response({"message": "Stage is not a Round-Robin stage."}, status=400)
+        return Response({"message": "Stage is not a Round-Robin stage.", "code": "stage_not_round_robin"}, status=400)
 
     # Find the next stage the SAME way advance_group_competitors_to_next_stage does: the stage
     # immediately after this one in the CANONICAL display order (manual stage_order wins, else
@@ -16126,13 +16126,13 @@ def advance_round_robin(request):
             break
 
     if not next_stage:
-        return Response({"message": "No next stage found after this stage."}, status=400)
+        return Response({"message": "No next stage found after this stage.", "code": "no_next_stage_found"}, status=400)
 
     # The cumulative table is the single source of truth for ranking (already server-sorted by
     # effective_total → booyahs → kills → name). Each row carries tournament_team_id.
     cumulative = round_robin.cumulative_standings(stage)
     if not cumulative:
-        return Response({"message": "No standings found (no results entered?)."}, status=400)
+        return Response({"message": "No standings found (no results entered?).", "code": "no_standings_found_no"}, status=400)
 
     # OWNER OVERRIDE (2026-06-29): fold Point-Rush carry-over into the cumulative ranking when THIS
     # round-robin stage is itself a Point-Rush TARGET, so banked points count toward who qualifies out
@@ -16155,9 +16155,9 @@ def advance_round_robin(request):
         try:
             qualify_per_group = int(request.data.get("qualify_per_group", 1))
         except (TypeError, ValueError):
-            return Response({"message": "qualify_per_group must be an integer."}, status=400)
+            return Response({"message": "qualify_per_group must be an integer.", "code": "qualify_per_group_integer"}, status=400)
         if qualify_per_group <= 0:
-            return Response({"message": "qualify_per_group must be > 0."}, status=400)
+            return Response({"message": "qualify_per_group must be > 0.", "code": "qualify_per_group"}, status=400)
 
         # Cumulative order is authoritative, so a team's rank WITHIN its group is just its
         # position in the cumulative list filtered to that group's members. Walk the
@@ -16177,11 +16177,11 @@ def advance_round_robin(request):
         qualify_n = int(stage.teams_qualifying_from_stage or 0)
         if qualify_n <= 0:
             return Response(
-                {"message": "stage.teams_qualifying_from_stage must be > 0."}, status=400)
+                {"message": "stage.teams_qualifying_from_stage must be > 0.", "code": "stage_teams_qualifying_stage"}, status=400)
         winner_ids = [row["tournament_team_id"] for row in cumulative[:qualify_n]]
 
     if not winner_ids:
-        return Response({"message": "No winners selected."}, status=400)
+        return Response({"message": "No winners selected.", "code": "no_winners_selected"}, status=400)
 
     created_count = 0
     queued_roles = 0
@@ -16254,19 +16254,19 @@ def advance_round_robin(request):
 # def advance_group_competitors_to_next_stage(request):
 #     auth = request.headers.get("Authorization")
 #     if not auth or not auth.startswith("Bearer "):
-#         return Response({"message": "Invalid or missing Authorization token."}, status=400)
+#         return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
 
 #     admin = validate_token(auth.split(" ")[1])
 #     if not admin:
-#         return Response({"message": "Invalid or expired session token."}, status=401)
+#         return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
 #     if admin.role != "admin":
-#         return Response({"message": "You do not have permission."}, status=403)
+#         return Response({"message": "You do not have permission.", "code": "not_permission"}, status=403)
 
 #     event_id = request.data.get("event_id")
 #     group_id = request.data.get("group_id")
 
 #     if not event_id or not group_id:
-#         return Response({"message": "event_id and group_id are required."}, status=400)
+#         return Response({"message": "event_id and group_id are required.", "code": "event_group_required"}, status=400)
 
 #     event = get_object_or_404(Event, event_id=event_id)
 #     group = get_object_or_404(StageGroups, group_id=group_id, stage__event=event)
@@ -16275,22 +16275,22 @@ def advance_round_robin(request):
 #     # 1) Ensure all match results uploaded
 #     matches = Match.objects.filter(group=group).order_by("match_number")
 #     if not matches.exists():
-#         return Response({"message": "No matches in this group."}, status=400)
+#         return Response({"message": "No matches in this group.", "code": "no_matches_group"}, status=400)
 
 #     not_done = matches.filter(result_inputted=False).count()
 #     if not_done > 0:
 #         return Response({
 #             "message": "Cannot advance yet. Some matches have no results uploaded.",
 #             "missing_results_matches_count": not_done,
-#         }, status=400)
+#         , "code": "cannot_advance_matches_no"}, status=400)
 
 
 #     if not next_stage:
-#         return Response({"message": "No next stage found after this stage."}, status=400)
+#         return Response({"message": "No next stage found after this stage.", "code": "no_next_stage_found"}, status=400)
 
 #     qualify_n = int(group.teams_qualifying or 0)
 #     if qualify_n <= 0:
-#         return Response({"message": "group.teams_qualifying must be > 0."}, status=400)
+#         return Response({"message": "group.teams_qualifying must be > 0.", "code": "group_teams_qualifying"}, status=400)
 
 #     # 3) Compute winners from this group's overall leaderboard
 #     if event.participant_type == "solo":
@@ -16305,7 +16305,7 @@ def advance_round_robin(request):
 
 #         winner_ids = [row["competitor_id"] for row in overall]  # RegisteredCompetitors.id
 #         if not winner_ids:
-#             return Response({"message": "No winners found (no stats?)."}, status=400)
+#             return Response({"message": "No winners found (no stats?).", "code": "no_winners_found_no"}, status=400)
 
 #         winners_qs = RegisteredCompetitors.objects.select_related("user").filter(id__in=winner_ids)
 
@@ -16363,7 +16363,7 @@ def advance_round_robin(request):
 
 #         winner_ids = [row["tournament_team_id"] for row in overall]  # TournamentTeam.tournament_team_id
 #         if not winner_ids:
-#             return Response({"message": "No winners found (no stats?)."}, status=400)
+#             return Response({"message": "No winners found (no stats?).", "code": "no_winners_found_no"}, status=400)
 
 #         winners_qs = TournamentTeam.objects.prefetch_related("members__user").filter(
 #             tournament_team_id__in=winner_ids
@@ -16455,15 +16455,15 @@ def _recompute_solo_leaderboard_points(lb):
 def edit_leaderboard(request):
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
 
     admin = validate_token(auth.split(" ")[1])
     if not admin:
-        return Response({"message": "Unauthorized."}, status=403)
+        return Response({"message": "Unauthorized.", "code": "edit_leaderboard_unauthorized"}, status=403)
 
     leaderboard_id = request.data.get("leaderboard_id")
     if not leaderboard_id:
-        return Response({"message": "leaderboard_id is required."}, status=400)
+        return Response({"message": "leaderboard_id is required.", "code": "leaderboard_required"}, status=400)
 
     lb = get_object_or_404(Leaderboard, leaderboard_id=leaderboard_id)
 
@@ -16471,7 +16471,7 @@ def edit_leaderboard(request):
     # admins always pass; otherwise allow org members holding can_upload_results on the event's
     # owning org. Native (org=None) events stay admin-only.
     if not _is_event_admin(admin) and not org_can_event(admin, "can_upload_results", lb.event):
-        return Response({"message": "You do not have permission to manage results for this event."}, status=403)
+        return Response({"message": "You do not have permission to manage results for this event.", "code": "not_permission_manage_results"}, status=403)
 
     # optional updates
     new_stage_id = request.data.get("stage_id")
@@ -16490,7 +16490,7 @@ def edit_leaderboard(request):
         if isinstance(placement_points_raw, str):
             placement_points_raw = json.loads(placement_points_raw)
         if not isinstance(placement_points_raw, dict):
-            return Response({"message": "placement_points must be a JSON object."}, status=400)
+            return Response({"message": "placement_points must be a JSON object.", "code": "placement_points_json_object"}, status=400)
         lb.placement_points = placement_points_raw
 
     if new_stage_id is not None:
@@ -16508,7 +16508,7 @@ def edit_leaderboard(request):
         group=lb.group
     ).exclude(leaderboard_id=lb.leaderboard_id).exists()
     if exists:
-        return Response({"message": "A leaderboard already exists for this event/stage/group."}, status=400)
+        return Response({"message": "A leaderboard already exists for this event/stage/group.", "code": "leaderboard_already_exists_event"}, status=400)
 
     lb.save()
 
@@ -16531,11 +16531,11 @@ def edit_leaderboard(request):
 def edit_solo_match_result(request):
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
 
     admin = validate_token(auth.split(" ")[1])
     if not admin:
-        return Response({"message": "Unauthorized."}, status=403)
+        return Response({"message": "Unauthorized.", "code": "edit_solo_match_result_unauthorized"}, status=403)
 
     # NOTE: permission is finalised below, once the owning event is resolved via
     # match_id -> match.group.stage.event - org members with can_upload_results may edit
@@ -16545,11 +16545,11 @@ def edit_solo_match_result(request):
     rows = request.data.get("rows")
 
     if not match_id or not isinstance(rows, list):
-        return Response({"message": "match_id and rows(list) are required."}, status=400)
+        return Response({"message": "match_id and rows(list) are required.", "code": "match_rows_list_required"}, status=400)
 
     match = get_object_or_404(Match, match_id=match_id)
     if not match.group:
-        return Response({"message": "Match must be linked to a group."}, status=400)
+        return Response({"message": "Match must be linked to a group.", "code": "match_linked_group"}, status=400)
 
     event = match.group.stage.event
 
@@ -16557,17 +16557,17 @@ def edit_solo_match_result(request):
     # admins always pass; otherwise allow org members holding can_upload_results on the event's
     # owning org. Native (org=None) events stay admin-only.
     if not _is_event_admin(admin) and not org_can_event(admin, "can_upload_results", event):
-        return Response({"message": "You do not have permission to manage results for this event."}, status=403)
+        return Response({"message": "You do not have permission to manage results for this event.", "code": "not_permission_manage_results"}, status=403)
 
     if event.participant_type != "solo":
-        return Response({"message": "This endpoint is for solo only."}, status=400)
+        return Response({"message": "This endpoint is for solo only.", "code": "endpoint_solo"}, status=400)
 
     # leaderboard scoring config
     lb = match.leaderboard or Leaderboard.objects.filter(
         event=event, stage=match.group.stage, group=match.group
     ).first()
     if not lb:
-        return Response({"message": "Leaderboard not found for this match."}, status=400)
+        return Response({"message": "Leaderboard not found for this match.", "code": "leaderboard_not_found_match"}, status=400)
 
     placement_points = {int(k): int(v) for k, v in (lb.placement_points or {}).items()}
     if not placement_points:
@@ -16598,7 +16598,7 @@ def edit_solo_match_result(request):
         [r.get("placement") for r in _played_rows], noun="player"
     )
     if _placement_error:
-        return Response({"message": _placement_error}, status=400)
+        return Response({"message": _placement_error, "code": "edit_solo_match_result_refused"}, status=400)
 
     with transaction.atomic():
         for r in rows:
@@ -16664,11 +16664,11 @@ from rest_framework import status
 def remove_non_nigeria_registered_competitors(request):
     event_id = request.data.get("event_id")
     if not event_id:
-        return Response({"message": "event_id is required."}, status=400)
+        return Response({"message": "event_id is required.", "code": "event_required"}, status=400)
 
     event = Event.objects.filter(event_id=event_id).first()
     if not event:
-        return Response({"message": "Event not found."}, status=404)
+        return Response({"message": "Event not found.", "code": "event_not_found"}, status=404)
 
     # #8 (2026-07-06 organizer parity): was AFC-super-admin-only; this registration mutation is now
     # allowed for the owning organizer (can_manage_registrations) on THEIR OWN event.
@@ -16736,11 +16736,11 @@ def delete_match(request):
     # -------------- AUTH --------------
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
 
     admin = validate_token(auth.split(" ")[1])
     if not admin:
-        return Response({"message": "Invalid or expired session token."}, status=401)
+        return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
 
     # NOTE: permission is finalised below, once the owning event is resolved via
     # match_id -> match.group.stage.event - org members with can_upload_results may delete
@@ -16749,7 +16749,7 @@ def delete_match(request):
     # -------------- INPUT --------------
     match_id = request.data.get("match_id")
     if not match_id:
-        return Response({"message": "match_id is required."}, status=400)
+        return Response({"message": "match_id is required.", "code": "match_required"}, status=400)
 
     force = str(request.data.get("force", "false")).lower() in ("1", "true", "yes")
     renumber = str(request.data.get("renumber", "true")).lower() in ("1", "true", "yes")
@@ -16762,13 +16762,13 @@ def delete_match(request):
     # stay admin-only.
     _del_event = match.group.stage.event if match.group else None
     if not _is_event_admin(admin) and not (_del_event and org_can_event(admin, "can_upload_results", _del_event)):
-        return Response({"message": "You do not have permission to manage results for this event."}, status=403)
+        return Response({"message": "You do not have permission to manage results for this event.", "code": "not_permission_manage_results"}, status=403)
 
     if match.result_inputted and not force:
         return Response({
             "message": "This match already has results. Pass force=true to delete anyway.",
             "match_id": match.match_id,
-        }, status=400)
+         "code": "match_already_results_pass"}, status=400)
 
     group = match.group
     deleted_number = match.match_number
@@ -16829,10 +16829,10 @@ def clear_match_result(request):
     # -------------- AUTH --------------
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
     admin = validate_token(auth.split(" ")[1])
     if not admin:
-        return Response({"message": "Invalid or expired session token."}, status=401)
+        return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
 
     # -------------- INPUT --------------
     match_id = request.data.get("match_id")
@@ -16843,10 +16843,10 @@ def clear_match_result(request):
     #    match_id -> match.group.stage.event. Native (org=None) events stay admin-only.
     _event = match.group.stage.event if match.group else None
     if not _is_event_admin(admin) and not (_event and org_can_event(admin, "can_upload_results", _event)):
-        return Response({"message": "You do not have permission to manage results for this event."}, status=403)
+        return Response({"message": "You do not have permission to manage results for this event.", "code": "not_permission_manage_results"}, status=403)
 
     if not match.result_inputted and not force:
-        return Response({"message": "This map has no results to clear.", "match_id": match.match_id}, status=400)
+        return Response({"message": "This map has no results to clear.", "match_id": match.match_id, "code": "map_no_results_clear"}, status=400)
 
     with transaction.atomic():
         # Run all three deletes unconditionally - each is a no-op for the wrong event type
@@ -16867,11 +16867,11 @@ def clear_match_result(request):
 def edit_match_details(request):
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
 
     user = validate_token(auth.split(" ")[1])
     if not user:
-        return Response({"message": "Unauthorized."}, status=403)
+        return Response({"message": "Unauthorized.", "code": "edit_match_details_unauthorized"}, status=403)
 
     match_id = request.data.get("match_id")
     room_name = request.data.get("room_name")
@@ -16884,7 +16884,7 @@ def edit_match_details(request):
     room_is_3d = request.data.get("room_is_3d")
 
     if not match_id:
-        return Response({"message": "match_id is required."}, status=400)
+        return Response({"message": "match_id is required.", "code": "match_required"}, status=400)
     match = get_object_or_404(Match, match_id=match_id)
 
     # AUTH (owner 2026-06-17): was admin-only, so an ORGANIZER editing room details silently 403'd
@@ -16894,7 +16894,7 @@ def edit_match_details(request):
     if not (_is_event_admin(user) or (event and (
         org_can_event(user, "can_edit_events", event) or org_can_event(user, "can_upload_results", event)
     ))):
-        return Response({"message": "You do not have permission to edit this match."}, status=403)
+        return Response({"message": "You do not have permission to edit this match.", "code": "not_permission_edit_match"}, status=403)
 
     updated_fields = []
     if room_name is not None:
@@ -16954,13 +16954,13 @@ def _normalize_placement_points(pp):
 #     # ---- AUTH (your existing pattern) ----
 #     auth = request.headers.get("Authorization")
 #     if not auth or not auth.startswith("Bearer "):
-#         return Response({"message": "Invalid or missing Authorization token."}, status=400)
+#         return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
 
 #     admin = validate_token(auth.split(" ")[1])
 #     if not admin:
-#         return Response({"message": "Invalid or expired session token."}, status=401)
+#         return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
 #     if admin.role != "admin":
-#         return Response({"message": "You do not have permission."}, status=403)
+#         return Response({"message": "You do not have permission.", "code": "not_permission"}, status=403)
 
 #     # ---- INPUT ----
 #     event_id = request.data.get("event_id")
@@ -16968,7 +16968,7 @@ def _normalize_placement_points(pp):
 #     group_id = request.data.get("group_id")
 
 #     if not (event_id and stage_id and group_id):
-#         return Response({"message": "event_id, stage_id, group_id are required."}, status=400)
+#         return Response({"message": "event_id, stage_id, group_id are required.", "code": "event_stage_group_required"}, status=400)
 
 #     event = get_object_or_404(Event, event_id=event_id)
 #     stage = get_object_or_404(Stages, stage_id=stage_id, event=event)
@@ -16980,12 +16980,12 @@ def _normalize_placement_points(pp):
 #     try:
 #         placement_points = _normalize_placement_points(placement_points_raw)
 #     except ValueError as e:
-#         return Response({"message": str(e)}, status=400)
+#         return Response({"message": str(e), "code": "_normalize_placement_points_refused"}, status=400)
 
 #     try:
 #         kill_point = float(kill_point_raw)
 #     except Exception:
-#         return Response({"message": "kill_point must be a number."}, status=400)
+#         return Response({"message": "kill_point must be a number.", "code": "kill_point_number"}, status=400)
 
 #     leaderboard_name = request.data.get("leaderboard_name") or f"{event.event_name} - {stage.stage_name} - {group.group_name}"
 
@@ -16993,7 +16993,7 @@ def _normalize_placement_points(pp):
 #         # Ensure matches exist for this group (match_count) and link them to leaderboard
 #         match_count = int(group.match_count or 0)
 #         if match_count <= 0:
-#             return Response({"message": "group.match_count must be > 0 to create matches."}, status=400)
+#             return Response({"message": "group.match_count must be > 0 to create matches.", "code": "group_match_count_create"}, status=400)
 
 
 #     return Response({
@@ -17017,11 +17017,11 @@ def create_leaderboard_manually(request):
     # wire it back up without removing the auto-create paths first.
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid token"}, status=400)
+        return Response({"message": "Invalid token", "code": "invalid_token"}, status=400)
 
     admin = validate_token(auth.split(" ")[1])
     if not admin:
-        return Response({"message": "No permission"}, status=403)
+        return Response({"message": "No permission", "code": "no_permission"}, status=403)
 
     # NOTE: permission is finalised below, once the owning event is resolved from event_id - 
     # org members with can_upload_results may create leaderboards for THEIR org's events.
@@ -17031,7 +17031,7 @@ def create_leaderboard_manually(request):
     group_id = request.data.get("group_id")
 
     if not (event_id and stage_id and group_id):
-        return Response({"message": "event_id, stage_id, group_id required."}, status=400)
+        return Response({"message": "event_id, stage_id, group_id required.", "code": "event_stage_group_required"}, status=400)
 
     event = get_object_or_404(Event, event_id=event_id)
     stage = get_object_or_404(Stages, stage_id=stage_id, event=event)
@@ -17041,7 +17041,7 @@ def create_leaderboard_manually(request):
     # validated to belong to it). AFC event admins always pass; otherwise allow org members
     # holding can_upload_results on the event's owning org. Native (org=None) events stay admin-only.
     if not _is_event_admin(admin) and not org_can_event(admin, "can_upload_results", event):
-        return Response({"message": "You do not have permission to manage results for this event."}, status=403)
+        return Response({"message": "You do not have permission to manage results for this event.", "code": "not_permission_manage_results"}, status=403)
 
     apply_to_all = str(request.data.get("apply_to_all")).lower() == "true"
 
@@ -17074,7 +17074,7 @@ def create_leaderboard_manually(request):
 
         match_count = int(group.match_count or 0)
         if match_count <= 0:
-            return Response({"message": "match_count must be > 0"}, status=400)
+            return Response({"message": "match_count must be > 0", "code": "match_count"}, status=400)
 
         matches = []
         for num in range(1, match_count + 1):
@@ -17108,7 +17108,7 @@ def create_leaderboard_manually(request):
 
             if len(placement_points_list) != match_count:
                 return Response(
-                    {"message": "placement_points_list must match match_count"},
+                    {"message": "placement_points_list must match match_count", "code": "placement_points_list_match"},
                     status=400
                 )
 
@@ -17264,11 +17264,11 @@ def enter_team_match_result_manual(request):
     # ---------------- AUTH ----------------
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
 
     admin = validate_token(auth.split(" ")[1])
     if not admin:
-        return Response({"message": "Invalid or expired session token."}, status=401)
+        return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
 
     # NOTE: permission is finalised below, after the owning event is resolved - org members
     # with can_upload_results may enter results for THEIR org's events.
@@ -17278,25 +17278,25 @@ def enter_team_match_result_manual(request):
     results_payload = _parse_json_or_value(request.data.get("results"), default=None)
 
     if not match_id:
-        return Response({"message": "match_id is required."}, status=400)
+        return Response({"message": "match_id is required.", "code": "match_required"}, status=400)
 
     if not isinstance(results_payload, list) or not results_payload:
-        return Response({"message": "results must be a non-empty list."}, status=400)
+        return Response({"message": "results must be a non-empty list.", "code": "results_non_empty_list"}, status=400)
 
     match = get_object_or_404(Match, match_id=match_id)
     lb = _get_lb_for_match(match)
     if not lb:
-        return Response({"message": "No leaderboard linked/found for this match."}, status=400)
+        return Response({"message": "No leaderboard linked/found for this match.", "code": "no_leaderboard_linked_found"}, status=400)
 
     event = lb.event
 
     # ── AUTH (event-scoped): AFC event admins always pass; otherwise allow org members
     # holding can_upload_results on the event's owning org (native events stay admin-only).
     if not _is_event_admin(admin) and not org_can_event(admin, "can_upload_results", event):
-        return Response({"message": "You do not have permission."}, status=403)
+        return Response({"message": "You do not have permission.", "code": "not_permission"}, status=403)
 
     if event.participant_type == "solo":
-        return Response({"message": "This endpoint is for TEAM events only."}, status=400)
+        return Response({"message": "This endpoint is for TEAM events only.", "code": "endpoint_team_events"}, status=400)
 
     # ---------------- SCORING ----------------
     scoring = match.scoring_settings or {}
@@ -17307,7 +17307,7 @@ def enter_team_match_result_manual(request):
             for k, v in (scoring.get("placement_points") or {}).items()
         }
     except Exception:
-        return Response({"message": "Invalid match scoring placement_points."}, status=400)
+        return Response({"message": "Invalid match scoring placement_points.", "code": "invalid_match_scoring_placement"}, status=400)
 
     kill_point = float(scoring.get("kill_point", 1))
     points_per_assist = float(scoring.get("points_per_assist", 0))
@@ -17339,7 +17339,7 @@ def enter_team_match_result_manual(request):
 
     _placement_error = validate_placements(placements, noun="team")
     if _placement_error:
-        return Response({"message": _placement_error}, status=400)
+        return Response({"message": _placement_error, "code": "enter_team_match_result_manual_refused"}, status=400)
 
     # ---------------- PLAYED-PLAYER VALIDATION (must run BEFORE the destructive write) ----------------
     # Squad rules cap a match at 4 PLAYED players per team. Validate here, ahead of the transaction:
@@ -17380,7 +17380,7 @@ def enter_team_match_result_manual(request):
         try:
             write_ctx = result_writes.scoring_context(match)
         except ValueError as exc:
-            return Response({"message": str(exc)}, status=400)
+            return Response({"message": str(exc), "code": "enter_team_match_result_manual_refused"}, status=400)
 
         # ROLE AT MATCH: one query for the whole event giving each player's FROZEN per-event
         # in-game role, passed into every write below rather than re-read per team. Reading the
@@ -17449,33 +17449,33 @@ def enter_team_match_result_manual(request):
 #     # ---------------- AUTH ----------------
 #     auth = request.headers.get("Authorization")
 #     if not auth or not auth.startswith("Bearer "):
-#         return Response({"message": "Invalid or missing Authorization token."}, status=400)
+#         return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
 
 #     admin = validate_token(auth.split(" ")[1])
 #     if not admin:
-#         return Response({"message": "Invalid or expired session token."}, status=401)
+#         return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
 
 #     if admin.role != "admin":
-#         return Response({"message": "You do not have permission."}, status=403)
+#         return Response({"message": "You do not have permission.", "code": "not_permission"}, status=403)
 
 #     # ---------------- INPUT ----------------
 #     match_id = request.data.get("match_id")
 #     teams_payload = _parse_json_or_value(request.data.get("results"), default=None)
 
 #     if not match_id:
-#         return Response({"message": "match_id is required."}, status=400)
+#         return Response({"message": "match_id is required.", "code": "match_required"}, status=400)
 
 #     if not isinstance(teams_payload, list) or not teams_payload:
-#         return Response({"message": "teams must be a non-empty list."}, status=400)
+#         return Response({"message": "teams must be a non-empty list.", "code": "teams_non_empty_list"}, status=400)
 
 #     match = get_object_or_404(Match, match_id=match_id)
 #     lb = _get_lb_for_match(match)
 #     if not lb:
-#         return Response({"message": "No leaderboard linked/found for this match."}, status=400)
+#         return Response({"message": "No leaderboard linked/found for this match.", "code": "no_leaderboard_linked_found"}, status=400)
 
 #     event = lb.event
 #     if event.participant_type == "solo":
-#         return Response({"message": "This endpoint is for TEAM events only."}, status=400)
+#         return Response({"message": "This endpoint is for TEAM events only.", "code": "endpoint_team_events"}, status=400)
 
 #     # ---------------- SCORING ----------------
 #     scoring = match.scoring_settings or {}
@@ -17486,7 +17486,7 @@ def enter_team_match_result_manual(request):
 #             for k, v in (scoring.get("placement_points") or {}).items()
 #         }
 #     except Exception:
-#         return Response({"message": "Invalid match scoring placement_points."}, status=400)
+#         return Response({"message": "Invalid match scoring placement_points.", "code": "invalid_match_scoring_placement"}, status=400)
 
 #     kill_point = float(scoring.get("kill_point", 1))
 #     points_per_assist = float(scoring.get("points_per_assist", 0))
@@ -17507,10 +17507,10 @@ def enter_team_match_result_manual(request):
 #     placements = [t.get("placement") for t in played_rows]
 
 #     if any(p is None for p in placements):
-#         return Response({"message": "Each played team must have placement."}, status=400)
+#         return Response({"message": "Each played team must have placement.", "code": "played_team_placement"}, status=400)
 
 #     if len(set(placements)) != len(placements):
-#         return Response({"message": "Placements must be unique among played teams."}, status=400)
+#         return Response({"message": "Placements must be unique among played teams.", "code": "placements_unique_among_played"}, status=400)
 
 #     stats_rows = []
 #     player_rows = []
@@ -17633,30 +17633,30 @@ def enter_team_match_result_manual(request):
 #     # ---- AUTH ----
 #     auth = request.headers.get("Authorization")
 #     if not auth or not auth.startswith("Bearer "):
-#         return Response({"message": "Invalid or missing Authorization token."}, status=400)
+#         return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
 
 #     admin = validate_token(auth.split(" ")[1])
 #     if not admin:
-#         return Response({"message": "Invalid or expired session token."}, status=401)
+#         return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
 #     if admin.role != "admin":
-#         return Response({"message": "You do not have permission."}, status=403)
+#         return Response({"message": "You do not have permission.", "code": "not_permission"}, status=403)
 
 #     match_id = request.data.get("match_id")
 #     teams_payload = _parse_json_or_value(request.data.get("teams"), default=None)
 
 #     if not match_id:
-#         return Response({"message": "match_id is required."}, status=400)
+#         return Response({"message": "match_id is required.", "code": "match_required"}, status=400)
 #     if not isinstance(teams_payload, list) or not teams_payload:
-#         return Response({"message": "teams must be a non-empty list."}, status=400)
+#         return Response({"message": "teams must be a non-empty list.", "code": "teams_non_empty_list"}, status=400)
 
 #     match = get_object_or_404(Match, match_id=match_id)
 #     lb = _get_lb_for_match(match)
 #     if not lb:
-#         return Response({"message": "No leaderboard linked/found for this match."}, status=400)
+#         return Response({"message": "No leaderboard linked/found for this match.", "code": "no_leaderboard_linked_found"}, status=400)
 
 #     event = lb.event
 #     if event.participant_type == "solo":
-#         return Response({"message": "This endpoint is for TEAM events only."}, status=400)
+#         return Response({"message": "This endpoint is for TEAM events only.", "code": "endpoint_team_events"}, status=400)
 
 #     scoring = match.scoring_settings or {}
 
@@ -17666,7 +17666,7 @@ def enter_team_match_result_manual(request):
 #             for k, v in (scoring.get("placement_points") or {}).items()
 #         }
 #     except Exception:
-#         return Response({"message": "Invalid match scoring placement_points."}, status=400)
+#         return Response({"message": "Invalid match scoring placement_points.", "code": "invalid_match_scoring_placement"}, status=400)
 
 #     kill_point = float(scoring.get("kill_point", 1))
 #     points_per_assist = float(scoring.get("points_per_assist", 0))
@@ -17798,11 +17798,11 @@ def enter_solo_match_result_manual(request):
     # ---- AUTH ----
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
 
     admin = validate_token(auth.split(" ")[1])
     if not admin:
-        return Response({"message": "Invalid or expired session token."}, status=401)
+        return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
 
     # NOTE: permission is finalised below, after the owning event is resolved - org members
     # with can_upload_results may enter results for THEIR org's events.
@@ -17811,24 +17811,24 @@ def enter_solo_match_result_manual(request):
     players_payload = _parse_json_or_value(request.data.get("players"), default=None)
 
     if not match_id:
-        return Response({"message": "match_id is required."}, status=400)
+        return Response({"message": "match_id is required.", "code": "match_required"}, status=400)
     if not isinstance(players_payload, list) or not players_payload:
-        return Response({"message": "players must be a non-empty list."}, status=400)
+        return Response({"message": "players must be a non-empty list.", "code": "players_non_empty_list"}, status=400)
 
     match = get_object_or_404(Match, match_id=match_id)
     lb = _get_lb_for_match(match)
     if not lb:
-        return Response({"message": "No leaderboard linked/found for this match."}, status=400)
+        return Response({"message": "No leaderboard linked/found for this match.", "code": "no_leaderboard_linked_found"}, status=400)
 
     event = lb.event
 
     # ── AUTH (event-scoped): AFC event admins always pass; otherwise allow org members
     # holding can_upload_results on the event's owning org (native events stay admin-only).
     if not _is_event_admin(admin) and not org_can_event(admin, "can_upload_results", event):
-        return Response({"message": "You do not have permission."}, status=403)
+        return Response({"message": "You do not have permission.", "code": "not_permission"}, status=403)
 
     if event.participant_type != "solo":
-        return Response({"message": "This endpoint is for SOLO events only."}, status=400)
+        return Response({"message": "This endpoint is for SOLO events only.", "code": "endpoint_solo_events"}, status=400)
 
     placement_points = _normalize_placement_points(lb.placement_points or {})
     kill_point = float(lb.kill_point or 1.0)
@@ -17853,7 +17853,7 @@ def enter_solo_match_result_manual(request):
         [p.get("placement") for p in _played], noun="player"
     )
     if _placement_error:
-        return Response({"message": _placement_error}, status=400)
+        return Response({"message": _placement_error, "code": "enter_solo_match_result_manual_refused"}, status=400)
 
     rows = []
     with transaction.atomic():
@@ -17932,11 +17932,11 @@ def edit_match_result(request):
     # ---------------- AUTH ----------------
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
 
     admin = validate_token(auth.split(" ")[1])
     if not admin:
-        return Response({"message": "Invalid or expired session token."}, status=401)
+        return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
 
     # NOTE: permission is finalised below, once the owning event is resolved via the match's
     # leaderboard (lb.event) - org members with can_upload_results may edit results for THEIR
@@ -17947,16 +17947,16 @@ def edit_match_result(request):
     results_payload = _parse_json_or_value(request.data.get("results"), default=None)
 
     if not match_id:
-        return Response({"message": "match_id is required."}, status=400)
+        return Response({"message": "match_id is required.", "code": "match_required"}, status=400)
 
     if not isinstance(results_payload, list) or not results_payload:
-        return Response({"message": "results must be a non-empty list."}, status=400)
+        return Response({"message": "results must be a non-empty list.", "code": "results_non_empty_list"}, status=400)
 
     match = get_object_or_404(Match, match_id=match_id)
 
     lb = _get_lb_for_match(match)
     if not lb:
-        return Response({"message": "No leaderboard linked/found for this match."}, status=400)
+        return Response({"message": "No leaderboard linked/found for this match.", "code": "no_leaderboard_linked_found"}, status=400)
 
     event = lb.event
 
@@ -17964,10 +17964,10 @@ def edit_match_result(request):
     # event admins always pass; otherwise allow org members holding can_upload_results on the
     # event's owning org. Native (org=None) events stay admin-only.
     if not _is_event_admin(admin) and not org_can_event(admin, "can_upload_results", event):
-        return Response({"message": "You do not have permission to manage results for this event."}, status=403)
+        return Response({"message": "You do not have permission to manage results for this event.", "code": "not_permission_manage_results"}, status=403)
 
     if event.participant_type == "solo":
-        return Response({"message": "This endpoint is for TEAM events only."}, status=400)
+        return Response({"message": "This endpoint is for TEAM events only.", "code": "endpoint_team_events"}, status=400)
 
     # ---------------- SCORING ----------------
     scoring = match.scoring_settings or {}
@@ -18005,7 +18005,7 @@ def edit_match_result(request):
 
     _placement_error = validate_placements(placements, noun="team")
     if _placement_error:
-        return Response({"message": _placement_error}, status=400)
+        return Response({"message": _placement_error, "code": "edit_match_result_refused"}, status=400)
 
     # ---------------- PLAYED-PLAYER VALIDATION (must run BEFORE the destructive write) ----------------
     # Squad rules cap a match at 4 PLAYED players per team. This check MUST happen here, ahead of the
@@ -18213,16 +18213,16 @@ def edit_match_result(request):
 #     # ---------------- AUTH ----------------
 #     auth = request.headers.get("Authorization")
 #     if not auth or not auth.startswith("Bearer "):
-#         return Response({"message": "Invalid or missing Authorization token."}, status=400)
+#         return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
 
 #     admin = validate_token(auth.split(" ")[1])
 #     if not admin or admin.role != "admin":
-#         return Response({"message": "Unauthorized."}, status=403)
+#         return Response({"message": "Unauthorized.", "code": "edit_match_result_unauthorized"}, status=403)
 
 #     # ---------------- INPUT ----------------
 #     match_id = request.data.get("match_id")
 #     if not match_id:
-#         return Response({"message": "match_id is required."}, status=400)
+#         return Response({"message": "match_id is required.", "code": "match_required"}, status=400)
 
 #     results = request.data.get("results")
 
@@ -18230,18 +18230,18 @@ def edit_match_result(request):
 #         results = json.loads(results)
 
 #     if not isinstance(results, list) or not results:
-#         return Response({"message": "results must be a list."}, status=400)
+#         return Response({"message": "results must be a list.", "code": "results_list"}, status=400)
 
 #     match = get_object_or_404(Match, match_id=match_id)
 
 #     if not match.group or not match.group.stage or not match.group.stage.event:
-#         return Response({"message": "Match not linked to event."}, status=400)
+#         return Response({"message": "Match not linked to event.", "code": "match_not_linked_event"}, status=400)
 
 #     event = match.group.stage.event
 
 #     leaderboard = _get_leaderboard_for_match(match)
 #     if not leaderboard:
-#         return Response({"message": "Leaderboard not found."}, status=400)
+#         return Response({"message": "Leaderboard not found.", "code": "leaderboard_not_found"}, status=400)
 
 #     # ---------------- SCORING ----------------
 #     scoring = match.scoring_settings or {}
@@ -18260,10 +18260,10 @@ def edit_match_result(request):
 #     placements = [r.get("placement") for r in played_rows]
 
 #     if any(p is None for p in placements):
-#         return Response({"message": "Played teams must have placement."}, status=400)
+#         return Response({"message": "Played teams must have placement.", "code": "played_teams_placement"}, status=400)
 
 #     if len(set(placements)) != len(placements):
-#         return Response({"message": "Placements must be unique."}, status=400)
+#         return Response({"message": "Placements must be unique.", "code": "placements_unique"}, status=400)
 
 #     # ---------------- TRANSACTION ----------------
 #     with transaction.atomic():
@@ -18410,31 +18410,31 @@ def edit_match_result(request):
 # def edit_match_result(request):
 #     auth = request.headers.get("Authorization")
 #     if not auth or not auth.startswith("Bearer "):
-#         return Response({"message": "Invalid or missing Authorization token."}, status=400)
+#         return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
 
 #     admin = validate_token(auth.split(" ")[1])
 #     if not admin or admin.role != "admin":
-#         return Response({"message": "Unauthorized."}, status=403)
+#         return Response({"message": "Unauthorized.", "code": "edit_match_result_unauthorized"}, status=403)
 
 #     match_id = request.data.get("match_id")
 #     if not match_id:
-#         return Response({"message": "match_id is required."}, status=400)
+#         return Response({"message": "match_id is required.", "code": "match_required"}, status=400)
 
 #     match = get_object_or_404(Match, match_id=match_id)
 
 #     if not match.group or not match.group.stage or not match.group.stage.event:
-#         return Response({"message": "Match is not linked to a valid group/stage/event."}, status=400)
+#         return Response({"message": "Match is not linked to a valid group/stage/event.", "code": "match_not_linked_valid"}, status=400)
 
 #     event = match.group.stage.event
 #     leaderboard = _get_leaderboard_for_match(match)
 #     if not leaderboard:
-#         return Response({"message": "No leaderboard found for this match/group."}, status=400)
+#         return Response({"message": "No leaderboard found for this match/group.", "code": "no_leaderboard_found_match"}, status=400)
 
 #     # placement_points_raw = leaderboard.placement_points or {}
 #     # try:
 #     #     placement_points = {int(k): int(v) for k, v in placement_points_raw.items()}
 #     # except Exception:
-#     #     return Response({"message": "Invalid leaderboard placement_points."}, status=400)
+#     #     return Response({"message": "Invalid leaderboard placement_points.", "code": "invalid_leaderboard_placement_points"}, status=400)
 
 #     # kill_point = float(getattr(leaderboard, "kill_point", 1.0) or 1.0)
 
@@ -18454,15 +18454,15 @@ def edit_match_result(request):
 #         results = json.loads(results or "[]")
 
 #     if not isinstance(results, list) or not results:
-#         return Response({"message": "results must be a non-empty list."}, status=400)
+#         return Response({"message": "results must be a non-empty list.", "code": "results_non_empty_list"}, status=400)
 
 #     # basic validation: unique placements among PLAYED competitors
 #     played_rows = [r for r in results if r.get("played", True)]
 #     placements = [r.get("placement") for r in played_rows]
 #     if any(p is None for p in placements):
-#         return Response({"message": "Each played row must have placement."}, status=400)
+#         return Response({"message": "Each played row must have placement.", "code": "played_row_placement"}, status=400)
 #     if len(set(placements)) != len(placements):
-#         return Response({"message": "Placements must be unique (among played rows)."}, status=400)
+#         return Response({"message": "Placements must be unique (among played rows).", "code": "placements_unique_among_played"}, status=400)
 
 #     with transaction.atomic():
 #         if event.participant_type == "solo":
@@ -18496,7 +18496,7 @@ def edit_match_result(request):
 #                 bonus = int(r.get("bonus_points") or 0)
 #                 penalty = int(r.get("penalty_points") or 0)
 #                 if bonus < 0 or penalty < 0:
-#                     return Response({"message": "bonus_points and penalty_points must be >= 0."}, status=400)
+#                     return Response({"message": "bonus_points and penalty_points must be >= 0.", "code": "bonus_points_penalty_points"}, status=400)
 
 #                 place_pts = placement_points.get(placement, 0) if played else 0
 #                 # kill_pts = int(kills * kill_point) if played else 0
@@ -18679,11 +18679,11 @@ def disqualify_player(request):
     # -------- AUTH --------
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
 
     admin = validate_token(auth.split(" ")[1])
     if not admin:
-        return Response({"message": "Invalid or expired session token."}, status=401)
+        return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
 
     # -------- INPUT --------
     event_id = request.data.get("event_id")
@@ -18694,13 +18694,13 @@ def disqualify_player(request):
     # notification below could say "No reason provided", which is the complaint itself.
     if not reason:
         return Response(
-            {"message": "A reason is required. The competitor is shown it, so say why."},
+            {"message": "A reason is required. The competitor is shown it, so say why.", "code": "reason_required_competitor_shown"},
             status=400)
 
     if not event_id:
-        return Response({"message": "event_id is required."}, status=400)
+        return Response({"message": "event_id is required.", "code": "event_required"}, status=400)
     if not rc_id and not user_id:
-        return Response({"message": "registered_competitor_id or user_id is required."}, status=400)
+        return Response({"message": "registered_competitor_id or user_id is required.", "code": "registered_competitor_user_required"}, status=400)
 
     event = get_object_or_404(Event, event_id=event_id)
 
@@ -18708,10 +18708,10 @@ def disqualify_player(request):
     # AFC admins manage registrations for any event; org members need
     # can_manage_registrations on the event's owning org (native AFC events stay admin-only).
     if not _is_event_admin(admin) and not org_can_event(admin, "can_manage_registrations", event):
-        return Response({"message": "You do not have permission to manage registrations for this event."}, status=403)
+        return Response({"message": "You do not have permission to manage registrations for this event.", "code": "not_permission_manage_registrations"}, status=403)
 
     if event.participant_type != "solo":
-        return Response({"message": "This endpoint is for SOLO events only."}, status=400)
+        return Response({"message": "This endpoint is for SOLO events only.", "code": "endpoint_solo_events"}, status=400)
 
     # -------- TARGET --------
     if rc_id:
@@ -18777,11 +18777,11 @@ def disqualify_team(request):
     # -------- AUTH --------
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
 
     admin = validate_token(auth.split(" ")[1])
     if not admin:
-        return Response({"message": "Invalid or expired session token."}, status=401)
+        return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
 
     # -------- INPUT --------
     event_id = request.data.get("event_id")
@@ -18792,13 +18792,13 @@ def disqualify_team(request):
     # notification below could say "No reason provided", which is the complaint itself.
     if not reason:
         return Response(
-            {"message": "A reason is required. The competitor is shown it, so say why."},
+            {"message": "A reason is required. The competitor is shown it, so say why.", "code": "reason_required_competitor_shown"},
             status=400)
 
     if not event_id:
-        return Response({"message": "event_id is required."}, status=400)
+        return Response({"message": "event_id is required.", "code": "event_required"}, status=400)
     if not tournament_team_id and not team_id:
-        return Response({"message": "tournament_team_id or team_id is required."}, status=400)
+        return Response({"message": "tournament_team_id or team_id is required.", "code": "tournament_team_team_required"}, status=400)
 
     event = get_object_or_404(Event, event_id=event_id)
 
@@ -18806,10 +18806,10 @@ def disqualify_team(request):
     # AFC admins manage registrations for any event; org members need
     # can_manage_registrations on the event's owning org (native AFC events stay admin-only).
     if not _is_event_admin(admin) and not org_can_event(admin, "can_manage_registrations", event):
-        return Response({"message": "You do not have permission to manage registrations for this event."}, status=403)
+        return Response({"message": "You do not have permission to manage registrations for this event.", "code": "not_permission_manage_registrations"}, status=403)
 
     if event.participant_type == "solo":
-        return Response({"message": "This endpoint is for TEAM events only (duo/squad)."}, status=400)
+        return Response({"message": "This endpoint is for TEAM events only (duo/squad).", "code": "endpoint_team_events_duo"}, status=400)
 
     # -------- TARGET --------
     if tournament_team_id:
@@ -18878,24 +18878,24 @@ def _resolve_event_team(request):
     only (duo/squad)."""
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return None, None, None, Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return None, None, None, Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
     admin = validate_token(auth.split(" ")[1])
     if not admin:
-        return None, None, None, Response({"message": "Invalid or expired session token."}, status=401)
+        return None, None, None, Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
     event_id = request.data.get("event_id")
     tournament_team_id = request.data.get("tournament_team_id")
     team_id = request.data.get("team_id")
     if not event_id:
-        return None, None, None, Response({"message": "event_id is required."}, status=400)
+        return None, None, None, Response({"message": "event_id is required.", "code": "event_required"}, status=400)
     if not tournament_team_id and not team_id:
-        return None, None, None, Response({"message": "tournament_team_id or team_id is required."}, status=400)
+        return None, None, None, Response({"message": "tournament_team_id or team_id is required.", "code": "tournament_team_team_required"}, status=400)
     event = get_object_or_404(Event, event_id=event_id)
     # Bug D: allow the event's own creator too (native/legacy events with no org, or a sub_organizer
     # who can create but not manage), in addition to AFC admins and org managers.
     if not _is_event_admin(admin) and not _is_event_creator(admin, event) and not org_can_event(admin, "can_manage_registrations", event):
-        return None, None, None, Response({"message": "You do not have permission to manage registrations for this event."}, status=403)
+        return None, None, None, Response({"message": "You do not have permission to manage registrations for this event.", "code": "not_permission_manage_registrations"}, status=403)
     if event.participant_type == "solo":
-        return None, None, None, Response({"message": "This endpoint is for TEAM events only (duo/squad)."}, status=400)
+        return None, None, None, Response({"message": "This endpoint is for TEAM events only (duo/squad).", "code": "endpoint_team_events_duo"}, status=400)
     if tournament_team_id:
         tt = get_object_or_404(TournamentTeam, tournament_team_id=tournament_team_id, event=event)
     else:
@@ -18905,7 +18905,7 @@ def _resolve_event_team(request):
         # constraint prevents new dupes; this keeps any pre-existing dupe removable). 404 if none.
         tt = TournamentTeam.objects.filter(event=event, team__team_id=team_id).order_by("tournament_team_id").first()
         if tt is None:
-            return None, None, None, Response({"message": "That team is not registered for this event."}, status=404)
+            return None, None, None, Response({"message": "That team is not registered for this event.", "code": "team_not_registered_event"}, status=404)
     return admin, event, tt, None
 
 
@@ -19010,10 +19010,10 @@ def reactivate_team(request):
 def get_drafted_events(request):
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
     user = validate_token(auth.split(" ")[1])
     if not user:
-        return Response({"message": "Invalid or expired session token."}, status=401)
+        return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
 
     qs = Event.objects.filter(is_draft=True)
 
@@ -19025,14 +19025,14 @@ def get_drafted_events(request):
     if organization_id:
         org = Organization.objects.filter(organization_id=organization_id).first()
         if not org:
-            return Response({"message": "Organization not found."}, status=404)
+            return Response({"message": "Organization not found.", "code": "organization_not_found"}, status=404)
         if not (
             _is_event_admin(user)
             or org_can(user, "can_create_events", org)
             or org_can(user, "can_edit_events", org)
         ):
             return Response(
-                {"message": "You do not have permission to view this organization's drafts."},
+                {"message": "You do not have permission to view this organization's drafts.", "code": "not_permission_view_organization"},
                 status=403,
             )
         qs = qs.filter(organization=org)
@@ -19081,10 +19081,10 @@ def get_drafted_events(request):
 def get_my_drafted_events(request):
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
     user = validate_token(auth.split(" ")[1])
     if not user:
-        return Response({"message": "Invalid or expired session token."}, status=401)
+        return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
     events = Event.objects.filter(is_draft=True, creator=user).order_by("-created_at")
     event_list = []
     for event in events:
@@ -19131,22 +19131,22 @@ def generate_single_use_invite_link_for_private_event(request):
     """
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
     admin = validate_token(auth.split(" ")[1])
     if not admin:
-        return Response({"message": "Invalid or expired session token."}, status=401)
+        return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
     event_id = request.data.get("event_id")
     if not event_id:
-        return Response({"message": "event_id is required."}, status=400)
+        return Response({"message": "event_id is required.", "code": "event_required"}, status=400)
     event = get_object_or_404(Event, event_id=event_id)
     # ── registration gate (org-aware, resolved after we have the event) ──
     if not _is_event_admin(admin) and not org_can_event(admin, "can_manage_registrations", event):
-        return Response({"message": "You do not have permission."}, status=403)
+        return Response({"message": "You do not have permission.", "code": "not_permission"}, status=403)
     if event.is_draft:
-        return Response({"message": "Cannot generate invite link for draft event."}, status=400
+        return Response({"message": "Cannot generate invite link for draft event.", "code": "cannot_generate_invite_link"}, status=400
     )
     if event.is_public:
-        return Response({"message": "Event is already public. No invite link needed."}, status=400)
+        return Response({"message": "Event is already public. No invite link needed.", "code": "event_already_public_no"}, status=400)
 
     # SHARED vs single-use:
     #   is_shared=True  -> ONE reusable first-come-first-serve link; many people register
@@ -19167,9 +19167,9 @@ def generate_single_use_invite_link_for_private_event(request):
         try:
             days = int(expires_in_days)
         except (TypeError, ValueError):
-            return Response({"message": "expires_in_days must be an integer number of days."}, status=400)
+            return Response({"message": "expires_in_days must be an integer number of days.", "code": "expires_days_integer_number"}, status=400)
         if days < 1:
-            return Response({"message": "expires_in_days must be at least 1."}, status=400)
+            return Response({"message": "expires_in_days must be at least 1.", "code": "expires_days_least"}, status=400)
         expires_at = timezone.now() + timedelta(days=days)
 
     # Generate a unique token (you can use UUID or any other method)
@@ -19212,24 +19212,24 @@ def generate_multiple_single_use_invite_links_for_private_event(request):
     """
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
     admin = validate_token(auth.split(" ")[1])
     if not admin:
-        return Response({"message": "Invalid or expired session token."}, status=401)
+        return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
     event_id = request.data.get("event_id")
     count = request.data.get("count", 1)
     if not event_id:
-        return Response({"message": "event_id is required."}, status=400)
+        return Response({"message": "event_id is required.", "code": "event_required"}, status=400)
     if not isinstance(count, int) or count < 1 or count > 100:
-        return Response({"message": "count must be an integer between 1 and 100."}, status=400)
+        return Response({"message": "count must be an integer between 1 and 100.", "code": "count_integer_between"}, status=400)
     event = get_object_or_404(Event, event_id=event_id)
     # ── registration gate (org-aware, resolved after we have the event) ──
     if not _is_event_admin(admin) and not org_can_event(admin, "can_manage_registrations", event):
-        return Response({"message": "You do not have permission."}, status=403)
+        return Response({"message": "You do not have permission.", "code": "not_permission"}, status=403)
     if event.is_draft:
-        return Response({"message": "Cannot generate invite links for draft event."}, status=400)
+        return Response({"message": "Cannot generate invite links for draft event.", "code": "cannot_generate_invite_links"}, status=400)
     if event.is_public:
-        return Response({"message": "Event is already public. No invite links needed."}, status=400)
+        return Response({"message": "Event is already public. No invite links needed.", "code": "event_already_public_no"}, status=400)
     invite_links = []
     import uuid
     event_slug = event.slug
@@ -19260,21 +19260,21 @@ def get_all_invite_links_for_private_event(request):
     """
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
     admin = validate_token(auth.split(" ")[1])
     if not admin:
-        return Response({"message": "Invalid or expired session token."}, status=401)
+        return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
     event_id = request.data.get("event_id")
     if not event_id:
-        return Response({"message": "event_id is required."}, status=400)
+        return Response({"message": "event_id is required.", "code": "event_required"}, status=400)
     event = get_object_or_404(Event, event_id=event_id)
     # ── registration gate (org-aware, resolved after we have the event) ──
     if not _is_event_admin(admin) and not org_can_event(admin, "can_manage_registrations", event):
-        return Response({"message": "You do not have permission."}, status=403)
+        return Response({"message": "You do not have permission.", "code": "not_permission"}, status=403)
     if event.is_draft:
-        return Response({"message": "Draft event does not have invite links."}, status=400)
+        return Response({"message": "Draft event does not have invite links.", "code": "draft_event_not_invite"}, status=400)
     if event.is_public:
-        return Response({"message": "Public event does not have invite links."}, status=400)
+        return Response({"message": "Public event does not have invite links.", "code": "public_event_not_invite"}, status=400)
     tokens = EventInviteToken.objects.filter(event=event).order_by("-created_at")
     invite_links = []
     for token in tokens:
@@ -19310,20 +19310,20 @@ from django.shortcuts import get_object_or_404
 # def leave_event(request):
 #     auth = request.headers.get("Authorization")
 #     if not auth or not auth.startswith("Bearer "):
-#         return Response({"message": "Invalid or missing Authorization token."}, status=400)
+#         return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
 
 #     user = validate_token(auth.split(" ")[1])
 #     if not user:
-#         return Response({"message": "Invalid or expired session token."}, status=401)
+#         return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
 
 #     event_id = request.data.get("event_id")
 #     if not event_id:
-#         return Response({"message": "event_id is required."}, status=400)
+#         return Response({"message": "event_id is required.", "code": "event_required"}, status=400)
 
 #     event = get_object_or_404(Event, event_id=event_id)
 
 #     if event.is_draft:
-#         return Response({"message": "Cannot leave a draft event."}, status=400)
+#         return Response({"message": "Cannot leave a draft event.", "code": "cannot_leave_draft_event"}, status=400)
 
 #     today = timezone.now().date()
 
@@ -19350,7 +19350,7 @@ from django.shortcuts import get_object_or_404
 #             ).first()
 
 #             if not registration:
-#                 return Response({"message": "You are not registered in this event."}, status=400)
+#                 return Response({"message": "You are not registered in this event.", "code": "not_registered_event"}, status=400)
 
 #             if registration.status != "registered":
 #                 return Response(
@@ -19370,7 +19370,7 @@ from django.shortcuts import get_object_or_404
 #             ).first()
 
 #             if not tournament_team:
-#                 return Response({"message": "You are not part of any team in this event."}, status=400)
+#                 return Response({"message": "You are not part of any team in this event.", "code": "not_part_team_event"}, status=400)
 
 #             if tournament_team.status != "active":
 #                 return Response(
@@ -19398,26 +19398,26 @@ from django.shortcuts import get_object_or_404
 def leave_event(request):
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
 
     user = validate_token(auth.split(" ")[1])
     if not user:
-        return Response({"message": "Invalid or expired session token."}, status=401)
+        return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
 
     event_id = request.data.get("event_id")
     if not event_id:
-        return Response({"message": "event_id is required."}, status=400)
+        return Response({"message": "event_id is required.", "code": "event_required"}, status=400)
 
     event = get_object_or_404(Event, event_id=event_id)
 
     if event.is_draft:
-        return Response({"message": "Cannot leave a draft event."}, status=400)
+        return Response({"message": "Cannot leave a draft event.", "code": "cannot_leave_draft_event"}, status=400)
 
     today = timezone.now().date()
 
     if today < event.registration_open_date or today > event.registration_end_date:
         return Response(
-            {"message": "You can only leave during the registration period."},
+            {"message": "You can only leave during the registration period.", "code": "leave_during_registration_period"},
             status=400
         )
 
@@ -19433,7 +19433,7 @@ def leave_event(request):
             ).first()
 
             if not registration:
-                return Response({"message": "You are not registered in this event."}, status=400)
+                return Response({"message": "You are not registered in this event.", "code": "not_registered_event"}, status=400)
 
             # 🔥 Delete registration completely
             registration.delete()
@@ -19452,7 +19452,7 @@ def leave_event(request):
             ).select_related("team").first()
 
             if not tournament_team:
-                return Response({"message": "You are not part of any team in this event."}, status=400)
+                return Response({"message": "You are not part of any team in this event.", "code": "not_part_team_event"}, status=400)
 
             # 🔐 Only captain (registered_by) can leave. A ghost row (external, unclaimed
             # competitor) has no AFC owner and is structurally unreachable here anyway - the
@@ -19462,7 +19462,7 @@ def leave_event(request):
             if tournament_team.is_ghost or tournament_team.team.team_owner != user:
                 return Response({
                     "message": "Only the team captain can leave the event."
-                }, status=403)
+                , "code": "team_captain_leave_event"}, status=403)
             
             # Delete All Tournament Team Members
             TournamentTeamMember.objects.filter(tournament_team=tournament_team).delete()
@@ -19488,10 +19488,10 @@ def leave_event(request):
 def check_invite_token_status(request):
     token = request.data.get("invite_token")
     if not token:
-        return Response({"message": "token is required."}, status=400)
+        return Response({"message": "token is required.", "code": "token_required"}, status=400)
     invite = EventInviteToken.objects.filter(token=token).first()
     if not invite:
-        return Response({"message": "Invalid token."}, status=404)
+        return Response({"message": "Invalid token.", "code": "invalid_token"}, status=404)
     # Surface is_shared/expiry so the user-side page can tell a reusable FCFS link
     # (still valid even when is_used is True) apart from a consumed single-use link,
     # and so it can show an "expired" state. is_expired mirrors the register_for_event
@@ -19524,24 +19524,24 @@ def seed_event_competitors_to_stage(request):
     """
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid token"}, status=400)
+        return Response({"message": "Invalid token", "code": "invalid_token"}, status=400)
 
     admin = validate_token(auth.split(" ")[1])
     if not admin:
-        return Response({"message": "Invalid session"}, status=401)
+        return Response({"message": "Invalid session", "code": "invalid_session"}, status=401)
 
     stage_id = request.data.get("stage_id")
     clear_existing = request.data.get("clear_existing", False)
 
     if not stage_id:
-        return Response({"message": "stage_id required"}, status=400)
+        return Response({"message": "stage_id required", "code": "stage_required"}, status=400)
 
     stage = get_object_or_404(Stages, stage_id=stage_id)
     event = stage.event
 
     # ── seeding gate (org-aware, mirrors seeding_management._seeding_gate) ──
     if not _is_event_admin(admin) and not org_can_event(admin, "can_manage_registrations", event):
-        return Response({"message": "No permission"}, status=403)
+        return Response({"message": "No permission", "code": "no_permission"}, status=403)
 
     # Check the registration end date, and prevent seeding if registration has not closed.
     # OVERRIDE (owner 2026-07-02): admins/organizers may start anyway by sending
@@ -19567,7 +19567,7 @@ def seed_event_competitors_to_stage(request):
         # Prevent accidental reseeding
         if StageCompetitor.objects.filter(stage=stage).exists() and not clear_existing:
             return Response(
-                {"message": "Stage already has competitors. Use clear_existing=True to reseed."},
+                {"message": "Stage already has competitors. Use clear_existing=True to reseed.", "code": "stage_already_competitors_use"},
                 status=400
             )
 
@@ -19637,11 +19637,11 @@ import random
 def seed_stage_competitors_to_groups_team(request):
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid token"}, status=400)
+        return Response({"message": "Invalid token", "code": "invalid_token"}, status=400)
 
     admin = validate_token(auth.split(" ")[1])
     if not admin:
-        return Response({"message": "Invalid session"}, status=401)
+        return Response({"message": "Invalid session", "code": "invalid_session"}, status=401)
 
 
     stage_id = request.data.get("stage_id")
@@ -19649,21 +19649,21 @@ def seed_stage_competitors_to_groups_team(request):
     clear_existing = request.data.get("clear_existing", False)
 
     if not stage_id:
-        return Response({"message": "stage_id required"}, status=400)
+        return Response({"message": "stage_id required", "code": "stage_required"}, status=400)
 
     stage = get_object_or_404(Stages, stage_id=stage_id)
     # Group draw (owner 2026-09-12): while the teams are picking their own groups, the random
     # seeder must not deal over them. Close or reset the draw first (afc_draws.services).
     from afc_draws.services import draw_is_open as _draw_is_open
     if _draw_is_open(stage):
-        return Response({"message": "A group draw is open for this stage. Close or reset it before seeding."}, status=409)
+        return Response({"message": "A group draw is open for this stage. Close or reset it before seeding.", "code": "group_draw_open_stage"}, status=409)
     # Organizer parity (owner 2026-07-04): owning organizer (can_manage_registrations) may act on their OWN event.
     if not _is_event_admin(admin) and not org_can_event(admin, "can_manage_registrations", stage.event):
-        return Response({"message": "You do not have permission to perform this action."}, status=403)
+        return Response({"message": "You do not have permission to perform this action.", "code": "not_permission_perform_action"}, status=403)
     groups = StageGroups.objects.filter(stage=stage).order_by("group_id")
 
     if not groups.exists():
-        return Response({"message": "No groups found."}, status=400)
+        return Response({"message": "No groups found.", "code": "no_groups_found"}, status=400)
 
     try:
         with transaction.atomic():
@@ -19678,7 +19678,7 @@ def seed_stage_competitors_to_groups_team(request):
                 stage_group__stage=stage
             ).exists() and not clear_existing:
                 return Response(
-                    {"message": "Groups already seeded. Use clear_existing=True to reseed."},
+                    {"message": "Groups already seeded. Use clear_existing=True to reseed.", "code": "groups_already_seeded_use"},
                     status=400
                 )
 
@@ -19690,7 +19690,7 @@ def seed_stage_competitors_to_groups_team(request):
             )
 
             if not competitors:
-                return Response({"message": "No stage competitors found."}, status=400)
+                return Response({"message": "No stage competitors found.", "code": "no_stage_competitors_found"}, status=400)
 
             if shuffle:
                 random.shuffle(competitors)
@@ -19728,7 +19728,7 @@ def seed_stage_competitors_to_groups_team(request):
 
             result = reconcile_group_roles_for_stage(stage)
     except GroupCapacityError as e:
-        return Response({"message": str(e)}, status=400)
+        return Response({"message": str(e), "code": "seed_stage_competitors_to_groups_team_refused"}, status=400)
 
 
     return Response({
@@ -19944,24 +19944,24 @@ def add_teams_to_stage(request):
     """
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid token"}, status=400)
+        return Response({"message": "Invalid token", "code": "invalid_token"}, status=400)
     admin = validate_token(auth.split(" ")[1])
     if not admin:
-        return Response({"message": "Invalid session"}, status=401)
+        return Response({"message": "Invalid session", "code": "invalid_session"}, status=401)
     stage_id = request.data.get("stage_id")
     team_ids = request.data.get("team_ids", [])
     if not stage_id:
-        return Response({"message": "stage_id required"}, status=400)
+        return Response({"message": "stage_id required", "code": "stage_required"}, status=400)
     if not isinstance(team_ids, list) or not all(isinstance(tid, int) for tid in team_ids):
-        return Response({"message": "team_ids must be a list of integers"}, status=400)
+        return Response({"message": "team_ids must be a list of integers", "code": "team_ids_list_integers"}, status=400)
     stage = get_object_or_404(Stages, stage_id=stage_id)
     event = stage.event
     # ── registration gate (org-aware, resolved from the stage's event) ──
     # Bug D: the event creator may also manage seeding (native/legacy events, create-only sub_organizers).
     if not _is_event_admin(admin) and not _is_event_creator(admin, event) and not org_can_event(admin, "can_manage_registrations", event):
-        return Response({"message": "No permission"}, status=403)
+        return Response({"message": "No permission", "code": "no_permission"}, status=403)
     if event.participant_type == "solo":
-        return Response({"message": "This endpoint is for team events only."}, status=400)
+        return Response({"message": "This endpoint is for team events only.", "code": "endpoint_team_events"}, status=400)
     # GHOST COMPETITORS (owner 2026-08-20, external results import). `team_ids` are afc_team.Team
     # ids, and a GHOST registration has team_id NULL, so filtering on them can never select one:
     # an imported competitor could exist in an event but never be placed into a stage. Accept
@@ -19969,14 +19969,14 @@ def add_teams_to_stage(request):
     # competitor, real or ghost. Existing callers sending team_ids are unaffected.
     tt_ids = request.data.get("tournament_team_ids", [])
     if not isinstance(tt_ids, list) or not all(isinstance(t, int) for t in tt_ids):
-        return Response({"message": "tournament_team_ids must be a list of integers"}, status=400)
+        return Response({"message": "tournament_team_ids must be a list of integers", "code": "tournament_team_ids_list"}, status=400)
 
     teams = TournamentTeam.objects.filter(
         Q(team_id__in=team_ids) | Q(tournament_team_id__in=tt_ids),
         event=event, status="active",
     )
     if not teams.exists():
-        return Response({"message": "No valid teams found for the provided ids."}, status=400)
+        return Response({"message": "No valid teams found for the provided ids.", "code": "no_valid_teams_found"}, status=400)
     # Keyed on the REGISTRATION pk, not the team pk: every ghost has team_id NULL, so keying on the
     # team would collapse them all into one "already present" bucket and silently skip all but one.
     existing_tt_ids = set(StageCompetitor.objects.filter(stage=stage)
@@ -20037,28 +20037,28 @@ PLAYER_RE = re.compile(
 #     # -------- AUTH --------
 #     auth = request.headers.get("Authorization")
 #     if not auth or not auth.startswith("Bearer "):
-#         return Response({"message": "Invalid token."}, status=400)
+#         return Response({"message": "Invalid token.", "code": "invalid_token"}, status=400)
 
 #     admin = validate_token(auth.split(" ")[1])
 #     if not admin or admin.role != "admin":
-#         return Response({"message": "Unauthorized."}, status=403)
+#         return Response({"message": "Unauthorized.", "code": "add_teams_to_stage_unauthorized"}, status=403)
 
 #     match_id = request.data.get("match_id")
 #     if not match_id:
-#         return Response({"message": "match_id required."}, status=400)
+#         return Response({"message": "match_id required.", "code": "match_required"}, status=400)
 
 #     uploaded_file = request.FILES.get("file")
 #     if not uploaded_file:
-#         return Response({"message": "file required."}, status=400)
+#         return Response({"message": "file required.", "code": "file_required"}, status=400)
 
 #     match = get_object_or_404(Match, match_id=match_id)
 
 #     if not match.group:
-#         return Response({"message": "Match not linked to group."}, status=400)
+#         return Response({"message": "Match not linked to group.", "code": "match_not_linked_group"}, status=400)
 
 #     event = match.group.stage.event
 #     if event.participant_type == "solo":
-#         return Response({"message": "This endpoint is for TEAM events only."}, status=400)
+#         return Response({"message": "This endpoint is for TEAM events only.", "code": "endpoint_team_events"}, status=400)
 
 #     # -------- SCORING --------
 #     scoring = match.scoring_settings or {}
@@ -20069,7 +20069,7 @@ PLAYER_RE = re.compile(
 #             for k, v in (scoring.get("placement_points") or {}).items()
 #         }
 #     except Exception:
-#         return Response({"message": "Invalid scoring placement_points."}, status=400)
+#         return Response({"message": "Invalid scoring placement_points.", "code": "invalid_scoring_placement_points"}, status=400)
 
 #     kill_point = float(scoring.get("kill_point", 1))
 #     points_per_assist = float(scoring.get("points_per_assist", 0))
@@ -20098,7 +20098,7 @@ PLAYER_RE = re.compile(
 #         })
 
 #     if not parsed_teams:
-#         return Response({"message": "No team data parsed."}, status=400)
+#         return Response({"message": "No team data parsed.", "code": "no_team_data_parsed"}, status=400)
 
 #     # -------- MAP USERS --------
 #     all_uids = [p["uid"] for t in parsed_teams for p in t["players"]]
@@ -20222,10 +20222,10 @@ def _overlay_bearer_user(request):
     the two is non-None. Kept tiny + local so both token endpoints gate identically."""
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return None, Response({"message": "Invalid token."}, status=400)
+        return None, Response({"message": "Invalid token.", "code": "invalid_token"}, status=400)
     user = validate_token(auth.split(" ")[1])
     if not user:
-        return None, Response({"message": "Unauthorized."}, status=403)
+        return None, Response({"message": "Unauthorized.", "code": "overlay_bearer_user_unauthorized"}, status=403)
     return user, None
 
 
@@ -20288,9 +20288,9 @@ def _resolve_event_upload_token(request):
 def capture_resolve(request):
     value, token = _resolve_event_upload_token(request)
     if not value:
-        return Response({"message": "No capture key provided."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "No capture key provided.", "code": "no_capture_key_provided"}, status=status.HTTP_400_BAD_REQUEST)
     if not token:
-        return Response({"message": "Invalid or revoked capture key."}, status=status.HTTP_403_FORBIDDEN)
+        return Response({"message": "Invalid or revoked capture key.", "code": "invalid_revoked_capture_key"}, status=status.HTTP_403_FORBIDDEN)
     event = token.event
     stages_out, active_stage_id, active_group_id = [], None, None
     for st in Stages.objects.filter(event=event).order_by("stage_order", "start_date", "stage_id"):
@@ -20355,9 +20355,9 @@ def capture_resolve(request):
 def capture_context(request):
     value, token = _resolve_event_upload_token(request)
     if not value:
-        return Response({"message": "No capture key provided."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "No capture key provided.", "code": "no_capture_key_provided"}, status=status.HTTP_400_BAD_REQUEST)
     if not token:
-        return Response({"message": "Invalid or revoked capture key."}, status=status.HTTP_403_FORBIDDEN)
+        return Response({"message": "Invalid or revoked capture key.", "code": "invalid_revoked_capture_key"}, status=status.HTTP_403_FORBIDDEN)
     event = token.event
 
     # ── Resolve the target stage + group ─────────────────────────────────────────────────────────
@@ -20926,7 +20926,7 @@ def ensure_overlay_token(request, event_id):
         return err
     event = get_object_or_404(Event, event_id=event_id)
     if not _can_manage_overlay(user, event):
-        return Response({"message": "You do not have permission to manage this overlay."}, status=403)
+        return Response({"message": "You do not have permission to manage this overlay.", "code": "not_permission_manage_overlay"}, status=403)
 
     from .models import _gen_overlay_token
     regenerate = _as_bool(request.query_params.get("regenerate"))
@@ -20960,13 +20960,13 @@ def overlay_feed(request):
     CONSUMED BY: the FE overlay route (frontend/app/overlay/leaderboard/[token]) polling this feed."""
     token = (request.query_params.get("token") or "").strip()
     if not token:
-        return Response({"message": "token is required."}, status=400)
+        return Response({"message": "token is required.", "code": "token_required"}, status=400)
 
     # Resolve the event by its public overlay key. A hidden (suspended/deleted) org's event 404s so a
     # leaked token can't surface it - same visibility rule as every public event surface (_org_hidden).
     event = Event.objects.select_related("organization").filter(overlay_token=token).first()
     if not event or _org_hidden(event):
-        return Response({"message": "Overlay not found."}, status=404)
+        return Response({"message": "Overlay not found.", "code": "overlay_not_found"}, status=404)
 
     size = (request.query_params.get("size") or "youtube").lower()
     if size not in ("instagram", "youtube"):
@@ -21124,12 +21124,12 @@ def _broadcast_gate(request, event_id):
     auth = request.headers.get("Authorization") or ""
     user = validate_token(auth.split(" ")[1]) if auth.startswith("Bearer ") else None
     if not user:
-        return None, Response({"message": "Invalid or expired session token."}, status=401)
+        return None, Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
     event = Event.objects.select_related("organization").filter(event_id=event_id).first()
     if not event:
-        return None, Response({"message": "Event not found."}, status=404)
+        return None, Response({"message": "Event not found.", "code": "event_not_found"}, status=404)
     if not (_is_event_admin(user) or org_can_event(user, "can_edit_events", event)):
-        return None, Response({"message": "You do not have permission for this event."}, status=403)
+        return None, Response({"message": "You do not have permission for this event.", "code": "not_permission_event"}, status=403)
     return event, None
 
 
@@ -21177,7 +21177,7 @@ def set_broadcast(request, event_id):
     data = request.data or {}
     scope = str(data.get("scope") or "group").lower()
     if scope not in ("group", "stage", "event", "custom"):
-        return Response({"message": "scope must be group, stage, event or custom."}, status=400)
+        return Response({"message": "scope must be group, stage, event or custom.", "code": "scope_group_stage_event"}, status=400)
 
     # Valid stage/group ids for THIS event (guard against cross-event ids).
     valid_stage_ids = set(Stages.objects.filter(event=event).values_list("stage_id", flat=True))
@@ -21192,9 +21192,9 @@ def set_broadcast(request, event_id):
     group_ids = [int(g) for g in group_ids if str(g).isdigit() and int(g) in valid_group_ids]
 
     if scope == "group" and group_id not in valid_group_ids:
-        return Response({"message": "group_id does not belong to this event."}, status=400)
+        return Response({"message": "group_id does not belong to this event.", "code": "group_not_belong_event"}, status=400)
     if scope == "stage" and stage_id not in valid_stage_ids:
-        return Response({"message": "stage_id does not belong to this event."}, status=400)
+        return Response({"message": "stage_id does not belong to this event.", "code": "stage_not_belong_event"}, status=400)
 
     event.broadcast_scope = scope
     event.broadcast_stage_id = stage_id if scope == "stage" else (
@@ -21254,25 +21254,25 @@ def live_push(request):
     token_value, upload_token = _resolve_event_upload_token(request)
     if not token_value or not upload_token:
         # Covers missing (no ?token=/header), unknown, and revoked keys - all a flat 403.
-        return Response({"message": "Invalid or revoked upload token."}, status=403)
+        return Response({"message": "Invalid or revoked upload token.", "code": "invalid_revoked_upload_token"}, status=403)
 
     # event_id is required and must be an int so it can be compared to the token's scope + used in the key.
     event_id = request.data.get("event_id")
     if event_id in (None, ""):
-        return Response({"message": "event_id is required."}, status=400)
+        return Response({"message": "event_id is required.", "code": "event_required"}, status=400)
     try:
         event_id = int(event_id)
     except (TypeError, ValueError):
-        return Response({"message": "event_id must be an integer."}, status=400)
+        return Response({"message": "event_id must be an integer.", "code": "event_integer"}, status=400)
 
     # Scope check: the token is bound to ONE event; it may only write THAT event's live snapshot. A token
     # minted for event A can never push a live key for event B (mirrors upload_team_match_result's guard).
     if upload_token.event_id != event_id:
-        return Response({"message": "This upload token is not valid for this event."}, status=403)
+        return Response({"message": "This upload token is not valid for this event.", "code": "upload_token_not_valid"}, status=403)
 
     standings = request.data.get("standings")
     if not isinstance(standings, list):
-        return Response({"message": "standings must be a list."}, status=400)
+        return Response({"message": "standings must be a list.", "code": "standings_list"}, status=400)
 
     # Stash under the EXACT key overlay_feed reads. Short 15s TTL bounds staleness: when the client stops
     # pushing (round ends / app closed) the snapshot evaporates and the feed falls back to official.
@@ -21350,7 +21350,7 @@ def ensure_upload_token(request, event_id):
         return err
     event = get_object_or_404(Event, event_id=event_id)
     if not _can_manage_overlay(user, event):
-        return Response({"message": "You do not have permission to manage this upload key."}, status=403)
+        return Response({"message": "You do not have permission to manage this upload key.", "code": "not_permission_manage_upload"}, status=403)
 
     from .models import EventUploadToken
     label = (request.data.get("label") or "").strip()[:120]
@@ -21425,18 +21425,18 @@ def upload_team_match_result(request):
     upload_token_value, upload_token = _resolve_event_upload_token(request)
     if upload_token_value:
         if not upload_token:
-            return Response({"message": "Invalid or revoked upload token."}, status=403)
+            return Response({"message": "Invalid or revoked upload token.", "code": "invalid_revoked_upload_token"}, status=403)
         # Act as the granting user; may be None if that user was deleted (SET_NULL) - harmless because
         # the token path skips every `admin`-based gate and `admin` is not read after the auth block.
         admin = upload_token.created_by
     else:
         auth = request.headers.get("Authorization")
         if not auth or not auth.startswith("Bearer "):
-            return Response({"message": "Invalid token."}, status=400)
+            return Response({"message": "Invalid token.", "code": "invalid_token"}, status=400)
 
         admin = validate_token(auth.split(" ")[1])
         if not admin:
-            return Response({"message": "Unauthorized."}, status=403)
+            return Response({"message": "Unauthorized.", "code": "upload_team_match_result_unauthorized"}, status=403)
 
     # NOTE: permission is finalised below, after the owning event is resolved - org members
     # with can_upload_results may upload for THEIR org's events (Bearer path); an upload token is
@@ -21465,23 +21465,23 @@ def upload_team_match_result(request):
     if not match_id and attribution.startswith("replace:"):
         _rid = attribution.split(":", 1)[1].strip()
         if not _rid.isdigit():
-            return Response({"message": "replace target match_id must be numeric."}, status=400)
+            return Response({"message": "replace target match_id must be numeric.", "code": "replace_target_match_numeric"}, status=400)
         match_id = int(_rid)
 
     if not match_id:
         group_id = request.data.get("group") or request.data.get("group_id")
         if not group_id:
             # No slot AND no group = a genuinely malformed request.
-            return Response({"message": "match_id required."}, status=400)
+            return Response({"message": "match_id required.", "code": "match_required"}, status=400)
         try:
             _grp = StageGroups.objects.select_related("stage__event").get(group_id=group_id)
         except (StageGroups.DoesNotExist, ValueError, TypeError):
-            return Response({"message": "Group not found."}, status=404)
+            return Response({"message": "Group not found.", "code": "group_not_found"}, status=404)
         _event = _grp.stage.event
         # Event scoping (mirrors the match-path guard below): a capture token minted for event A can
         # never write into event B via a group id - enforced here too so pending/new/409 all respect it.
         if upload_token is not None and upload_token.event_id != _event.event_id:
-            return Response({"message": "This upload token is not valid for this event."}, status=403)
+            return Response({"message": "This upload token is not valid for this event.", "code": "upload_token_not_valid"}, status=403)
 
         # Bearer manager gate (auth fix 2026-07-06): the token path is event-scoped just above, but a
         # BEARER user reaching this no-match_id branch (pending / new / next-slot fill / 409) writes
@@ -21489,14 +21489,14 @@ def upload_team_match_result(request):
         # applies later - so any authenticated non-manager could write into an event they don't run.
         # Gate the Bearer path here (native org=None events stay admin-only), mirroring the match path.
         if upload_token is None and not (_is_event_admin(admin) or org_can_event(admin, "can_upload_results", _event)):
-            return Response({"message": "You do not have permission to manage results for this event."}, status=403)
+            return Response({"message": "You do not have permission to manage results for this event.", "code": "not_permission_manage_results"}, status=403)
 
         # "decide later" -> park the raw upload verbatim in the pending bucket; score nothing. This is the
         # never-lose-data guarantee: the file text + set stage/group are stored so a human can re-score it.
         if attribution == "pending":
             _uf = request.FILES.get("file")
             if not _uf:
-                return Response({"message": "file required."}, status=400)
+                return Response({"message": "file required.", "code": "file_required"}, status=400)
             _text = _uf.read().decode("utf-8", errors="ignore")
             from .views_capture_pending import _create_pending_capture
             pending = _create_pending_capture(
@@ -21531,11 +21531,11 @@ def upload_team_match_result(request):
                     "message": ("All map slots for this group already have results. Choose whether this "
                                 "extra game is a new map, replaces an existing map, or should be decided "
                                 "later on the website."),
-                }, status=409)
+                 "code": "upload_team_match_result_refused"}, status=409)
 
     uploaded_file = request.FILES.get("file")
     if not uploaded_file:
-        return Response({"message": "file required."}, status=400)
+        return Response({"message": "file required.", "code": "file_required"}, status=400)
 
     # DRY-RUN preview (owner 2026-06-22, multi-map .log upload): when truthy, do the FULL parse +
     # roster attribution + flag derivation and build the SAME response summary, but roll the whole
@@ -21562,7 +21562,7 @@ def upload_team_match_result(request):
     match = get_object_or_404(Match, match_id=match_id)
 
     if not match.group:
-        return Response({"message": "Match not linked to group."}, status=400)
+        return Response({"message": "Match not linked to group.", "code": "match_not_linked_group"}, status=400)
 
     event = match.group.stage.event
 
@@ -21571,16 +21571,16 @@ def upload_team_match_result(request):
         # Capture-client token path: the token is scoped to ONE event, so it may only write results
         # for that event. A token minted for event A can never upload for a match belonging to event B.
         if upload_token.event_id != event.event_id:
-            return Response({"message": "This upload token is not valid for this event."}, status=403)
+            return Response({"message": "This upload token is not valid for this event.", "code": "upload_token_not_valid"}, status=403)
         # Authorized: the token itself is the grant (WRITE-limited to this event's result upload).
     else:
         # Bearer path: AFC event admins always pass; otherwise allow org members holding
         # can_upload_results on the event's owning org (native events stay admin-only).
         if not _is_event_admin(admin) and not org_can_event(admin, "can_upload_results", event):
-            return Response({"message": "Unauthorized."}, status=403)
+            return Response({"message": "Unauthorized.", "code": "upload_team_match_result_unauthorized"}, status=403)
 
     if event.participant_type == "solo":
-        return Response({"message": "This endpoint is for TEAM events only."}, status=400)
+        return Response({"message": "This endpoint is for TEAM events only.", "code": "endpoint_team_events"}, status=400)
 
     # -------- SCORING --------
     # THE SHARED WRITER (owner 2026-08-04, finishing what backlog item 6 started). This endpoint
@@ -21598,7 +21598,7 @@ def upload_team_match_result(request):
         write_ctx = result_writes.scoring_context(match)
     except ValueError as exc:
         # Same 400 as before, now with the shared wording every result path returns.
-        return Response({"message": str(exc)}, status=400)
+        return Response({"message": str(exc), "code": "upload_team_match_result_refused"}, status=400)
 
     # -------- PARSE FILE --------
     # Keep the RAW bytes (owner 2026-07-07 audit trail): the parser only needs the decoded text, but the
@@ -21631,7 +21631,7 @@ def upload_team_match_result(request):
         })
 
     if not parsed_teams:
-        return Response({"message": "No team data parsed."}, status=400)
+        return Response({"message": "No team data parsed.", "code": "no_team_data_parsed"}, status=400)
 
     # ── ID: 0 (or blank) = the game's "UID unknown" SENTINEL, not a real identity (owner 2026-07-11) ──
     # Free Fire exports ID: 0 for a player whose UID it could not resolve (seen when a lobby is exported
@@ -22613,20 +22613,20 @@ def add_teams_to_event(request):
     """
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid token."}, status=400)
+        return Response({"message": "Invalid token.", "code": "invalid_token"}, status=400)
 
     admin = validate_token(auth.split(" ")[1])
     if not admin:
-        return Response({"message": "Unauthorized."}, status=403)
+        return Response({"message": "Unauthorized.", "code": "add_teams_to_event_unauthorized"}, status=403)
 
     event_id = request.data.get("event_id")
     team_ids = request.data.get("team_ids", [])
 
     if not event_id:
-        return Response({"message": "event_id required."}, status=400)
+        return Response({"message": "event_id required.", "code": "event_required"}, status=400)
 
     if not isinstance(team_ids, list) or not all(isinstance(tid, int) for tid in team_ids):
-        return Response({"message": "team_ids must be a list of integers"}, status=400)
+        return Response({"message": "team_ids must be a list of integers", "code": "team_ids_list_integers"}, status=400)
 
     event = get_object_or_404(Event, event_id=event_id)
 
@@ -22634,10 +22634,10 @@ def add_teams_to_event(request):
     # AFC event admins manage any event; organizers need can_manage_registrations on the
     # event's owning org (native AFC events stay admin-only).
     if not _is_event_admin(admin) and not org_can_event(admin, "can_manage_registrations", event):
-        return Response({"message": "Unauthorized."}, status=403)
+        return Response({"message": "Unauthorized.", "code": "add_teams_to_event_unauthorized"}, status=403)
 
     if event.participant_type == "solo":
-        return Response({"message": "This endpoint is for team events only."}, status=400)
+        return Response({"message": "This endpoint is for team events only.", "code": "endpoint_team_events"}, status=400)
 
     teams = Team.objects.filter(team_id__in=team_ids)
 
@@ -22786,7 +22786,7 @@ def add_teams_to_event(request):
 
             block = roster_change_block(event, team, [m.member_id for m in members])
             if block:
-                return Response({"message": block}, status=403)
+                return Response({"message": block, "code": "add_teams_to_event_refused"}, status=403)
 
             for member in members:
 
@@ -22871,16 +22871,16 @@ def add_teams_to_group(request):
     """
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid token."}, status=400)
+        return Response({"message": "Invalid token.", "code": "invalid_token"}, status=400)
     admin = validate_token(auth.split(" ")[1])
     if not admin:
-        return Response({"message": "Unauthorized."}, status=403)
+        return Response({"message": "Unauthorized.", "code": "add_teams_to_group_unauthorized"}, status=403)
     group_id = request.data.get("group_id")
     team_ids = request.data.get("team_ids", [])
     if not group_id:
-        return Response({"message": "group_id required."}, status=400)
+        return Response({"message": "group_id required.", "code": "group_required"}, status=400)
     if not isinstance(team_ids, list) or not all(isinstance(tid, int) for tid in team_ids):
-        return Response({"message": "team_ids must be a list of integers"}, status=400)
+        return Response({"message": "team_ids must be a list of integers", "code": "team_ids_list_integers"}, status=400)
 
     # ── ROUND-ROBIN branch (owner 2026-07-04 bug fix) ─────────────────────────────────────────────
     # RR stages store group membership on RoundRobinGroup.teams (M2M), NOT StageGroupCompetitor, and
@@ -22896,12 +22896,12 @@ def add_teams_to_group(request):
         rr_event = rr_group.stage.event
         # Bug D: event creator may also manage seeding.
         if not _is_event_admin(admin) and not _is_event_creator(admin, rr_event) and not org_can_event(admin, "can_manage_registrations", rr_event):
-            return Response({"message": "Unauthorized."}, status=403)
+            return Response({"message": "Unauthorized.", "code": "add_teams_to_group_unauthorized"}, status=403)
         if rr_event.participant_type == "solo":
-            return Response({"message": "This endpoint is for team events only."}, status=400)
+            return Response({"message": "This endpoint is for team events only.", "code": "endpoint_team_events"}, status=400)
         rr_teams = TournamentTeam.objects.filter(team_id__in=team_ids, event=rr_event, status="active")
         if not rr_teams.exists():
-            return Response({"message": "No valid teams found for the provided team_ids."}, status=400)
+            return Response({"message": "No valid teams found for the provided team_ids.", "code": "no_valid_teams_found"}, status=400)
         added = []
         for team in rr_teams:
             # The team must be a stage competitor (the pool + base groups draw from it).
@@ -22924,23 +22924,23 @@ def add_teams_to_group(request):
     # ── registration gate (org-aware, event resolved group -> stage -> event) ──
     # Bug D: event creator may also manage seeding.
     if not _is_event_admin(admin) and not _is_event_creator(admin, group.stage.event) and not org_can_event(admin, "can_manage_registrations", group.stage.event):
-        return Response({"message": "Unauthorized."}, status=403)
+        return Response({"message": "Unauthorized.", "code": "add_teams_to_group_unauthorized"}, status=403)
     if group.stage.event.participant_type == "solo":
-        return Response({"message": "This endpoint is for team events only."}, status=400)
+        return Response({"message": "This endpoint is for team events only.", "code": "endpoint_team_events"}, status=400)
     # GHOST COMPETITORS (owner 2026-08-20, external results import). Same reasoning as
     # add_teams_to_stage: `team_ids` are afc_team.Team ids and a ghost registration has team_id
     # NULL, so it could never be placed into a group. `tournament_team_ids` is an ADDITIVE route
     # that addresses any competitor by its registration pk. Existing callers are unaffected.
     tt_ids_g = request.data.get("tournament_team_ids", [])
     if not isinstance(tt_ids_g, list) or not all(isinstance(t, int) for t in tt_ids_g):
-        return Response({"message": "tournament_team_ids must be a list of integers"}, status=400)
+        return Response({"message": "tournament_team_ids must be a list of integers", "code": "tournament_team_ids_list"}, status=400)
 
     teams = TournamentTeam.objects.filter(
         Q(team_id__in=team_ids) | Q(tournament_team_id__in=tt_ids_g),
         event=group.stage.event, status="active",
     )
     if not teams.exists():
-        return Response({"message": "No valid teams found for the provided ids."}, status=400)
+        return Response({"message": "No valid teams found for the provided ids.", "code": "no_valid_teams_found"}, status=400)
     # Keyed on the REGISTRATION pk: every ghost has team_id NULL, so keying on the team would
     # collapse them into one "already present" bucket and skip all but one.
     existing_tt_ids = set(StageGroupCompetitor.objects.filter(stage_group=group)
@@ -22995,16 +22995,16 @@ def get_all_tournament_player_match_stats(requests):
 def create_sponsor_account(request):
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid token."}, status=400)
+        return Response({"message": "Invalid token.", "code": "invalid_token"}, status=400)
     admin = validate_token(auth.split(" ")[1])
     if not admin or admin.role != "admin":
-        return Response({"message": "Unauthorized."}, status=403)
+        return Response({"message": "Unauthorized.", "code": "create_sponsor_account_unauthorized"}, status=403)
 
     # Only head admin can create sponsor accounts
     if admin.userroles.filter(role__role_name='head_admin'):
         pass  # User has permission
     else:
-        return Response({"message": "You do not have permission to create sponsor account."}, status=status.HTTP_403_FORBIDDEN)
+        return Response({"message": "You do not have permission to create sponsor account.", "code": "not_permission_create_sponsor"}, status=status.HTTP_403_FORBIDDEN)
     
     fullname = request.data.get("fullname")
     email = request.data.get("email")
@@ -23014,15 +23014,15 @@ def create_sponsor_account(request):
     confirm_password = request.data.get("confirm_password")
 
     if not all([fullname, email, username, uid, password, confirm_password]):
-        return Response({"message": "All fields are required."}, status=400)
+        return Response({"message": "All fields are required.", "code": "fields_required"}, status=400)
     if password != confirm_password:
-        return Response({"message": "Passwords do not match."}, status=400)
+        return Response({"message": "Passwords do not match.", "code": "passwords_not_match"}, status=400)
     if User.objects.filter(username=username).exists():
-        return Response({"message": "Username already exists."}, status=400)
+        return Response({"message": "Username already exists.", "code": "username_already_exists"}, status=400)
     if User.objects.filter(uid=uid).exists():
-        return Response({"message": "UID already exists."}, status=400)
+        return Response({"message": "UID already exists.", "code": "uid_already_exists"}, status=400)
     if User.objects.filter(email=email).exists():
-        return Response({"message": "Email already exists."}, status=400)
+        return Response({"message": "Email already exists.", "code": "email_already_exists"}, status=400)
     
     user = User.objects.create_user(
         username=username,
@@ -23048,33 +23048,33 @@ def create_sponsor_account(request):
 def assign_sponsor_to_event(request):
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid token."}, status=400)
+        return Response({"message": "Invalid token.", "code": "invalid_token"}, status=400)
     admin = validate_token(auth.split(" ")[1])
     if not admin:
-        return Response({"message": "Unauthorized."}, status=401)
+        return Response({"message": "Unauthorized.", "code": "assign_sponsor_to_event_unauthorized"}, status=401)
 
     sponsor_username = request.data.get("sponsor_username")
     event_ids = request.data.get("event_ids", [])
 
     if not sponsor_username:
-        return Response({"message": "sponsor_username required."}, status=400)
+        return Response({"message": "sponsor_username required.", "code": "sponsor_username_required"}, status=400)
 
     if not isinstance(event_ids, list) or not all(isinstance(eid, int) for eid in event_ids):
-        return Response({"message": "event_ids must be a list of integers"}, status=400)
+        return Response({"message": "event_ids must be a list of integers", "code": "event_ids_list_integers"}, status=400)
 
     role = Roles.objects.get(role_name="sponsor_admin")
 
     sponsor = get_object_or_404(User, username=sponsor_username, role="admin", userroles__role=role)
     events = Event.objects.filter(event_id__in=event_ids)
     if not events.exists():
-        return Response({"message": "No valid events found for the provided event_ids."}, status=400)
+        return Response({"message": "No valid events found for the provided event_ids.", "code": "no_valid_events_found"}, status=400)
 
     # AUTH (#8 / owner 2026-07-06): an AFC head_admin may assign sponsors to ANY events; an organizer
     # may assign to THEIR OWN events only (every event in the list must be owned via org_can_event).
     # Was head_admin-only, which blocked organizers from sponsoring their own events.
     is_head_admin = admin.role == "admin" and admin.userroles.filter(role__role_name="head_admin").exists()
     if not is_head_admin and not all(org_can_event(admin, "can_edit_events", ev) for ev in events):
-        return Response({"message": "You can only assign sponsors to your own events."}, status=403)
+        return Response({"message": "You can only assign sponsors to your own events.", "code": "assign_sponsors_events"}, status=403)
 
     for event in events:
         event.sponsor = sponsor
@@ -23100,12 +23100,12 @@ def get_all_sponsors(request):
 def get_list_of_players_in_sponsor_event(request):
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid token."}, status=400)
+        return Response({"message": "Invalid token.", "code": "invalid_token"}, status=400)
     sponsor = validate_token(auth.split(" ")[1])
 
     role = Roles.objects.get(role_name="sponsor_admin")
     if not sponsor or sponsor.role != "admin" or not sponsor.userroles.filter(role=role).exists():
-        return Response({"message": "Unauthorized."}, status=403)
+        return Response({"message": "Unauthorized.", "code": "get_list_of_players_in_sponsor_event_una"}, status=403)
 
     # use the sponsor to get all events they are connected to, then get all players in those events
 
@@ -23208,10 +23208,10 @@ def _recompute_team_match_points(match):
 def edit_match_scoring_config(request):
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid token."}, status=400)
+        return Response({"message": "Invalid token.", "code": "invalid_token"}, status=400)
     admin = validate_token(auth.split(" ")[1])
     if not admin:
-        return Response({"message": "Unauthorized."}, status=403)
+        return Response({"message": "Unauthorized.", "code": "edit_match_scoring_config_unauthorized"}, status=403)
 
     # NOTE: permission is finalised below, once the owning event is resolved via
     # match_id -> match.group.stage.event - org members with can_upload_results may edit a
@@ -23220,9 +23220,9 @@ def edit_match_scoring_config(request):
     match_id = request.data.get("match_id")
     scoring_settings = request.data.get("scoring_settings")
     if not match_id:
-        return Response({"message": "match_id required."}, status=400)
+        return Response({"message": "match_id required.", "code": "match_required"}, status=400)
     if not isinstance(scoring_settings, dict):
-        return Response({"message": "scoring_settings must be a dictionary."}, status=400)
+        return Response({"message": "scoring_settings must be a dictionary.", "code": "scoring_settings_dictionary"}, status=400)
     match = get_object_or_404(Match, match_id=match_id)
 
     # ── AUTH (event-scoped): event derived via match_id -> match.group.stage.event. AFC event
@@ -23230,7 +23230,7 @@ def edit_match_scoring_config(request):
     # owning org. Native (org=None) events stay admin-only.
     _cfg_event = match.group.stage.event if match.group else None
     if not _is_event_admin(admin) and not (_cfg_event and org_can_event(admin, "can_upload_results", _cfg_event)):
-        return Response({"message": "You do not have permission to manage results for this event."}, status=403)
+        return Response({"message": "You do not have permission to manage results for this event.", "code": "not_permission_manage_results"}, status=403)
 
     match.scoring_settings = scoring_settings
     match.save(update_fields=["scoring_settings"])
@@ -23251,14 +23251,14 @@ def edit_match_scoring_config(request):
 def get_sponsor_details(request):
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid token."}, status=400)
+        return Response({"message": "Invalid token.", "code": "invalid_token"}, status=400)
     admin = validate_token(auth.split(" ")[1])
 
     sponsor_username = request.data.get("sponsor_username")
     sponsor = get_object_or_404(User, username=sponsor_username, role="admin", userroles__role__role_name="sponsor_admin")
 
     if not sponsor:
-        return Response({"message": "Invalid token."}, status=400)
+        return Response({"message": "Invalid token.", "code": "invalid_token"}, status=400)
 
     # get events that the sponsr is linked to
     sponsor_events = SponsorEvent.objects.filter(sponsor=sponsor).select_related("event")
@@ -23283,25 +23283,25 @@ def edit_sponsor_details(request):
 
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid token."}, status=400)
+        return Response({"message": "Invalid token.", "code": "invalid_token"}, status=400)
 
     admin = validate_token(auth.split(" ")[1])
     if not admin:
-        return Response({"message": "Unauthorized."}, status=403)
+        return Response({"message": "Unauthorized.", "code": "edit_sponsor_details_unauthorized"}, status=403)
 
     # allow admin OR sponsor_admin
     is_admin = admin.role == "admin"
     is_sponsor_admin = admin.userroles.filter(role__role_name="sponsor_admin").exists()
 
     if not (is_admin or is_sponsor_admin):
-        return Response({"message": "Unauthorized."}, status=403)
+        return Response({"message": "Unauthorized.", "code": "edit_sponsor_details_unauthorized"}, status=403)
 
     sponsor_username = request.data.get("sponsor_username")
     sponsor = get_object_or_404(User, username=sponsor_username, role="admin")
 
     role = Roles.objects.get(role_name="sponsor_admin")
     if not sponsor.userroles.filter(role=role).exists():
-        return Response({"message": "User is not a sponsor admin."}, status=400)
+        return Response({"message": "User is not a sponsor admin.", "code": "user_not_sponsor_admin"}, status=400)
 
     full_name = request.data.get("full_name")
     email = request.data.get("email")
@@ -23317,13 +23317,13 @@ def edit_sponsor_details(request):
 
     if email:
         if User.objects.filter(email=email).exclude(user_id=sponsor.user_id).exists():
-            return Response({"message": "Email already in use."}, status=400)
+            return Response({"message": "Email already in use.", "code": "email_already_use"}, status=400)
         sponsor.email = email
         update_fields.append("email")
 
     if username:
         if User.objects.filter(username=username).exclude(user_id=sponsor.user_id).exists():
-            return Response({"message": "Username already in use."}, status=400)
+            return Response({"message": "Username already in use.", "code": "username_already_use"}, status=400)
         sponsor.username = username
         update_fields.append("username")
 
@@ -23343,7 +23343,7 @@ def edit_sponsor_details(request):
     if event_ids is not None:
 
         if not isinstance(event_ids, list) or not all(isinstance(eid, int) for eid in event_ids):
-            return Response({"message": "event_ids must be a list of integers"}, status=400)
+            return Response({"message": "event_ids must be a list of integers", "code": "event_ids_list_integers"}, status=400)
 
         events = Event.objects.filter(event_id__in=event_ids)
 
@@ -23371,14 +23371,14 @@ def edit_sponsor_details(request):
 #     # -------------------------
 #     auth = request.headers.get("Authorization")
 #     if not auth or not auth.startswith("Bearer "):
-#         return Response({"message": "Invalid or missing Authorization token."}, status=400)
+#         return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
 
 #     user = validate_token(auth.split(" ")[1])
 #     if not user:
-#         return Response({"message": "Invalid or expired session token."}, status=401)
+#         return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
 
 #     if user.status != "active":
-#         return Response({"message": "Your account is not active."}, status=403)
+#         return Response({"message": "Your account is not active.", "code": "account_not_active"}, status=403)
 
 #     # -------------------------
 #     # INPUT
@@ -23390,25 +23390,25 @@ def edit_sponsor_details(request):
 #     sponsor_ids = _maybe_json(request.data.get("sponsor_ids"), default={})
 
 #     if not event_id or not team_id:
-#         return Response({"message": "event_id and team_id are required."}, status=400)
+#         return Response({"message": "event_id and team_id are required.", "code": "event_team_required"}, status=400)
 
 #     event = get_object_or_404(Event, event_id=event_id)
 #     team = get_object_or_404(Team, team_id=team_id)
 
 #     if event.participant_type not in ["duo", "squad"]:
-#         return Response({"message": "Roster editing only allowed for team events."}, status=400)
+#         return Response({"message": "Roster editing only allowed for team events.", "code": "roster_editing_allowed_team"}, status=400)
 
 #     # -------------------------
 #     # REGISTRATION WINDOW
 #     # -------------------------
 #     if date.today() > event.registration_end_date:
-#         return Response({"message": "Registration period has ended. Roster cannot be edited."}, status=403)
+#         return Response({"message": "Registration period has ended. Roster cannot be edited.", "code": "registration_period_ended_roster"}, status=403)
 
 #     # -------------------------
 #     # PERMISSION CHECK
 #     # -------------------------
 #     if not _user_is_team_captain_or_owner(user, team):
-#         return Response({"message": "Only captain/vice-captain/team owner can edit roster."}, status=403)
+#         return Response({"message": "Only captain/vice-captain/team owner can edit roster.", "code": "captain_vice_captain_team"}, status=403)
 
 #     # -------------------------
 #     # GET TOURNAMENT TEAM
@@ -23416,7 +23416,7 @@ def edit_sponsor_details(request):
 #     tt = TournamentTeam.objects.filter(event=event, team=team).first()
 
 #     if not tt:
-#         return Response({"message": "Team is not registered for this event."}, status=404)
+#         return Response({"message": "Team is not registered for this event.", "code": "team_not_registered_event"}, status=404)
 
 #     # -------------------------
 #     # ROSTER SIZE RULES
@@ -23427,7 +23427,7 @@ def edit_sponsor_details(request):
 #         min_size, max_size = 4, 6
 
 #     if not roster_member_ids:
-#         return Response({"message": "roster_member_ids is required."}, status=400)
+#         return Response({"message": "roster_member_ids is required.", "code": "roster_member_ids_required"}, status=400)
 
 #     roster_member_ids = list(dict.fromkeys(roster_member_ids))
 
@@ -23444,7 +23444,7 @@ def edit_sponsor_details(request):
 #     )
 
 #     if not set(roster_member_ids).issubset(team_member_ids):
-#         return Response({"message": "One or more roster players are not members of this team."}, status=400)
+#         return Response({"message": "One or more roster players are not members of this team.", "code": "roster_players_not_members"}, status=400)
 
 #     # -------------------------
 #     # CHECK OTHER ROSTERS
@@ -23460,7 +23460,7 @@ def edit_sponsor_details(request):
 #         return Response({
 #             "message": "One or more players are already in another roster.",
 #             "user_ids": list(conflict_players)
-#         }, status=409)
+#         , "code": "players_already_roster"}, status=409)
 
 #     # -------------------------
 #     # LOAD USERS
@@ -23475,7 +23475,7 @@ def edit_sponsor_details(request):
 #         return Response({
 #             "message": "Some users not found.",
 #             "missing_user_ids": missing_ids
-#         }, status=400)
+#         , "code": "users_not_found"}, status=400)
 
 #     # -------------------------
 #     # UPDATE ROSTER
@@ -23541,19 +23541,19 @@ def set_roster_edit_window(request):
 
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
     user = validate_token(auth.split(" ")[1])
     if not user:
-        return Response({"message": "Invalid or expired session token."}, status=401)
+        return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
 
     event_id = request.data.get("event_id")
     if not event_id:
-        return Response({"message": "event_id is required."}, status=400)
+        return Response({"message": "event_id is required.", "code": "event_required"}, status=400)
     event = get_object_or_404(Event, event_id=event_id)
 
     # Same manager gate as edit_roster: AFC event admin, or org member with can_manage_registrations.
     if not _is_event_admin(user) and not org_can_event(user, "can_manage_registrations", event):
-        return Response({"message": "You do not have permission to manage this event's roster window."}, status=403)
+        return Response({"message": "You do not have permission to manage this event's roster window.", "code": "not_permission_manage_event"}, status=403)
 
     raw_until = request.data.get("until")
     open_flag = request.data.get("open")
@@ -23567,15 +23567,15 @@ def set_roster_edit_window(request):
     # OPEN: parse + validate the closing instant.
     until = parse_datetime(str(raw_until))
     if not until:
-        return Response({"message": "Invalid 'until' datetime."}, status=400)
+        return Response({"message": "Invalid 'until' datetime.", "code": "invalid_until_datetime"}, status=400)
     if timezone.is_naive(until):
         until = timezone.make_aware(until, timezone.get_current_timezone())
     if until <= timezone.now():
-        return Response({"message": "The roster-edit window must close at a time in the future."}, status=400)
+        return Response({"message": "The roster-edit window must close at a time in the future.", "code": "roster_edit_window_close"}, status=400)
     # Cap at the event end (end_date treated as end of that day) - the window can't outlive the event.
     end_of_event = timezone.make_aware(_dt.combine(event.end_date, _time.max), timezone.get_current_timezone())
     if until > end_of_event:
-        return Response({"message": "The roster-edit window can't go past the event's end date."}, status=400)
+        return Response({"message": "The roster-edit window can't go past the event's end date.", "code": "roster_edit_window_past"}, status=400)
 
     event.roster_edit_until = until
     event.save(update_fields=["roster_edit_until"])
@@ -23610,24 +23610,24 @@ def set_team_roster_edit_window(request):
 
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
     user = validate_token(auth.split(" ")[1])
     if not user:
-        return Response({"message": "Invalid or expired session token."}, status=401)
+        return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
 
     event_id = request.data.get("event_id")
     team_id = request.data.get("team_id")
     if not event_id or not team_id:
-        return Response({"message": "event_id and team_id are required."}, status=400)
+        return Response({"message": "event_id and team_id are required.", "code": "event_team_required"}, status=400)
     event = get_object_or_404(Event, event_id=event_id)
 
     # Same manager gate as set_roster_edit_window / edit_roster.
     if not _is_event_admin(user) and not org_can_event(user, "can_manage_registrations", event):
-        return Response({"message": "You do not have permission to manage this event's roster window."}, status=403)
+        return Response({"message": "You do not have permission to manage this event's roster window.", "code": "not_permission_manage_event"}, status=403)
 
     tt = TournamentTeam.objects.filter(event=event, team_id=team_id).first()
     if not tt:
-        return Response({"message": "That team is not registered for this event."}, status=404)
+        return Response({"message": "That team is not registered for this event.", "code": "team_not_registered_event"}, status=404)
 
     raw_until = request.data.get("until")
     open_flag = request.data.get("open")
@@ -23644,13 +23644,13 @@ def set_team_roster_edit_window(request):
     # max" without the FE needing the exact end date.
     until = parse_datetime(str(raw_until))
     if not until:
-        return Response({"message": "Invalid 'until' datetime."}, status=400)
+        return Response({"message": "Invalid 'until' datetime.", "code": "invalid_until_datetime"}, status=400)
     if timezone.is_naive(until):
         until = timezone.make_aware(until, timezone.get_current_timezone())
     end_of_event = timezone.make_aware(_dt.combine(event.end_date, _time.max), timezone.get_current_timezone())
     until = min(until, end_of_event)
     if until <= timezone.now():
-        return Response({"message": "This event has already ended; cannot open a roster-edit window."}, status=400)
+        return Response({"message": "This event has already ended; cannot open a roster-edit window.", "code": "event_already_ended_cannot"}, status=400)
 
     tt.roster_edit_until = until
     tt.save(update_fields=["roster_edit_until"])
@@ -23697,24 +23697,24 @@ def assign_team_letter(request):
     """
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
     user = validate_token(auth.split(" ")[1])
     if not user:
-        return Response({"message": "Invalid or expired session token."}, status=401)
+        return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
 
     event_id = request.data.get("event_id")
     team_id = request.data.get("team_id")
     if not event_id or not team_id:
-        return Response({"message": "event_id and team_id are required."}, status=400)
+        return Response({"message": "event_id and team_id are required.", "code": "event_team_required"}, status=400)
     event = get_object_or_404(Event, event_id=event_id)
 
     # Same gate as set_team_roster_edit_window / broadcast_letter_assignments.
     if not _is_event_admin(user) and not org_can_event(user, "can_manage_registrations", event):
-        return Response({"message": "You do not have permission to assign letters for this event."}, status=403)
+        return Response({"message": "You do not have permission to assign letters for this event.", "code": "not_permission_assign_letters"}, status=403)
 
     tt = TournamentTeam.objects.filter(event=event, team_id=team_id).select_related("team").first()
     if not tt:
-        return Response({"message": "That team is not registered for this event."}, status=404)
+        return Response({"message": "That team is not registered for this event.", "code": "team_not_registered_event"}, status=404)
 
     # CLEAR (unassign): an empty / null / "none" letter frees this team's letter for reuse.
     raw_letter = request.data.get("letter")
@@ -23728,7 +23728,7 @@ def assign_team_letter(request):
 
     letter = _norm_letter_char(raw_letter)
     if not letter:
-        return Response({"message": "letter must be a single A-Z character."}, status=400)
+        return Response({"message": "letter must be a single A-Z character.", "code": "letter_single_character"}, status=400)
 
     # UNIQUE per event (Open Q g, HARD). The conditional DB UniqueConstraint
     # (uniq_assigned_letter_per_event) is a NO-OP on MySQL, which has no partial indexes - so this
@@ -23827,18 +23827,18 @@ def get_event_team_letters(request):
     """
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
     user = validate_token(auth.split(" ")[1])
     if not user:
-        return Response({"message": "Invalid or expired session token."}, status=401)
+        return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
 
     event_id = request.GET.get("event_id")
     if not event_id:
-        return Response({"message": "event_id is required."}, status=400)
+        return Response({"message": "event_id is required.", "code": "event_required"}, status=400)
     event = get_object_or_404(Event, event_id=event_id)
 
     if not _is_event_admin(user) and not org_can_event(user, "can_manage_registrations", event):
-        return Response({"message": "You do not have permission to view this event's letters."}, status=403)
+        return Response({"message": "You do not have permission to view this event's letters.", "code": "not_permission_view_event"}, status=403)
 
     # Pagination (best-practice rule 10: always bounded). Default 50, clamp 1..200.
     try:
@@ -23894,14 +23894,14 @@ def edit_roster(request):
     # ---------------- AUTH ----------------
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid token."}, status=400)
+        return Response({"message": "Invalid token.", "code": "invalid_token"}, status=400)
 
     user = validate_token(auth.split(" ")[1])
     if not user:
-        return Response({"message": "Invalid session."}, status=401)
+        return Response({"message": "Invalid session.", "code": "invalid_session"}, status=401)
 
     if user.status != "active":
-        return Response({"message": "Your account is not active."}, status=403)
+        return Response({"message": "Your account is not active.", "code": "account_not_active"}, status=403)
 
     # ---------------- INPUT ----------------
     event_id = request.data.get("event_id")
@@ -23910,7 +23910,7 @@ def edit_roster(request):
     sponsor_ids = _maybe_json(request.data.get("sponsor_ids"), default={})
 
     if not event_id or not team_id:
-        return Response({"message": "event_id and team_id required."}, status=400)
+        return Response({"message": "event_id and team_id required.", "code": "event_team_required"}, status=400)
 
     event = get_object_or_404(Event, event_id=event_id)
     team = get_object_or_404(Team, team_id=team_id)
@@ -23919,7 +23919,7 @@ def edit_roster(request):
     # allow-path checked alongside the event-wide window in the registration + results gates below.
     tt = TournamentTeam.objects.filter(event=event, team=team).first()
     if not tt:
-        return Response({"message": "Team not registered."}, status=404)
+        return Response({"message": "Team not registered.", "code": "team_not_registered"}, status=404)
     # Either the event-wide window OR this team's per-team window opens roster editing for this team.
     roster_window_open = event.roster_edit_open or tt.roster_edit_open
 
@@ -23959,7 +23959,7 @@ def edit_roster(request):
     # event.roster_edit_until (capped at the event end; see set_roster_edit_window). The match-start
     # lock below still applies to everyone.
     if date.today() > event.registration_end_date and not is_manager and not roster_window_open and not team_stage_over:
-        return Response({"message": "Registration closed. Cannot edit roster."}, status=403)
+        return Response({"message": "Registration closed. Cannot edit roster.", "code": "registration_closed_cannot_edit"}, status=403)
 
     # ---------------- MATCH START CHECK ----------------
     # Editing a roster after results would normally orphan match stats, so this freezes everyone
@@ -23975,13 +23975,13 @@ def edit_roster(request):
     ).exists():
         return Response({
             "message": "Roster cannot be edited after matches have started."
-        }, status=403)
+        , "code": "roster_cannot_edited_after"}, status=403)
 
     # ---------------- PERMISSION ----------------
     # A manager who is NOT on the team can still edit it (staff correction); otherwise the
     # editor must be the team's captain/owner.
     if not (_user_is_team_captain_or_owner(user, team) or is_manager):
-        return Response({"message": "Only captain/owner can edit roster."}, status=403)
+        return Response({"message": "Only captain/owner can edit roster.", "code": "captain_owner_edit_roster"}, status=403)
 
     # tt (TournamentTeam) + roster_window_open were resolved at the top of this function.
 
@@ -24010,7 +24010,7 @@ def edit_roster(request):
 
     # OPEN ROSTER (owner 2026-09-11): the club-membership rule is skipped; see register_for_event.
     if not event.open_roster and not set(roster_member_ids).issubset(team_member_ids):
-        return Response({"message": "Roster players must belong to team."}, status=400)
+        return Response({"message": "Roster players must belong to team.", "code": "roster_players_belong_team"}, status=400)
 
     # One team per player per event, on this door too. register_for_event has always refused a
     # player already on another live roster of the same event; edit_roster never did, because a
@@ -24033,7 +24033,7 @@ def edit_roster(request):
         return Response({
             "message": "Your team is not eligible for this event based on country restriction.",
             "team_country": team_country
-        }, status=403)
+        , "code": "team_not_eligible_event"}, status=403)
 
     missing = [uid for uid in roster_member_ids if uid not in users_by_id]
 
@@ -24041,7 +24041,7 @@ def edit_roster(request):
         return Response({
             "message": "Some users do not exist.",
             "missing_user_ids": missing
-        }, status=400)
+        , "code": "users_not_exist"}, status=400)
 
     # ---------------- SPONSOR VALIDATION ----------------
     if event.is_sponsored:
@@ -24056,7 +24056,7 @@ def edit_roster(request):
         if len(sponsor_values) != len(set(sponsor_values)):
             return Response({
                 "message": "Duplicate sponsor IDs in roster."
-            }, status=400)
+            , "code": "duplicate_sponsor_ids_roster"}, status=400)
 
         # duplicates already used in event
         existing_ids = set(
@@ -24072,7 +24072,7 @@ def edit_roster(request):
             return Response({
                 "message": "Some sponsor IDs already exist in this event.",
                 "conflicting_ids": list(existing_ids)
-            }, status=409)
+            , "code": "sponsor_ids_already_exist"}, status=409)
 
     # ---------------- EXISTING ROSTER ----------------
     existing_members = list(
@@ -24097,7 +24097,7 @@ def edit_roster(request):
 
         block = roster_change_block(event, tt.team, list(added_ids))
         if block:
-            return Response({"message": block}, status=403)
+            return Response({"message": block, "code": "edit_roster_refused"}, status=403)
 
     with transaction.atomic():
 
@@ -24240,11 +24240,11 @@ def add_player_to_event_roster(request):
     # ---------------- AUTH ----------------
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
 
     user = validate_token(auth.split(" ")[1])
     if not user:
-        return Response({"message": "Invalid or expired session token."}, status=401)
+        return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
 
     # ---------------- INPUT ----------------
     event_id = request.data.get("event_id")
@@ -24253,11 +24253,11 @@ def add_player_to_event_roster(request):
     add_user_id = request.data.get("user_id")
 
     if not event_id:
-        return Response({"message": "event_id is required."}, status=400)
+        return Response({"message": "event_id is required.", "code": "event_required"}, status=400)
     if not add_user_id:
-        return Response({"message": "user_id is required."}, status=400)
+        return Response({"message": "user_id is required.", "code": "user_required"}, status=400)
     if not tournament_team_id and not team_id:
-        return Response({"message": "tournament_team_id or team_id is required."}, status=400)
+        return Response({"message": "tournament_team_id or team_id is required.", "code": "tournament_team_team_required"}, status=400)
 
     event = get_object_or_404(Event, event_id=event_id)
 
@@ -24266,7 +24266,7 @@ def add_player_to_event_roster(request):
     # can_manage_registrations on the event's owning org. No captain self-serve here.
     is_manager = _is_event_admin(user) or org_can_event(user, "can_manage_registrations", event)
     if not is_manager:
-        return Response({"message": "You do not have permission to manage rosters for this event."}, status=403)
+        return Response({"message": "You do not have permission to manage rosters for this event.", "code": "not_permission_manage_rosters"}, status=403)
 
     # ---------------- RESOLVE THE TOURNAMENT TEAM ----------------
     # tournament_team_id wins when both are supplied; otherwise resolve by (event, team).
@@ -24276,7 +24276,7 @@ def add_player_to_event_roster(request):
         team = get_object_or_404(Team, team_id=team_id)
         tt = TournamentTeam.objects.filter(event=event, team=team).first()
     if not tt:
-        return Response({"message": "Team is not registered for this event."}, status=404)
+        return Response({"message": "Team is not registered for this event.", "code": "team_not_registered_event"}, status=404)
 
     team = tt.team
 
@@ -24284,19 +24284,19 @@ def add_player_to_event_roster(request):
     # Same lock edit_roster enforces: editing a roster after any match has results would orphan
     # the match stats, so the roster is frozen once results exist.
     if Match.objects.filter(group__stage__event=event, result_inputted=True).exists():
-        return Response({"message": "Roster cannot be edited after matches have started."}, status=403)
+        return Response({"message": "Roster cannot be edited after matches have started.", "code": "roster_cannot_edited_after"}, status=403)
 
     # ---------------- VALIDATE THE PLAYER ----------------
     add_user = User.objects.filter(user_id=add_user_id).first()
     if not add_user:
-        return Response({"message": "User not found."}, status=404)
+        return Response({"message": "User not found.", "code": "user_not_found"}, status=404)
 
     # Same-team membership: the player must belong to THIS team (mirrors edit_roster's subset
     # check, scoped to the single added user). An OPEN-ROSTER event (owner 2026-09-11) takes
     # any AFC player; `membership` is then None and the frozen role below is left None.
     membership = TeamMembers.objects.filter(team=team, member_id=add_user_id).first()
     if not membership and not event.open_roster:
-        return Response({"message": "This player is not a member of the team."}, status=400)
+        return Response({"message": "This player is not a member of the team.", "code": "player_not_member_team"}, status=400)
 
     # Exclude STAFF_ROLES: coach / manager / analyst are support-only and never rostered
     # (same rule as register_for_event; STAFF_ROLES imported from afc_team.views).
@@ -24306,7 +24306,7 @@ def add_player_to_event_roster(request):
                 "Staff (coach, manager, or analyst) cannot be added to an event roster. "
                 "Only players can be rostered."
             )
-        }, status=400)
+        , "code": "add_player_to_event_roster_refused"}, status=400)
 
     # One team per player per event (see edit_roster for why this door checks it too).
     conflict = open_roster.roster_conflict(event, [add_user_id], exclude_tournament_team=tt)
@@ -24316,7 +24316,7 @@ def add_player_to_event_roster(request):
     # Already on this event roster? unique_together (tournament_team, user) would raise, so we
     # answer with a clean 409 instead of a 500.
     if TournamentTeamMember.objects.filter(tournament_team=tt, user=add_user).exists():
-        return Response({"message": "This player is already on the event roster."}, status=409)
+        return Response({"message": "This player is already on the event roster.", "code": "player_already_event_roster"}, status=409)
 
     # ── site ban and organizer blacklist, the same gate registration applies ──
     # This endpoint adds one player straight onto a roster, so without this it was the shortest
@@ -24326,7 +24326,7 @@ def add_player_to_event_roster(request):
 
     block = roster_change_block(event, team, [add_user_id])
     if block:
-        return Response({"message": block}, status=403)
+        return Response({"message": block, "code": "add_player_to_event_roster_refused"}, status=403)
 
     # 6-player ceiling: do not exceed 6 TournamentTeamMember rows for this team in this event
     # (the same squad ceiling register_for_event / edit_roster enforce).
@@ -24369,14 +24369,14 @@ def add_player_to_event_roster(request):
 #     # ---------------- AUTH ----------------
 #     auth = request.headers.get("Authorization")
 #     if not auth or not auth.startswith("Bearer "):
-#         return Response({"message": "Invalid token."}, status=400)
+#         return Response({"message": "Invalid token.", "code": "invalid_token"}, status=400)
 
 #     user = validate_token(auth.split(" ")[1])
 #     if not user:
-#         return Response({"message": "Invalid session."}, status=401)
+#         return Response({"message": "Invalid session.", "code": "invalid_session"}, status=401)
 
 #     if user.status != "active":
-#         return Response({"message": "Your account is not active."}, status=403)
+#         return Response({"message": "Your account is not active.", "code": "account_not_active"}, status=403)
 
 #     # ---------------- INPUT ----------------
 #     event_id = request.data.get("event_id")
@@ -24386,21 +24386,21 @@ def add_player_to_event_roster(request):
 #     sponsor_ids = _maybe_json(request.data.get("sponsor_ids"), default={})
 
 #     if not event_id or not team_id:
-#         return Response({"message": "event_id and team_id required."}, status=400)
+#         return Response({"message": "event_id and team_id required.", "code": "event_team_required"}, status=400)
 
 #     event = get_object_or_404(Event, event_id=event_id)
 #     team = get_object_or_404(Team, team_id=team_id)
 
 #     if date.today() > event.registration_end_date:
-#         return Response({"message": "Registration closed. Cannot edit roster."}, status=403)
+#         return Response({"message": "Registration closed. Cannot edit roster.", "code": "registration_closed_cannot_edit"}, status=403)
 
 #     if not _user_is_team_captain_or_owner(user, team):
-#         return Response({"message": "Only captain/owner can edit roster."}, status=403)
+#         return Response({"message": "Only captain/owner can edit roster.", "code": "captain_owner_edit_roster"}, status=403)
 
 #     tt = TournamentTeam.objects.filter(event=event, team=team).first()
 
 #     if not tt:
-#         return Response({"message": "Team not registered."}, status=404)
+#         return Response({"message": "Team not registered.", "code": "team_not_registered"}, status=404)
 
 #     # ---------------- ROSTER RULES ----------------
 #     if event.participant_type == "duo":
@@ -24421,7 +24421,7 @@ def add_player_to_event_roster(request):
 #     )
 
 #     if not set(roster_member_ids).issubset(team_member_ids):
-#         return Response({"message": "Roster players must belong to team."}, status=400)
+#         return Response({"message": "Roster players must belong to team.", "code": "roster_players_belong_team"}, status=400)
 
 #     # ---------------- LOAD USERS ----------------
 #     users = User.objects.filter(user_id__in=roster_member_ids)
@@ -24433,7 +24433,7 @@ def add_player_to_event_roster(request):
 #         return Response({
 #             "message": "Some users do not exist.",
 #             "missing_user_ids": missing
-#         }, status=400)
+#         , "code": "users_not_exist"}, status=400)
 
 #     # ---------------- EXISTING ROSTER ----------------
 #     existing_members = list(
@@ -24508,26 +24508,26 @@ def add_player_to_event_roster(request):
 def get_roster_details(request):
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid token."}, status=400)
+        return Response({"message": "Invalid token.", "code": "invalid_token"}, status=400)
     user = validate_token(auth.split(" ")[1])
     if not user:
-        return Response({"message": "Invalid session."}, status=401)
+        return Response({"message": "Invalid session.", "code": "invalid_session"}, status=401)
     if user.status != "active":
-        return Response({"message": "Your account is not active."}, status=403)
+        return Response({"message": "Your account is not active.", "code": "account_not_active"}, status=403)
     event_id = request.data.get("event_id")
 
     if not event_id:
-        return Response({"message": "event_id required."}, status=400)
+        return Response({"message": "event_id required.", "code": "event_required"}, status=400)
     event = get_object_or_404(Event, event_id=event_id)
     if event.participant_type == "solo":
-        return Response({"message": "This endpoint is for team events only."}, status=400
+        return Response({"message": "This endpoint is for team events only.", "code": "endpoint_team_events"}, status=400
     )
     team = Team.objects.filter(memberships__member=user).first()
     if not team:
-        return Response({"message": "You are not part of any team."}, status=404)
+        return Response({"message": "You are not part of any team.", "code": "not_part_team"}, status=404)
     tournament_teams = TournamentTeam.objects.filter(event=event, team=team).select_related("team")
     if not tournament_teams.exists():
-        return Response({"message": "Your team is not registered for this event."}, status=404)
+        return Response({"message": "Your team is not registered for this event.", "code": "team_not_registered_event"}, status=404)
     tournament_team = tournament_teams.first()
     members = TournamentTeamMember.objects.filter(tournament_team=tournament_team).select_related("user")
     roster = []
@@ -24705,11 +24705,11 @@ def _merge_solo_results(all_results):
 def upload_match_result_image(request):
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
 
     admin = validate_token(auth.split(" ")[1])
     if not admin:
-        return Response({"message": "Invalid or expired session token."}, status=401)
+        return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
 
     # NOTE: permission is finalised below, once the owning event is resolved via
     # match_id -> match.group.stage.event - org members with can_upload_results may run OCR
@@ -24717,16 +24717,16 @@ def upload_match_result_image(request):
 
     match_id = request.data.get("match_id")
     if not match_id:
-        return Response({"message": "match_id is required."}, status=400)
+        return Response({"message": "match_id is required.", "code": "match_required"}, status=400)
 
     images = request.FILES.getlist("images")
     if not images:
-        return Response({"message": "At least one image file is required."}, status=400)
+        return Response({"message": "At least one image file is required.", "code": "least_image_file_required"}, status=400)
 
     match = get_object_or_404(Match, match_id=match_id)
 
     if not match.group:
-        return Response({"message": "Match is not linked to a group."}, status=400)
+        return Response({"message": "Match is not linked to a group.", "code": "match_not_linked_group"}, status=400)
 
     event = match.group.stage.event
     participant_type = event.participant_type  # "solo", "duo", or "squad"
@@ -24735,7 +24735,7 @@ def upload_match_result_image(request):
     # admins always pass; otherwise allow org members holding can_upload_results on the event's
     # owning org. Native (org=None) events stay admin-only.
     if not _is_event_admin(admin) and not org_can_event(admin, "can_upload_results", event):
-        return Response({"message": "You do not have permission to manage results for this event."}, status=403)
+        return Response({"message": "You do not have permission to manage results for this event.", "code": "not_permission_manage_results"}, status=403)
 
     # -------- LEADERBOARD / SCORING --------
     leaderboard = match.leaderboard or Leaderboard.objects.filter(
@@ -24743,7 +24743,7 @@ def upload_match_result_image(request):
     ).first()
 
     if not leaderboard:
-        return Response({"message": "No leaderboard found for this group. Create one first."}, status=400)
+        return Response({"message": "No leaderboard found for this group. Create one first.", "code": "no_leaderboard_found_group"}, status=400)
 
     try:
         placement_points = {int(k): int(v) for k, v in (leaderboard.placement_points or {}).items()}
@@ -24799,10 +24799,10 @@ def upload_match_result_image(request):
         return Response({
             "message": "Failed to extract results from image(s).",
             "errors": extraction_errors,
-        }, status=400)
+         "code": "failed_extract_results_image"}, status=400)
 
     if not all_raw:
-        return Response({"message": "No results could be extracted from the provided image(s)."}, status=400)
+        return Response({"message": "No results could be extracted from the provided image(s).", "code": "no_results_could_extracted"}, status=400)
 
     # -------- INSERT STATS --------
     if participant_type == "solo":
@@ -25015,11 +25015,11 @@ def upload_match_result_image(request):
 def get_match_result_images(request):
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
 
     admin = validate_token(auth.split(" ")[1])
     if not admin:
-        return Response({"message": "Invalid or expired session token."}, status=401)
+        return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
 
     # NOTE: permission is finalised below, once the owning event is resolved via
     # match_id -> match.group.stage.event. This is a READ, but result images are admin/organizer
@@ -25027,7 +25027,7 @@ def get_match_result_images(request):
 
     match_id = request.data.get("match_id")
     if not match_id:
-        return Response({"message": "match_id is required."}, status=400)
+        return Response({"message": "match_id is required.", "code": "match_required"}, status=400)
 
     match = get_object_or_404(Match, match_id=match_id)
 
@@ -25037,7 +25037,7 @@ def get_match_result_images(request):
     # Native (org=None) events stay admin-only.
     _img_event = match.group.stage.event if match.group else None
     if not _is_event_admin(admin) and not (_img_event and org_can_event(admin, "can_upload_results", _img_event)):
-        return Response({"message": "You do not have permission to manage results for this event."}, status=403)
+        return Response({"message": "You do not have permission to manage results for this event.", "code": "not_permission_manage_results"}, status=403)
 
     images = MatchResultImage.objects.filter(match=match).order_by("uploaded_at")
 
@@ -25059,11 +25059,11 @@ def get_match_result_images(request):
 def delete_match_result_image(request):
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
 
     admin = validate_token(auth.split(" ")[1])
     if not admin:
-        return Response({"message": "Invalid or expired session token."}, status=401)
+        return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
 
     # NOTE: permission is finalised below, once the owning event is resolved via the image's
     # match (image -> match -> group.stage.event) - org members with can_upload_results may
@@ -25071,7 +25071,7 @@ def delete_match_result_image(request):
 
     image_id = request.data.get("image_id")
     if not image_id:
-        return Response({"message": "image_id is required."}, status=400)
+        return Response({"message": "image_id is required.", "code": "image_required"}, status=400)
 
     img = get_object_or_404(MatchResultImage, image_id=image_id)
 
@@ -25080,7 +25080,7 @@ def delete_match_result_image(request):
     # event's owning org. Native (org=None) events stay admin-only.
     _img_event = img.match.group.stage.event if (img.match and img.match.group) else None
     if not _is_event_admin(admin) and not (_img_event and org_can_event(admin, "can_upload_results", _img_event)):
-        return Response({"message": "You do not have permission to manage results for this event."}, status=403)
+        return Response({"message": "You do not have permission to manage results for this event.", "code": "not_permission_manage_results"}, status=403)
 
     img.image.delete(save=False)
     img.delete()
@@ -25096,19 +25096,19 @@ def get_match_result_logs(request):
     from .models import MatchResultLog
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
     admin = validate_token(auth.split(" ")[1])
     if not admin:
-        return Response({"message": "Invalid or expired session token."}, status=401)
+        return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
     match_id = request.data.get("match_id")
     if not match_id:
-        return Response({"message": "match_id is required."}, status=400)
+        return Response({"message": "match_id is required.", "code": "match_required"}, status=400)
     match = get_object_or_404(Match, match_id=match_id)
     # Event-scoped read (same rule as get_match_result_images): AFC event admins pass; otherwise an org
     # member with can_upload_results on the event's owning org. Native (org=None) events stay admin-only.
     _event = match.group.stage.event if match.group else None
     if not _is_event_admin(admin) and not (_event and org_can_event(admin, "can_upload_results", _event)):
-        return Response({"message": "You do not have permission to manage results for this event."}, status=403)
+        return Response({"message": "You do not have permission to manage results for this event.", "code": "not_permission_manage_results"}, status=403)
     logs = MatchResultLog.objects.filter(match=match)   # model Meta orders newest-first
     data = [{
         "log_id": lg.log_id,
@@ -25127,17 +25127,17 @@ def delete_match_result_log(request):
     from .models import MatchResultLog
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
     admin = validate_token(auth.split(" ")[1])
     if not admin:
-        return Response({"message": "Invalid or expired session token."}, status=401)
+        return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
     log_id = request.data.get("log_id")
     if not log_id:
-        return Response({"message": "log_id is required."}, status=400)
+        return Response({"message": "log_id is required.", "code": "log_required"}, status=400)
     lg = get_object_or_404(MatchResultLog, log_id=log_id)
     _event = lg.match.group.stage.event if (lg.match and lg.match.group) else None
     if not _is_event_admin(admin) and not (_event and org_can_event(admin, "can_upload_results", _event)):
-        return Response({"message": "You do not have permission to manage results for this event."}, status=403)
+        return Response({"message": "You do not have permission to manage results for this event.", "code": "not_permission_manage_results"}, status=403)
     if lg.file:
         lg.file.delete(save=False)
     lg.delete()
@@ -25158,17 +25158,17 @@ def _get_event_action_user(request, event=None, org_perm=None):
     -> 500; corrected to `role__role_name__in`."""
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return None, Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return None, Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
     user = validate_token(auth.split(" ")[1])
     if not user:
-        return None, Response({"message": "Invalid or expired session token."}, status=401)
+        return None, Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
     allowed = user.role in ["admin", "moderator", "support"]
     if not allowed:
         allowed = user.userroles.filter(role__role_name__in=["event_admin", "head_admin"]).exists()
     if not allowed and event is not None and org_perm:
         allowed = org_can_event(user, org_perm, event)
     if not allowed:
-        return None, Response({"message": "You do not have permission to perform this action."}, status=403)
+        return None, Response({"message": "You do not have permission to perform this action.", "code": "not_permission_perform_action"}, status=403)
     return user, None
 
 
@@ -25223,7 +25223,7 @@ def cancel_event(request):
     # not just AFC staff (owner 2026-07-04 organizer parity).
     event_id = request.data.get("event_id")
     if not event_id:
-        return Response({"message": "event_id is required."}, status=400)
+        return Response({"message": "event_id is required.", "code": "event_required"}, status=400)
     event = get_object_or_404(Event, event_id=event_id)
     user, err = _get_event_action_user(request, event=event, org_perm="can_edit_events")
     if err:
@@ -25383,7 +25383,7 @@ def maybe_autocomplete_event(event, by_user):
 def complete_event(request):
     event_id = request.data.get("event_id")
     if not event_id:
-        return Response({"message": "event_id is required."}, status=400)
+        return Response({"message": "event_id is required.", "code": "event_required"}, status=400)
 
     event = get_object_or_404(Event, event_id=event_id)
 
@@ -25434,20 +25434,20 @@ def reopen_event(request):
     (app/(a)/a/events/[slug]/edit) and organizer (app/(organizer)/.../edit) event-edit pages."""
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
     user = validate_token(auth.split(" ")[1])
     if not user:
-        return Response({"message": "Invalid or expired session token."}, status=401)
+        return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
 
     event_id = request.data.get("event_id")
     if not event_id:
-        return Response({"message": "event_id is required."}, status=400)
+        return Response({"message": "event_id is required.", "code": "event_required"}, status=400)
 
     event = get_object_or_404(Event, event_id=event_id)
 
     # Admins always pass; otherwise the organizer must hold can_edit_events on the owning org.
     if not (_is_event_admin(user) or org_can_event(user, "can_edit_events", event)):
-        return Response({"message": "You do not have permission to perform this action."}, status=403)
+        return Response({"message": "You do not have permission to perform this action.", "code": "not_permission_perform_action"}, status=403)
 
     # Gate on the EFFECTIVE status (the read-time derivation the FE badge + event lists use), NOT the raw
     # stored event_status. effective_event_status reports a past-end event as "completed" even when the
@@ -25525,19 +25525,19 @@ def set_results_visibility(request):
     admin (app/(a)/a/events/[slug]/edit) and organizer (app/(organizer)/.../edit) event-edit pages."""
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
     user = validate_token(auth.split(" ")[1])
     if not user:
-        return Response({"message": "Invalid or expired session token."}, status=401)
+        return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
 
     event_id = request.data.get("event_id")
     if not event_id:
-        return Response({"message": "event_id is required."}, status=400)
+        return Response({"message": "event_id is required.", "code": "event_required"}, status=400)
 
     # Accept a JSON bool or the string forms the FE/forms may send ("true"/"True"/"1").
     raw = request.data.get("results_published")
     if raw is None:
-        return Response({"message": "results_published is required."}, status=400)
+        return Response({"message": "results_published is required.", "code": "results_published_required"}, status=400)
     if isinstance(raw, bool):
         new_value = raw
     else:
@@ -25547,7 +25547,7 @@ def set_results_visibility(request):
 
     # Admins always pass; otherwise the organizer must hold can_edit_events on the owning org.
     if not (_is_event_admin(user) or org_can_event(user, "can_edit_events", event)):
-        return Response({"message": "You do not have permission to perform this action."}, status=403)
+        return Response({"message": "You do not have permission to perform this action.", "code": "not_permission_perform_action"}, status=403)
 
     event.results_published = new_value
     event.save(update_fields=["results_published"])
@@ -25764,12 +25764,12 @@ def _auth_event_results(request, event):
     used by the result-save endpoints. Returns (user, None) or (None, error_response)."""
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return None, Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return None, Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
     admin = validate_token(auth.split(" ")[1])
     if not admin:
-        return None, Response({"message": "Invalid or expired session token."}, status=401)
+        return None, Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
     if not _is_event_admin(admin) and not org_can_event(admin, "can_upload_results", event):
-        return None, Response({"message": "You do not have permission."}, status=403)
+        return None, Response({"message": "You do not have permission.", "code": "not_permission"}, status=403)
     return admin, None
 
 
@@ -25810,7 +25810,7 @@ def get_event_flagged_kills(request):
     admin + organizer event leaderboards."""
     event_id = request.query_params.get("event_id")
     if not event_id:
-        return Response({"message": "event_id is required."}, status=400)
+        return Response({"message": "event_id is required.", "code": "event_required"}, status=400)
     event = get_object_or_404(Event, event_id=event_id)
     admin, err = _auth_event_results(request, event)
     if err:
@@ -25924,14 +25924,14 @@ def set_event_flagged_kills(request):
     AFC event admin OR org member with can_upload_results."""
     event_id = request.data.get("event_id")
     if not event_id:
-        return Response({"message": "event_id is required."}, status=400)
+        return Response({"message": "event_id is required.", "code": "event_required"}, status=400)
     event = get_object_or_404(Event, event_id=event_id)
     admin, err = _auth_event_results(request, event)
     if err:
         return err
     val = _as_bool_nullable(request.data.get("count_flagged_kills"), default=None)
     if val is None:
-        return Response({"message": "count_flagged_kills (bool) is required."}, status=400)
+        return Response({"message": "count_flagged_kills (bool) is required.", "code": "count_flagged_kills_bool"}, status=400)
     event.count_flagged_kills = val
     event.save(update_fields=["count_flagged_kills"])
     updated = _recompute_team_kills_for_event(event)
@@ -25950,7 +25950,7 @@ def set_match_kill_flag(request):
     can_upload_results on the flag's event."""
     flag_id = request.data.get("flag_id")
     if not flag_id:
-        return Response({"message": "flag_id is required."}, status=400)
+        return Response({"message": "flag_id is required.", "code": "flag_required"}, status=400)
     from .models import MatchKillFlag
     flag = get_object_or_404(
         MatchKillFlag.objects.select_related("tournament_team__event"), id=flag_id)
@@ -25998,7 +25998,7 @@ def attribute_unmatched_team(request):
     attribution. Returns the updated block."""
     block_id = request.data.get("block_id")
     if not block_id:
-        return Response({"message": "block_id is required."}, status=400)
+        return Response({"message": "block_id is required.", "code": "block_required"}, status=400)
     from .models import UnmatchedTeamBlock
     block = get_object_or_404(
         UnmatchedTeamBlock.objects.select_related("match__group__stage__event"), id=block_id)
@@ -26015,9 +26015,9 @@ def attribute_unmatched_team(request):
         try:
             new_tt_id = int(raw)
         except (TypeError, ValueError):
-            return Response({"message": "tournament_team_id must be an integer or null."}, status=400)
+            return Response({"message": "tournament_team_id must be an integer or null.", "code": "tournament_team_integer_null"}, status=400)
         if not TournamentTeam.objects.filter(tournament_team_id=new_tt_id, event=event).exists():
-            return Response({"message": "That team is not registered for this event."}, status=400)
+            return Response({"message": "That team is not registered for this event.", "code": "team_not_registered_event"}, status=400)
 
     old_tt_id = block.attributed_team_id
     block.attributed_team_id = new_tt_id
@@ -26059,7 +26059,7 @@ def set_flagged_kills_bulk(request):
 
     event_id = request.data.get("event_id")
     if not event_id:
-        return Response({"message": "event_id is required."}, status=400)
+        return Response({"message": "event_id is required.", "code": "event_required"}, status=400)
     event = get_object_or_404(Event, event_id=event_id)
     admin, err = _auth_event_results(request, event)
     if err:
@@ -26068,7 +26068,7 @@ def set_flagged_kills_bulk(request):
     flags_in = request.data.get("flags") or []
     unmatched_in = request.data.get("unmatched") or []
     if not isinstance(flags_in, list) or not isinstance(unmatched_in, list):
-        return Response({"message": "flags and unmatched must be lists."}, status=400)
+        return Response({"message": "flags and unmatched must be lists.", "code": "flags_unmatched_lists"}, status=400)
 
     flags_updated = 0
     blocks_updated = 0
@@ -26137,10 +26137,10 @@ def broadcast_announcement(request):
     # using the shared ActionsTab "Whole event" scope got a 403.
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
     user = validate_token(auth.split(" ")[1])
     if not user:
-        return Response({"message": "Invalid or expired session token."}, status=401)
+        return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
 
     event_id = request.data.get("event_id")
     title = request.data.get("title", "").strip()
@@ -26155,15 +26155,15 @@ def broadcast_announcement(request):
     target_id = (request.data.get("target_id") or "").strip()
 
     if not event_id or not title or not message:
-        return Response({"message": "event_id, title, and message are required."}, status=400)
+        return Response({"message": "event_id, title, and message are required.", "code": "event_title_message_required"}, status=400)
     if delivery not in ("push", "email", "both"):
-        return Response({"message": "delivery must be 'push', 'email', or 'both'."}, status=400)
+        return Response({"message": "delivery must be 'push', 'email', or 'both'.", "code": "delivery_push_email_both"}, status=400)
 
     event = get_object_or_404(Event, event_id=event_id)
 
     # AFC event admin OR an organizer who can edit this event (native org=None events stay AFC-only).
     if not (_is_event_admin(user) or org_can_event(user, "can_edit_events", event)):
-        return Response({"message": "You do not have permission to broadcast to this event."}, status=403)
+        return Response({"message": "You do not have permission to broadcast to this event.", "code": "not_permission_broadcast_event"}, status=403)
 
     # ── ORGANIZER BROADCAST RATE LIMIT (owner 2026-06-27) ──────────────────────────────────────────
     # Non-admin senders (organizers) are capped at 5 broadcasts/hour with a 5-min cooldown between sends
@@ -26175,7 +26175,7 @@ def broadcast_announcement(request):
     if not allowed:
         return Response(
             {"message": rl["message"], "reason": rl["reason"], "resets_at": rl["resets_at"],
-             "remaining": rl["remaining"], "limit": rl["limit"]},
+             "remaining": rl["remaining"], "limit": rl["limit"], "code": "broadcast_announcement_refused"},
             status=429,
         )
 
@@ -26353,26 +26353,26 @@ def broadcast_match_room_details(request):
     Consumed by: EditMatchModal "Send to players" button (per match row, admin + organizer)."""
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
     user = validate_token(auth.split(" ")[1])
     if not user:
-        return Response({"message": "Invalid or expired session token."}, status=401)
+        return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
 
     match_id = request.data.get("match_id")
     if not match_id:
-        return Response({"message": "match_id is required."}, status=400)
+        return Response({"message": "match_id is required.", "code": "match_required"}, status=400)
     match = get_object_or_404(Match, match_id=match_id)
     if not (match.group and match.group.stage):
-        return Response({"message": "This match is not linked to a group/stage."}, status=400)
+        return Response({"message": "This match is not linked to a group/stage.", "code": "match_not_linked_group"}, status=400)
     group = match.group
     event = group.stage.event
 
     if not (_is_event_admin(user) or org_can_event(user, "can_edit_events", event)
             or org_can_event(user, "can_upload_results", event)):
-        return Response({"message": "You do not have permission to send room details for this event."}, status=403)
+        return Response({"message": "You do not have permission to send room details for this event.", "code": "not_permission_send_room"}, status=403)
 
     if not (match.room_id or match.room_name or match.room_password):
-        return Response({"message": "No room details have been set for this map yet."}, status=400)
+        return Response({"message": "No room details have been set for this map yet.", "code": "no_room_details_set"}, status=400)
 
     # One-map room message (mirrors _group_room_details_text but for a single match).
     title = f"Match Room Details: {event.event_name}"
@@ -26397,7 +26397,7 @@ def broadcast_match_room_details(request):
 
     recipients = _group_recipient_users(event, group)
     if not recipients:
-        return Response({"message": "This group has no players to message yet.", "recipients": 0}, status=400)
+        return Response({"message": "This group has no players to message yet.", "recipients": 0, "code": "group_no_players_message"}, status=400)
 
     # Organizer broadcast rate limit (owner 2026-06-27): admins exempt; organizers capped 5/hr + 5-min
     # cooldown. Room-details sends count too (owner: include all broadcast types). Checked before send.
@@ -26406,7 +26406,7 @@ def broadcast_match_room_details(request):
     if not allowed:
         return Response(
             {"message": rl["message"], "reason": rl["reason"], "resets_at": rl["resets_at"],
-             "remaining": rl["remaining"], "limit": rl["limit"]},
+             "remaining": rl["remaining"], "limit": rl["limit"], "code": "broadcast_match_room_details_refused"},
             status=429,
         )
 
@@ -26479,15 +26479,15 @@ def broadcast_to_group(request):
     """
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
     user = validate_token(auth.split(" ")[1])
     if not user:
-        return Response({"message": "Invalid or expired session token."}, status=401)
+        return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
 
     event_id = request.data.get("event_id")
     group_id = request.data.get("group_id")
     if not event_id or not group_id:
-        return Response({"message": "event_id and group_id are required."}, status=400)
+        return Response({"message": "event_id and group_id are required.", "code": "event_group_required"}, status=400)
 
     event = get_object_or_404(Event, event_id=event_id)
     # group must belong to a stage of THIS event (stops a caller broadcasting into a
@@ -26506,7 +26506,7 @@ def broadcast_to_group(request):
     _can_custom = _is_event_admin(user) or org_can_event(user, "can_edit_events", event)
     if not (_can_room if mode == "room_details" else _can_custom):
         return Response(
-            {"message": "You do not have permission to message this group."}, status=403
+            {"message": "You do not have permission to message this group.", "code": "not_permission_message_group"}, status=403
         )
 
     if mode == "room_details":
@@ -26514,7 +26514,7 @@ def broadcast_to_group(request):
         message = _group_room_details_text(event, group)
         if not message:
             return Response(
-                {"message": "No room details have been set for this group's maps yet."},
+                {"message": "No room details have been set for this group's maps yet.", "code": "no_room_details_set"},
                 status=400,
             )
         # RELEASE (owner 2026-06-17): posting room details to the group also flips them visible on the
@@ -26527,18 +26527,18 @@ def broadcast_to_group(request):
         title = (request.data.get("title") or "").strip()
         message = (request.data.get("message") or "").strip()
         if not message:
-            return Response({"message": "A message is required."}, status=400)
+            return Response({"message": "A message is required.", "code": "message_required"}, status=400)
 
     # Channel choice (owner 2026-06-13): app push, email, or both (default both). Email goes
     # in the fixed branded design via deliver_broadcast.
     delivery = (request.data.get("delivery") or "both").strip().lower()
     if delivery not in ("push", "email", "both"):
-        return Response({"message": "delivery must be 'push', 'email', or 'both'."}, status=400)
+        return Response({"message": "delivery must be 'push', 'email', or 'both'.", "code": "delivery_push_email_both"}, status=400)
 
     recipients = _group_recipient_users(event, group)
     if not recipients:
         return Response(
-            {"message": "This group has no players to message yet.", "recipients": 0},
+            {"message": "This group has no players to message yet.", "recipients": 0, "code": "group_no_players_message"},
             status=400,
         )
 
@@ -26548,7 +26548,7 @@ def broadcast_to_group(request):
     if not allowed:
         return Response(
             {"message": rl["message"], "reason": rl["reason"], "resets_at": rl["resets_at"],
-             "remaining": rl["remaining"], "limit": rl["limit"]},
+             "remaining": rl["remaining"], "limit": rl["limit"], "code": "broadcast_to_group_refused"},
             status=429,
         )
 
@@ -26615,22 +26615,22 @@ def broadcast_to_stage(request):
     Consumed by: the broadcast composer's "Stage" scope (admin event page + organizer event page)."""
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
     user = validate_token(auth.split(" ")[1])
     if not user:
-        return Response({"message": "Invalid or expired session token."}, status=401)
+        return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
 
     event_id = request.data.get("event_id")
     stage_id = request.data.get("stage_id")
     if not event_id or not stage_id:
-        return Response({"message": "event_id and stage_id are required."}, status=400)
+        return Response({"message": "event_id and stage_id are required.", "code": "event_stage_required"}, status=400)
 
     event = get_object_or_404(Event, event_id=event_id)
     stage = get_object_or_404(Stages, stage_id=stage_id, event=event)
 
     # Same gate as broadcast_to_group: AFC event admin OR an organizer who can edit this event.
     if not (_is_event_admin(user) or org_can_event(user, "can_edit_events", event)):
-        return Response({"message": "You do not have permission to message this stage."}, status=403)
+        return Response({"message": "You do not have permission to message this stage.", "code": "not_permission_message_stage"}, status=403)
 
     mode = (request.data.get("mode") or "custom").strip()
     groups = list(stage.groups.all())
@@ -26643,7 +26643,7 @@ def broadcast_to_stage(request):
                 seen[u.user_id] = u
     recipients = list(seen.values())
     if not recipients:
-        return Response({"message": "This stage has no players to message yet.", "recipients": 0}, status=400)
+        return Response({"message": "This stage has no players to message yet.", "recipients": 0, "code": "stage_no_players_message"}, status=400)
 
     # Organizer broadcast rate limit (owner 2026-06-27): admins exempt; organizers 5/hr + 5-min cooldown.
     from afc_auth.broadcast_ratelimit import check_broadcast_rate, record_broadcast_send
@@ -26651,7 +26651,7 @@ def broadcast_to_stage(request):
     if not allowed:
         return Response(
             {"message": rl["message"], "reason": rl["reason"], "resets_at": rl["resets_at"],
-             "remaining": rl["remaining"], "limit": rl["limit"]},
+             "remaining": rl["remaining"], "limit": rl["limit"], "code": "broadcast_to_stage_refused"},
             status=429,
         )
 
@@ -26660,7 +26660,7 @@ def broadcast_to_stage(request):
         # Combine each group's room-details summary (skip groups with none set).
         blocks = [t for t in (_group_room_details_text(event, g) for g in groups) if t]
         if not blocks:
-            return Response({"message": "No room details have been set for this stage's groups yet."}, status=400)
+            return Response({"message": "No room details have been set for this stage's groups yet.", "code": "no_room_details_set"}, status=400)
         message = "\n\n".join(blocks)
         # RELEASE (owner 2026-06-17): same as broadcast_to_group, but across every group in the stage - 
         # stamp room_details_released_at so the user event page shows each group's room to its members.
@@ -26671,11 +26671,11 @@ def broadcast_to_stage(request):
         title = (request.data.get("title") or "").strip()
         message = (request.data.get("message") or "").strip()
         if not message:
-            return Response({"message": "A message is required."}, status=400)
+            return Response({"message": "A message is required.", "code": "message_required"}, status=400)
 
     delivery = (request.data.get("delivery") or "both").strip().lower()
     if delivery not in ("push", "email", "both"):
-        return Response({"message": "delivery must be 'push', 'email', or 'both'."}, status=400)
+        return Response({"message": "delivery must be 'push', 'email', or 'both'.", "code": "delivery_push_email_both"}, status=400)
 
     target_type = (request.data.get("target_type") or "").strip().lower()
     target_id = (request.data.get("target_id") or "").strip()
@@ -26722,18 +26722,18 @@ def get_broadcast_history(request):
     Consumed by: the "Broadcast history" view on the admin event page + organizer event page."""
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
     user = validate_token(auth.split(" ")[1])
     if not user:
-        return Response({"message": "Invalid or expired session token."}, status=401)
+        return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
 
     event_id = request.GET.get("event_id") or request.data.get("event_id")
     if not event_id:
-        return Response({"message": "event_id is required."}, status=400)
+        return Response({"message": "event_id is required.", "code": "event_required"}, status=400)
     event = get_object_or_404(Event, event_id=event_id)
 
     if not (_is_event_admin(user) or org_can_event(user, "can_edit_events", event)):
-        return Response({"message": "You do not have permission to view this event's broadcast history."}, status=403)
+        return Response({"message": "You do not have permission to view this event's broadcast history.", "code": "not_permission_view_event"}, status=403)
 
     def _int(name, default):
         try:
@@ -26766,10 +26766,10 @@ def broadcast_rate_status(request):
     Consumed by: SendNotificationModal / ActionsTab broadcast composer (admin + organizer event pages)."""
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
     user = validate_token(auth.split(" ")[1])
     if not user:
-        return Response({"message": "Invalid or expired session token."}, status=401)
+        return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
     from afc_auth.broadcast_ratelimit import broadcast_rate_status as _status
     return Response(_status(user), status=200)
 
@@ -26784,10 +26784,10 @@ def search_events(request):
     Consumed by: frontend NotificationTargetSelector event search-select."""
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
     user = validate_token(auth.split(" ")[1])
     if not user:
-        return Response({"message": "Invalid or expired session token."}, status=401)
+        return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
 
     q = (request.GET.get("q") or "").strip()
     try:
@@ -26817,19 +26817,19 @@ def _waitlist_gate(request):
     Returns (user, event, None) on success or (None, None, error_response)."""
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return None, None, Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return None, None, Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
     user = validate_token(auth.split(" ")[1])
     if not user:
-        return None, None, Response({"message": "Invalid or expired session token."}, status=401)
+        return None, None, Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
     event_id = request.data.get("event_id")
     if not event_id:
-        return None, None, Response({"message": "event_id is required."}, status=400)
+        return None, None, Response({"message": "event_id is required.", "code": "event_required"}, status=400)
     event = get_object_or_404(Event, event_id=event_id)
     # Waitlist promotion / no-show are REGISTRATION actions, so gate on can_manage_registrations (owner
     # 2026-07-05) to match every other add/remove/seed registration endpoint. The org OWNER passes either
     # way (holds all perms); this correctly lets a registrations-only sub-organizer promote/no-show too.
     if not (_is_event_admin(user) or org_can_event(user, "can_manage_registrations", event)):
-        return None, None, Response({"message": "You do not have permission to manage this event's waitlist."}, status=403)
+        return None, None, Response({"message": "You do not have permission to manage this event's waitlist.", "code": "not_permission_manage_event"}, status=403)
     return user, event, None
 
 
@@ -26888,13 +26888,13 @@ def mark_no_show(request):
     if event.participant_type == "solo":
         cid = request.data.get("competitor_id")
         if not cid:
-            return Response({"message": "competitor_id is required."}, status=400)
+            return Response({"message": "competitor_id is required.", "code": "competitor_required"}, status=400)
         # The RegisteredTeamsTab row carries the USER id (player_id), like DisqualifyModal. Resolve by
         # user first (the common case); fall back to the RegisteredCompetitors pk for other callers.
         reg = (RegisteredCompetitors.objects.filter(event=event, user_id=cid, is_waitlisted=False).first()
                or RegisteredCompetitors.objects.filter(id=cid, event=event).first())
         if not reg:
-            return Response({"message": "Registered competitor not found."}, status=404)
+            return Response({"message": "Registered competitor not found.", "code": "registered_competitor_not_found"}, status=404)
         reg.is_no_show = bool(value)
         reg.save(update_fields=["is_no_show"])
         _apply_no_show_record(event, user_obj=reg.user, value=value, actor=user)  # F1 history
@@ -26902,7 +26902,7 @@ def mark_no_show(request):
     else:
         ttid = request.data.get("tournament_team_id")
         if not ttid:
-            return Response({"message": "tournament_team_id is required."}, status=400)
+            return Response({"message": "tournament_team_id is required.", "code": "tournament_team_required"}, status=400)
         tt = get_object_or_404(TournamentTeam, tournament_team_id=ttid, event=event)
         tt.is_no_show = bool(value)
         tt.save(update_fields=["is_no_show"])
@@ -26980,11 +26980,11 @@ def get_no_show_warnings(request):
     auth = request.headers.get("Authorization") or ""
     user = validate_token(auth.split(" ")[1]) if auth.startswith("Bearer ") else None
     if not user:
-        return Response({"message": "Invalid or expired session token."}, status=401)
+        return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
     from afc_organizers.models import OrganizationMember
     is_organizer = OrganizationMember.objects.filter(user=user, status="active").exists()
     if not (_is_event_admin(user) or is_organizer):
-        return Response({"message": "You do not have permission to view no-show reputation."}, status=403)
+        return Response({"message": "You do not have permission to view no-show reputation.", "code": "not_permission_view_no"}, status=403)
     team_ids = [int(x) for x in (request.data.get("team_ids") or []) if str(x).isdigit()]
     user_ids = [int(x) for x in (request.data.get("user_ids") or []) if str(x).isdigit()]
     return Response(_no_show_warning_for(team_ids=team_ids, user_ids=user_ids), status=200)
@@ -27110,7 +27110,7 @@ def promote_from_waitlist(request):
         tournament_team_id=request.data.get("tournament_team_id"),
     )
     if not name:
-        return Response({"message": "That waitlisted competitor was not found (already promoted?)."}, status=404)
+        return Response({"message": "That waitlisted competitor was not found (already promoted?).", "code": "waitlisted_competitor_not_found"}, status=404)
     _notify_promoted(event, recipients, name)
     AdminHistory.objects.create(
         admin_user=user, action="promote_from_waitlist",
@@ -27132,16 +27132,16 @@ def promote_next_waitlist(request):
         nxt = RegisteredCompetitors.objects.filter(
             event=event, is_waitlisted=True).order_by("registration_date").first()
         if not nxt:
-            return Response({"message": "The waitlist is empty."}, status=400)
+            return Response({"message": "The waitlist is empty.", "code": "waitlist_empty"}, status=400)
         name, recipients = _promote_competitor(event, competitor_id=nxt.id)
     else:
         nxt = TournamentTeam.objects.filter(
             event=event, is_waitlisted=True).order_by("registration_date").first()
         if not nxt:
-            return Response({"message": "The waitlist is empty."}, status=400)
+            return Response({"message": "The waitlist is empty.", "code": "waitlist_empty"}, status=400)
         name, recipients = _promote_competitor(event, tournament_team_id=nxt.tournament_team_id)
     if not name:
-        return Response({"message": "Could not promote the next waitlist entry."}, status=400)
+        return Response({"message": "Could not promote the next waitlist entry.", "code": "could_not_promote_next"}, status=400)
     _notify_promoted(event, recipients, name)
     AdminHistory.objects.create(
         admin_user=user, action="promote_next_waitlist",
@@ -27162,30 +27162,30 @@ def set_stage_status(request):
     the Complete flow). Auth: AFC event admin OR an organizer who can edit this event."""
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
     user = validate_token(auth.split(" ")[1])
     if not user:
-        return Response({"message": "Invalid or expired session token."}, status=401)
+        return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
 
     event_id = request.data.get("event_id")
     stage_id = request.data.get("stage_id")
     status_val = (request.data.get("status") or "").strip().lower()
     if not event_id or not stage_id:
-        return Response({"message": "event_id and stage_id are required."}, status=400)
+        return Response({"message": "event_id and stage_id are required.", "code": "event_stage_required"}, status=400)
     if status_val not in ("ongoing", "paused"):
-        return Response({"message": "status must be 'ongoing' or 'paused'."}, status=400)
+        return Response({"message": "status must be 'ongoing' or 'paused'.", "code": "status_ongoing_paused"}, status=400)
 
     event = get_object_or_404(Event, event_id=event_id)
     stage = get_object_or_404(Stages, stage_id=stage_id, event=event)
 
     if not (_is_event_admin(user) or org_can_event(user, "can_edit_events", event)):
-        return Response({"message": "You do not have permission to change this stage."}, status=403)
+        return Response({"message": "You do not have permission to change this stage.", "code": "not_permission_change_stage"}, status=403)
 
     # Only pause/resume a STARTED stage. A stage that never started (upcoming) or has finished
     # (completed) cannot be paused/resumed - the Start and Complete flows own those.
     if stage.stage_status not in ("ongoing", "paused"):
         return Response(
-            {"message": "Only a started stage can be paused or resumed."}, status=400)
+            {"message": "Only a started stage can be paused or resumed.", "code": "started_stage_paused_resumed"}, status=400)
 
     stage.stage_status = status_val
     stage.save(update_fields=["stage_status"])
@@ -27262,16 +27262,16 @@ def export_participants(request):
     fmt = request.query_params.get("format", "csv").lower()
 
     if not event_id:
-        return JsonResponse({"message": "event_id is required."}, status=400)
+        return JsonResponse({"message": "event_id is required.", "code": "event_required"}, status=400)
     if fmt not in ("csv", "xlsx"):
-        return JsonResponse({"message": "format must be csv or xlsx."}, status=400)
+        return JsonResponse({"message": "format must be csv or xlsx.", "code": "format_csv_xlsx"}, status=400)
 
     # Explicit lookup instead of get_object_or_404 so a missing event returns a
     # clean JSON 404 (get_object_or_404 raises Http404, which DRF would otherwise
     # render through the negotiated csv/xlsx passthrough renderer).
     event = Event.objects.filter(event_id=event_id).first()
     if not event:
-        return JsonResponse({"message": "Event not found."}, status=404)
+        return JsonResponse({"message": "Event not found.", "code": "event_not_found"}, status=404)
 
     user, err = _get_event_action_user(request, event=event, org_perm="can_manage_registrations")
     if err:
@@ -27362,19 +27362,19 @@ def export_participants(request):
 def verify_event(request):
     session_token = request.headers.get("Authorization")
     if not session_token or not session_token.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
 
     user = validate_token(session_token.split(" ")[1])
     if not user:
-        return Response({"message": "Invalid or expired session token."}, status=status.HTTP_401_UNAUTHORIZED)
+        return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=status.HTTP_401_UNAUTHORIZED)
 
     # rankings-integrity decision → platform org admins only.
     if not is_platform_org_admin(user):
-        return Response({"message": "You do not have permission to verify events."}, status=403)
+        return Response({"message": "You do not have permission to verify events.", "code": "not_permission_verify_events"}, status=403)
 
     event = Event.objects.filter(event_id=request.data.get("event_id")).first()
     if not event:
-        return Response({"message": "Event not found."}, status=404)
+        return Response({"message": "Event not found.", "code": "event_not_found"}, status=404)
 
     # default to verifying when the flag is omitted; accept an explicit false to un-verify.
     event.rankings_verified = bool(request.data.get("verified", True))
@@ -27434,17 +27434,17 @@ def download_esport_media(request):
 
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
     user = validate_token(auth.split(" ")[1])
     if not user:
-        return Response({"message": "Invalid or expired session token."}, status=401)
+        return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
 
     team_ids = request.data.get("team_ids") or []
     player_ids = request.data.get("player_ids") or []
     event_id = request.data.get("event_id")
 
     if not team_ids and not player_ids and not event_id:
-        return Response({"message": "Provide team_ids, player_ids, or event_id."}, status=400)
+        return Response({"message": "Provide team_ids, player_ids, or event_id.", "code": "provide_team_ids_player"}, status=400)
 
     # AUTH (event-scoped, privacy fix 2026-07-06): this returns players' esport images + team logos =
     # roster PII. AFC event admins always pass. A mere platform "organizer" role is NOT enough: an
@@ -27455,13 +27455,13 @@ def download_esport_media(request):
     if not _is_event_admin(user):
         scoped_event = Event.objects.filter(event_id=event_id).first() if event_id else None
         if not (scoped_event and org_can_event(user, "can_edit_events", scoped_event)):
-            return Response({"message": "You do not have permission to download this event's media."}, status=403)
+            return Response({"message": "You do not have permission to download this event's media.", "code": "not_permission_download_event"}, status=403)
 
     zip_label = "esport-media"
     if event_id:
         event = Event.objects.filter(event_id=event_id).first()
         if not event:
-            return Response({"message": "Event not found."}, status=400)
+            return Response({"message": "Event not found.", "code": "event_not_found"}, status=400)
         zip_label = event.event_name or f"event-{event_id}"
         regs = RegisteredCompetitors.objects.filter(event=event).select_related("team", "user")
         team_ids = list({r.team_id for r in regs if r.team_id})
@@ -27590,10 +27590,10 @@ def download_single_media(request):
 
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
     user = validate_token(auth.split(" ")[1])
     if not user:
-        return Response({"message": "Invalid or expired session token."}, status=401)
+        return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
     # AUTH (#9 audit + privacy 2026-07-06): mirror download_esport_media (the bulk ZIP sibling). Roster
     # media is PII. AFC staff always pass. A mere platform "organizer" role is NOT enough: a non-admin
     # must scope to an event THEIR org owns (org_can_event) AND the requested team/player must belong to
@@ -27603,7 +27603,7 @@ def download_single_media(request):
     if not _is_event_admin(user):
         scoped_event = Event.objects.filter(event_id=request.data.get("event_id")).first()
         if not (scoped_event and org_can_event(user, "can_edit_events", scoped_event)):
-            return Response({"message": "You do not have permission to download this event's media."}, status=403)
+            return Response({"message": "You do not have permission to download this event's media.", "code": "not_permission_download_event"}, status=403)
 
     kind = (request.data.get("kind") or "").strip()
     fmt = (request.data.get("format") or "png").lower()
@@ -27624,13 +27624,13 @@ def download_single_media(request):
     if kind == "team_logo":
         team = Team.objects.filter(team_id=request.data.get("team_id")).first()
         if not team:
-            return Response({"message": "Team not found."}, status=400)
+            return Response({"message": "Team not found.", "code": "team_not_found"}, status=400)
         # Organizer scope: the team must actually be in the event they own (closes cross-event IDOR).
         if scoped_event and not (
             TournamentTeam.objects.filter(event=scoped_event, team=team).exists()
             or RegisteredCompetitors.objects.filter(event=scoped_event, team=team).exists()
         ):
-            return Response({"message": "That team is not in this event."}, status=403)
+            return Response({"message": "That team is not in this event.", "code": "team_not_event"}, status=403)
         default_name = team.team_name or f"team-{team.team_id}"
         if team.team_logo:
             try:
@@ -27641,13 +27641,13 @@ def download_single_media(request):
         from afc_auth.models import UserProfile
         u = User.objects.filter(user_id=request.data.get("user_id")).first()
         if not u:
-            return Response({"message": "Player not found."}, status=400)
+            return Response({"message": "Player not found.", "code": "player_not_found"}, status=400)
         # Organizer scope: the player must be in the event they own (solo competitor or roster member).
         if scoped_event and not (
             RegisteredCompetitors.objects.filter(event=scoped_event, user=u).exists()
             or TournamentTeamMember.objects.filter(tournament_team__event=scoped_event, user=u).exists()
         ):
-            return Response({"message": "That player is not in this event."}, status=403)
+            return Response({"message": "That player is not in this event.", "code": "player_not_event"}, status=403)
         default_name = u.username or f"player-{u.user_id}"
         prof = UserProfile.objects.filter(user_id=u.user_id).first()
         if prof and prof.esports_pic:
@@ -27656,10 +27656,10 @@ def download_single_media(request):
             except Exception:
                 raw = None
     else:
-        return Response({"message": "kind must be team_logo or player_image."}, status=400)
+        return Response({"message": "kind must be team_logo or player_image.", "code": "kind_team_logo_player"}, status=400)
 
     if not raw:
-        return Response({"message": "That team/player has no uploaded image."}, status=400)
+        return Response({"message": "That team/player has no uploaded image.", "code": "team_player_no_uploaded"}, status=400)
 
     # Resize (cover-crop to exact target) + encode. Fail-safe: original bytes if anything breaks.
     ext = ".png"
@@ -27717,10 +27717,10 @@ def _reorder_auth(request):
     Mirrors the seed endpoints' inline auth shape (Authorization: Bearer <SessionToken>)."""
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return None, Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return None, Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
     user = validate_token(auth.split(" ")[1])
     if not user:
-        return None, Response({"message": "Invalid or expired session token."}, status=401)
+        return None, Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
     return user, None
 
 
@@ -27754,17 +27754,17 @@ def reorder_stages(request):
 
     event = get_object_or_404(Event, event_id=request.data.get("event_id"))
     if not _can_edit_event(user, event):
-        return Response({"message": "You do not have permission to reorder stages for this event."}, status=403)
+        return Response({"message": "You do not have permission to reorder stages for this event.", "code": "not_permission_reorder_stages"}, status=403)
 
     stage_ids = request.data.get("stage_ids") or []
     if not isinstance(stage_ids, list) or not stage_ids:
-        return Response({"message": "stage_ids must be a non-empty list of stage ids."}, status=400)
+        return Response({"message": "stage_ids must be a non-empty list of stage ids.", "code": "stage_ids_non_empty"}, status=400)
 
     # Only act on stages that actually belong to this event (ignore foreign / stale ids).
     stages_by_id = {s.stage_id: s for s in event.stages.all()}
     ordered = [stages_by_id[sid] for sid in stage_ids if sid in stages_by_id]
     if not ordered:
-        return Response({"message": "None of the supplied stage ids belong to this event."}, status=400)
+        return Response({"message": "None of the supplied stage ids belong to this event.", "code": "none_supplied_stage_ids"}, status=400)
 
     # Assign 1-based manual orders in the requested sequence; this overrides auto-by-date.
     for index, stage in enumerate(ordered):
@@ -27814,17 +27814,17 @@ def reorder_groups(request):
     stage = get_object_or_404(Stages, stage_id=request.data.get("stage_id"))
     event = stage.event
     if not _can_edit_event(user, event):
-        return Response({"message": "You do not have permission to reorder groups for this event."}, status=403)
+        return Response({"message": "You do not have permission to reorder groups for this event.", "code": "not_permission_reorder_groups"}, status=403)
 
     group_ids = request.data.get("group_ids") or []
     if not isinstance(group_ids, list) or not group_ids:
-        return Response({"message": "group_ids must be a non-empty list of group ids."}, status=400)
+        return Response({"message": "group_ids must be a non-empty list of group ids.", "code": "group_ids_non_empty"}, status=400)
 
     # Only act on groups that actually belong to this stage (ignore foreign / stale ids).
     groups_by_id = {g.group_id: g for g in stage.groups.all()}
     ordered = [groups_by_id[gid] for gid in group_ids if gid in groups_by_id]
     if not ordered:
-        return Response({"message": "None of the supplied group ids belong to this stage."}, status=400)
+        return Response({"message": "None of the supplied group ids belong to this stage.", "code": "none_supplied_group_ids"}, status=400)
 
     # Assign 1-based manual orders in the requested sequence; this overrides auto-by-date/time.
     for index, group in enumerate(ordered):

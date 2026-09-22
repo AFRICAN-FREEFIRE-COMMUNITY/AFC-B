@@ -93,19 +93,19 @@ def _require_auth(request):
     session_token = request.headers.get("Authorization")
     if not session_token:
         return None, Response(
-            {"message": "Authorization header is required"},
+            {"message": "Authorization header is required", "code": "authorization_header_required"},
             status=status.HTTP_400_BAD_REQUEST,
         )
     if not session_token.startswith("Bearer "):
         return None, Response(
-            {"message": "Invalid token format"},
+            {"message": "Invalid token format", "code": "invalid_token_format"},
             status=status.HTTP_400_BAD_REQUEST,
         )
     session_token = session_token.split(" ")[1]
     user = validate_token(session_token)
     if not user:
         return None, Response(
-            {"message": "Invalid or expired session token."},
+            {"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"},
             status=status.HTTP_401_UNAUTHORIZED,
         )
     return user, None
@@ -157,12 +157,12 @@ def rate_event(request, event_id):
         score = int(raw_score)
     except (TypeError, ValueError):
         return Response(
-            {"message": "score must be an integer between 1 and 5."},
+            {"message": "score must be an integer between 1 and 5.", "code": "score_integer_between"},
             status=status.HTTP_400_BAD_REQUEST,
         )
     if score < 1 or score > 5:
         return Response(
-            {"message": "score must be an integer between 1 and 5."},
+            {"message": "score must be an integer between 1 and 5.", "code": "score_integer_between"},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
@@ -237,7 +237,7 @@ def comment_event(request, event_id):
     text = (request.data.get("text") or "").strip()
     if not text:
         return Response(
-            {"message": "Comment text is required."},
+            {"message": "Comment text is required.", "code": "comment_text_required"},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
@@ -269,14 +269,14 @@ def event_comments(request, event_id):
     event = Event.objects.filter(event_id=event_id).first()
     if not event:
         return Response(
-            {"message": "Event not found."},
+            {"message": "Event not found.", "code": "event_not_found"},
             status=status.HTTP_404_NOT_FOUND,
         )
 
     # Permission gate - central owner/admin bypass via org_can_event.
     if not org_can_event(user, "can_view_reviews", event):
         return Response(
-            {"message": "You do not have permission to view reviews for this event."},
+            {"message": "You do not have permission to view reviews for this event.", "code": "not_permission_view_reviews"},
             status=status.HTTP_403_FORBIDDEN,
         )
 
@@ -418,14 +418,14 @@ def org_metrics(request, slug):
     org = Organization.objects.filter(slug=slug).first()
     if not org:
         return Response(
-            {"message": "Organization not found."},
+            {"message": "Organization not found.", "code": "organization_not_found"},
             status=status.HTTP_404_NOT_FOUND,
         )
 
     # Permission gate - central owner/admin bypass via org_can.
     if not org_can(user, "can_view_metrics", org):
         return Response(
-            {"message": "You do not have permission to view metrics for this organization."},
+            {"message": "You do not have permission to view metrics for this organization.", "code": "not_permission_view_metrics"},
             status=status.HTTP_403_FORBIDDEN,
         )
 

@@ -67,10 +67,10 @@ def _auth_user(request):
     """Resolve the Bearer-token user, or return (None, error Response)."""
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return None, Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return None, Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
     user = validate_token(auth.split(" ")[1])
     if not user:
-        return None, Response({"message": "Invalid or expired session token."}, status=401)
+        return None, Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
     return user, None
 
 
@@ -380,11 +380,11 @@ def sync_entry_stage_seeding(request):
         return err
     event_id = request.data.get("event_id")
     if not event_id:
-        return Response({"message": "event_id required."}, status=400)
+        return Response({"message": "event_id required.", "code": "event_required"}, status=400)
     event = get_object_or_404(Event, event_id=event_id)
     if not _seeding_gate(user, event):
         return Response(
-            {"message": "You do not have permission to manage seeding for this event."},
+            {"message": "You do not have permission to manage seeding for this event.", "code": "not_permission_manage_seeding"},
             status=403,
         )
     result = autoseed_entry_stage(event)
@@ -416,7 +416,7 @@ def undo_seeding(request):
     stage = get_object_or_404(Stages, stage_id=request.data.get("stage_id"))
     event = stage.event
     if not _seeding_gate(user, event):
-        return Response({"message": "You do not have permission to manage seeding for this event."}, status=403)
+        return Response({"message": "You do not have permission to manage seeding for this event.", "code": "not_permission_manage_seeding"}, status=403)
 
     force = str(request.data.get("force", "false")).lower() in ("1", "true", "yes")
     played = _played_maps_in_stage(stage)
@@ -452,7 +452,7 @@ def reseed_into_groups(request):
     stage = get_object_or_404(Stages, stage_id=request.data.get("stage_id"))
     event = stage.event
     if not _seeding_gate(user, event):
-        return Response({"message": "You do not have permission to manage seeding for this event."}, status=403)
+        return Response({"message": "You do not have permission to manage seeding for this event.", "code": "not_permission_manage_seeding"}, status=403)
 
     shuffle = str(request.data.get("shuffle", "true")).lower() in ("1", "true", "yes")
     clear_existing = str(request.data.get("clear_existing", "true")).lower() in ("1", "true", "yes")
@@ -478,7 +478,7 @@ def reseed_into_groups(request):
                 stage, shuffle=shuffle, only_ungrouped=not clear_existing, strict=True,
             )
     except GroupCapacityError as e:
-        return Response({"message": str(e)}, status=400)
+        return Response({"message": str(e), "code": "reseed_into_groups_refused"}, status=400)
 
     groups = StageGroups.objects.filter(stage=stage).count()
     return Response({"message": "Competitors seeded into groups.",
@@ -523,7 +523,7 @@ def seed_next_stage_by_standings(request):
     rr_stage = get_object_or_404(Stages, stage_id=request.data.get("stage_id"))
     event = rr_stage.event
     if not _seeding_gate(user, event):
-        return Response({"message": "You do not have permission to manage seeding for this event."}, status=403)
+        return Response({"message": "You do not have permission to manage seeding for this event.", "code": "not_permission_manage_seeding"}, status=403)
 
     force = str(request.data.get("force", "false")).lower() in ("1", "true", "yes")
 
@@ -532,14 +532,14 @@ def seed_next_stage_by_standings(request):
     ordered = list(event.stages.all().order_by("stage_order", "start_date", "stage_id"))
     idx = next((i for i, s in enumerate(ordered) if s.stage_id == rr_stage.stage_id), None)
     if idx is None or idx + 1 >= len(ordered):
-        return Response({"message": "This is the last stage; there is no next stage to seed."}, status=400)
+        return Response({"message": "This is the last stage; there is no next stage to seed.", "code": "last_stage_no_next"}, status=400)
     next_stage = ordered[idx + 1]
 
     # The combined RR ranking (best-first). Empty => the round-robin has not been played yet.
     standings = round_robin.cumulative_standings(rr_stage)
     if not standings:
         return Response({"message": "This round-robin stage has no results yet. Enter the match "
-                                    "results first, then seed the next stage by the standings."}, status=400)
+                                    "results first, then seed the next stage by the standings.", "code": "round_robin_stage_no"}, status=400)
     rank = {row["tournament_team_id"]: i for i, row in enumerate(standings)}
 
     # A round-robin NEXT stage seeds base groups differently (RoundRobinGroup.teams + lobby rebuild);
@@ -610,7 +610,7 @@ def seed_next_stage_by_standings(request):
             StageGroupCompetitor.objects.bulk_create(entries, ignore_conflicts=True)
             _reconcile_group_roles(next_stage)   # sync Discord group roles best-effort
     except GroupCapacityError as e:
-        return Response({"message": str(e)}, status=400)
+        return Response({"message": str(e), "code": "seed_next_stage_by_standings_refused"}, status=400)
 
     lead = f"Advanced {auto_advanced} and seeded " if auto_advanced else "Seeded "
     return Response({
@@ -641,12 +641,12 @@ def delete_group_managed(request):
     group = get_object_or_404(StageGroups, group_id=request.data.get("group_id"))
     mode = (request.data.get("mode") or "manual").strip().lower()
     if mode not in ("auto", "manual", "delete_all"):
-        return Response({"message": "mode must be one of: auto, manual, delete_all."}, status=400)
+        return Response({"message": "mode must be one of: auto, manual, delete_all.", "code": "mode_auto_manual_delete"}, status=400)
 
     stage = group.stage
     event = stage.event
     if not _seeding_gate(user, event):
-        return Response({"message": "You do not have permission to manage seeding for this event."}, status=403)
+        return Response({"message": "You do not have permission to manage seeding for this event.", "code": "not_permission_manage_seeding"}, status=403)
 
     force = str(request.data.get("force", "false")).lower() in ("1", "true", "yes")
     played = _played_maps_in_group(group)
@@ -714,11 +714,11 @@ def delete_stage_managed(request):
     stage = get_object_or_404(Stages, stage_id=request.data.get("stage_id"))
     mode = (request.data.get("mode") or "delete_all").strip().lower()
     if mode not in ("auto", "manual", "delete_all"):
-        return Response({"message": "mode must be one of: auto, manual, delete_all."}, status=400)
+        return Response({"message": "mode must be one of: auto, manual, delete_all.", "code": "mode_auto_manual_delete"}, status=400)
 
     event = stage.event
     if not _seeding_gate(user, event):
-        return Response({"message": "You do not have permission to manage seeding for this event."}, status=403)
+        return Response({"message": "You do not have permission to manage seeding for this event.", "code": "not_permission_manage_seeding"}, status=403)
 
     force = str(request.data.get("force", "false")).lower() in ("1", "true", "yes")
     played = _played_maps_in_stage(stage)
@@ -734,12 +734,12 @@ def delete_stage_managed(request):
     if mode in ("auto", "manual"):
         target_stage_id = request.data.get("target_stage_id")
         if not target_stage_id:
-            return Response({"message": "target_stage_id is required to move competitors."}, status=400)
+            return Response({"message": "target_stage_id is required to move competitors.", "code": "target_stage_required_move"}, status=400)
         target_stage = get_object_or_404(Stages, stage_id=target_stage_id)
         if target_stage.stage_id == stage.stage_id:
-            return Response({"message": "Target stage must be different from the stage being deleted."}, status=400)
+            return Response({"message": "Target stage must be different from the stage being deleted.", "code": "target_stage_different_stage"}, status=400)
         if target_stage.event_id != event.event_id:
-            return Response({"message": "Target stage must belong to the same event."}, status=400)
+            return Response({"message": "Target stage must belong to the same event.", "code": "target_stage_belong_same"}, status=400)
 
     with transaction.atomic():
         moved = 0
@@ -835,24 +835,24 @@ def move_team_between_groups(request):
     if _from_rr or _to_rr:
         # Mixed RR/standard ids are invalid; a pool-to-pool move is a no-op.
         if not (_from_rr and _to_rr):
-            return Response({"message": "Round-robin groups can only be moved within their own stage."}, status=400)
+            return Response({"message": "Round-robin groups can only be moved within their own stage.", "code": "round_robin_groups_moved"}, status=400)
         rr_stage = (_from_rr[1].stage if _from_rr[0] == "group" else None) or (_to_rr[1].stage if _to_rr[0] == "group" else None)
         if rr_stage is None:
-            return Response({"message": "Source and target groups are the same."}, status=400)
+            return Response({"message": "Source and target groups are the same.", "code": "source_target_groups_same"}, status=400)
         for ref in (_from_rr, _to_rr):
             sid = ref[1] if ref[0] == "pool" else ref[1].stage_id
             if sid != rr_stage.stage_id:
-                return Response({"message": "Both groups must be in the same stage."}, status=400)
+                return Response({"message": "Both groups must be in the same stage.", "code": "both_groups_same_stage"}, status=400)
         event = rr_stage.event
         if not _seeding_gate(user, event):
-            return Response({"message": "You do not have permission to manage seeding for this event."}, status=403)
+            return Response({"message": "You do not have permission to manage seeding for this event.", "code": "not_permission_manage_seeding"}, status=403)
         tt_id = request.data.get("tournament_team_id")
         if not tt_id:
-            return Response({"message": "tournament_team_id is required."}, status=400)
+            return Response({"message": "tournament_team_id is required.", "code": "tournament_team_required"}, status=400)
         force = str(request.data.get("force", "false")).lower() in ("1", "true", "yes")
         # The team must be a competitor of this stage (the pool + base groups both draw from it).
         if not StageCompetitor.objects.filter(stage=rr_stage, tournament_team_id=tt_id).exists():
-            return Response({"message": "That team is not a competitor of this stage."}, status=404)
+            return Response({"message": "That team is not a competitor of this stage.", "code": "team_not_competitor_stage"}, status=404)
         # Played-lobby guard: any result-entered lobby sourced from a touched base group -> force.
         touched = [r[1] for r in (_from_rr, _to_rr) if r[0] == "group"]
         if not force:
@@ -868,7 +868,7 @@ def move_team_between_groups(request):
         # Apply: remove from the source base group (pool = nothing to remove), add to the target.
         if _from_rr[0] == "group":
             if not _from_rr[1].teams.filter(tournament_team_id=tt_id).exists():
-                return Response({"message": "That competitor is not in the source group."}, status=404)
+                return Response({"message": "That competitor is not in the source group.", "code": "competitor_not_source_group"}, status=404)
             _from_rr[1].teams.remove(tt_id)
         else:
             # Pool source: the team must not already sit in a base group of this stage.
@@ -877,7 +877,7 @@ def move_team_between_groups(request):
                 return Response({"message": f"That team is already in base group {existing.label}."}, status=400)
         if _to_rr[0] == "group":
             if _to_rr[1].teams.filter(tournament_team_id=tt_id).exists():
-                return Response({"message": "That competitor is already in the target group."}, status=400)
+                return Response({"message": "That competitor is already in the target group.", "code": "competitor_already_target_group"}, status=400)
             _to_rr[1].teams.add(tt_id)
         return Response({"message": "Team moved.", "from_group_id": _from_id, "to_group_id": _to_id})
 
@@ -887,26 +887,26 @@ def move_team_between_groups(request):
     from_group = get_object_or_404(StageGroups, group_id=_from_id)
     to_group = get_object_or_404(StageGroups, group_id=_to_id)
     if from_group.stage_id != to_group.stage_id:
-        return Response({"message": "Both groups must be in the same stage."}, status=400)
+        return Response({"message": "Both groups must be in the same stage.", "code": "both_groups_same_stage"}, status=400)
     if from_group.group_id == to_group.group_id:
-        return Response({"message": "Source and target groups are the same."}, status=400)
+        return Response({"message": "Source and target groups are the same.", "code": "source_target_groups_same"}, status=400)
 
     stage = from_group.stage
     event = stage.event
     if not _seeding_gate(user, event):
-        return Response({"message": "You do not have permission to manage seeding for this event."}, status=403)
+        return Response({"message": "You do not have permission to manage seeding for this event.", "code": "not_permission_manage_seeding"}, status=403)
 
     # Round-robin fail-safe #2 - STRUCTURAL guard on the RESOLVED stage (authoritative). The old check
     # was `"round" in stage_format` which both over-matches (legacy 'br - roundrobin' Knockout) and
     # under-matches ('cs - league'); the presence of RoundRobinGroup rows is the real signal that a
     # stage's teams live on the RR M2M (same source of truth get_event_group_rosters uses).
     if stage.round_robin_groups.exists():
-        return Response({"message": _rr_msg}, status=400)
+        return Response({"message": _rr_msg, "code": "_rr_ref_refused"}, status=400)
 
     tt_id = request.data.get("tournament_team_id")
     player_id = request.data.get("player_id")
     if not tt_id and not player_id:
-        return Response({"message": "tournament_team_id or player_id is required."}, status=400)
+        return Response({"message": "tournament_team_id or player_id is required.", "code": "tournament_team_player_required"}, status=400)
     force = str(request.data.get("force", "false")).lower() in ("1", "true", "yes")
 
     # Locate the competitor's row in the SOURCE group.
@@ -921,9 +921,9 @@ def move_team_between_groups(request):
 
     row = StageGroupCompetitor.objects.filter(**src_filter).first()
     if not row:
-        return Response({"message": "That competitor is not in the source group."}, status=404)
+        return Response({"message": "That competitor is not in the source group.", "code": "competitor_not_source_group"}, status=404)
     if StageGroupCompetitor.objects.filter(**tgt_filter).exists():
-        return Response({"message": "That competitor is already in the target group."}, status=400)
+        return Response({"message": "That competitor is already in the target group.", "code": "competitor_already_target_group"}, status=400)
 
     # Results guard (team only - solo stats are out of scope for the guard): if the team already has
     # entered results in the source group, warn + require force (old-group stats stay behind).
@@ -937,7 +937,7 @@ def move_team_between_groups(request):
                 "message": "This team already has results entered in its current group. Moving it "
                            "leaves those results in the old group's standings. Move anyway?",
                 "requires_force": True,
-            }, status=409)
+             "code": "team_already_results_entered"}, status=409)
 
     with transaction.atomic():
         row.delete()
@@ -1123,7 +1123,7 @@ def remove_competitor_from_group(request):
 
     group_id = request.data.get("group_id")
     if group_id in (None, ""):
-        return Response({"message": "group_id is required."}, status=400)
+        return Response({"message": "group_id is required.", "code": "group_required"}, status=400)
 
     from .models import RoundRobinGroup
 
@@ -1132,14 +1132,14 @@ def remove_competitor_from_group(request):
     if rr_group is not None:
         event = rr_group.stage.event
         if not _seeding_gate(user, event):
-            return Response({"message": "You do not have permission to manage seeding for this event."}, status=403)
+            return Response({"message": "You do not have permission to manage seeding for this event.", "code": "not_permission_manage_seeding"}, status=403)
         if event.participant_type == "solo":
-            return Response({"message": "This is a team (round-robin) group; provide a team, not a solo player."}, status=400)
+            return Response({"message": "This is a team (round-robin) group; provide a team, not a solo player.", "code": "team_round_robin_group"}, status=400)
         tt = _resolve_target_team(event, request.data)
         if tt is None:
-            return Response({"message": "Provide a valid team_id or tournament_team_id."}, status=400)
+            return Response({"message": "Provide a valid team_id or tournament_team_id.", "code": "provide_valid_team_tournament"}, status=400)
         if _team_has_rr_group_results(rr_group, tt):
-            return Response({"message": "That team has match results in this group; clear its results first."}, status=400)
+            return Response({"message": "That team has match results in this group; clear its results first.", "code": "team_match_results_group"}, status=400)
         removed = 0
         if rr_group.teams.filter(tournament_team_id=tt.tournament_team_id).exists():
             rr_group.teams.remove(tt)
@@ -1154,14 +1154,14 @@ def remove_competitor_from_group(request):
     stage = group.stage
     event = stage.event
     if not _seeding_gate(user, event):
-        return Response({"message": "You do not have permission to manage seeding for this event."}, status=403)
+        return Response({"message": "You do not have permission to manage seeding for this event.", "code": "not_permission_manage_seeding"}, status=403)
 
     if event.participant_type == "solo":
         competitor = _resolve_target_competitor(event, request.data)
         if competitor is None:
-            return Response({"message": "Provide a valid competitor_id or user_id."}, status=400)
+            return Response({"message": "Provide a valid competitor_id or user_id.", "code": "provide_valid_competitor_user"}, status=400)
         if _solo_has_group_results(group, competitor):
-            return Response({"message": "That player has match results in this group; clear its results first."}, status=400)
+            return Response({"message": "That player has match results in this group; clear its results first.", "code": "player_match_results_group"}, status=400)
         rows = StageGroupCompetitor.objects.filter(stage_group=group, player=competitor)
         removed = rows.count()
         if removed:
@@ -1175,9 +1175,9 @@ def remove_competitor_from_group(request):
     # team event
     tt = _resolve_target_team(event, request.data)
     if tt is None:
-        return Response({"message": "Provide a valid team_id or tournament_team_id."}, status=400)
+        return Response({"message": "Provide a valid team_id or tournament_team_id.", "code": "provide_valid_team_tournament"}, status=400)
     if _team_has_group_results(group, tt):
-        return Response({"message": "That team has match results in this group; clear its results first."}, status=400)
+        return Response({"message": "That team has match results in this group; clear its results first.", "code": "team_match_results_group"}, status=400)
     rows = StageGroupCompetitor.objects.filter(stage_group=group, tournament_team=tt)
     removed = rows.count()
     if removed:
@@ -1207,16 +1207,16 @@ def remove_competitor_from_stage(request):
     stage = get_object_or_404(Stages, stage_id=request.data.get("stage_id"))
     event = stage.event
     if not _seeding_gate(user, event):
-        return Response({"message": "You do not have permission to manage seeding for this event."}, status=403)
+        return Response({"message": "You do not have permission to manage seeding for this event.", "code": "not_permission_manage_seeding"}, status=403)
 
     from .models import RoundRobinGroup
 
     if event.participant_type == "solo":
         competitor = _resolve_target_competitor(event, request.data)
         if competitor is None:
-            return Response({"message": "Provide a valid competitor_id or user_id."}, status=400)
+            return Response({"message": "Provide a valid competitor_id or user_id.", "code": "provide_valid_competitor_user"}, status=400)
         if _solo_has_stage_results(stage, competitor):
-            return Response({"message": "That player has match results in this stage; clear its results first."}, status=400)
+            return Response({"message": "That player has match results in this stage; clear its results first.", "code": "player_match_results_stage"}, status=400)
         with transaction.atomic():
             # Discord: queue removal from every group role this player currently holds in the stage.
             for sgc in StageGroupCompetitor.objects.filter(
@@ -1237,9 +1237,9 @@ def remove_competitor_from_stage(request):
     # team event
     tt = _resolve_target_team(event, request.data)
     if tt is None:
-        return Response({"message": "Provide a valid team_id or tournament_team_id."}, status=400)
+        return Response({"message": "Provide a valid team_id or tournament_team_id.", "code": "provide_valid_team_tournament"}, status=400)
     if _team_has_stage_results(stage, tt):
-        return Response({"message": "That team has match results in this stage; clear its results first."}, status=400)
+        return Response({"message": "That team has match results in this stage; clear its results first.", "code": "team_match_results_stage"}, status=400)
     with transaction.atomic():
         for sgc in StageGroupCompetitor.objects.filter(
             stage_group__stage=stage, tournament_team=tt,
@@ -1280,23 +1280,23 @@ def add_solo_players_to_group(request):
     group_id = request.data.get("group_id")
     competitor_ids = request.data.get("competitor_ids", [])
     if group_id in (None, ""):
-        return Response({"message": "group_id is required."}, status=400)
+        return Response({"message": "group_id is required.", "code": "group_required"}, status=400)
     if not isinstance(competitor_ids, list) or not all(isinstance(c, int) for c in competitor_ids):
-        return Response({"message": "competitor_ids must be a list of integers."}, status=400)
+        return Response({"message": "competitor_ids must be a list of integers.", "code": "competitor_ids_list_integers"}, status=400)
 
     group = get_object_or_404(StageGroups, group_id=group_id)
     stage = group.stage
     event = stage.event
     if not _seeding_gate(user, event):
-        return Response({"message": "You do not have permission to manage seeding for this event."}, status=403)
+        return Response({"message": "You do not have permission to manage seeding for this event.", "code": "not_permission_manage_seeding"}, status=403)
     if event.participant_type != "solo":
-        return Response({"message": "This endpoint is for solo events only."}, status=400)
+        return Response({"message": "This endpoint is for solo events only.", "code": "endpoint_solo_events"}, status=400)
 
     regs = RegisteredCompetitors.objects.filter(
         event=event, id__in=competitor_ids, team__isnull=True, status="registered",
     )
     if not regs.exists():
-        return Response({"message": "No valid registered solo players found for the provided competitor_ids."}, status=400)
+        return Response({"message": "No valid registered solo players found for the provided competitor_ids.", "code": "no_valid_registered_solo"}, status=400)
 
     existing_group_player_ids = set(
         StageGroupCompetitor.objects.filter(
@@ -1337,22 +1337,22 @@ def add_solo_players_to_stage(request):
     stage_id = request.data.get("stage_id")
     competitor_ids = request.data.get("competitor_ids", [])
     if stage_id in (None, ""):
-        return Response({"message": "stage_id is required."}, status=400)
+        return Response({"message": "stage_id is required.", "code": "stage_required"}, status=400)
     if not isinstance(competitor_ids, list) or not all(isinstance(c, int) for c in competitor_ids):
-        return Response({"message": "competitor_ids must be a list of integers."}, status=400)
+        return Response({"message": "competitor_ids must be a list of integers.", "code": "competitor_ids_list_integers"}, status=400)
 
     stage = get_object_or_404(Stages, stage_id=stage_id)
     event = stage.event
     if not _seeding_gate(user, event):
-        return Response({"message": "You do not have permission to manage seeding for this event."}, status=403)
+        return Response({"message": "You do not have permission to manage seeding for this event.", "code": "not_permission_manage_seeding"}, status=403)
     if event.participant_type != "solo":
-        return Response({"message": "This endpoint is for solo events only."}, status=400)
+        return Response({"message": "This endpoint is for solo events only.", "code": "endpoint_solo_events"}, status=400)
 
     regs = RegisteredCompetitors.objects.filter(
         event=event, id__in=competitor_ids, team__isnull=True, status="registered",
     )
     if not regs.exists():
-        return Response({"message": "No valid registered solo players found for the provided competitor_ids."}, status=400)
+        return Response({"message": "No valid registered solo players found for the provided competitor_ids.", "code": "no_valid_registered_solo"}, status=400)
 
     existing_ids = set(
         StageCompetitor.objects.filter(
@@ -1391,12 +1391,12 @@ def list_registered_solo_players(request):
         return err
     event_id = request.query_params.get("event_id")
     if not event_id:
-        return Response({"message": "event_id is required."}, status=400)
+        return Response({"message": "event_id is required.", "code": "event_required"}, status=400)
     event = get_object_or_404(Event, event_id=event_id)
     if not _seeding_gate(user, event):
-        return Response({"message": "You do not have permission to manage seeding for this event."}, status=403)
+        return Response({"message": "You do not have permission to manage seeding for this event.", "code": "not_permission_manage_seeding"}, status=403)
     if event.participant_type != "solo":
-        return Response({"message": "This endpoint is for solo events only.", "players": []}, status=400)
+        return Response({"message": "This endpoint is for solo events only.", "players": [], "code": "endpoint_solo_events"}, status=400)
 
     stage_id = request.query_params.get("stage_id")
     group_id = request.query_params.get("group_id")
@@ -1447,12 +1447,12 @@ def list_registered_teams(request):
         return err
     event_id = request.query_params.get("event_id")
     if not event_id:
-        return Response({"message": "event_id is required."}, status=400)
+        return Response({"message": "event_id is required.", "code": "event_required"}, status=400)
     event = get_object_or_404(Event, event_id=event_id)
     if not _seeding_gate(user, event):
-        return Response({"message": "You do not have permission to manage seeding for this event."}, status=403)
+        return Response({"message": "You do not have permission to manage seeding for this event.", "code": "not_permission_manage_seeding"}, status=403)
     if event.participant_type == "solo":
-        return Response({"message": "This endpoint is for team events only.", "teams": []}, status=400)
+        return Response({"message": "This endpoint is for team events only.", "teams": [], "code": "endpoint_team_events"}, status=400)
 
     # select_related BOTH competitor kinds (owner 2026-08-20, external results import): a ghost row's
     # .team is None and .ghost_team is the real FK, so fetching only "team" left every ghost's name

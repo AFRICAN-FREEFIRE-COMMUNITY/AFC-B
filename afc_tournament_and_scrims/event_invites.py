@@ -131,10 +131,10 @@ def _auth_user(request):
     """The Bearer-token user, or (None, error Response). Mirrors event_links._auth_user."""
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return None, Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return None, Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
     user = validate_token(auth.split(" ")[1])
     if not user:
-        return None, Response({"message": "Invalid or expired session token."}, status=401)
+        return None, Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
     return user, None
 
 
@@ -601,21 +601,21 @@ def create_team_invitations(request):
     delivery, delivery_error = _clean_delivery(request.data.get("delivery"))
 
     if not event_id:
-        return Response({"message": "event_id is required."}, status=400)
+        return Response({"message": "event_id is required.", "code": "event_required"}, status=400)
     if not isinstance(team_ids, list):
-        return Response({"message": "team_ids must be a list of team ids."}, status=400)
+        return Response({"message": "team_ids must be a list of team ids.", "code": "team_ids_list_team"}, status=400)
     if not isinstance(user_ids, list):
-        return Response({"message": "user_ids must be a list of player ids."}, status=400)
+        return Response({"message": "user_ids must be a list of player ids.", "code": "user_ids_list_player"}, status=400)
     if not team_ids and not user_ids:
         return Response(
-            {"message": "Pick at least one team or player to invite."}, status=400,
+            {"message": "Pick at least one team or player to invite.", "code": "pick_least_team_player"}, status=400,
         )
     if kind not in VALID_KINDS:
         return Response(
-            {"message": "kind must be one of: per_team, per_player, fcfs, bulk."}, status=400,
+            {"message": "kind must be one of: per_team, per_player, fcfs, bulk.", "code": "kind_per_team_per"}, status=400,
         )
     if delivery_error:
-        return Response({"message": delivery_error}, status=400)
+        return Response({"message": delivery_error, "code": "create_team_invitations_refused"}, status=400)
 
     # `slots` is meaningful for fcfs alone. Accepting it for the other kinds would create a ceiling
     # nothing enforces, so it is refused rather than ignored: a silently dropped limit is how an
@@ -627,18 +627,18 @@ def create_team_invitations(request):
         try:
             slots = int(slots)
         except (TypeError, ValueError):
-            return Response({"message": "slots must be a whole number."}, status=400)
+            return Response({"message": "slots must be a whole number.", "code": "slots_whole_number"}, status=400)
         if slots < 1:
-            return Response({"message": "slots must be at least 1."}, status=400)
+            return Response({"message": "slots must be at least 1.", "code": "slots_least"}, status=400)
         if kind != "fcfs":
             return Response(
-                {"message": "slots only applies to a first come, first served invitation."},
+                {"message": "slots only applies to a first come, first served invitation.", "code": "slots_applies_first_come"},
                 status=400,
             )
 
     event = get_object_or_404(Event, event_id=event_id)
     if not _can_invite(user, event):
-        return Response({"message": "Unauthorized."}, status=403)
+        return Response({"message": "Unauthorized.", "code": "create_team_invitations_unauthorized"}, status=403)
     # WHICH SHAPE THIS EVENT TAKES. A solo event has no teams to address and a duo/squad event has
     # no individual entrants, so sending the wrong list is a mistake worth naming rather than
     # silently ignoring half the request.
@@ -646,11 +646,11 @@ def create_team_invitations(request):
     if is_solo_event:
         if team_ids:
             return Response(
-                {"message": "This is a solo event. Invite players, not teams."}, status=400,
+                {"message": "This is a solo event. Invite players, not teams.", "code": "solo_event_invite_players"}, status=400,
             )
         if not user_ids:
             return Response(
-                {"message": "user_ids must be a non-empty list of player ids."}, status=400,
+                {"message": "user_ids must be a non-empty list of player ids.", "code": "user_ids_non_empty"}, status=400,
             )
         if kind == "per_team":
             # An older client that sends no kind defaults to per_team; on a solo event that plainly
@@ -660,24 +660,24 @@ def create_team_invitations(request):
             pass
         elif kind not in ("fcfs", "bulk"):
             return Response(
-                {"message": "kind must be one of: per_player, fcfs, bulk."}, status=400,
+                {"message": "kind must be one of: per_player, fcfs, bulk.", "code": "kind_per_player_fcfs"}, status=400,
             )
     else:
         if user_ids:
             return Response(
-                {"message": "This event is played in teams. Invite teams, not players."},
+                {"message": "This event is played in teams. Invite teams, not players.", "code": "event_played_teams_invite"},
                 status=400,
             )
         if not team_ids:
             return Response(
-                {"message": "team_ids must be a non-empty list of team ids."}, status=400,
+                {"message": "team_ids must be a non-empty list of team ids.", "code": "team_ids_non_empty"}, status=400,
             )
         if kind == "per_player":
             return Response(
-                {"message": "per_player invitations are for solo events."}, status=400,
+                {"message": "per_player invitations are for solo events.", "code": "per_player_invitations_solo"}, status=400,
             )
     if effective_event_status(event) in ("cancelled", "completed"):
-        return Response({"message": "This event is no longer open for invitations."}, status=400)
+        return Response({"message": "This event is no longer open for invitations.", "code": "event_no_longer_open"}, status=400)
 
     # Coerce ids defensively: the dialog sends ints, but a hand-made call must not 500 the batch.
     wanted = []
@@ -880,10 +880,10 @@ def invitation_reach(request):
 
     event_id = request.GET.get("event_id")
     if not event_id:
-        return Response({"message": "event_id is required."}, status=400)
+        return Response({"message": "event_id is required.", "code": "event_required"}, status=400)
     event = get_object_or_404(Event, event_id=event_id)
     if not _can_invite(user, event):
-        return Response({"message": "Unauthorized."}, status=403)
+        return Response({"message": "Unauthorized.", "code": "invitation_reach_unauthorized"}, status=403)
 
     # Bounded like every other list here: a hand-made call must not be able to ask us to walk the
     # whole team table. MAX_LIMIT is the same ceiling the invitation lists use.
@@ -946,11 +946,11 @@ def list_event_invitations(request):
 
     event_id = request.GET.get("event_id")
     if not event_id:
-        return Response({"message": "event_id is required."}, status=400)
+        return Response({"message": "event_id is required.", "code": "event_required"}, status=400)
 
     event = get_object_or_404(Event, event_id=event_id)
     if not _can_invite(user, event):
-        return Response({"message": "Unauthorized."}, status=403)
+        return Response({"message": "Unauthorized.", "code": "list_event_invitations_unauthorized"}, status=403)
 
     base = EventTeamInvitation.objects.filter(event=event)
     _expire_stale(base)
@@ -1006,7 +1006,7 @@ def cancel_team_invitation(request, invitation_id):
         EventTeamInvitation.objects.select_related("event", "team"), id=invitation_id,
     )
     if not _can_invite(user, invitation.event):
-        return Response({"message": "Unauthorized."}, status=403)
+        return Response({"message": "Unauthorized.", "code": "cancel_team_invitation_unauthorized"}, status=403)
     if invitation.status != "pending":
         return Response(
             {"message": f"This invitation was already {invitation.status}."}, status=400,
@@ -1067,7 +1067,7 @@ def list_my_team_invitations(request):
             or TeamMembers.objects.filter(team=team, member=user).exists()
         )
         if not belongs:
-            return Response({"message": "You are not a member of this team."}, status=403)
+            return Response({"message": "You are not a member of this team.", "code": "not_member_team"}, status=403)
     else:
         membership = TeamMembers.objects.filter(member=user).select_related("team").first()
         if not membership:
@@ -1166,13 +1166,13 @@ def _load_for_response(user, invitation_id):
     if invitation.user_id:
         if user.user_id != invitation.user_id:
             return None, Response(
-                {"message": "Only the invited player can answer this invitation."},
+                {"message": "Only the invited player can answer this invitation.", "code": "invited_player_answer_invitation"},
                 status=403,
             )
     elif not _user_can_register_team(user, invitation.team):
         return None, Response(
             {"message": "Only the team owner, captain, vice-captain, manager, or coach can "
-                        "answer an event invitation."},
+                        "answer an event invitation.", "code": "team_owner_captain_vice"},
             status=403,
         )
     if invitation.is_expired() and invitation.status == "pending":
@@ -1230,7 +1230,7 @@ def accept_team_invitation(request, invitation_id):
     if campaign is not None:
         if campaign.status != "open":
             return Response(
-                {"message": "This invitation is closed. All of its places have been taken."},
+                {"message": "This invitation is closed. All of its places have been taken.", "code": "invitation_closed_places_taken"},
                 status=409,
             )
         if not campaign.claim_slot():
@@ -1238,7 +1238,7 @@ def accept_team_invitation(request, invitation_id):
             # campaign so the remaining invitations stop offering something that is gone.
             _close_if_full(campaign)
             return Response(
-                {"message": "This invitation is closed. All of its places have been taken."},
+                {"message": "This invitation is closed. All of its places have been taken.", "code": "invitation_closed_places_taken"},
                 status=409,
             )
         claimed = campaign.slots is not None and campaign.kind == "fcfs"
@@ -1339,17 +1339,17 @@ def _load_bulk_for_response(user, campaign_id, team_id):
     )
     if campaign.kind != "bulk":
         return None, None, Response(
-            {"message": "This is not an open invitation."}, status=400,
+            {"message": "This is not an open invitation.", "code": "not_open_invitation"}, status=400,
         )
 
     if not team_id:
-        return None, None, Response({"message": "team_id is required."}, status=400)
+        return None, None, Response({"message": "team_id is required.", "code": "team_required"}, status=400)
     team = get_object_or_404(Team, team_id=team_id)
 
     if not _user_can_register_team(user, team):
         return None, None, Response(
             {"message": "Only the team owner, captain, vice-captain, manager, or coach can "
-                        "answer an event invitation."},
+                        "answer an event invitation.", "code": "team_owner_captain_vice"},
             status=403,
         )
     # The audience is the guest list. Without this check any team that learned the campaign id could
@@ -1357,14 +1357,14 @@ def _load_bulk_for_response(user, campaign_id, team_id):
     # public one.
     if team.team_id not in (campaign.audience_team_ids or []):
         return None, None, Response(
-            {"message": "This invitation was not sent to your team."}, status=403,
+            {"message": "This invitation was not sent to your team.", "code": "invitation_not_sent_team"}, status=403,
         )
     if campaign.is_expired() and campaign.status == "open":
         EventInvitationCampaign.objects.filter(pk=campaign.pk).update(status="closed")
         campaign.status = "closed"
     if campaign.status != "open":
         return None, None, Response(
-            {"message": "This invitation is closed."}, status=400,
+            {"message": "This invitation is closed.", "code": "invitation_closed"}, status=400,
         )
     # One answer per team. The row a previous answer wrote is what makes this idempotent, so a
     # double-tap on a phone cannot register the same team twice or leave two rows behind.
@@ -1490,7 +1490,7 @@ def close_invitation_campaign(request, campaign_id):
         EventInvitationCampaign.objects.select_related("event"), id=campaign_id,
     )
     if not _can_invite(user, campaign.event):
-        return Response({"message": "Unauthorized."}, status=403)
+        return Response({"message": "Unauthorized.", "code": "close_invitation_campaign_unauthorized"}, status=403)
     if campaign.status != "open":
         return Response({"message": f"This invitation is already {campaign.status}."}, status=400)
 

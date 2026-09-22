@@ -177,17 +177,17 @@ def _require_active_vendor(request):
     their own payout bank."""
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return None, None, Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return None, None, Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
 
     user = validate_token(auth.split(" ")[1])
     if not user:
-        return None, None, Response({"message": "Invalid or expired session token."}, status=401)
+        return None, None, Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
 
     vendor = Vendor.objects.filter(user=user).first()
     if not vendor:
-        return None, None, Response({"message": "You are not a vendor."}, status=403)
+        return None, None, Response({"message": "You are not a vendor.", "code": "not_vendor"}, status=403)
     if vendor.status != "active":
-        return None, None, Response({"message": "Your vendor access is suspended."}, status=403)
+        return None, None, Response({"message": "Your vendor access is suspended.", "code": "vendor_access_suspended"}, status=403)
 
     return user, vendor, None
 
@@ -259,7 +259,7 @@ def resolve_account(request):
     account_number = (request.data.get("account_number") or "").strip()
     bank_code = (request.data.get("bank_code") or "").strip()
     if not account_number or not bank_code:
-        return Response({"message": "account_number and bank_code are required."}, status=400)
+        return Response({"message": "account_number and bank_code are required.", "code": "account_number_bank_code"}, status=400)
 
     ok, body = _paystack(
         "GET", f"/bank/resolve?account_number={account_number}&bank_code={bank_code}"
@@ -319,7 +319,7 @@ def vendor_save_bank(request):
     bank_code = (request.data.get("bank_code") or "").strip()
     bank_name = (request.data.get("bank_name") or "").strip()
     if not account_number or not bank_code:
-        return Response({"message": "account_number and bank_code are required."}, status=400)
+        return Response({"message": "account_number and bank_code are required.", "code": "account_number_bank_code"}, status=400)
 
     # ── 2a. Resolve the holder name server-side (do not trust a client-sent name). ──
     ok, body = _paystack(
@@ -586,7 +586,7 @@ def admin_retry_owed_paystack_payouts(request):
     if payout_id:
         payouts = list(VendorPayout.objects.select_related("vendor").filter(id=payout_id))
         if not payouts:
-            return Response({"message": "Payout not found."}, status=404)
+            return Response({"message": "Payout not found.", "code": "payout_not_found"}, status=404)
     elif vendor_id:
         vendor = get_object_or_404(Vendor, id=vendor_id)
         payouts = list(
@@ -594,7 +594,7 @@ def admin_retry_owed_paystack_payouts(request):
             .filter(vendor=vendor, status__in=("owed", "released"))
         )
     else:
-        return Response({"message": "Provide payout_id or vendor_id."}, status=400)
+        return Response({"message": "Provide payout_id or vendor_id.", "code": "provide_payout_vendor"}, status=400)
 
     released = 0
     still_owed = 0

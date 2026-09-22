@@ -104,7 +104,7 @@ def _require_user(request):
     user = _user_from_request(request)
     if not user:
         return None, Response(
-            {"message": "You need to be signed in to do this"},
+            {"message": "You need to be signed in to do this", "code": "need_signed"},
             status=status.HTTP_401_UNAUTHORIZED,
         )
     return user, None
@@ -378,13 +378,13 @@ def poll_detail(request, slug):
         .first()
     )
     if not poll:
-        return Response({"message": "Poll not found"}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "Poll not found", "code": "poll_not_found"}, status=status.HTTP_404_NOT_FOUND)
 
     # A draft is visible only to somebody who could edit it. `preview_only` and `link_only` are
     # deliberately readable here: the first is "look but do not touch", the second is "not listed",
     # and neither is "hidden".
     if poll.visibility == Poll.DRAFT and not can_manage_poll(user, poll):
-        return Response({"message": "Poll not found"}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "Poll not found", "code": "poll_not_found"}, status=status.HTTP_404_NOT_FOUND)
 
     verdict = check_eligibility(poll, user)
     show_results = _results_visible(poll, user)
@@ -540,23 +540,23 @@ def submit_response(request, slug):
 
     poll = Poll.objects.filter(slug=slug).prefetch_related("questions__options").first()
     if not poll:
-        return Response({"message": "Poll not found"}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "Poll not found", "code": "poll_not_found"}, status=status.HTTP_404_NOT_FOUND)
 
     if poll.visibility == Poll.PREVIEW_ONLY:
         return Response(
-            {"message": "This poll is a preview and is not taking answers"},
+            {"message": "This poll is a preview and is not taking answers", "code": "poll_preview_not_taking"},
             status=status.HTTP_403_FORBIDDEN,
         )
     if not poll.is_open():
         return Response(
-            {"message": "This poll is not open for answers"}, status=status.HTTP_403_FORBIDDEN
+            {"message": "This poll is not open for answers", "code": "poll_not_open_answers"}, status=status.HTTP_403_FORBIDDEN
         )
 
     # THE ONLY REAL GATE. Anything the client did is a courtesy.
     verdict = check_eligibility(poll, user)
     if not verdict["eligible"]:
         return Response(
-            {"message": "You are not eligible to vote in this poll", "eligibility": verdict},
+            {"message": "You are not eligible to vote in this poll", "eligibility": verdict, "code": "not_eligible_vote_poll"},
             status=status.HTTP_403_FORBIDDEN,
         )
 
@@ -569,21 +569,21 @@ def submit_response(request, slug):
         team = user_team_for_poll(poll, user)
         if not team:
             return Response(
-                {"message": "This poll is answered by teams, and you are not on a roster"},
+                {"message": "This poll is answered by teams, and you are not on a roster", "code": "poll_answered_teams_not"},
                 status=status.HTTP_403_FORBIDDEN,
             )
 
     existing = _find_response(poll, user)
     if existing and existing.status == PollResponse.SUBMITTED and not poll.allow_edit_until_close:
         return Response(
-            {"message": "You have already voted in this poll, and answers cannot be changed"},
+            {"message": "You have already voted in this poll, and answers cannot be changed", "code": "already_voted_poll_answers"},
             status=status.HTTP_403_FORBIDDEN,
         )
 
     questions = list(poll.questions.all())
     cleaned, error_message = _validate_answers(poll, request.data.get("answers"), questions)
     if error_message:
-        return Response({"message": error_message}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": error_message, "code": "submit_response_refused"}, status=status.HTTP_400_BAD_REQUEST)
 
     # ── BRANCHING: the server decides the path, then throws away everything off it ────────────
     # The client evaluated the same rules live so the form could react, but a person who answers
@@ -616,7 +616,7 @@ def submit_response(request, slug):
             status=status.HTTP_400_BAD_REQUEST,
         )
     if not cleaned:
-        return Response({"message": "No answers were sent"}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "No answers were sent", "code": "no_answers_sent"}, status=status.HTTP_400_BAD_REQUEST)
 
     now = timezone.now()
     with transaction.atomic():
@@ -850,7 +850,7 @@ def admin_polls(request):
     data = request.data or {}
     title = (data.get("title") or "").strip()
     if not title:
-        return Response({"message": "A title is required"}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "A title is required", "code": "title_required"}, status=status.HTTP_400_BAD_REQUEST)
 
     event = None
     if data.get("event_id"):
@@ -858,12 +858,12 @@ def admin_polls(request):
 
         event = Event.objects.filter(event_id=data.get("event_id")).first()
         if not event:
-            return Response({"message": "Event not found"}, status=status.HTTP_404_NOT_FOUND)
+            return Response({"message": "Event not found", "code": "event_not_found"}, status=status.HTTP_404_NOT_FOUND)
 
     draft = Poll(event=event)
     if not can_manage_poll(user, draft):
         return Response(
-            {"message": "You do not have permission to create this poll"},
+            {"message": "You do not have permission to create this poll", "code": "not_permission_create_poll"},
             status=status.HTTP_403_FORBIDDEN,
         )
 
@@ -872,7 +872,7 @@ def admin_polls(request):
     try:
         _apply_poll_fields(poll, data)
     except PollFieldError as exc:
-        return Response({"message": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": str(exc), "code": "admin_polls_refused"}, status=status.HTTP_400_BAD_REQUEST)
     poll.save()
     _save_eligibility(poll, data.get("eligibility"))
     return Response({"slug": poll.slug}, status=status.HTTP_201_CREATED)
@@ -1015,9 +1015,9 @@ def admin_poll_detail(request, slug):
 
     poll = Poll.objects.filter(slug=slug).select_related("eligibility", "event").first()
     if not poll:
-        return Response({"message": "Poll not found"}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "Poll not found", "code": "poll_not_found"}, status=status.HTTP_404_NOT_FOUND)
     if not can_manage_poll(user, poll):
-        return Response({"message": "You do not have permission to manage this poll"},
+        return Response({"message": "You do not have permission to manage this poll", "code": "not_permission_manage_poll"},
                         status=status.HTTP_403_FORBIDDEN)
 
     if request.method == "GET":
@@ -1091,7 +1091,7 @@ def admin_poll_detail(request, slug):
         if PollResponse.objects.filter(poll=poll).exists():
             return Response(
                 {"message": "This poll has answers and cannot be deleted. Set it back to draft "
-                            "to take it off the site."},
+                            "to take it off the site.", "code": "poll_answers_cannot_deleted"},
                 status=status.HTTP_409_CONFLICT,
             )
         poll.delete()
@@ -1100,7 +1100,7 @@ def admin_poll_detail(request, slug):
     try:
         _apply_poll_fields(poll, request.data or {})
     except PollFieldError as exc:
-        return Response({"message": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": str(exc), "code": "admin_poll_detail_refused"}, status=status.HTTP_400_BAD_REQUEST)
     poll.save()
     _save_eligibility(poll, (request.data or {}).get("eligibility"))
     return Response({"slug": poll.slug}, status=status.HTTP_200_OK)
@@ -1129,19 +1129,19 @@ def admin_save_questions(request, slug):
 
     poll = Poll.objects.filter(slug=slug).first()
     if not poll:
-        return Response({"message": "Poll not found"}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "Poll not found", "code": "poll_not_found"}, status=status.HTTP_404_NOT_FOUND)
     if not can_manage_poll(user, poll):
-        return Response({"message": "You do not have permission to manage this poll"},
+        return Response({"message": "You do not have permission to manage this poll", "code": "not_permission_manage_poll"},
                         status=status.HTTP_403_FORBIDDEN)
     if PollResponse.objects.filter(poll=poll).exists():
         return Response(
-            {"message": "People have already answered this poll, so its questions cannot change"},
+            {"message": "People have already answered this poll, so its questions cannot change", "code": "people_already_answered_poll"},
             status=status.HTTP_409_CONFLICT,
         )
 
     payload = (request.data or {}).get("questions")
     if not isinstance(payload, list):
-        return Response({"message": "questions must be a list"}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "questions must be a list", "code": "questions_list"}, status=status.HTTP_400_BAD_REQUEST)
 
     with transaction.atomic():
         kept_questions = []
@@ -1149,7 +1149,7 @@ def admin_save_questions(request, slug):
         for order, raw in enumerate(payload):
             prompt = (raw.get("prompt") or "").strip()
             if not prompt:
-                return Response({"message": "Every question needs a prompt"},
+                return Response({"message": "Every question needs a prompt", "code": "question_needs_prompt"},
                                 status=status.HTTP_400_BAD_REQUEST)
             answer_type = raw.get("answer_type") or PollQuestion.SINGLE_CHOICE
             if answer_type not in dict(PollQuestion.ANSWER_TYPE_CHOICES):
@@ -1211,7 +1211,7 @@ def admin_save_questions(request, slug):
         if "branch_rules" in (request.data or {}):
             error = _save_branch_rules(poll, (request.data or {}).get("branch_rules"))
             if error:
-                return Response({"message": error}, status=status.HTTP_400_BAD_REQUEST)
+                return Response({"message": error, "code": "admin_save_questions_refused"}, status=status.HTTP_400_BAD_REQUEST)
 
     return Response({"message": "Questions saved"}, status=status.HTTP_200_OK)
 
@@ -1290,9 +1290,9 @@ def admin_results(request, slug):
 
     poll = Poll.objects.filter(slug=slug).prefetch_related("questions__options").first()
     if not poll:
-        return Response({"message": "Poll not found"}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "Poll not found", "code": "poll_not_found"}, status=status.HTTP_404_NOT_FOUND)
     if not can_manage_poll(user, poll):
-        return Response({"message": "You do not have permission to see these results"},
+        return Response({"message": "You do not have permission to see these results", "code": "not_permission_see_results"},
                         status=status.HTTP_403_FORBIDDEN)
 
     locale = get_locale(request)
@@ -1439,7 +1439,7 @@ def edition_detail(request, slug):
     user = _user_from_request(request)
     edition = AwardsEdition.objects.filter(slug=slug).first()
     if not edition:
-        return Response({"message": "Awards edition not found"}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "Awards edition not found", "code": "awards_edition_not_found"}, status=status.HTTP_404_NOT_FOUND)
 
     polls = list(
         edition.polls.filter(visibility__in=[Poll.PUBLIC, Poll.LINK_ONLY, Poll.PREVIEW_ONLY])
@@ -1518,7 +1518,7 @@ def watch(request):
     data = request.data or {}
     reason = data.get("reason") or PollWatch.OPENS
     if reason not in dict(PollWatch.REASON_CHOICES):
-        return Response({"message": "Unknown watch reason"}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "Unknown watch reason", "code": "unknown_watch_reason"}, status=status.HTTP_400_BAD_REQUEST)
 
     poll = Poll.objects.filter(slug=data.get("poll_slug")).first() if data.get("poll_slug") else None
     edition = (
@@ -1527,7 +1527,7 @@ def watch(request):
     )
     if not poll and not edition:
         return Response(
-            {"message": "Say which poll or edition to watch"}, status=status.HTTP_400_BAD_REQUEST
+            {"message": "Say which poll or edition to watch", "code": "say_which_poll_edition"}, status=status.HTTP_400_BAD_REQUEST
         )
 
     if request.method == "DELETE":
@@ -1562,33 +1562,33 @@ def captain_override(request, slug):
 
     poll = Poll.objects.filter(slug=slug).prefetch_related("questions__options").first()
     if not poll:
-        return Response({"message": "Poll not found"}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "Poll not found", "code": "poll_not_found"}, status=status.HTTP_404_NOT_FOUND)
     if poll.subject != Poll.TEAM:
-        return Response({"message": "This is not a team poll"}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "This is not a team poll", "code": "not_team_poll"}, status=status.HTTP_400_BAD_REQUEST)
     if not poll.captain_override_allowed:
         return Response(
-            {"message": "The captain cannot set this poll's answer directly"},
+            {"message": "The captain cannot set this poll's answer directly", "code": "captain_cannot_set_poll"},
             status=status.HTTP_403_FORBIDDEN,
         )
     if not poll.is_open():
         return Response(
-            {"message": "This poll is not open for answers"}, status=status.HTTP_403_FORBIDDEN
+            {"message": "This poll is not open for answers", "code": "poll_not_open_answers"}, status=status.HTTP_403_FORBIDDEN
         )
 
     team = user_team_for_poll(poll, user)
     if not team or not user_is_captain(team, user):
         return Response(
-            {"message": "Only the team captain can set the team's answer"},
+            {"message": "Only the team captain can set the team's answer", "code": "team_captain_set_team"},
             status=status.HTTP_403_FORBIDDEN,
         )
 
     question = poll.questions.filter(question_id=request.data.get("question_id")).first()
     if not question:
-        return Response({"message": "That question is not part of this poll"},
+        return Response({"message": "That question is not part of this poll", "code": "question_not_part_poll"},
                         status=status.HTTP_400_BAD_REQUEST)
     option = question.options.filter(option_id=request.data.get("option_id")).first()
     if not option:
-        return Response({"message": "That option is not part of this question"},
+        return Response({"message": "That option is not part of this question", "code": "option_not_part_question"},
                         status=status.HTTP_400_BAD_REQUEST)
 
     result = set_captain_override(poll, team, question, option, user)
@@ -1624,14 +1624,14 @@ def admin_publish_winner(request, slug):
 
     poll = Poll.objects.filter(slug=slug).first()
     if not poll:
-        return Response({"message": "Poll not found"}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "Poll not found", "code": "poll_not_found"}, status=status.HTTP_404_NOT_FOUND)
     if not can_manage_poll(user, poll):
-        return Response({"message": "You do not have permission to manage this poll"},
+        return Response({"message": "You do not have permission to manage this poll", "code": "not_permission_manage_poll"},
                         status=status.HTTP_403_FORBIDDEN)
 
     question = poll.questions.filter(question_id=request.data.get("question_id")).first()
     if not question:
-        return Response({"message": "That question is not part of this poll"},
+        return Response({"message": "That question is not part of this poll", "code": "question_not_part_poll"},
                         status=status.HTTP_400_BAD_REQUEST)
 
     option_id = request.data.get("option_id")
@@ -1648,7 +1648,7 @@ def admin_publish_winner(request, slug):
 
     option = question.options.filter(option_id=option_id).first()
     if not option:
-        return Response({"message": "That option is not part of this question"},
+        return Response({"message": "That option is not part of this question", "code": "option_not_part_question"},
                         status=status.HTTP_400_BAD_REQUEST)
 
     votes = request.data.get("votes")
@@ -1656,7 +1656,7 @@ def admin_publish_winner(request, slug):
     try:
         question.published_winner_votes = int(votes) if votes not in (None, "") else None
     except (TypeError, ValueError):
-        return Response({"message": "The vote count must be a number"},
+        return Response({"message": "The vote count must be a number", "code": "vote_count_number"},
                         status=status.HTTP_400_BAD_REQUEST)
     question.published_at = timezone.now()
     # Provenance, so a reader a year from now can tell a transcribed 2025 number from one an admin
@@ -1685,7 +1685,7 @@ def admin_editions(request):
     if error:
         return error
     if not is_polls_admin(user):
-        return Response({"message": "You do not have permission to manage awards editions"},
+        return Response({"message": "You do not have permission to manage awards editions", "code": "not_permission_manage_awards"},
                         status=status.HTTP_403_FORBIDDEN)
 
     if request.method == "GET":
@@ -1698,7 +1698,7 @@ def admin_editions(request):
     data = request.data or {}
     title = (data.get("title") or "").strip()
     if not title:
-        return Response({"message": "A title is required"}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "A title is required", "code": "title_required"}, status=status.HTTP_400_BAD_REQUEST)
 
     edition = AwardsEdition(slug=_unique_edition_slug(data.get("slug") or title), title=title)
     _apply_edition_fields(edition, data)
@@ -1756,12 +1756,12 @@ def admin_edition_detail(request, slug):
     if error:
         return error
     if not is_polls_admin(user):
-        return Response({"message": "You do not have permission to manage awards editions"},
+        return Response({"message": "You do not have permission to manage awards editions", "code": "not_permission_manage_awards"},
                         status=status.HTTP_403_FORBIDDEN)
 
     edition = AwardsEdition.objects.filter(slug=slug).first()
     if not edition:
-        return Response({"message": "Awards edition not found"}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "Awards edition not found", "code": "awards_edition_not_found"}, status=status.HTTP_404_NOT_FOUND)
 
     if request.method == "GET":
         payload = _serialize_edition(edition)
@@ -1771,7 +1771,7 @@ def admin_edition_detail(request, slug):
     if request.method == "DELETE":
         if edition.polls.exists():
             return Response(
-                {"message": "Polls still belong to this edition. Move them first, or archive it."},
+                {"message": "Polls still belong to this edition. Move them first, or archive it.", "code": "polls_belong_edition_move"},
                 status=status.HTTP_409_CONFLICT,
             )
         edition.delete()
@@ -1807,15 +1807,15 @@ def admin_announce(request, slug):
 
     poll = Poll.objects.filter(slug=slug).select_related("eligibility").first()
     if not poll:
-        return Response({"message": "Poll not found"}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "Poll not found", "code": "poll_not_found"}, status=status.HTTP_404_NOT_FOUND)
     if not can_manage_poll(user, poll):
-        return Response({"message": "You do not have permission to manage this poll"},
+        return Response({"message": "You do not have permission to manage this poll", "code": "not_permission_manage_poll"},
                         status=status.HTTP_403_FORBIDDEN)
     if poll.visibility == Poll.DRAFT:
         # Announcing a draft sends people to a page they cannot see. Refused rather than sent,
         # because the notification cannot be recalled once it has gone.
         return Response(
-            {"message": "Publish this poll before announcing it"},
+            {"message": "Publish this poll before announcing it", "code": "publish_poll_before_announcing"},
             status=status.HTTP_400_BAD_REQUEST,
         )
 

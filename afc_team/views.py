@@ -360,10 +360,10 @@ def create_team(request):
     session_token = request.headers.get("Authorization")
 
     if not session_token:
-        return Response({'status': 'error', 'message': 'Authorization header is required'}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'status': 'error', 'message': 'Authorization header is required', "code": "authorization_header_required"}, status=status.HTTP_400_BAD_REQUEST)
 
     if not session_token.startswith("Bearer "):
-        return Response({'status': 'error', 'message': 'Invalid token format'}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'status': 'error', 'message': 'Invalid token format', "code": "invalid_token_format"}, status=status.HTTP_400_BAD_REQUEST)
 
     session_token = session_token.split(" ")[1]
 
@@ -371,13 +371,13 @@ def create_team(request):
     user = validate_token(session_token)
     if not user:
         return Response(
-            {"message": "Invalid or expired session token."},
+            {"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"},
             status=status.HTTP_401_UNAUTHORIZED
         )
 
     # Ensure user is not in another team
     if TeamMembers.objects.filter(member=user).exists():
-        return Response({"message": "You are already in another team and cannot create a new one."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "You are already in another team and cannot create a new one.", "code": "already_team_cannot_create"}, status=status.HTTP_400_BAD_REQUEST)
 
     # Extract data
     team_name = request.data.get("team_name")
@@ -406,22 +406,22 @@ def create_team(request):
 
     # Validate required fields
     if not team_name:
-        return Response({"message": "Team name is required."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "Team name is required.", "code": "team_name_required"}, status=status.HTTP_400_BAD_REQUEST)
 
     if join_settings not in ["open", "by_request"]:
-        return Response({"message": "Invalid join settings."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "Invalid join settings.", "code": "invalid_join_settings"}, status=status.HTTP_400_BAD_REQUEST)
 
     # Check for existing team name
     if Team.objects.filter(team_name=team_name).exists():
-        return Response({"message": "Team name already exists."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "Team name already exists.", "code": "team_name_already_exists"}, status=status.HTTP_400_BAD_REQUEST)
     
     if len(team_description) > 200:
-        return Response({"message": "Team Description should not be more than 200 Characters."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "Team Description should not be more than 200 Characters.", "code": "team_description_not_characters"}, status=status.HTTP_400_BAD_REQUEST)
 
     # Normalise + validate the optional team tag. Empty string -> stored as NULL.
     normalized_tag, tag_error = _normalize_team_tag(team_tag)
     if tag_error:
-        return Response({"message": tag_error}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": tag_error, "code": "create_team_refused"}, status=status.HTTP_400_BAD_REQUEST)
     # "" means "no tag"; anything else is the cleaned tag. None (key absent) also -> NULL on create.
     team_tag_value = normalized_tag if normalized_tag else None
 
@@ -484,10 +484,10 @@ def invite_member(request):
     session_token = request.headers.get("Authorization")
 
     if not session_token:
-        return Response({'status': 'error', 'message': 'Authorization header is required'}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'status': 'error', 'message': 'Authorization header is required', "code": "authorization_header_required"}, status=status.HTTP_400_BAD_REQUEST)
 
     if not session_token.startswith("Bearer "):
-        return Response({'status': 'error', 'message': 'Invalid token format'}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'status': 'error', 'message': 'Invalid token format', "code": "invalid_token_format"}, status=status.HTTP_400_BAD_REQUEST)
 
     session_token = session_token.split(" ")[1]
 
@@ -495,7 +495,7 @@ def invite_member(request):
     # try:
     #     user = User.objects.get(session_token=session_token)
     # except User.DoesNotExist:
-    #     return Response({"message": "Invalid session token."}, status=status.HTTP_401_UNAUTHORIZED)
+    #     return Response({"message": "Invalid session token.", "code": "invalid_session_token"}, status=status.HTTP_401_UNAUTHORIZED)
     
     invitee_email_or_ign = request.data.get("invitee_email_or_ign")
     team_id = request.data.get("team_id")
@@ -520,7 +520,7 @@ def invite_member(request):
         )
 
     if not invitee_email_or_ign or not team_id:
-        return Response({'message': 'Invitee and team ID are required.'}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'message': 'Invitee and team ID are required.', "code": "invitee_team_required"}, status=status.HTTP_400_BAD_REQUEST)
 
     try:
         # Validate inviter
@@ -528,7 +528,7 @@ def invite_member(request):
         inviter = validate_token(session_token)
         if not inviter:
             return Response(
-                {"message": "Invalid or expired session token."},
+                {"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"},
                 status=status.HTTP_401_UNAUTHORIZED
             )
 
@@ -539,7 +539,7 @@ def invite_member(request):
         team = Team.objects.get(team_id=team_id)
         if not team_role_can(inviter, team, "can_invite_members"):
             return Response(
-                {'message': 'Your role on this team cannot invite members.'},
+                {'message': 'Your role on this team cannot invite members.', "code": "role_team_cannot_invite"},
                 status=status.HTTP_403_FORBIDDEN,
             )
 
@@ -560,15 +560,15 @@ def invite_member(request):
         ).first()
 
         if not invitee:
-            return Response({'message': 'Invitee not found.'}, status=status.HTTP_404_NOT_FOUND)
+            return Response({'message': 'Invitee not found.', "code": "invitee_not_found"}, status=status.HTTP_404_NOT_FOUND)
 
         # Ensure the invitee is not already in a team
         if TeamMembers.objects.filter(member=invitee).exists():
-            return Response({'message': 'The invitee is already a member of another team.'}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({'message': 'The invitee is already a member of another team.', "code": "invitee_already_member_team"}, status=status.HTTP_400_BAD_REQUEST)
 
         # Check if an invitation already exists
         if Invite.objects.filter(invitee=invitee, team=team, status_of_invite='unattended_to').exists():
-            return Response({'message': 'An invitation to this user is already pending.'}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({'message': 'An invitation to this user is already pending.', "code": "invitation_user_already_pending"}, status=status.HTTP_400_BAD_REQUEST)
 
         # Refuse at INVITE time when the team has no seat for this role, so the captain finds out
         # now (and can pick a staff role instead) rather than the invitee being bounced on accept.
@@ -605,9 +605,9 @@ def invite_member(request):
         return Response({'message': 'Invitation sent successfully.'}, status=status.HTTP_201_CREATED)
 
     except User.DoesNotExist:
-        return Response({'message': 'Invalid session token.'}, status=status.HTTP_401_UNAUTHORIZED)
+        return Response({'message': 'Invalid session token.', "code": "invalid_session_token"}, status=status.HTTP_401_UNAUTHORIZED)
     except Team.DoesNotExist:
-        return Response({'message': 'Team not found or you do not own this team.'}, status=status.HTTP_404_NOT_FOUND)
+        return Response({'message': 'Team not found or you do not own this team.', "code": "team_not_found_not"}, status=status.HTTP_404_NOT_FOUND)
     except Exception as e:
         return internal_error(e, where="invite_member", code="invite_member_failed")
 
@@ -618,24 +618,24 @@ def disband_team(request):
     session_token = request.headers.get("Authorization")
 
     if not session_token:
-        return Response({'status': 'error', 'message': 'Authorization header is required'}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'status': 'error', 'message': 'Authorization header is required', "code": "authorization_header_required"}, status=status.HTTP_400_BAD_REQUEST)
 
     if not session_token.startswith("Bearer "):
-        return Response({'status': 'error', 'message': 'Invalid token format'}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'status': 'error', 'message': 'Invalid token format', "code": "invalid_token_format"}, status=status.HTTP_400_BAD_REQUEST)
 
     session_token = session_token.split(" ")[1]
     
     team_id = request.data.get("team_id")
 
     if not team_id:
-        return Response({'message': 'Team ID is required.'}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'message': 'Team ID is required.', "code": "team_required"}, status=status.HTTP_400_BAD_REQUEST)
 
     try:
         # Validate user
         user = validate_token(session_token)
         if not user:
             return Response(
-                {"message": "Invalid or expired session token."},
+                {"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"},
                 status=status.HTTP_401_UNAUTHORIZED
             )
 
@@ -686,9 +686,9 @@ def disband_team(request):
         return Response({'message': 'Team disbanded successfully, and a report has been recorded.'}, status=status.HTTP_200_OK)
 
     except User.DoesNotExist:
-        return Response({'message': 'Invalid session token.'}, status=status.HTTP_401_UNAUTHORIZED)
+        return Response({'message': 'Invalid session token.', "code": "invalid_session_token"}, status=status.HTTP_401_UNAUTHORIZED)
     except Team.DoesNotExist:
-        return Response({'message': 'Team not found or you do not own this team.'}, status=status.HTTP_403_FORBIDDEN)
+        return Response({'message': 'Team not found or you do not own this team.', "code": "team_not_found_not"}, status=status.HTTP_403_FORBIDDEN)
     except Exception as e:
         return internal_error(e, where="disband_team", code="disband_team_failed")
 
@@ -699,17 +699,17 @@ def transfer_ownership(request):
     session_token = request.headers.get("Authorization")
 
     if not session_token:
-        return Response({'status': 'error', 'message': 'Authorization header is required'}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'status': 'error', 'message': 'Authorization header is required', "code": "authorization_header_required"}, status=status.HTTP_400_BAD_REQUEST)
 
     if not session_token.startswith("Bearer "):
-        return Response({'status': 'error', 'message': 'Invalid token format'}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'status': 'error', 'message': 'Invalid token format', "code": "invalid_token_format"}, status=status.HTTP_400_BAD_REQUEST)
 
     session_token = session_token.split(" ")[1]
     
     new_owner_ign = request.data.get("new_owner_ign")  # Username of the new owner
 
     if not new_owner_ign:
-        return Response({"message": "New owner username is required."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "New owner username is required.", "code": "new_owner_username_required"}, status=status.HTTP_400_BAD_REQUEST)
 
     try:
         # Identify the logged-in user (current owner)
@@ -717,7 +717,7 @@ def transfer_ownership(request):
         current_owner = validate_token(session_token)
         if not current_owner:
             return Response(
-                {"message": "Invalid or expired session token."},
+                {"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"},
                 status=status.HTTP_401_UNAUTHORIZED
             )
 
@@ -729,7 +729,7 @@ def transfer_ownership(request):
         try:
             new_owner_member = TeamMembers.objects.get(team=team, member=new_owner)
         except TeamMembers.DoesNotExist:
-            return Response({"message": "New owner must be a member of the team."}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"message": "New owner must be a member of the team.", "code": "new_owner_member_team"}, status=status.HTTP_400_BAD_REQUEST)
 
         # Update roles in TeamMembers
         # 1. Old owner -> member
@@ -785,9 +785,9 @@ def transfer_ownership(request):
         }, status=status.HTTP_200_OK)
 
     except User.DoesNotExist:
-        return Response({"message": "Invalid session token or new owner username."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "Invalid session token or new owner username.", "code": "invalid_session_token_new"}, status=status.HTTP_404_NOT_FOUND)
     except Team.DoesNotExist:
-        return Response({"message": "You do not own any team."}, status=status.HTTP_403_FORBIDDEN)
+        return Response({"message": "You do not own any team.", "code": "not_team"}, status=status.HTTP_403_FORBIDDEN)
     except Exception as e:
         return internal_error(e, where="transfer_ownership", code="transfer_ownership_failed")
 
@@ -798,10 +798,10 @@ def send_join_request(request):
     session_token = request.headers.get("Authorization")
 
     if not session_token:
-        return Response({'status': 'error', 'message': 'Authorization header is required'}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'status': 'error', 'message': 'Authorization header is required', "code": "authorization_header_required"}, status=status.HTTP_400_BAD_REQUEST)
 
     if not session_token.startswith("Bearer "):
-        return Response({'status': 'error', 'message': 'Invalid token format'}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'status': 'error', 'message': 'Invalid token format', "code": "invalid_token_format"}, status=status.HTTP_400_BAD_REQUEST)
 
     session_token = session_token.split(" ")[1]
     
@@ -814,7 +814,7 @@ def send_join_request(request):
         requester = validate_token(session_token)
         if not requester:
             return Response(
-                {"message": "Invalid or expired session token."},
+                {"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"},
                 status=status.HTTP_401_UNAUTHORIZED
             )
 
@@ -844,9 +844,9 @@ def send_join_request(request):
         return Response({"message": "Join request sent successfully."}, status=status.HTTP_201_CREATED)
 
     except User.DoesNotExist:
-        return Response({"message": "Invalid session token."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "Invalid session token.", "code": "invalid_session_token"}, status=status.HTTP_404_NOT_FOUND)
     except Team.DoesNotExist:
-        return Response({"message": "Team not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "Team not found.", "code": "team_not_found"}, status=status.HTTP_404_NOT_FOUND)
     except Exception as e:
         return internal_error(e, where="send_join_request", code="send_join_request_failed")
 
@@ -857,10 +857,10 @@ def review_join_request(request):
     session_token = request.headers.get("Authorization")
 
     if not session_token:
-        return Response({'status': 'error', 'message': 'Authorization header is required'}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'status': 'error', 'message': 'Authorization header is required', "code": "authorization_header_required"}, status=status.HTTP_400_BAD_REQUEST)
 
     if not session_token.startswith("Bearer "):
-        return Response({'status': 'error', 'message': 'Invalid token format'}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'status': 'error', 'message': 'Invalid token format', "code": "invalid_token_format"}, status=status.HTTP_400_BAD_REQUEST)
 
     session_token = session_token.split(" ")[1]
 
@@ -868,7 +868,7 @@ def review_join_request(request):
     user = validate_token(session_token)
     if not user:
         return Response(
-            {"message": "Invalid or expired session token."},
+            {"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"},
             status=status.HTTP_401_UNAUTHORIZED
         )
     
@@ -876,13 +876,13 @@ def review_join_request(request):
     decision = request.data.get("decision")  # 'approved' or 'denied'
 
     if not request_id:
-        return Response({"message": "Request ID is required."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "Request ID is required.", "code": "request_required"}, status=status.HTTP_400_BAD_REQUEST)
 
     if not decision:
-        return Response({"message": "Decision is required."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "Decision is required.", "code": "decision_required"}, status=status.HTTP_400_BAD_REQUEST)
 
     if decision not in ["approved", "denied"]:
-        return Response({"message": "Invalid decision. Must be 'approved' or 'denied'."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "Invalid decision. Must be 'approved' or 'denied'.", "code": "invalid_decision_approved_denied"}, status=status.HTTP_400_BAD_REQUEST)
 
     try:
         # Identify the team owner or captain reviewing the request
@@ -896,11 +896,11 @@ def review_join_request(request):
         # not configurable; can_manage_join_requests defaults to owner-only, so unchanged unless the
         # owner has granted it to a role (afc_team/permissions.py).
         if not team_role_can(reviewer, team, "can_manage_join_requests"):
-            return Response({"message": "You do not have permission to review join requests for this team."}, status=status.HTTP_403_FORBIDDEN)
+            return Response({"message": "You do not have permission to review join requests for this team.", "code": "not_permission_review_join"}, status=status.HTTP_403_FORBIDDEN)
 
         # Ensure the request has not already been reviewed
         if join_request.status_of_request == "attended_to":
-            return Response({"message": "This request has already been reviewed."}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"message": "This request has already been reviewed.", "code": "request_already_reviewed"}, status=status.HTTP_400_BAD_REQUEST)
 
         # Set before the branch: a REJECTED request never seats anybody, and the notification
         # below reads this either way. Leaving it undefined there would raise NameError inside the
@@ -910,7 +910,7 @@ def review_join_request(request):
         if decision == "approved":
             # Ensure the requester is not already in a team
             if TeamMembers.objects.filter(member=join_request.requester).exists():
-                return Response({"message": "User is already a member of a team."}, status=status.HTTP_400_BAD_REQUEST)
+                return Response({"message": "User is already a member of a team.", "code": "user_already_member_team"}, status=status.HTTP_400_BAD_REQUEST)
             
             # Seat the requester: a playing place while one is free, otherwise the next free staff
             # place (owner 2026-08-05). Resolved HERE and not at request time because the roster
@@ -957,9 +957,9 @@ def review_join_request(request):
         return Response({"message": f"Join request {decision} successfully."}, status=status.HTTP_200_OK)
 
     except User.DoesNotExist:
-        return Response({"message": "Invalid session token."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "Invalid session token.", "code": "invalid_session_token"}, status=status.HTTP_404_NOT_FOUND)
     except JoinRequest.DoesNotExist:
-        return Response({"message": "Join request not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "Join request not found.", "code": "join_request_not_found"}, status=status.HTTP_404_NOT_FOUND)
     except Exception as e:
         return internal_error(e, where="review_join_request", code="review_join_request_failed")
     
@@ -973,7 +973,7 @@ def _join_requests_refusal():
     requests leaks that state.
     """
     return Response(
-        {"message": "You do not have permission to view join requests for this team."},
+        {"message": "You do not have permission to view join requests for this team.", "code": "not_permission_view_join"},
         status=status.HTTP_403_FORBIDDEN,
     )
 
@@ -1014,7 +1014,7 @@ def view_join_requests_for_a_team(request):
 
     team_id = request.data.get("team_id")
     if not team_id:
-        return Response({"message": "Team ID is required."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "Team ID is required.", "code": "team_required"}, status=status.HTTP_400_BAD_REQUEST)
 
     try:
         team = Team.objects.get(team_id=team_id)
@@ -1048,10 +1048,10 @@ def edit_team(request):
     session_token = request.headers.get("Authorization")
 
     if not session_token:
-        return Response({'status': 'error', 'message': 'Authorization header is required'}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'status': 'error', 'message': 'Authorization header is required', "code": "authorization_header_required"}, status=status.HTTP_400_BAD_REQUEST)
 
     if not session_token.startswith("Bearer "):
-        return Response({'status': 'error', 'message': 'Invalid token format'}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'status': 'error', 'message': 'Invalid token format', "code": "invalid_token_format"}, status=status.HTTP_400_BAD_REQUEST)
 
     session_token = session_token.split(" ")[1]
 
@@ -1059,7 +1059,7 @@ def edit_team(request):
     user = validate_token(session_token)
     if not user:
         return Response(
-            {"message": "Invalid or expired session token."},
+            {"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"},
             status=status.HTTP_401_UNAUTHORIZED
         )
 
@@ -1090,7 +1090,7 @@ def edit_team(request):
     try:
         team = Team.objects.get(team_id=team_id)
     except Team.DoesNotExist:
-        return Response({"message": "Team not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "Team not found.", "code": "team_not_found"}, status=status.HTTP_404_NOT_FOUND)
 
     # Ensure the user may edit this team's profile. Was owner-only and not configurable;
     # can_edit_team_profile defaults to owner-only, so nothing changes for a team that has not
@@ -1100,7 +1100,7 @@ def edit_team(request):
     # (set_team_stats_visibility, set_team_letters) and are deliberately left alone, because
     # folding them in here would take controls away from managers on every existing team.
     if not team_role_can(user, team, "can_edit_team_profile"):
-        return Response({"message": "You do not have permission to edit this team."}, status=status.HTTP_403_FORBIDDEN)
+        return Response({"message": "You do not have permission to edit this team.", "code": "not_permission_edit_team"}, status=status.HTTP_403_FORBIDDEN)
 
     # ── ban guard (afc_auth.BannedPlayer + Team.is_banned) ──
     # A banned team (TeamBan -> Team.is_banned) or a banned acting user may NOT edit the team
@@ -1108,9 +1108,9 @@ def edit_team(request):
     # update endpoint, so this single guard covers profile edits too. Placed right after the
     # owner-permission check so the owner identity is already resolved.
     if team.is_banned:
-        return Response({"message": "This team is banned and cannot be edited."}, status=status.HTTP_403_FORBIDDEN)
+        return Response({"message": "This team is banned and cannot be edited.", "code": "team_banned_cannot_edited"}, status=status.HTTP_403_FORBIDDEN)
     if _is_player_banned(user):
-        return Response({"message": "You are banned and cannot edit a team."}, status=status.HTTP_403_FORBIDDEN)
+        return Response({"message": "You are banned and cannot edit a team.", "code": "banned_cannot_edit_team"}, status=status.HTTP_403_FORBIDDEN)
 
     # Track if team name changes
     old_team_name = team.team_name
@@ -1119,7 +1119,7 @@ def edit_team(request):
     # Update fields if provided
     if team_name and team_name != old_team_name:
         if Team.objects.filter(team_name=team_name).exclude(team_id=team.team_id).exists():
-            return Response({"message": "Team name already exists."}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"message": "Team name already exists.", "code": "team_name_already_exists"}, status=status.HTTP_400_BAD_REQUEST)
         team.team_name = team_name
         team_name_changed = True
 
@@ -1135,7 +1135,7 @@ def edit_team(request):
     if team_tag is not _TAG_UNSET:
         normalized_tag, tag_error = _normalize_team_tag(team_tag)
         if tag_error:
-            return Response({"message": tag_error}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"message": tag_error, "code": "edit_team_refused"}, status=status.HTTP_400_BAD_REQUEST)
         # "" -> clear the tag (NULL); otherwise store the cleaned, upper-cased handle.
         team.team_tag = normalized_tag if normalized_tag else None
 
@@ -1148,7 +1148,7 @@ def edit_team(request):
         team_description = (team_description or "").strip()
         if len(team_description) > 200:
             return Response(
-                {"message": "Team description must be 200 characters or fewer."},
+                {"message": "Team description must be 200 characters or fewer.", "code": "team_description_characters_fewer"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
         team.team_description = team_description or "We Love Playing Free Fire"
@@ -1256,12 +1256,12 @@ def get_all_teams(request):
 #     team_name = request.data.get("team_name")
 
 #     if not team_name:
-#         return Response({"message": "Team name is required."}, status=status.HTTP_400_BAD_REQUEST)
+#         return Response({"message": "Team name is required.", "code": "team_name_required"}, status=status.HTTP_400_BAD_REQUEST)
 
 #     try:
 #         team = Team.objects.get(team_name=team_name)
 #     except Team.DoesNotExist:
-#         return Response({"message": "Team not found."}, status=status.HTTP_404_NOT_FOUND)
+#         return Response({"message": "Team not found.", "code": "team_not_found"}, status=status.HTTP_404_NOT_FOUND)
 
 #     team_data = {
 #         "team_id": team.team_id,
@@ -1531,23 +1531,23 @@ def set_team_letters(request):
     """
     session_token = request.headers.get("Authorization")
     if not session_token or not session_token.startswith("Bearer "):
-        return Response({"message": "Authorization header is required."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "Authorization header is required.", "code": "authorization_header_required"}, status=status.HTTP_400_BAD_REQUEST)
     user = validate_token(session_token.split(" ")[1])
     if not user:
-        return Response({"message": "Invalid or expired session token."}, status=status.HTTP_401_UNAUTHORIZED)
+        return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=status.HTTP_401_UNAUTHORIZED)
 
     team_id = request.data.get("team_id")
     if not team_id:
-        return Response({"message": "team_id is required."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "team_id is required.", "code": "team_required"}, status=status.HTTP_400_BAD_REQUEST)
     try:
         team = Team.objects.get(team_id=team_id)
     except Team.DoesNotExist:
-        return Response({"message": "Team not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "Team not found.", "code": "team_not_found"}, status=status.HTTP_404_NOT_FOUND)
 
     # Only the owner or a leadership/support manager may declare the team's manual letters.
     if not _can_manage_team_letters(user, team):
         return Response(
-            {"message": "Only the team owner, captain, vice-captain, manager or coach can change the team letters."},
+            {"message": "Only the team owner, captain, vice-captain, manager or coach can change the team letters.", "code": "team_owner_captain_vice"},
             status=status.HTTP_403_FORBIDDEN,
         )
 
@@ -1556,18 +1556,18 @@ def set_team_letters(request):
     # change); an explicit empty list is allowed (clears all manual extras).
     raw = request.data.get("manual_letters", None)
     if raw is None:
-        return Response({"message": "manual_letters is required."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "manual_letters is required.", "code": "manual_letters_required"}, status=status.HTTP_400_BAD_REQUEST)
     if isinstance(raw, str):
         try:
             raw = json.loads(raw)
         except (ValueError, TypeError):
             return Response(
-                {"message": "manual_letters must be a list of single letters A-Z."},
+                {"message": "manual_letters must be a list of single letters A-Z.", "code": "manual_letters_list_single"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
     if not isinstance(raw, list):
         return Response(
-            {"message": "manual_letters must be a list of single letters A-Z."},
+            {"message": "manual_letters must be a list of single letters A-Z.", "code": "manual_letters_list_single"},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
@@ -1616,23 +1616,23 @@ def set_team_stats_visibility(request):
     """
     session_token = request.headers.get("Authorization")
     if not session_token or not session_token.startswith("Bearer "):
-        return Response({"message": "Authorization header is required."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "Authorization header is required.", "code": "authorization_header_required"}, status=status.HTTP_400_BAD_REQUEST)
     user = validate_token(session_token.split(" ")[1])
     if not user:
-        return Response({"message": "Invalid or expired session token."}, status=status.HTTP_401_UNAUTHORIZED)
+        return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=status.HTTP_401_UNAUTHORIZED)
 
     team_id = request.data.get("team_id")
     if not team_id:
-        return Response({"message": "team_id is required."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "team_id is required.", "code": "team_required"}, status=status.HTTP_400_BAD_REQUEST)
     try:
         team = Team.objects.get(team_id=team_id)
     except Team.DoesNotExist:
-        return Response({"message": "Team not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "Team not found.", "code": "team_not_found"}, status=status.HTTP_404_NOT_FOUND)
 
     # Only the owner or a leadership member may open up the team's stats.
     if not _is_team_owner_or_manager(user, team):
         return Response(
-            {"message": "Only the team owner or a manager can change who sees the team's stats."},
+            {"message": "Only the team owner or a manager can change who sees the team's stats.", "code": "team_owner_manager_change"},
             status=status.HTTP_403_FORBIDDEN,
         )
 
@@ -1640,7 +1640,7 @@ def set_team_stats_visibility(request):
     # so the toggle endpoint always makes a deliberate change (no silent no-op write).
     sv_raw = request.data.get("stats_visible", None)
     if sv_raw is None:
-        return Response({"message": "stats_visible is required."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "stats_visible is required.", "code": "stats_visible_required"}, status=status.HTTP_400_BAD_REQUEST)
     new_val = sv_raw if isinstance(sv_raw, bool) else str(sv_raw).strip().lower() in ("true", "1", "yes", "on")
 
     team.stats_visible = new_val
@@ -1677,12 +1677,12 @@ def get_team_details(request):
     team_name = request.data.get("team_name")
 
     if not team_name:
-        return Response({"message": "Team name is required."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "Team name is required.", "code": "team_name_required"}, status=status.HTTP_400_BAD_REQUEST)
 
     try:
         team = Team.objects.get(team_name=team_name)
     except Team.DoesNotExist:
-        return Response({"message": "Team not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "Team not found.", "code": "team_not_found"}, status=status.HTTP_404_NOT_FOUND)
 
     # ── Viewer + team-stats visibility (self-membership / admin gate) ──────────
     # Resolve the OPTIONAL viewer from the Bearer token (None when anonymous), then
@@ -2227,10 +2227,10 @@ def get_user_current_team(request):
     session_token = request.headers.get("Authorization")
 
     if not session_token:
-        return Response({'status': 'error', 'message': 'Authorization header is required'}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'status': 'error', 'message': 'Authorization header is required', "code": "authorization_header_required"}, status=status.HTTP_400_BAD_REQUEST)
 
     if not session_token.startswith("Bearer "):
-        return Response({'status': 'error', 'message': 'Invalid token format'}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'status': 'error', 'message': 'Invalid token format', "code": "invalid_token_format"}, status=status.HTTP_400_BAD_REQUEST)
 
     session_token = session_token.split(" ")[1]
 
@@ -2238,7 +2238,7 @@ def get_user_current_team(request):
     user = validate_token(session_token)
     if not user:
         return Response(
-            {"message": "Invalid or expired session token."},
+            {"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"},
             status=status.HTTP_401_UNAUTHORIZED
         )
 
@@ -2277,10 +2277,10 @@ def exit_team(request):
     session_token = request.headers.get("Authorization")
 
     if not session_token:
-        return Response({'status': 'error', 'message': 'Authorization header is required'}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'status': 'error', 'message': 'Authorization header is required', "code": "authorization_header_required"}, status=status.HTTP_400_BAD_REQUEST)
 
     if not session_token.startswith("Bearer "):
-        return Response({'status': 'error', 'message': 'Invalid token format'}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'status': 'error', 'message': 'Invalid token format', "code": "invalid_token_format"}, status=status.HTTP_400_BAD_REQUEST)
 
     session_token = session_token.split(" ")[1]
 
@@ -2288,7 +2288,7 @@ def exit_team(request):
     user = validate_token(session_token)
     if not user:
         return Response(
-            {"message": "Invalid or expired session token."},
+            {"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"},
             status=status.HTTP_401_UNAUTHORIZED
         )
 
@@ -2369,14 +2369,14 @@ def exit_team(request):
 def generate_invite_link(request):
     session_token = request.headers.get("Authorization")
     if not session_token or not session_token.startswith("Bearer "):
-        return Response({"message": "Invalid token"}, status=400)
+        return Response({"message": "Invalid token", "code": "invalid_token"}, status=400)
     
     session_token = session_token.split(" ")[1]
 
     user = validate_token(session_token)
     if not user:
         return Response(
-            {"message": "Invalid or expired session token."},
+            {"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"},
             status=status.HTTP_401_UNAUTHORIZED
         )
     
@@ -2403,7 +2403,7 @@ def generate_invite_link(request):
         try:
             max_uses = int(raw_uses)
         except (TypeError, ValueError):
-            return Response({"message": "max_uses must be a whole number."}, status=400)
+            return Response({"message": "max_uses must be a whole number.", "code": "max_uses_whole_number"}, status=400)
         if max_uses < 1 or max_uses > MAX_MEMBERS:
             return Response(
                 {"message": f"A link can be used between 1 and {MAX_MEMBERS} times."}, status=400)
@@ -2422,11 +2422,11 @@ def generate_invite_link(request):
             team = membership.team
         if not team_role_can(user, team, "can_invite_members"):
             return Response(
-                {"message": "Your role on this team cannot create invite links."}, status=403)
+                {"message": "Your role on this team cannot create invite links.", "code": "role_team_cannot_create"}, status=403)
         # Same capacity gate as invite_member: don't mint a link into a seat that does not exist.
         capacity_error = _roster_capacity_error(team, role_to_be_given_upon_acceptance)
         if capacity_error:
-            return Response({"message": capacity_error}, status=400)
+            return Response({"message": capacity_error, "code": "generate_invite_link_refused"}, status=400)
         invite = Invite.objects.create(
             inviter=user,
             team=team,
@@ -2443,7 +2443,7 @@ def generate_invite_link(request):
             "uses_left": invite.uses_left(),
         }, status=200)
     except Team.DoesNotExist:
-        return Response({"message": "You do not own any team."}, status=403)
+        return Response({"message": "You do not own any team.", "code": "not_team"}, status=403)
 
 
 @api_view(["POST"])
@@ -2454,14 +2454,14 @@ def respond_invite(request, invite_id):
     """
     session_token = request.headers.get("Authorization")
     if not session_token or not session_token.startswith("Bearer "):
-        return Response({"message": "Invalid token"}, status=400)
+        return Response({"message": "Invalid token", "code": "invalid_token"}, status=400)
     
     session_token = session_token.split(" ")[1]
     
     user = validate_token(session_token)
     if not user:
         return Response(
-            {"message": "Invalid or expired session token."},
+            {"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"},
             status=status.HTTP_401_UNAUTHORIZED
         )
 
@@ -2470,10 +2470,10 @@ def respond_invite(request, invite_id):
     except (Invite.DoesNotExist, ValidationError, ValueError):
         # DoesNotExist = no such invite; ValidationError/ValueError = the id wasn't even a
         # valid UUID (the route is <str:invite_id>). Either way it's a 404, never a 500.
-        return Response({"message": "Invite not found."}, status=404)
+        return Response({"message": "Invite not found.", "code": "invite_not_found"}, status=404)
 
     if invite.is_expired():
-        return Response({"message": "Invite has expired."}, status=400)
+        return Response({"message": "Invite has expired.", "code": "invite_expired"}, status=400)
 
     # A shared link is spent when its last use is gone, not when the first person walks through
     # it, so ask the invite rather than reading status_of_invite directly (owner 2026-08-05).
@@ -2483,17 +2483,17 @@ def respond_invite(request, invite_id):
                 {"message": f"This invite link has been used {invite.use_count} times and has no "
                             f"uses left. Ask the team for a new one."},
                 status=400)
-        return Response({"message": "Invite already used."}, status=400)
+        return Response({"message": "Invite already used.", "code": "invite_already_used"}, status=400)
 
     # The same account must not spend two uses of one link. Being already on a team is caught
     # below with a clearer message; this catches the person who joined through this very link,
     # left, and came back to it.
     if invite.is_multi_use() and user.pk in (invite.accepted_user_ids or []):
-        return Response({"message": "You have already used this invite link."}, status=400)
+        return Response({"message": "You have already used this invite link.", "code": "already_used_invite_link"}, status=400)
 
     action = request.data.get("action")
     if action not in ["accept", "decline"]:
-        return Response({"message": "Invalid action."}, status=400)
+        return Response({"message": "Invalid action.", "code": "invalid_action"}, status=400)
 
     if action == "accept":
         # ── Guards run BEFORE the invite is consumed (owner 2026-08-04, item 33) ──────────────
@@ -2577,10 +2577,10 @@ def get_team_details_based_on_invite(request, invite_id):
     except (Invite.DoesNotExist, ValidationError, ValueError):
         # DoesNotExist = no such invite; ValidationError/ValueError = the id wasn't even a
         # valid UUID (the route is <str:invite_id>). Either way it's a 404, never a 500.
-        return Response({"message": "Invite not found."}, status=404)
+        return Response({"message": "Invite not found.", "code": "invite_not_found"}, status=404)
 
     if invite.is_expired():
-        return Response({"message": "Invite has expired."}, status=400)
+        return Response({"message": "Invite has expired.", "code": "invite_expired"}, status=400)
 
     team = invite.team
     team_data = {
@@ -2781,14 +2781,14 @@ def manage_team_roster(request):
         # Authorization
         session_token = request.headers.get("Authorization")
         if not session_token or not session_token.startswith("Bearer "):
-            return Response({"error": "Authorization token missing or invalid"}, status=400)
+            return Response({"error": "Authorization token missing or invalid", "code": "manage_team_roster_refused"}, status=400)
 
         session_token = session_token.split(" ")[1]
 
         user = validate_token(session_token)
         if not user:
             return Response(
-                {"message": "Invalid or expired session token."},
+                {"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"},
                 status=status.HTTP_401_UNAUTHORIZED
             )
 
@@ -2796,19 +2796,19 @@ def manage_team_roster(request):
         updates = request.data.get("updates", [])
 
         if not team_id or not isinstance(updates, list):
-            return Response({"error": "team_id and updates[] are required"}, status=400)
+            return Response({"error": "team_id and updates[] are required", "code": "manage_team_roster_refused"}, status=400)
 
         # Get team
         try:
             team = Team.objects.get(team_id=team_id)
         except Team.DoesNotExist:
-            return Response({"error": "Team not found"}, status=404)
+            return Response({"error": "Team not found", "code": "manage_team_roster_refused"}, status=404)
 
         # Roster management: whoever the OWNER has granted can_edit_roster. Defaults to the owner
         # plus 'coach', which is exactly what _can_manage_roster hard-coded before this was
         # configurable, so an untouched team behaves identically (afc_team/permissions.py).
         if not team_role_can(user, team, "can_edit_roster"):
-            return Response({"error": "Only the team owner or a coach can manage the roster"}, status=403)
+            return Response({"error": "Only the team owner or a coach can manage the roster", "code": "manage_team_roster_refused"}, status=403)
 
         # ── Transfer-window lock on POSITIONS (in_game_role) ──────────────────────
         # In-game positions (rusher / support / grenader / sniper) can be edited ONLY while the
@@ -3040,14 +3040,14 @@ def kick_team_member(request):
         # Authorization
         session_token = request.headers.get("Authorization")
         if not session_token or not session_token.startswith("Bearer "):
-            return Response({"error": "Authorization token missing or invalid"}, status=400)
+            return Response({"error": "Authorization token missing or invalid", "code": "kick_team_member_refused"}, status=400)
 
         session_token = session_token.split(" ")[1]
 
         user = validate_token(session_token)
         if not user:
             return Response(
-                {"message": "Invalid or expired session token."},
+                {"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"},
                 status=status.HTTP_401_UNAUTHORIZED
             )
 
@@ -3055,20 +3055,20 @@ def kick_team_member(request):
         member_id = request.data.get("member_id")
 
         if not team_id or not member_id:
-            return Response({"error": "team_id and member_id are required"}, status=400)
+            return Response({"error": "team_id and member_id are required", "code": "kick_team_member_refused"}, status=400)
 
         # Get team
         try:
             team = Team.objects.get(team_id=team_id)
         except Team.DoesNotExist:
-            return Response({"error": "Team not found"}, status=404)
+            return Response({"error": "Team not found", "code": "kick_team_member_refused"}, status=404)
 
         # Kicking: whoever the OWNER has granted can_remove_members. Defaults to the owner plus
         # 'coach' (what _can_manage_roster hard-coded), so an untouched team behaves identically.
         # Separate from can_edit_roster because removing somebody is not undoable in a click the way
         # a demotion is - see afc_team/permissions.py.
         if not team_role_can(user, team, "can_remove_members"):
-            return Response({"error": "Only the team owner or a coach can kick members"}, status=403)
+            return Response({"error": "Only the team owner or a coach can kick members", "code": "kick_team_member_refused"}, status=403)
 
         # Roster moves are locked outside the transfer window - members cannot be kicked
         # while the window is CLOSED (matches the player-leave + disband locks). The window
@@ -3105,15 +3105,15 @@ def kick_team_member(request):
         try:
             tm = TeamMembers.objects.get(team=team, member=member_id)
         except TeamMembers.DoesNotExist:
-            return Response({"error": "Member not in team"}, status=404)
+            return Response({"error": "Member not in team", "code": "kick_team_member_refused"}, status=404)
 
         # You cannot kick yourself.
         if tm.member == user:
-            return Response({"error": "You cannot kick yourself"}, status=400)
+            return Response({"error": "You cannot kick yourself", "code": "kick_team_member_refused"}, status=400)
 
         # The team owner cannot be kicked (a coach must not be able to remove the owner).
         if tm.member_id == team.team_owner_id:
-            return Response({"error": "The team owner cannot be kicked."}, status=400)
+            return Response({"error": "The team owner cannot be kicked.", "code": "kick_team_member_refused"}, status=400)
 
         kicked_member_username = tm.member.username
         tm.delete()
@@ -3145,24 +3145,24 @@ def join_team(request):
     session_token = request.headers.get("Authorization")
 
     if not session_token:
-        return Response({'status': 'error', 'message': 'Authorization header is required'}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'status': 'error', 'message': 'Authorization header is required', "code": "authorization_header_required"}, status=status.HTTP_400_BAD_REQUEST)
 
     if not session_token.startswith("Bearer "):
-        return Response({'status': 'error', 'message': 'Invalid token format'}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'status': 'error', 'message': 'Invalid token format', "code": "invalid_token_format"}, status=status.HTTP_400_BAD_REQUEST)
 
     session_token = session_token.split(" ")[1]
 
     user = validate_token(session_token)
     if not user:
         return Response(
-            {"message": "Invalid or expired session token."},
+            {"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"},
             status=status.HTTP_401_UNAUTHORIZED
         )
 
     try:
         team = Team.objects.get(team_id=team_id)
     except Team.DoesNotExist:
-        return Response({"message": "Team not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "Team not found.", "code": "team_not_found"}, status=status.HTTP_404_NOT_FOUND)
 
     # Check if user is already in a team
     if TeamMembers.objects.filter(member=user).exists():
@@ -3170,7 +3170,7 @@ def join_team(request):
 
     # Check join settings
     if team.join_settings == "by_request":
-        return Response({"message": "This team requires a join request. Please send a join request instead."}, status=status.HTTP_403_FORBIDDEN)
+        return Response({"message": "This team requires a join request. Please send a join request instead.", "code": "team_requires_join_request"}, status=status.HTTP_403_FORBIDDEN)
 
     # Capacity gate. This open-join door had NO cap of any kind (owner 2026-08-04, item 33): an
     # "open" team could be walked into indefinitely, past both the total headcount and the 6-player
@@ -3180,7 +3180,7 @@ def join_team(request):
     # _resolve_join_role only turns somebody away when all nine seats are genuinely taken.
     join_role, capacity_error = _resolve_join_role(team, "member")
     if capacity_error:
-        return Response({"message": capacity_error}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": capacity_error, "code": "join_team_refused"}, status=status.HTTP_400_BAD_REQUEST)
 
     # Add user to team
     TeamMembers.objects.create(team=team, member=user, management_role=join_role)
@@ -3229,10 +3229,10 @@ def _get_authed_user(request):
     """Validate Bearer token and return (user, error_response)."""
     session_token = request.headers.get("Authorization", "")
     if not session_token or not session_token.startswith("Bearer "):
-        return None, Response({"message": "Authorization header is required."}, status=status.HTTP_400_BAD_REQUEST)
+        return None, Response({"message": "Authorization header is required.", "code": "authorization_header_required"}, status=status.HTTP_400_BAD_REQUEST)
     user = validate_token(session_token.split(" ")[1])
     if not user:
-        return None, Response({"message": "Invalid or expired session token."}, status=status.HTTP_401_UNAUTHORIZED)
+        return None, Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=status.HTTP_401_UNAUTHORIZED)
     return user, None
 
 
@@ -3242,7 +3242,7 @@ def admin_search_players(request):
     if err:
         return err
     if not _is_admin(admin):
-        return Response({"message": "Admin access required."}, status=status.HTTP_403_FORBIDDEN)
+        return Response({"message": "Admin access required.", "code": "admin_access_required"}, status=status.HTTP_403_FORBIDDEN)
 
     query = request.query_params.get("q", "").strip()
     if len(query) < 2:
@@ -3274,26 +3274,26 @@ def admin_remove_member(request):
     if err:
         return err
     if not _is_admin(admin):
-        return Response({"message": "Admin access required."}, status=status.HTTP_403_FORBIDDEN)
+        return Response({"message": "Admin access required.", "code": "admin_access_required"}, status=status.HTTP_403_FORBIDDEN)
 
     team_id = request.data.get("team_id")
     member_id = request.data.get("member_id")
 
     if not team_id or not member_id:
-        return Response({"message": "team_id and member_id are required."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "team_id and member_id are required.", "code": "team_member_required"}, status=status.HTTP_400_BAD_REQUEST)
 
     try:
         team = Team.objects.get(team_id=team_id)
     except Team.DoesNotExist:
-        return Response({"message": "Team not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "Team not found.", "code": "team_not_found"}, status=status.HTTP_404_NOT_FOUND)
 
     try:
         tm = TeamMembers.objects.get(team=team, member_id=member_id)
     except TeamMembers.DoesNotExist:
-        return Response({"message": "Member not found in this team."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "Member not found in this team.", "code": "member_not_found_team"}, status=status.HTTP_404_NOT_FOUND)
 
     if team.team_owner_id == tm.member_id:
-        return Response({"message": "Cannot remove the team owner."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "Cannot remove the team owner.", "code": "cannot_remove_team_owner"}, status=status.HTTP_400_BAD_REQUEST)
 
     removed_member = tm.member
     removed_username = removed_member.username
@@ -3325,7 +3325,7 @@ def admin_add_member(request):
     if err:
         return err
     if not _is_admin(admin):
-        return Response({"message": "Admin access required."}, status=status.HTTP_403_FORBIDDEN)
+        return Response({"message": "Admin access required.", "code": "admin_access_required"}, status=status.HTTP_403_FORBIDDEN)
 
     team_id = request.data.get("team_id")
     player_id = request.data.get("player_id")
@@ -3334,7 +3334,7 @@ def admin_add_member(request):
     override_limit = request.data.get("override_limit", False)
 
     if not team_id or not player_id:
-        return Response({"message": "team_id and player_id are required."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "team_id and player_id are required.", "code": "team_player_required"}, status=status.HTTP_400_BAD_REQUEST)
 
     valid_roles = [choice[0] for choice in TeamMembers.MANAGEMENT_ROLE_CHOICES]
     if management_role not in valid_roles:
@@ -3343,15 +3343,15 @@ def admin_add_member(request):
     try:
         team = Team.objects.get(team_id=team_id)
     except Team.DoesNotExist:
-        return Response({"message": "Team not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "Team not found.", "code": "team_not_found"}, status=status.HTTP_404_NOT_FOUND)
 
     try:
         player = User.objects.get(user_id=player_id)
     except User.DoesNotExist:
-        return Response({"message": "Player not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "Player not found.", "code": "player_not_found"}, status=status.HTTP_404_NOT_FOUND)
 
     if TeamMembers.objects.filter(team=team, member=player).exists():
-        return Response({"message": "Player is already a member of this team."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "Player is already a member of this team.", "code": "player_already_member_team"}, status=status.HTTP_400_BAD_REQUEST)
 
     existing = TeamMembers.objects.filter(member=player).select_related("team").first()
     if existing:
@@ -3422,12 +3422,12 @@ def _require_team_admin(request):
     """Validate Bearer token and require admin/moderator/support role. Returns (user, err)."""
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return None, Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return None, Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
     user = validate_token(auth.split(" ")[1])
     if not user:
-        return None, Response({"message": "Invalid or expired session token."}, status=401)
+        return None, Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
     if user.role not in ["admin", "moderator", "support"]:
-        return None, Response({"message": "You do not have permission to perform this action."}, status=403)
+        return None, Response({"message": "You do not have permission to perform this action.", "code": "not_permission_perform_action"}, status=403)
     return user, None
 
 
@@ -3439,13 +3439,13 @@ def admin_get_team_event_history(request):
 
     team_id = request.query_params.get("team_id")
     if not team_id:
-        return Response({"message": "team_id is required."}, status=400)
+        return Response({"message": "team_id is required.", "code": "team_required"}, status=400)
 
     try:
         page = max(1, int(request.query_params.get("page", 1)))
         page_size = min(50, max(1, int(request.query_params.get("page_size", 10))))
     except ValueError:
-        return Response({"message": "page and page_size must be integers."}, status=400)
+        return Response({"message": "page and page_size must be integers.", "code": "page_page_size_integers"}, status=400)
 
     team = get_object_or_404(Team, team_id=team_id)
 
@@ -3489,9 +3489,9 @@ def admin_change_team_tier(request):
     tier = str(request.data.get("tier", "")).strip()
 
     if not team_id:
-        return Response({"message": "team_id is required."}, status=400)
+        return Response({"message": "team_id is required.", "code": "team_required"}, status=400)
     if tier not in ["1", "2", "3"]:
-        return Response({"message": "tier must be 1, 2, or 3."}, status=400)
+        return Response({"message": "tier must be 1, 2, or 3.", "code": "admin_change_team_tier_tier"}, status=400)
 
     team = get_object_or_404(Team, team_id=team_id)
     old_tier = team.team_tier
@@ -3525,17 +3525,17 @@ def admin_transfer_team_ownership(request):
     new_owner_id = request.data.get("new_owner_id")
 
     if not team_id or not new_owner_id:
-        return Response({"message": "team_id and new_owner_id are required."}, status=400)
+        return Response({"message": "team_id and new_owner_id are required.", "code": "team_new_owner_required"}, status=400)
 
     team = get_object_or_404(Team, team_id=team_id)
     new_owner = get_object_or_404(User, user_id=new_owner_id)
     old_owner = team.team_owner
 
     if new_owner == old_owner:
-        return Response({"message": "New owner is already the team owner."}, status=400)
+        return Response({"message": "New owner is already the team owner.", "code": "new_owner_already_team"}, status=400)
 
     if not TeamMembers.objects.filter(team=team, member=new_owner).exists():
-        return Response({"message": "New owner must be a current team member."}, status=400)
+        return Response({"message": "New owner must be a current team member.", "code": "new_owner_current_team"}, status=400)
 
     # Update management roles
     TeamMembers.objects.filter(team=team, member=old_owner).update(management_role="member")
@@ -3592,10 +3592,10 @@ def search_teams(request):
     """
     auth = request.headers.get("Authorization", "")
     if not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=status.HTTP_400_BAD_REQUEST)
     requester = validate_token(auth.split(" ", 1)[1])
     if not requester:
-        return Response({"message": "Invalid or expired session token."}, status=status.HTTP_401_UNAUTHORIZED)
+        return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=status.HTTP_401_UNAUTHORIZED)
 
     q = request.GET.get("q", "").strip()
     if len(q) < 2:

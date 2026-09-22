@@ -101,7 +101,7 @@ def admin_dashboard_stats(request):
     if err:
         return err
     if not _is_admin(user):
-        return Response({"message": "Admins only."}, status=status.HTTP_403_FORBIDDEN)
+        return Response({"message": "Admins only.", "code": "admin_dashboard_stats_admins"}, status=status.HTTP_403_FORBIDDEN)
 
     now = timezone.now()
     month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
@@ -606,7 +606,7 @@ def admin_dashboard_detail(request, metric):
     if err:
         return err
     if not _is_admin(user):
-        return Response({"message": "Admins only."}, status=status.HTTP_403_FORBIDDEN)
+        return Response({"message": "Admins only.", "code": "admin_dashboard_detail_admins"}, status=status.HTTP_403_FORBIDDEN)
 
     builder = DETAIL_BUILDERS.get(metric)
     if not builder:

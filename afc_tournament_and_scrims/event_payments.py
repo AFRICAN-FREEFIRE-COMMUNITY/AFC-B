@@ -52,10 +52,10 @@ def _auth(request):
     """(user, error_response). Bearer token -> validate_token, mirroring the rest of this app."""
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return None, Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return None, Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
     user = validate_token(auth.split(" ")[1])
     if not user:
-        return None, Response({"message": "Invalid or expired session token."}, status=401)
+        return None, Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
     return user, None
 
 
@@ -100,20 +100,20 @@ def init_registration_payment(request):
     if err:
         return err
     if user.status != "active":
-        return Response({"message": "Your account is not active."}, status=403)
+        return Response({"message": "Your account is not active.", "code": "account_not_active"}, status=403)
 
     event = get_object_or_404(Event, event_id=request.data.get("event_id"))
     if event.registration_type != "paid" or not event.registration_fee or event.registration_fee <= 0:
-        return Response({"message": "This event is not a paid event."}, status=400)
+        return Response({"message": "This event is not a paid event.", "code": "event_not_paid_event"}, status=400)
 
     # reg window
     today = timezone.now().date()
     if not (event.registration_open_date <= today <= event.registration_end_date):
-        return Response({"message": "Registration is closed."}, status=403)
+        return Response({"message": "Registration is closed.", "code": "registration_closed"}, status=403)
 
     # already registered?
     if RegisteredCompetitors.objects.filter(event=event, user=user, status="registered").exists():
-        return Response({"message": "You are already registered for this event."}, status=409)
+        return Response({"message": "You are already registered for this event.", "code": "already_registered_event"}, status=409)
 
     from .views import resolve_registration_fee, determine_team_country, _user_can_register_team
     from afc_auth.models import User as AfcUser
@@ -181,7 +181,7 @@ def init_registration_payment(request):
 
     # capacity (best-effort; re-checked at register time)
     if RegisteredCompetitors.objects.filter(event=event, status="registered").count() >= event.max_teams_or_players:
-        return Response({"message": "Registration limit reached."}, status=403)
+        return Response({"message": "Registration limit reached.", "code": "registration_limit_reached"}, status=403)
 
     payment = EventRegistrationPayment.objects.create(
         event=event, user=user, team=team, amount=amount, currency=currency, provider="stripe",
@@ -234,9 +234,9 @@ def verify_registration_payment(request):
     elif session_id:
         payment = EventRegistrationPayment.objects.filter(stripe_session_id=session_id).first()
     if not payment:
-        return Response({"message": "Payment not found."}, status=404)
+        return Response({"message": "Payment not found.", "code": "payment_not_found"}, status=404)
     if payment.user_id != user.user_id and not _is_payments_admin(user):
-        return Response({"message": "Unauthorized."}, status=403)
+        return Response({"message": "Unauthorized.", "code": "verify_registration_payment_unauthorized"}, status=403)
     if payment.status == "paid":
         return Response({"status": "paid", "already": True}, status=200)
 
@@ -275,15 +275,15 @@ def stripe_webhook(request):
             signed = f"{parts.get('t','')}.".encode() + body
             expected = hmac.new(secret.encode(), signed, hashlib.sha256).hexdigest()
             if not hmac.compare_digest(expected, parts.get("v1", "")):
-                return Response({"message": "Bad signature."}, status=400)
+                return Response({"message": "Bad signature.", "code": "bad_signature"}, status=400)
         except Exception:
-            return Response({"message": "Bad signature."}, status=400)
+            return Response({"message": "Bad signature.", "code": "bad_signature"}, status=400)
     # else: no secret configured yet -> accept (test setup); set the secret in prod.
 
     try:
         event = json.loads(body.decode())
     except Exception:
-        return Response({"message": "Bad payload."}, status=400)
+        return Response({"message": "Bad payload.", "code": "bad_payload"}, status=400)
 
     if event.get("type") == "checkout.session.completed":
         obj = event.get("data", {}).get("object", {})
@@ -304,7 +304,7 @@ def admin_list_event_payments(request):
     if err:
         return err
     if not _is_payments_admin(user):
-        return Response({"message": "Unauthorized."}, status=403)
+        return Response({"message": "Unauthorized.", "code": "admin_list_event_payments_unauthorized"}, status=403)
     qs = EventRegistrationPayment.objects.select_related("event", "user", "team").all()
     event_id = request.GET.get("event_id")
     if event_id:
@@ -336,12 +336,12 @@ def admin_release_payment(request):
     if err:
         return err
     if not _is_payments_admin(user):
-        return Response({"message": "Unauthorized."}, status=403)
+        return Response({"message": "Unauthorized.", "code": "admin_release_payment_unauthorized"}, status=403)
     payment = EventRegistrationPayment.objects.filter(payment_id=request.data.get("payment_id")).first()
     if not payment:
-        return Response({"message": "Payment not found."}, status=404)
+        return Response({"message": "Payment not found.", "code": "payment_not_found"}, status=404)
     if payment.status != "paid":
-        return Response({"message": "Only a paid payment can be released."}, status=400)
+        return Response({"message": "Only a paid payment can be released.", "code": "paid_payment_released"}, status=400)
     if payment.release_status != "held":
         return Response({"message": f"Already {payment.release_status}."}, status=400)
     payment.release_status = "released"
@@ -368,16 +368,16 @@ def admin_refund_payment(request):
     if err:
         return err
     if not _is_payments_admin(user):
-        return Response({"message": "Unauthorized."}, status=403)
+        return Response({"message": "Unauthorized.", "code": "admin_refund_payment_unauthorized"}, status=403)
     payment = EventRegistrationPayment.objects.filter(payment_id=request.data.get("payment_id")).first()
     if not payment:
-        return Response({"message": "Payment not found."}, status=404)
+        return Response({"message": "Payment not found.", "code": "payment_not_found"}, status=404)
     if payment.status != "paid":
-        return Response({"message": "Only a paid payment can be refunded."}, status=400)
+        return Response({"message": "Only a paid payment can be refunded.", "code": "paid_payment_refunded"}, status=400)
     if payment.release_status == "released":
-        return Response({"message": "Already released to the organizer; cannot auto-refund."}, status=400)
+        return Response({"message": "Already released to the organizer; cannot auto-refund.", "code": "already_released_organizer_cannot"}, status=400)
     if not payment.stripe_payment_intent:
-        return Response({"message": "No charge reference to refund."}, status=400)
+        return Response({"message": "No charge reference to refund.", "code": "no_charge_reference_refund"}, status=400)
 
     ok, resp = _stripe("POST", "/refunds", {"payment_intent": payment.stripe_payment_intent})
     if not ok:

@@ -170,18 +170,18 @@ def _reason(request):
     precedent on this codebase for "a sensitive admin action must carry a reason"."""
     reason = (request.data.get("reason") or "").strip()
     if not reason:
-        return None, Response({"message": "A reason is required."}, status=status.HTTP_400_BAD_REQUEST)
+        return None, Response({"message": "A reason is required.", "code": "reason_required"}, status=status.HTTP_400_BAD_REQUEST)
     return reason[:REASON_MAX_LENGTH], None
 
 
 def _target(user_id):
     """The user being acted on, or (None, Response) for a missing/unknown id."""
     if user_id in (None, ""):
-        return None, Response({"message": "user_id is required."}, status=status.HTTP_400_BAD_REQUEST)
+        return None, Response({"message": "user_id is required.", "code": "user_required"}, status=status.HTTP_400_BAD_REQUEST)
     try:
         return User.objects.get(user_id=user_id), None
     except (User.DoesNotExist, ValueError, TypeError):
-        return None, Response({"message": "User not found."}, status=status.HTTP_404_NOT_FOUND)
+        return None, Response({"message": "User not found.", "code": "user_not_found"}, status=status.HTTP_404_NOT_FOUND)
 
 
 def _guard_target(admin_user, target):
@@ -198,12 +198,12 @@ def _guard_target(admin_user, target):
     """
     if target.user_id == admin_user.user_id:
         return Response(
-            {"message": "You can't use this on your own account. Change your own UID in profile settings and your own email with the Change email flow."},
+            {"message": "You can't use this on your own account. Change your own UID in profile settings and your own email with the Change email flow.", "code": "use_account_change_uid"},
             status=status.HTTP_403_FORBIDDEN,
         )
     if not _is_super_admin(admin_user) and "super_admin" in _user_role_names(target):
         return Response(
-            {"message": "Only a super admin can change a super admin's account."},
+            {"message": "Only a super admin can change a super admin's account.", "code": "super_admin_change_super"},
             status=status.HTTP_403_FORBIDDEN,
         )
     return None
@@ -362,7 +362,7 @@ def admin_set_user_uid(request):
     # where a partial save silently blanked a set UID, so "absent" is an error, never a removal.
     if "uid" not in request.data:
         return Response(
-            {"message": "uid is required. Send an empty value to remove the UID."},
+            {"message": "uid is required. Send an empty value to remove the UID.", "code": "uid_required_send_empty"},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
@@ -373,13 +373,13 @@ def admin_set_user_uid(request):
         # Format: digits only, within the column width. See UID_MAX_LENGTH for why this is stricter
         # than edit_profile.
         if not new_uid.isdigit():
-            return Response({"message": "A Free Fire UID is numbers only."},
+            return Response({"message": "A Free Fire UID is numbers only.", "code": "free_fire_uid_numbers"},
                             status=status.HTTP_400_BAD_REQUEST)
         if len(new_uid) > UID_MAX_LENGTH:
             return Response({"message": f"A UID can be at most {UID_MAX_LENGTH} digits."},
                             status=status.HTTP_400_BAD_REQUEST)
         if new_uid == previous_uid:
-            return Response({"message": "That is already this user's UID."},
+            return Response({"message": "That is already this user's UID.", "code": "already_user_uid"},
                             status=status.HTTP_400_BAD_REQUEST)
         # UNIQUE column: tell the admin who holds it, so they can go and clear it there first.
         clash = User.objects.exclude(pk=target.pk).filter(uid=new_uid).first()
@@ -399,7 +399,7 @@ def admin_set_user_uid(request):
                 status=status.HTTP_400_BAD_REQUEST,
             )
     elif not previous_uid:
-        return Response({"message": "This account has no UID to remove."},
+        return Response({"message": "This account has no UID to remove.", "code": "account_no_uid_remove"},
                         status=status.HTTP_400_BAD_REQUEST)
 
     identity_locked = _has_active_event_registration(target)
@@ -526,15 +526,15 @@ def admin_set_user_email(request):
 
     new_email = (request.data.get("new_email") or "").strip()
     if not new_email:
-        return Response({"message": "new_email is required."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "new_email is required.", "code": "new_email_required"}, status=status.HTTP_400_BAD_REQUEST)
 
     ok, msg = is_valid_email(new_email)
     if not ok:
-        return Response({"error": msg}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"error": msg, "code": "admin_set_user_email_refused"}, status=status.HTTP_400_BAD_REQUEST)
 
     previous_email = target.email or ""
     if new_email.lower() == previous_email.lower():
-        return Response({"message": "That is already this user's email."},
+        return Response({"message": "That is already this user's email.", "code": "already_user_email"},
                         status=status.HTTP_400_BAD_REQUEST)
 
     # Case-insensitive duplicate check: MySQL's default collation already compares this way, but
@@ -542,7 +542,7 @@ def admin_set_user_email(request):
     # same check the self-serve flow runs.
     clash = User.objects.exclude(pk=target.pk).filter(email__iexact=new_email).first()
     if clash:
-        return Response({"message": "That email is already registered to another account."},
+        return Response({"message": "That email is already registered to another account.", "code": "email_already_registered_account"},
                         status=status.HTTP_400_BAD_REQUEST)
     # Same cross-column trap as the UID (see _login_ambiguity_clash): 106 accounts have a username
     # that IS a well-formed email address, so an address can collide with somebody's in-game name
@@ -563,7 +563,7 @@ def admin_set_user_email(request):
             {
                 "message": "This account has two-factor authentication on, and the code goes to the email address. Changing the address would hand the second factor to the new inbox, so 2FA has to be switched off as part of this change. Confirm to continue.",
                 "requires_two_factor_ack": True,
-            },
+             "code": "account_two_factor_authentication"},
             status=status.HTTP_409_CONFLICT,
         )
 
@@ -721,13 +721,13 @@ def admin_set_user_username(request):
     # Unlike the UID there is no "remove" here: username is NOT NULL and is what every screen
     # displays a player by, so a blank one would leave an unnameable account.
     if not new_name:
-        return Response({"message": "An in-game name is required."},
+        return Response({"message": "An in-game name is required.", "code": "game_name_required"},
                         status=status.HTTP_400_BAD_REQUEST)
     if len(new_name) > USERNAME_MAX_LENGTH:
         return Response({"message": f"An in-game name can be at most {USERNAME_MAX_LENGTH} characters."},
                         status=status.HTTP_400_BAD_REQUEST)
     if new_name == previous_name:
-        return Response({"message": "That is already this user's in-game name."},
+        return Response({"message": "That is already this user's in-game name.", "code": "already_user_game_name"},
                         status=status.HTTP_400_BAD_REQUEST)
 
     # Case-insensitive, matching admin_set_user_email's reasoning: MySQL's collation already
@@ -858,7 +858,7 @@ def admin_set_user_country(request):
         return err
 
     if "country" not in request.data:
-        return Response({"message": "country is required. Send an empty value to clear it."},
+        return Response({"message": "country is required. Send an empty value to clear it.", "code": "country_required_send_empty"},
                         status=status.HTTP_400_BAD_REQUEST)
 
     typed = (request.data.get("country") or "").strip()
@@ -878,7 +878,7 @@ def admin_set_user_country(request):
     # `Nigeria` for one country, a raw comparison would call `Nigeria` a change on an `NG` row and
     # write an audit entry for a rename that moves nobody.
     if canonical_country(stored) == canonical_country(previous_country):
-        return Response({"message": "That is already this user's country."},
+        return Response({"message": "That is already this user's country.", "code": "already_user_country"},
                         status=status.HTTP_400_BAD_REQUEST)
 
     target.country = stored
@@ -979,7 +979,7 @@ def admin_set_user_whatsapp(request):
         return err
 
     if "whatsapp_number" not in request.data:
-        return Response({"message": "whatsapp_number is required. Send an empty value to remove it."},
+        return Response({"message": "whatsapp_number is required. Send an empty value to remove it.", "code": "whatsapp_number_required_send"},
                         status=status.HTTP_400_BAD_REQUEST)
 
     # canonical_profile, NOT profile_of: duplicate UserProfile rows exist in production, and the
@@ -997,9 +997,9 @@ def admin_set_user_whatsapp(request):
         # field the endpoint above exists to correct. Its own message names the real problem.
         new_number, phone_error = require_international(typed)
         if phone_error:
-            return Response({"message": phone_error}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"message": phone_error, "code": "admin_set_user_whatsapp_refused"}, status=status.HTTP_400_BAD_REQUEST)
         if new_number == previous_number:
-            return Response({"message": "That is already this user's WhatsApp number."},
+            return Response({"message": "That is already this user's WhatsApp number.", "code": "already_user_whatsapp_number"},
                             status=status.HTTP_400_BAD_REQUEST)
         # One account per WhatsApp number (owner 2026-09-14, inbox #21). An admin IS told whose
         # it is, because they need to know where to go; a player is not (identifiers.py §4).
@@ -1013,7 +1013,7 @@ def admin_set_user_whatsapp(request):
     else:
         new_number = ""
         if not previous_number:
-            return Response({"message": "This account has no WhatsApp number to remove."},
+            return Response({"message": "This account has no WhatsApp number to remove.", "code": "account_no_whatsapp_number"},
                             status=status.HTTP_400_BAD_REQUEST)
 
     profile.whatsapp_number = new_number

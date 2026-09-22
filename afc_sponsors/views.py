@@ -68,10 +68,10 @@ def _auth_user(request):
     """Resolve the Bearer caller. Returns (user, error_response)."""
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return None, Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return None, Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
     user = validate_token(auth.split(" ")[1])
     if not user:
-        return None, Response({"message": "Invalid or expired session token."}, status=401)
+        return None, Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
     return user, None
 
 
@@ -209,13 +209,13 @@ def create_sponsor(request):
     if err:
         return err
     if not _can_create_sponsor(user):
-        return Response({"message": "You do not have permission to manage sponsors."}, status=403)
+        return Response({"message": "You do not have permission to manage sponsors.", "code": "not_permission_manage_sponsors"}, status=403)
 
     name = (request.data.get("name") or "").strip()
     if not name:
-        return Response({"message": "name is required."}, status=400)
+        return Response({"message": "name is required.", "code": "name_required"}, status=400)
     if Sponsor.objects.filter(name__iexact=name).exists():
-        return Response({"message": "A sponsor with that name already exists."}, status=400)
+        return Response({"message": "A sponsor with that name already exists.", "code": "sponsor_name_already_exists"}, status=400)
 
     base = slugify(name) or "sponsor"
     slug = base
@@ -245,7 +245,7 @@ def list_sponsors(request):
     if err:
         return err
     if not _can_create_sponsor(user):
-        return Response({"message": "You do not have permission to manage sponsors."}, status=403)
+        return Response({"message": "You do not have permission to manage sponsors.", "code": "not_permission_manage_sponsors"}, status=403)
 
     qs = Sponsor.objects.all()
     q = (request.GET.get("q") or "").strip()
@@ -272,9 +272,9 @@ def sponsor_detail(request, sponsor_id):
     try:
         sponsor = Sponsor.objects.get(id=sponsor_id)
     except Sponsor.DoesNotExist:
-        return Response({"message": "Sponsor not found."}, status=404)
+        return Response({"message": "Sponsor not found.", "code": "sponsor_not_found"}, status=404)
     if not _can_view_sponsor(user, sponsor):
-        return Response({"message": "You do not have access to this sponsor."}, status=403)
+        return Response({"message": "You do not have access to this sponsor.", "code": "not_access_sponsor"}, status=403)
     return Response({"sponsor": _serialize_sponsor(sponsor, with_members=True)})
 
 
@@ -286,19 +286,19 @@ def edit_sponsor(request, sponsor_id):
     if err:
         return err
     if not _is_sponsor_admin(user):
-        return Response({"message": "You do not have permission to manage sponsors."}, status=403)
+        return Response({"message": "You do not have permission to manage sponsors.", "code": "not_permission_manage_sponsors"}, status=403)
     try:
         sponsor = Sponsor.objects.get(id=sponsor_id)
     except Sponsor.DoesNotExist:
-        return Response({"message": "Sponsor not found."}, status=404)
+        return Response({"message": "Sponsor not found.", "code": "sponsor_not_found"}, status=404)
 
     fields = []
     if "name" in request.data:
         name = (request.data.get("name") or "").strip()
         if not name:
-            return Response({"message": "name cannot be empty."}, status=400)
+            return Response({"message": "name cannot be empty.", "code": "name_cannot_empty"}, status=400)
         if Sponsor.objects.filter(name__iexact=name).exclude(id=sponsor.id).exists():
-            return Response({"message": "A sponsor with that name already exists."}, status=400)
+            return Response({"message": "A sponsor with that name already exists.", "code": "sponsor_name_already_exists"}, status=400)
         sponsor.name = name
         fields.append("name")
     for key in ("description", "website"):
@@ -311,7 +311,7 @@ def edit_sponsor(request, sponsor_id):
     if "status" in request.data:
         status_val = request.data.get("status")
         if status_val not in ("active", "suspended"):
-            return Response({"message": "status must be active or suspended."}, status=400)
+            return Response({"message": "status must be active or suspended.", "code": "status_active_suspended"}, status=400)
         sponsor.status = status_val
         fields.append("status")
     if fields:
@@ -331,20 +331,20 @@ def add_member(request, sponsor_id):
     if err:
         return err
     if not _is_sponsor_admin(user):
-        return Response({"message": "You do not have permission to manage sponsors."}, status=403)
+        return Response({"message": "You do not have permission to manage sponsors.", "code": "not_permission_manage_sponsors"}, status=403)
     try:
         sponsor = Sponsor.objects.get(id=sponsor_id)
     except Sponsor.DoesNotExist:
-        return Response({"message": "Sponsor not found."}, status=404)
+        return Response({"message": "Sponsor not found.", "code": "sponsor_not_found"}, status=404)
 
     target_id = request.data.get("user_id")
     role = request.data.get("role") or "member"
     if role not in ("owner", "member"):
-        return Response({"message": "role must be owner or member."}, status=400)
+        return Response({"message": "role must be owner or member.", "code": "role_owner_member"}, status=400)
     try:
         target = User.objects.get(user_id=target_id)
     except User.DoesNotExist:
-        return Response({"message": "User not found."}, status=404)
+        return Response({"message": "User not found.", "code": "user_not_found"}, status=404)
 
     member, created = SponsorMember.objects.get_or_create(
         sponsor=sponsor, user=target, defaults={"role": role, "status": "active"},
@@ -387,11 +387,11 @@ def invite_member(request, sponsor_id):
     if err:
         return err
     if not _is_sponsor_admin(user):
-        return Response({"message": "You do not have permission to manage sponsors."}, status=403)
+        return Response({"message": "You do not have permission to manage sponsors.", "code": "not_permission_manage_sponsors"}, status=403)
     try:
         sponsor = Sponsor.objects.get(id=sponsor_id)
     except Sponsor.DoesNotExist:
-        return Response({"message": "Sponsor not found."}, status=404)
+        return Response({"message": "Sponsor not found.", "code": "sponsor_not_found"}, status=404)
 
     from .invites import invite_contact
     result, error = invite_contact(
@@ -401,7 +401,7 @@ def invite_member(request, sponsor_id):
         invited_by=user,
     )
     if error:
-        return Response({"message": error}, status=400)
+        return Response({"message": error, "code": "invite_member_refused"}, status=400)
 
     messages = {
         "member_added": f"{result.get('username')} now manages {sponsor.name}.",
@@ -423,7 +423,7 @@ def list_invites(request, sponsor_id):
     if err:
         return err
     if not _is_sponsor_admin(user):
-        return Response({"message": "You do not have permission to manage sponsors."}, status=403)
+        return Response({"message": "You do not have permission to manage sponsors.", "code": "not_permission_manage_sponsors"}, status=403)
     rows = SponsorMemberInvite.objects.filter(
         sponsor_id=sponsor_id, status="pending",
     ).order_by("-created_at")
@@ -447,13 +447,13 @@ def revoke_invite(request, sponsor_id, invite_id):
     if err:
         return err
     if not _is_sponsor_admin(user):
-        return Response({"message": "You do not have permission to manage sponsors."}, status=403)
+        return Response({"message": "You do not have permission to manage sponsors.", "code": "not_permission_manage_sponsors"}, status=403)
     try:
         invite = SponsorMemberInvite.objects.get(id=invite_id, sponsor_id=sponsor_id)
     except SponsorMemberInvite.DoesNotExist:
-        return Response({"message": "Invitation not found."}, status=404)
+        return Response({"message": "Invitation not found.", "code": "invitation_not_found"}, status=404)
     if invite.status != "pending":
-        return Response({"message": "That invitation is no longer pending."}, status=400)
+        return Response({"message": "That invitation is no longer pending.", "code": "invitation_no_longer_pending"}, status=400)
     invite.status = "revoked"
     invite.save(update_fields=["status"])
     return Response({"message": "Invitation revoked."})
@@ -467,11 +467,11 @@ def remove_member(request, sponsor_id, member_id):
     if err:
         return err
     if not _is_sponsor_admin(user):
-        return Response({"message": "You do not have permission to manage sponsors."}, status=403)
+        return Response({"message": "You do not have permission to manage sponsors.", "code": "not_permission_manage_sponsors"}, status=403)
     try:
         member = SponsorMember.objects.get(id=member_id, sponsor_id=sponsor_id)
     except SponsorMember.DoesNotExist:
-        return Response({"message": "Member not found."}, status=404)
+        return Response({"message": "Member not found.", "code": "member_not_found"}, status=404)
     member.status = "removed"
     member.save(update_fields=["status"])
     return Response({"message": "Member removed."})
@@ -488,19 +488,19 @@ def attach_event(request, sponsor_id):
     if err:
         return err
     if not _is_sponsor_admin(user):
-        return Response({"message": "You do not have permission to manage sponsors."}, status=403)
+        return Response({"message": "You do not have permission to manage sponsors.", "code": "not_permission_manage_sponsors"}, status=403)
     try:
         sponsor = Sponsor.objects.get(id=sponsor_id)
     except Sponsor.DoesNotExist:
-        return Response({"message": "Sponsor not found."}, status=404)
+        return Response({"message": "Sponsor not found.", "code": "sponsor_not_found"}, status=404)
     try:
         event = Event.objects.get(event_id=request.data.get("event_id"))
     except Event.DoesNotExist:
-        return Response({"message": "Event not found."}, status=404)
+        return Response({"message": "Event not found.", "code": "event_not_found"}, status=404)
 
     _, created = EventSponsorship.objects.get_or_create(event=event, sponsor=sponsor)
     if not created:
-        return Response({"message": "That event is already attached to this sponsor."}, status=400)
+        return Response({"message": "That event is already attached to this sponsor.", "code": "event_already_attached_sponsor"}, status=400)
     return Response({"message": f"{event.event_name} attached to {sponsor.name}."}, status=201)
 
 
@@ -512,10 +512,10 @@ def detach_event(request, sponsor_id, event_id):
     if err:
         return err
     if not _is_sponsor_admin(user):
-        return Response({"message": "You do not have permission to manage sponsors."}, status=403)
+        return Response({"message": "You do not have permission to manage sponsors.", "code": "not_permission_manage_sponsors"}, status=403)
     deleted, _ = EventSponsorship.objects.filter(sponsor_id=sponsor_id, event_id=event_id).delete()
     if not deleted:
-        return Response({"message": "That event is not attached to this sponsor."}, status=404)
+        return Response({"message": "That event is not attached to this sponsor.", "code": "event_not_attached_sponsor"}, status=404)
     return Response({"message": "Event detached."})
 
 
@@ -549,9 +549,9 @@ def sponsor_events(request, sponsor_id):
     try:
         sponsor = Sponsor.objects.get(id=sponsor_id)
     except Sponsor.DoesNotExist:
-        return Response({"message": "Sponsor not found."}, status=404)
+        return Response({"message": "Sponsor not found.", "code": "sponsor_not_found"}, status=404)
     if not _can_view_sponsor(user, sponsor):
-        return Response({"message": "You do not have access to this sponsor."}, status=403)
+        return Response({"message": "You do not have access to this sponsor.", "code": "not_access_sponsor"}, status=403)
 
     out = []
     for sp in sponsor.sponsorships.select_related("event").order_by("-created_at"):
@@ -619,12 +619,12 @@ def event_submissions(request, sponsor_id, event_id):
     try:
         sponsor = Sponsor.objects.get(id=sponsor_id)
     except Sponsor.DoesNotExist:
-        return Response({"message": "Sponsor not found."}, status=404)
+        return Response({"message": "Sponsor not found.", "code": "sponsor_not_found"}, status=404)
     if not _can_view_sponsor(user, sponsor):
-        return Response({"message": "You do not have access to this sponsor."}, status=403)
+        return Response({"message": "You do not have access to this sponsor.", "code": "not_access_sponsor"}, status=403)
     sp = EventSponsorship.objects.filter(sponsor=sponsor, event_id=event_id).select_related("event").first()
     if not sp:
-        return Response({"message": "That event is not attached to this sponsor."}, status=404)
+        return Response({"message": "That event is not attached to this sponsor.", "code": "event_not_attached_sponsor"}, status=404)
 
     rows = _event_submission_rows(sp.event)
 

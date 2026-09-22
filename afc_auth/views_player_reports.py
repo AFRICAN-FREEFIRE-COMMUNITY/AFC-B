@@ -65,10 +65,10 @@ def _authenticate(request):
     """
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return None, Response({"message": "Invalid token."}, status=400)
+        return None, Response({"message": "Invalid token.", "code": "invalid_token"}, status=400)
     user = validate_token(auth.split(" ")[1])
     if not user:
-        return None, Response({"message": "Invalid session."}, status=401)
+        return None, Response({"message": "Invalid session.", "code": "invalid_session"}, status=401)
     return user, None
 
 
@@ -217,29 +217,29 @@ def file_player_report(request):
     reported_user_id = request.data.get("reported_user_id")
     reported_username = (request.data.get("reported_username") or "").strip()
     if not reported_user_id and not reported_username:
-        return Response({"message": "reported_user_id or reported_username is required."}, status=400)
+        return Response({"message": "reported_user_id or reported_username is required.", "code": "reported_user_reported_username"}, status=400)
 
     if reported_user_id:
         reported_user = User.objects.filter(pk=reported_user_id).first()
     else:
         reported_user = User.objects.filter(username__iexact=reported_username).first()
     if not reported_user:
-        return Response({"message": "The player you are reporting was not found."}, status=404)
+        return Response({"message": "The player you are reporting was not found.", "code": "player_reporting_not_found"}, status=404)
 
     # Cannot report yourself (checked AFTER resolving so it works for both inputs).
     if reported_user.user_id == user.user_id:
-        return Response({"message": "You cannot report yourself."}, status=400)
+        return Response({"message": "You cannot report yourself.", "code": "cannot_report_yourself"}, status=400)
 
     # category: validate against the model choices, default "other".
     valid_categories = {c[0] for c in UserReport.CATEGORY_CHOICES}
     category = request.data.get("category") or "other"
     if category not in valid_categories:
-        return Response({"message": "Invalid report category."}, status=400)
+        return Response({"message": "Invalid report category.", "code": "invalid_report_category"}, status=400)
 
     # details: required free text.
     details = (request.data.get("details") or "").strip()
     if not details:
-        return Response({"message": "Please describe what happened."}, status=400)
+        return Response({"message": "Please describe what happened.", "code": "describe_what_happened"}, status=400)
 
     evidence = request.FILES.get("evidence")  # optional proof image
     if evidence is not None:
@@ -288,23 +288,23 @@ def file_team_report(request):
     reported_team_id = request.data.get("reported_team_id")
     reported_team_name = (request.data.get("reported_team_name") or "").strip()
     if not reported_team_id and not reported_team_name:
-        return Response({"message": "reported_team_id or reported_team_name is required."}, status=400)
+        return Response({"message": "reported_team_id or reported_team_name is required.", "code": "reported_team_reported_team"}, status=400)
 
     if reported_team_id:
         reported_team = Team.objects.filter(pk=reported_team_id).first()
     else:
         reported_team = Team.objects.filter(team_name__iexact=reported_team_name).first()
     if not reported_team:
-        return Response({"message": "The team you are reporting was not found."}, status=404)
+        return Response({"message": "The team you are reporting was not found.", "code": "team_reporting_not_found"}, status=404)
 
     valid_categories = {c[0] for c in UserReport.CATEGORY_CHOICES}
     category = request.data.get("category") or "other"
     if category not in valid_categories:
-        return Response({"message": "Invalid report category."}, status=400)
+        return Response({"message": "Invalid report category.", "code": "invalid_report_category"}, status=400)
 
     details = (request.data.get("details") or "").strip()
     if not details:
-        return Response({"message": "Please describe what happened."}, status=400)
+        return Response({"message": "Please describe what happened.", "code": "describe_what_happened"}, status=400)
 
     evidence = request.FILES.get("evidence")
 
@@ -369,7 +369,7 @@ def admin_list_player_reports(request):
     if err:
         return err
     if not _is_report_moderator(user):
-        return Response({"message": "You do not have permission to view player reports."}, status=403)
+        return Response({"message": "You do not have permission to view player reports.", "code": "not_permission_view_player"}, status=403)
 
     qs = (
         UserReport.objects.select_related(
@@ -471,7 +471,7 @@ def admin_respond_player_report(request, report_id):
     if err:
         return err
     if not _is_report_moderator(user):
-        return Response({"message": "You do not have permission to manage player reports."}, status=403)
+        return Response({"message": "You do not have permission to manage player reports.", "code": "not_permission_manage_player"}, status=403)
 
     report = (
         UserReport.objects.select_related(
@@ -481,14 +481,14 @@ def admin_respond_player_report(request, report_id):
         .first()
     )
     if not report:
-        return Response({"message": "Report not found."}, status=404)
+        return Response({"message": "Report not found.", "code": "report_not_found"}, status=404)
 
     answered = False
     if "status" in request.data:
         new_status = request.data.get("status")
         valid_statuses = {c[0] for c in UserReport.STATUS_CHOICES}
         if new_status not in valid_statuses:
-            return Response({"message": "Invalid report status."}, status=400)
+            return Response({"message": "Invalid report status.", "code": "invalid_report_status"}, status=400)
         report.status = new_status
 
     if "admin_response" in request.data:

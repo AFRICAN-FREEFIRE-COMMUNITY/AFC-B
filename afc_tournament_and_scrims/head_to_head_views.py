@@ -65,10 +65,10 @@ def _auth_user(request):
     """Resolve the Bearer token to a user. Returns (user, None) or (None, error Response)."""
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return None, Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return None, Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
     user = validate_token(auth.split(" ")[1])
     if not user:
-        return None, Response({"message": "Invalid or expired session token."}, status=401)
+        return None, Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
     return user, None
 
 
@@ -469,7 +469,7 @@ def generate_h2h_bracket(request, stage_id):
 
     # Gate: AFC event admins always; otherwise org members who may edit this org's events.
     if not _is_event_admin(user) and not org_can_event(user, "can_edit_events", event):
-        return Response({"message": "You do not have permission to manage this event's bracket."},
+        return Response({"message": "You do not have permission to manage this event's bracket.", "code": "not_permission_manage_event"},
                         status=403)
 
     # ── which bracket, and in which mode? (owner 2026-08-13) ──────────────────────────────────
@@ -491,7 +491,7 @@ def generate_h2h_bracket(request, stage_id):
     if named_group is None and len(list(head_to_head.bracket_groups(stage)[:2])) > 1:
         return Response(
             {"message": "This stage is split into groups, so say which group's bracket you are "
-                        "generating."},
+                        "generating.", "code": "stage_split_into_groups"},
             status=400)
 
     fmt = (named_group.bracket_format if named_group and named_group.bracket_format else None) \
@@ -500,7 +500,7 @@ def generate_h2h_bracket(request, stage_id):
     if not fmt:
         return Response(
             {"message": "Pick a mode for this bracket (single_elim, double_elim, league or "
-                        "round_robin_h2h)."},
+                        "round_robin_h2h).", "code": "pick_mode_bracket_single"},
             status=400)
     if fmt not in head_to_head.VALID_FORMATS:
         return Response({"message": f"Unknown bracket format '{fmt}'."}, status=400)
@@ -509,7 +509,7 @@ def generate_h2h_bracket(request, stage_id):
     team_ids = request.data.get("team_ids")
     if not isinstance(team_ids, list) or len(team_ids) < 2:
         return Response({"message": "team_ids must be a list of at least 2 tournament team ids "
-                                    "in seed order."}, status=400)
+                                    "in seed order.", "code": "team_ids_list_least"}, status=400)
     # Coerce to ints up front (P2, owner 2026-07-13): a non-numeric id (e.g. "abc", null, a float)
     # used to reach the `__in=team_ids` query and raise an uncaught 500. Reject it as a clean 400
     # instead. Booleans are ints in Python but never a real team id, so refuse them explicitly.
@@ -518,12 +518,12 @@ def generate_h2h_bracket(request, stage_id):
         if len(team_ids) != len(request.data.get("team_ids")):
             raise ValueError
     except (TypeError, ValueError):
-        return Response({"message": "team_ids must all be integer tournament team ids."}, status=400)
+        return Response({"message": "team_ids must all be integer tournament team ids.", "code": "team_ids_integer_tournament"}, status=400)
     if len(set(team_ids)) != len(team_ids):
         return Response({"message": "team_ids contains duplicates: each team can only be "
-                                    "seeded once."}, status=400)
+                                    "seeded once.", "code": "team_ids_contains_duplicates"}, status=400)
     if fmt == "double_elim" and len(team_ids) < 3:
-        return Response({"message": "Double elimination needs at least 3 teams."}, status=400)
+        return Response({"message": "Double elimination needs at least 3 teams.", "code": "double_elimination_needs_least"}, status=400)
     valid_ids = set(
         TournamentTeam.objects.filter(event=event, tournament_team_id__in=team_ids)
         .values_list("tournament_team_id", flat=True))
@@ -568,7 +568,7 @@ def generate_h2h_bracket(request, stage_id):
         else:
             group = head_to_head.ensure_bracket_group(stage, fmt, third_place=third_place)
     except head_to_head.BracketError as e:
-        return Response({"message": str(e)}, status=400)
+        return Response({"message": str(e), "code": "generate_h2h_bracket_refused"}, status=400)
 
     # Regeneration guard: only while no REAL result has been entered IN THIS BRACKET. A bye is
     # completed with one empty slot, so requiring both teams filters byes out. Scoped to the group
@@ -577,7 +577,7 @@ def generate_h2h_bracket(request, stage_id):
             status="completed",
             team_a__isnull=False, team_b__isnull=False).exists():
         return Response({"message": "Results have already been entered for this bracket; "
-                                    "it can no longer be regenerated."}, status=400)
+                                    "it can no longer be regenerated.", "code": "results_already_entered_bracket"}, status=400)
 
     # Replace any previous (result-free) bracket atomically. Scoped to this group: regenerating
     # Group A must not wipe Group B.
@@ -590,7 +590,7 @@ def generate_h2h_bracket(request, stage_id):
             # atomic() rolls the delete back too, so a failed generate leaves the old
             # bracket untouched.
             transaction.set_rollback(True)
-            return Response({"message": str(e)}, status=400)
+            return Response({"message": str(e), "code": "generate_h2h_bracket_refused"}, status=400)
 
     # Tell every team the bracket exists and who they open against (owner 2026-08-12: nothing in
     # the Clash Squad path notified a player of anything). Best-effort inside the helper, so a
@@ -668,7 +668,7 @@ def report_h2h_match_result(request, match_id):
     event = match.stage.event
 
     if not _is_event_admin(user) and not org_can_event(user, "can_upload_results", event):
-        return Response({"message": "You do not have permission to enter results for this event."},
+        return Response({"message": "You do not have permission to enter results for this event.", "code": "not_permission_enter_results"},
                         status=403)
 
     # ── the set was never played: forfeit / walkover / disqualification (owner 2026-08-12) ──
@@ -685,7 +685,7 @@ def report_h2h_match_result(request, match_id):
                 acting_user=user,
             )
         except head_to_head.BracketError as e:
-            return Response({"message": str(e)}, status=400)
+            return Response({"message": str(e), "code": "report_h2h_match_result_refused"}, status=400)
         match.refresh_from_db()
         h2h_notifications.notify_match_result(match)
         return Response({
@@ -697,7 +697,7 @@ def report_h2h_match_result(request, match_id):
     score_a = request.data.get("score_a")
     score_b = request.data.get("score_b")
     if score_a is None or score_b is None:
-        return Response({"message": "score_a and score_b are required."}, status=400)
+        return Response({"message": "score_a and score_b are required.", "code": "score_score_required"}, status=400)
 
     # Optional per-player lines for this set (owner 2026-08-12). Omitting the key leaves any
     # existing lines untouched; sending [] clears them. Written inside report_result's transaction,
@@ -708,7 +708,7 @@ def report_h2h_match_result(request, match_id):
         bracket_complete = head_to_head.report_result(
             match, score_a, score_b, acting_user=user, player_stats=player_stats)
     except head_to_head.BracketError as e:
-        return Response({"message": str(e)}, status=400)
+        return Response({"message": str(e), "code": "report_h2h_match_result_refused"}, status=400)
 
     # Re-fetch so the echoed match carries the propagation-fresh team objects.
     match.refresh_from_db()
@@ -747,7 +747,7 @@ def update_h2h_match(request, match_id):
         HeadToHeadMatch.objects.select_related("stage__event", "team_a__team", "team_b__team"),
         h2h_match_id=match_id)
     if not _is_event_admin(user) and not org_can_event(user, "can_edit_events", match.stage.event):
-        return Response({"message": "You do not have permission to schedule this match."},
+        return Response({"message": "You do not have permission to schedule this match.", "code": "not_permission_schedule_match"},
                         status=403)
 
     fields = []
@@ -756,7 +756,7 @@ def update_h2h_match(request, match_id):
         try:
             match.scheduled_date = datetime.date.fromisoformat(raw) if raw else None
         except (TypeError, ValueError):
-            return Response({"message": "scheduled_date must look like 2026-08-20."}, status=400)
+            return Response({"message": "scheduled_date must look like 2026-08-20.", "code": "scheduled_date_look_like"}, status=400)
         fields.append("scheduled_date")
     if "scheduled_time" in request.data:
         raw = request.data.get("scheduled_time")
@@ -764,7 +764,7 @@ def update_h2h_match(request, match_id):
             # Accept both "18:30" and "18:30:00" - a browser time input sends the short form.
             match.scheduled_time = datetime.time.fromisoformat(raw) if raw else None
         except (TypeError, ValueError):
-            return Response({"message": "scheduled_time must look like 18:30."}, status=400)
+            return Response({"message": "scheduled_time must look like 18:30.", "code": "scheduled_time_look_like"}, status=400)
         fields.append("scheduled_time")
     if "status" in request.data:
         status_value = request.data.get("status")
@@ -773,16 +773,16 @@ def update_h2h_match(request, match_id):
             # here would leave a match marked finished with no winner and no advancement.
             return Response(
                 {"message": "status can only be set to pending or live. Enter a result to "
-                            "complete a match."}, status=400)
+                            "complete a match.", "code": "status_set_pending_live"}, status=400)
         if match.status == "completed":
             return Response(
-                {"message": "This match already has a result. Change the result instead."},
+                {"message": "This match already has a result. Change the result instead.", "code": "match_already_result_change"},
                 status=400)
         match.status = status_value
         fields.append("status")
 
     if not fields:
-        return Response({"message": "Nothing to update."}, status=400)
+        return Response({"message": "Nothing to update.", "code": "nothing_update"}, status=400)
 
     match.save(update_fields=fields + ["updated_at"])
 
@@ -826,7 +826,7 @@ def get_h2h_match_rosters(request, match_id):
     event = match.stage.event
 
     if not _is_event_admin(user) and not org_can_event(user, "can_upload_results", event):
-        return Response({"message": "You do not have permission to enter results for this event."},
+        return Response({"message": "You do not have permission to enter results for this event.", "code": "not_permission_enter_results"},
                         status=403)
 
     teams = []

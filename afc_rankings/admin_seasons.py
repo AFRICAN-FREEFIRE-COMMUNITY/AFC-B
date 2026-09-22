@@ -142,19 +142,19 @@ def season_create(request):
     # ── validate required text/number fields ──
     name = (data.get("name") or "").strip()
     if not name:
-        return Response({"message": "name is required."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "name is required.", "code": "name_required"}, status=status.HTTP_400_BAD_REQUEST)
 
     try:
         quarter = int(data.get("quarter"))
     except (TypeError, ValueError):
-        return Response({"message": "quarter must be an integer 1-4."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "quarter must be an integer 1-4.", "code": "quarter_integer"}, status=status.HTTP_400_BAD_REQUEST)
     if quarter not in (1, 2, 3, 4):
-        return Response({"message": "quarter must be one of 1, 2, 3, 4."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "quarter must be one of 1, 2, 3, 4.", "code": "season_create_quarter"}, status=status.HTTP_400_BAD_REQUEST)
 
     try:
         year = int(data.get("year"))
     except (TypeError, ValueError):
-        return Response({"message": "year must be an integer."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "year must be an integer.", "code": "year_integer"}, status=status.HTTP_400_BAD_REQUEST)
 
     # ── validate the four required dates ──
     start_date = _parse_date(data.get("start_date"))
@@ -175,10 +175,10 @@ def season_create(request):
 
     # ── sanity: ranges must not be inverted ──
     if end_date < start_date:
-        return Response({"message": "end_date cannot be before start_date."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "end_date cannot be before start_date.", "code": "end_date_cannot_before"}, status=status.HTTP_400_BAD_REQUEST)
     if tw_close < tw_open:
         return Response(
-            {"message": "transfer_window_close cannot be before transfer_window_open."},
+            {"message": "transfer_window_close cannot be before transfer_window_open.", "code": "transfer_window_close_cannot"},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
@@ -234,7 +234,7 @@ def season_update(request, season_id):
 
     season = Season.objects.filter(pk=season_id).first()
     if not season:
-        return Response({"message": "Season not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "Season not found.", "code": "season_not_found"}, status=status.HTTP_404_NOT_FOUND)
 
     data = request.data
     before = serialize_season(season)  # snapshot BEFORE any mutation for the audit log.
@@ -243,7 +243,7 @@ def season_update(request, season_id):
     if "name" in data:
         name = (data.get("name") or "").strip()
         if not name:
-            return Response({"message": "name cannot be blank."}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"message": "name cannot be blank.", "code": "name_cannot_blank"}, status=status.HTTP_400_BAD_REQUEST)
         season.name = name
 
     # ── dates (optional, each validated only if present) ──
@@ -261,10 +261,10 @@ def season_update(request, season_id):
 
     # ── cross-field range sanity on the (possibly updated) values ──
     if season.end_date < season.start_date:
-        return Response({"message": "end_date cannot be before start_date."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "end_date cannot be before start_date.", "code": "end_date_cannot_before"}, status=status.HTTP_400_BAD_REQUEST)
     if season.transfer_window_close < season.transfer_window_open:
         return Response(
-            {"message": "transfer_window_close cannot be before transfer_window_open."},
+            {"message": "transfer_window_close cannot be before transfer_window_open.", "code": "transfer_window_close_cannot"},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
@@ -318,7 +318,7 @@ def transfer_window_action(request, season_id):
 
     season = Season.objects.filter(pk=season_id).first()
     if not season:
-        return Response({"message": "Season not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "Season not found.", "code": "season_not_found"}, status=status.HTTP_404_NOT_FOUND)
 
     data = request.data
 
@@ -340,20 +340,20 @@ def transfer_window_action(request, season_id):
     if "new_open_date" in data:
         parsed = _parse_date(data.get("new_open_date"))
         if parsed is None:
-            return Response({"message": "Invalid new_open_date. Use YYYY-MM-DD."}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"message": "Invalid new_open_date. Use YYYY-MM-DD.", "code": "invalid_new_open_date"}, status=status.HTTP_400_BAD_REQUEST)
         new_open = parsed
 
     new_close = prev_close
     if "new_close_date" in data:
         parsed = _parse_date(data.get("new_close_date"))
         if parsed is None:
-            return Response({"message": "Invalid new_close_date. Use YYYY-MM-DD."}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"message": "Invalid new_close_date. Use YYYY-MM-DD.", "code": "invalid_new_close_date"}, status=status.HTTP_400_BAD_REQUEST)
         new_close = parsed
 
     # ── range sanity on the resulting window ──
     if new_close < new_open:
         return Response(
-            {"message": "transfer window close cannot be before open."},
+            {"message": "transfer window close cannot be before open.", "code": "transfer_window_close_cannot"},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
@@ -406,7 +406,7 @@ def transfer_log_list(request, season_id):
 
     season = Season.objects.filter(pk=season_id).first()
     if not season:
-        return Response({"message": "Season not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "Season not found.", "code": "season_not_found"}, status=status.HTTP_404_NOT_FOUND)
 
     # model Meta already orders by "-changed_at"; filter to this season and paginate.
     qs = TransferWindowLog.objects.filter(season=season)

@@ -78,10 +78,10 @@ def _auth(request):
     """Returns (user, error_response). If error_response is not None, return it immediately."""
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return None, Response({"message": "Invalid token."}, status=400)
+        return None, Response({"message": "Invalid token.", "code": "invalid_token"}, status=400)
     user = validate_token(auth.split(" ")[1])
     if not user:
-        return None, Response({"message": "Invalid session."}, status=401)
+        return None, Response({"message": "Invalid session.", "code": "invalid_session"}, status=401)
     return user, None
 
 
@@ -97,7 +97,7 @@ def _require_admin(user):
             role__role_name__in=["event_admin", "head_admin"]
         ).exists())
     ):
-        return Response({"message": "Unauthorized. Admins only."}, status=403)
+        return Response({"message": "Unauthorized. Admins only.", "code": "unauthorized_admins"}, status=403)
     return None
 
 
@@ -123,7 +123,7 @@ def _require_results_access(user, match):
     event = _get_event(match)
     if event and org_can_event(user, "can_upload_results", event):
         return None
-    return Response({"message": "Unauthorized. Admins only."}, status=403)
+    return Response({"message": "Unauthorized. Admins only.", "code": "unauthorized_admins"}, status=403)
 
 
 @api_view(["POST"])
@@ -158,7 +158,7 @@ def upload_ocr_session(request):
 
     if not match_id or not map_index or not screenshots:
         return Response(
-            {"message": "match_id, map_index, and at least one screenshot are required."},
+            {"message": "match_id, map_index, and at least one screenshot are required.", "code": "match_map_index_least"},
             status=400,
         )
 
@@ -167,7 +167,7 @@ def upload_ocr_session(request):
     # client-safe message. Bounding the file count keeps the synchronous multi-image read
     # under the ~30s prod gateway budget (the Gemini socket timeout does the rest, see A5).
     if (image_err := validate_ocr_images(screenshots)):
-        return Response({"message": image_err}, status=400)
+        return Response({"message": image_err, "code": "upload_ocr_session_refused"}, status=400)
 
     # A5 (sync path stays under the ~30s prod gateway budget): the synchronous per-map read fans
     # a SEPARATE Gemini call out per screenshot (ThreadPoolExecutor with max_workers=min(4, N)
@@ -177,7 +177,7 @@ def upload_ocr_session(request):
     # validate_ocr_images already bounded mime/size/count above; this bounds the wall-time.
     if len(screenshots) > 4:
         return Response(
-            {"message": "You can upload up to 4 screenshots per map at once. Add the rest as a second read."},
+            {"message": "You can upload up to 4 screenshots per map at once. Add the rest as a second read.", "code": "upload_screenshots_per_map"},
             status=400,
         )
 
@@ -187,7 +187,7 @@ def upload_ocr_session(request):
             "group__stage__event",
         ).get(match_id=match_id)
     except Match.DoesNotExist:
-        return Response({"message": "Match not found."}, status=404)
+        return Response({"message": "Match not found.", "code": "match_not_found"}, status=404)
 
     # Event-scoped access check (admins, or org members with can_upload_results on this match).
     if (deny := _require_results_access(user, match)):
@@ -195,7 +195,7 @@ def upload_ocr_session(request):
 
     event = _get_event(match)
     if not event:
-        return Response({"message": "Cannot determine event for this match."}, status=400)
+        return Response({"message": "Cannot determine event for this match.", "code": "cannot_determine_event_match"}, status=400)
 
     event_type = "solo" if event.participant_type == "solo" else "team"
 
@@ -378,7 +378,7 @@ def ocr_session_detail(request, session_id):
             "match__group__stage__event",
         ).get(session_id=session_id)
     except OCRSession.DoesNotExist:
-        return Response({"message": "Session not found."}, status=404)
+        return Response({"message": "Session not found.", "code": "session_not_found"}, status=404)
 
     # Event-scoped access check, resolving the event via the session's match.
     if (deny := _require_results_access(user, session.match)):
@@ -404,7 +404,7 @@ def ocr_session_detail(request, session_id):
 
         row_id = request.data.get("row_id")
         if not row_id:
-            return Response({"message": "row_id is required."}, status=400)
+            return Response({"message": "row_id is required.", "code": "row_required"}, status=400)
 
         rows = session.draft_rows
         for row in rows:
@@ -427,7 +427,7 @@ def ocr_session_detail(request, session_id):
                     row["corrected_text"] = request.data["corrected_text"]
                 break
         else:
-            return Response({"message": "Row not found."}, status=404)
+            return Response({"message": "Row not found.", "code": "row_not_found"}, status=404)
 
         session.draft_rows = rows
         session.save(update_fields=["draft_rows", "updated_at"])
@@ -461,7 +461,7 @@ def commit_ocr_session(request, session_id):
             "match__group__stage__event",
         ).get(session_id=session_id)
     except OCRSession.DoesNotExist:
-        return Response({"message": "Session not found."}, status=404)
+        return Response({"message": "Session not found.", "code": "session_not_found"}, status=404)
 
     # Event-scoped access check, resolving the event via the session's match.
     if (deny := _require_results_access(user, session.match)):
@@ -483,7 +483,7 @@ def commit_ocr_session(request, session_id):
         return Response({
             "message": "Some rows have no matched player. Resolve or remove them before committing.",
             "unresolved": unresolved,
-        }, status=400)
+         "code": "rows_no_matched_player"}, status=400)
 
     unacknowledged = [
         r.get("raw_name", "") for r in final_rows
@@ -493,7 +493,7 @@ def commit_ocr_session(request, session_id):
         return Response({
             "message": "Some team mismatches have not been acknowledged. Confirm or reassign before committing.",
             "unacknowledged": unacknowledged,
-        }, status=400)
+         "code": "team_mismatches_not_acknowledged"}, status=400)
 
     try:
         from .services.commit import (
@@ -614,7 +614,7 @@ def ocr_session_roster(request, session_id):
             "match__group__stage__event",
         ).get(session_id=session_id)
     except OCRSession.DoesNotExist:
-        return Response({"message": "Session not found."}, status=404)
+        return Response({"message": "Session not found.", "code": "session_not_found"}, status=404)
 
     # Event-scoped access check, resolving the event via the session's match (identical gate
     # to the sibling session views, so admin AND organizer parity is preserved here).
@@ -625,7 +625,7 @@ def ocr_session_roster(request, session_id):
     # a standalone leaderboard or a stage group). A session with no resolvable event is a 404.
     event = _get_event(session.match)
     if not event:
-        return Response({"message": "Cannot determine event for this session."}, status=404)
+        return Response({"message": "Cannot determine event for this session.", "code": "cannot_determine_event_session"}, status=404)
 
     # solo events carry no team context (team_id/team_name come back null from the resolver);
     # anything else is a team event. Same derivation the upload/commit paths use.
@@ -662,12 +662,12 @@ def ocr_from_stored_image(request):
     map_index = request.data.get("map_index", 1)
 
     if not image_id or not match_id:
-        return Response({"message": "image_id and match_id are required."}, status=400)
+        return Response({"message": "image_id and match_id are required.", "code": "image_match_required"}, status=400)
 
     try:
         stored = MatchResultImage.objects.get(image_id=image_id)
     except MatchResultImage.DoesNotExist:
-        return Response({"message": "Image not found."}, status=404)
+        return Response({"message": "Image not found.", "code": "image_not_found"}, status=404)
 
     try:
         match = Match.objects.select_related(
@@ -675,7 +675,7 @@ def ocr_from_stored_image(request):
             "group__stage__event",
         ).get(match_id=match_id)
     except Match.DoesNotExist:
-        return Response({"message": "Match not found."}, status=404)
+        return Response({"message": "Match not found.", "code": "match_not_found"}, status=404)
 
     # Event-scoped access check (admins, or org members with can_upload_results on this match).
     if (deny := _require_results_access(user, match)):
@@ -685,11 +685,11 @@ def ocr_from_stored_image(request):
     # match_id, but image_id was fetched independently, so without this an organizer with results access
     # on match A could OCR a screenshot belonging to another event's match by passing a foreign image_id.
     if getattr(stored, "match_id", None) and stored.match_id != match.match_id:
-        return Response({"message": "That image does not belong to this match."}, status=400)
+        return Response({"message": "That image does not belong to this match.", "code": "image_not_belong_match"}, status=400)
 
     event = _get_event(match)
     if not event:
-        return Response({"message": "Cannot determine event for this match."}, status=400)
+        return Response({"message": "Cannot determine event for this match.", "code": "cannot_determine_event_match"}, status=400)
 
     event_type = "solo" if event.participant_type == "solo" else "team"
 
@@ -807,13 +807,13 @@ def list_ocr_sessions(request):
         # as _get_event above), so the event scope filter must cover both FKs.
         event_id = request.query_params.get("event_id")
         if not event_id:
-            return Response({"message": "event_id is required."}, status=400)
+            return Response({"message": "event_id is required.", "code": "event_required"}, status=400)
         try:
             event = Event.objects.get(event_id=event_id)
         except Event.DoesNotExist:
-            return Response({"message": "Event not found."}, status=404)
+            return Response({"message": "Event not found.", "code": "event_not_found"}, status=404)
         if not org_can_event(user, "can_upload_results", event):
-            return Response({"message": "Unauthorized. Admins only."}, status=403)
+            return Response({"message": "Unauthorized. Admins only.", "code": "unauthorized_admins"}, status=403)
         qs = qs.filter(
             Q(match__leaderboard__event=event) | Q(match__group__stage__event=event)
         )
@@ -828,7 +828,7 @@ def list_ocr_sessions(request):
             try:
                 event = Event.objects.get(event_id=admin_event_id)
             except Event.DoesNotExist:
-                return Response({"message": "Event not found."}, status=404)
+                return Response({"message": "Event not found.", "code": "event_not_found"}, status=404)
             qs = qs.filter(
                 Q(match__leaderboard__event=event) | Q(match__group__stage__event=event)
             )
@@ -956,7 +956,7 @@ def _require_ocr_admin(request):
         return None, err
     if not _is_ocr_admin(user):
         return None, Response(
-            {"message": "You do not have permission to manage the OCR model."},
+            {"message": "You do not have permission to manage the OCR model.", "code": "not_permission_manage_ocr"},
             status=403,
         )
     return user, None
@@ -1503,7 +1503,7 @@ def ocr_upload_model(request):
 
     upload = request.FILES.get("file")
     if not upload:
-        return Response({"message": "A bundle zip file is required (field 'file')."}, status=400)
+        return Response({"message": "A bundle zip file is required (field 'file').", "code": "bundle_zip_file_required"}, status=400)
 
     # ?promote may arrive as a query param OR a form field; accept either, default false.
     promote_raw = (
@@ -1523,7 +1523,7 @@ def ocr_upload_model(request):
         try:
             zf = zipfile.ZipFile(io.BytesIO(data))
         except zipfile.BadZipFile:
-            return Response({"message": "Uploaded file is not a valid zip bundle."}, status=400)
+            return Response({"message": "Uploaded file is not a valid zip bundle.", "code": "uploaded_file_not_valid"}, status=400)
 
         with zf:
             # Map basename -> entry so the bundle may be zipped flat OR inside a top folder.
@@ -1552,19 +1552,19 @@ def ocr_upload_model(request):
             # ── read VERSION (decides the target dir name) ─────────────────────
             version = zf.read(by_base["VERSION"]).decode("utf-8", "replace").strip()
             if not version:
-                return Response({"message": "Bundle VERSION file is empty."}, status=400)
+                return Response({"message": "Bundle VERSION file is empty.", "code": "bundle_version_file_empty"}, status=400)
             # Keep the version filesystem-safe (it becomes a dir name student_v<version>).
             safe_version = "".join(
                 c for c in version if c.isalnum() or c in ("_", "-", ".")
             )
             if not safe_version:
-                return Response({"message": "Bundle VERSION is not a usable version string."}, status=400)
+                return Response({"message": "Bundle VERSION is not a usable version string.", "code": "bundle_version_not_usable"}, status=400)
 
             # ── eval-gate verdict MUST be ship==true ───────────────────────────
             try:
                 report = _json.loads(zf.read(by_base["eval_report.json"]).decode("utf-8", "replace"))
             except ValueError:
-                return Response({"message": "eval_report.json in bundle is not valid JSON."}, status=400)
+                return Response({"message": "eval_report.json in bundle is not valid JSON.", "code": "eval_report_json_bundle"}, status=400)
             gate_passed = bool(report.get("ship", False))
             if not gate_passed:
                 # We never store/serve a model the gate did not clear (the safety spine).
@@ -1573,7 +1573,7 @@ def ocr_upload_model(request):
                         "message": "Bundle rejected: eval_report.json ship is not true "
                                    "(the eval gate did not clear this model).",
                         "gate_passed": False,
-                    },
+                     "code": "bundle_rejected_eval_report"},
                     status=400,
                 )
 
@@ -1638,7 +1638,7 @@ def ocr_promote_model(request):
 
     version = request.data.get("version")
     if version in (None, ""):
-        return Response({"message": "version is required."}, status=400)
+        return Response({"message": "version is required.", "code": "version_required"}, status=400)
 
     try:
         model_registry.promote(version)
@@ -1648,7 +1648,7 @@ def ocr_promote_model(request):
         )
     except FileNotFoundError as exc:
         # Bundle not deployed at media/models/student_v<version>/ - caller error, not a 500.
-        return Response({"message": str(exc)}, status=400)
+        return Response({"message": str(exc), "code": "ocr_promote_model_refused"}, status=400)
     except Exception as exc:  # noqa: BLE001
         logger.exception("ocr_promote_model failed: %s", exc)
         return Response(

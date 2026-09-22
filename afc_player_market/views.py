@@ -514,11 +514,11 @@ def create_recruitment_post(request):
     # ---------------- AUTH ----------------
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid token."}, status=400)
+        return Response({"message": "Invalid token.", "code": "invalid_token"}, status=400)
 
     user = validate_token(auth.split(" ")[1])
     if not user:
-        return Response({"message": "Invalid session."}, status=401)
+        return Response({"message": "Invalid session.", "code": "invalid_session"}, status=401)
 
     # â”€â”€ MARKET-BAN GUARD (feature "J-market-reporting") â”€â”€
     # A banned player (or a member of a banned team) cannot create a market post.
@@ -561,7 +561,7 @@ def create_recruitment_post(request):
                     "post at a time. Close or let your current post expire before "
                     "creating a new one."
                 )
-            },
+            , "code": "create_recruitment_post_refused"},
             status=400,
         )
 
@@ -573,7 +573,7 @@ def create_recruitment_post(request):
         expiry = data.get("post_expiry_date")
 
         if not post_type or not expiry:
-            return Response({"message": "post_type and post_expiry_date are required"}, status=400)
+            return Response({"message": "post_type and post_expiry_date are required", "code": "post_type_post_expiry"}, status=400)
 
         # â”€â”€ ONE-MONTH EXPIRY CAP (feature "L-market-expiry-cap") â”€â”€
         # Parse the user-set expiry, then bound it: a post may last AT MOST one calendar
@@ -587,18 +587,18 @@ def create_recruitment_post(request):
         try:
             expiry_date = datetime.strptime(expiry, "%Y-%m-%d").date()
         except ValueError:
-            return Response({"message": "Invalid date format. Use YYYY-MM-DD."}, status=400)
+            return Response({"message": "Invalid date format. Use YYYY-MM-DD.", "code": "invalid_date_format_use"}, status=400)
         if expiry_date < today:
-            return Response({"message": "Post expiry cannot be in the past."}, status=400)
+            return Response({"message": "Post expiry cannot be in the past.", "code": "post_expiry_cannot_past"}, status=400)
         if expiry_date > add_one_month(today):
-            return Response({"message": "Post expiry must be within 1 month from today."}, status=400)
+            return Response({"message": "Post expiry must be within 1 month from today.", "code": "post_expiry_within_month"}, status=400)
 
         # ðŸŒ Get country
         country = None
         if country_code:
             country = Country.objects.filter(code=country_code).first()
             if not country:
-                return Response({"message": "Invalid country code"}, status=400)
+                return Response({"message": "Invalid country code", "code": "invalid_country_code"}, status=400)
 
         # Build the post in memory and set EVERY field BEFORE the first save(), so a
         # request missing an optional field can never leave a half-written orphan row.
@@ -624,7 +624,7 @@ def create_recruitment_post(request):
                     or Team.objects.filter(team_owner=user).exists()):
                 return Response(
                     {"message": "You're already in a team, so you can't post that you're available. "
-                                "Leave your team first, then create the post."},
+                                "Leave your team first, then create the post.", "code": "already_team_post_available"},
                     status=400,
                 )
             # COMPULSORY (owner 2026-06-12): the mobile device the player currently plays on.
@@ -633,14 +633,14 @@ def create_recruitment_post(request):
             mobile_device = (data.get("mobile_device") or "").strip()
             if not mobile_device:
                 return Response(
-                    {"message": "mobile_device is required: tell teams the phone you currently play on."},
+                    {"message": "mobile_device is required: tell teams the phone you currently play on.", "code": "mobile_device_required_tell"},
                     status=400,
                 )
             post.mobile_device = mobile_device[:80]  # column cap; UI enforces the same limit
             # OPTIONAL gameplay video link, allowlist-validated (YouTube/TikTok only).
             video_url, video_err = _validate_video_url(data.get("video_url"))
             if video_err:
-                return Response({"message": video_err}, status=400)
+                return Response({"message": video_err, "code": "create_recruitment_post_refused"}, status=400)
             # Resolve TikTok short links to the embeddable canonical URL (owner 2026-06-30).
             post.video_url = _resolve_video_url(video_url)
             # OPTIONAL residential state (feature 3). Free CharField storing the ISO-3166-2
@@ -666,7 +666,7 @@ def create_recruitment_post(request):
             image_files = _post_files(request)
             img_err = _validate_post_image_files(image_files)
             if img_err:
-                return Response({"message": img_err}, status=400)
+                return Response({"message": img_err, "code": "create_recruitment_post_refused"}, status=400)
 
             post.save()  # single INSERT
             # Now that the post has a PK, persist the screenshots (normalised like the esport image).
@@ -698,7 +698,7 @@ def create_recruitment_post(request):
             except Team.DoesNotExist:
                 team = None
             if not team:
-                return Response({"message": "You must own a team to create a recruitment post"}, status=400)
+                return Response({"message": "You must own a team to create a recruitment post", "code": "team_create_recruitment_post"}, status=400)
             post.team = team
             # roles_needed is a JSON list column; _coerce_list keeps it a real list whether the
             # team form posts JSON (array) or multipart (JSON string), then None stays None.
@@ -722,7 +722,7 @@ def create_recruitment_post(request):
                     post.save(update_fields=["country"])
 
         else:
-            return Response({"message": "Invalid post_type"}, status=400)
+            return Response({"message": "Invalid post_type", "code": "invalid_post_type"}, status=400)
 
         return Response({
             "message": "Recruitment post created successfully",
@@ -882,11 +882,11 @@ def apply_to_team(request):
     # ---------------- AUTH ----------------
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid token."}, status=400)
+        return Response({"message": "Invalid token.", "code": "invalid_token"}, status=400)
 
     user = validate_token(auth.split(" ")[1])
     if not user:
-        return Response({"message": "Invalid session."}, status=401)
+        return Response({"message": "Invalid session.", "code": "invalid_session"}, status=401)
 
     # â”€â”€ MARKET-BAN GUARD (feature "J-market-reporting") â”€â”€
     # A banned player (or a member of a banned team) cannot apply to a team.
@@ -905,19 +905,19 @@ def apply_to_team(request):
     # (not found / bad id -> 404) so bad input returns a clean 4xx instead.
     post_id = request.data.get("post_id")
     if not post_id:
-        return Response({"message": "post_id is required."}, status=400)
+        return Response({"message": "post_id is required.", "code": "post_required"}, status=400)
 
     try:
         post = RecruitmentPost.objects.get(id=post_id)
     except (RecruitmentPost.DoesNotExist, ValueError):
-        return Response({"message": "Recruitment post not found."}, status=404)
+        return Response({"message": "Recruitment post not found.", "code": "recruitment_post_not_found"}, status=404)
 
     # ensure the applier is currently not in a team
     if TeamMembers.objects.filter(member=user).exists():
-        return Response({"message": "You must leave your current team before applying"}, status=400)
+        return Response({"message": "You must leave your current team before applying", "code": "leave_current_team_before"}, status=400)
     
     if post.post_type != "TEAM_RECRUITMENT":
-        return Response({"message": "Invalid post"}, status=400)
+        return Response({"message": "Invalid post", "code": "invalid_post"}, status=400)
 
     # â”€â”€ COUNTRY GATE (feature "K-country-gate") â”€â”€
     # If the team's post targets specific countries, only players LOCATED in one of those
@@ -930,7 +930,7 @@ def apply_to_team(request):
 
     # ensure the user has not already applied to this post
     if RecruitmentApplication.objects.filter(player=user, recruitment_post=post).exists():
-        return Response({"message": "Already applied"}, status=400)
+        return Response({"message": "Already applied", "code": "already_applied"}, status=400)
 
     application, created = RecruitmentApplication.objects.get_or_create(
         player=user,
@@ -1067,11 +1067,11 @@ def update_application_status(request):
     # ---------------- AUTH ----------------
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid token."}, status=400)
+        return Response({"message": "Invalid token.", "code": "invalid_token"}, status=400)
 
     user = validate_token(auth.split(" ")[1])
     if not user:
-        return Response({"message": "Invalid session."}, status=401)
+        return Response({"message": "Invalid session.", "code": "invalid_session"}, status=401)
     # â”€â”€ INPUT GUARD â”€â”€
     # application_id is required. On an empty/blank body request.data.get returns None,
     # and RecruitmentApplication.objects.get(id=None) raises DoesNotExist (a malformed
@@ -1079,16 +1079,16 @@ def update_application_status(request):
     # first (missing -> 400), then guard the lookup (not found / bad id -> 404).
     application_id = request.data.get("application_id")
     if not application_id:
-        return Response({"message": "application_id is required."}, status=400)
+        return Response({"message": "application_id is required.", "code": "application_required"}, status=400)
 
     try:
         application = RecruitmentApplication.objects.get(id=application_id)
     except (RecruitmentApplication.DoesNotExist, ValueError):
-        return Response({"message": "Application not found."}, status=404)
+        return Response({"message": "Application not found.", "code": "application_not_found"}, status=404)
 
     # Ensure user owns the team
     if application.team.team_owner != user:
-        return Response({"message": "Unauthorized"}, status=403)
+        return Response({"message": "Unauthorized", "code": "update_application_status_unauthorized"}, status=403)
 
     action = request.data.get("action")
 
@@ -1454,7 +1454,7 @@ def update_application_status(request):
         return Response({"message": "Trial started.", "chat_id": chat.id}, status=200)
 
     else:
-        return Response({"message": "Invalid action"}, status=400)
+        return Response({"message": "Invalid action", "code": "invalid_action"}, status=400)
 
     application.save()
 
@@ -1467,11 +1467,11 @@ def get_player_contact(request):
     # ---------------- AUTH ----------------
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid token."}, status=400)
+        return Response({"message": "Invalid token.", "code": "invalid_token"}, status=400)
 
     user = validate_token(auth.split(" ")[1])
     if not user:
-        return Response({"message": "Invalid session."}, status=401)
+        return Response({"message": "Invalid session.", "code": "invalid_session"}, status=401)
 
     # â”€â”€ INPUT GUARD â”€â”€
     # application_id is required. On an empty/blank body request.data.get returns None,
@@ -1480,24 +1480,24 @@ def get_player_contact(request):
     # first (missing -> 400), then guard the lookup (not found / bad id -> 404).
     application_id = request.data.get("application_id")
     if not application_id:
-        return Response({"message": "application_id is required."}, status=400)
+        return Response({"message": "application_id is required.", "code": "application_required"}, status=400)
 
     try:
         application = RecruitmentApplication.objects.get(id=application_id)
     except (RecruitmentApplication.DoesNotExist, ValueError):
-        return Response({"message": "Application not found."}, status=404)
+        return Response({"message": "Application not found.", "code": "application_not_found"}, status=404)
 
     if application.team.team_owner != user:
-        return Response({"message": "Unauthorized"}, status=403)
+        return Response({"message": "Unauthorized", "code": "get_player_contact_unauthorized"}, status=403)
 
     if not application.contact_unlocked:
-        return Response({"message": "Contact locked"}, status=403)
+        return Response({"message": "Contact locked", "code": "contact_locked"}, status=403)
 
     # invite_expires_at is nullable (model: null=True). When it is None, "None < now()"
     # raises TypeError -> 500. Treat a missing expiry as not-yet-unlocked: no live invite
     # window means contact is effectively locked, so return the same 403 as a stale one.
     if application.invite_expires_at is None or application.invite_expires_at < timezone.now():
-        return Response({"message": "Invite expired"}, status=403)
+        return Response({"message": "Invite expired", "code": "invite_expired"}, status=403)
 
     player = application.player
 
@@ -1535,11 +1535,11 @@ def finalize_trial(request):
     # ---------------- AUTH ----------------
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid token."}, status=400)
+        return Response({"message": "Invalid token.", "code": "invalid_token"}, status=400)
 
     user = validate_token(auth.split(" ")[1])
     if not user:
-        return Response({"message": "Invalid session."}, status=401)
+        return Response({"message": "Invalid session.", "code": "invalid_session"}, status=401)
     # â”€â”€ INPUT GUARD â”€â”€
     # application_id is required. On an empty/blank body request.data.get returns None,
     # and RecruitmentApplication.objects.get(id=None) raises DoesNotExist (a malformed
@@ -1547,15 +1547,15 @@ def finalize_trial(request):
     # first (missing -> 400), then guard the lookup (not found / bad id -> 404).
     application_id = request.data.get("application_id")
     if not application_id:
-        return Response({"message": "application_id is required."}, status=400)
+        return Response({"message": "application_id is required.", "code": "application_required"}, status=400)
 
     try:
         application = RecruitmentApplication.objects.get(id=application_id)
     except (RecruitmentApplication.DoesNotExist, ValueError):
-        return Response({"message": "Application not found."}, status=404)
+        return Response({"message": "Application not found.", "code": "application_not_found"}, status=404)
 
     if application.team.team_owner != user:
-        return Response({"message": "Unauthorized"}, status=403)
+        return Response({"message": "Unauthorized", "code": "finalize_trial_unauthorized"}, status=403)
 
     action = request.data.get("action")
 
@@ -1571,7 +1571,7 @@ def finalize_trial(request):
         application.status = "TRIAL_EXTENDED"
 
     else:
-        return Response({"message": "Invalid action"}, status=400)
+        return Response({"message": "Invalid action", "code": "invalid_action"}, status=400)
 
     application.save()
 
@@ -1583,17 +1583,17 @@ def view_applications(request):
     # ---------------- AUTH ----------------
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid token."}, status=400)
+        return Response({"message": "Invalid token.", "code": "invalid_token"}, status=400)
 
     user = validate_token(auth.split(" ")[1])
     if not user:
-        return Response({"message": "Invalid session."}, status=401)
+        return Response({"message": "Invalid session.", "code": "invalid_session"}, status=401)
 
     # team_owner is a non-unique ForeignKey (a user can own >1 team), so .get() can raise
     # MultipleObjectsReturned -> uncaught 500. Use .filter().first() to deterministically pick one team.
     team = Team.objects.filter(team_owner=user).order_by("team_id").first()
     if not team:
-        return Response({"message": "Team not found"}, status=404)
+        return Response({"message": "Team not found", "code": "team_not_found"}, status=404)
 
 
     applications = RecruitmentApplication.objects.filter(team=team).order_by("-created_at")
@@ -1687,11 +1687,11 @@ def get_my_trial_chats(request):
     # ---------------- AUTH ----------------
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid token."}, status=400)
+        return Response({"message": "Invalid token.", "code": "invalid_token"}, status=400)
 
     user = validate_token(auth.split(" ")[1])
     if not user:
-        return Response({"message": "Invalid session."}, status=401)
+        return Response({"message": "Invalid session.", "code": "invalid_session"}, status=401)
 
     trial_chats = TrialChat.objects.filter(
         Q(application__player=user) |
@@ -1717,16 +1717,16 @@ def get_trial_chat_messages(request):
     # ---------------- AUTH ----------------
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid token."}, status=400)
+        return Response({"message": "Invalid token.", "code": "invalid_token"}, status=400)
 
     user = validate_token(auth.split(" ")[1])
     if not user:
-        return Response({"message": "Invalid session."}, status=401)
+        return Response({"message": "Invalid session.", "code": "invalid_session"}, status=401)
 
     chat_id = request.query_params.get("chat_id")
 
     if not chat_id:
-        return Response({"message": "chat_id is required."}, status=400)
+        return Response({"message": "chat_id is required.", "code": "chat_required"}, status=400)
 
     try:
         chat = TrialChat.objects.select_related(
@@ -1734,7 +1734,7 @@ def get_trial_chat_messages(request):
             "application__team",
         ).get(id=chat_id)
     except (TrialChat.DoesNotExist, ValueError):
-        return Response({"message": "Chat not found."}, status=404)
+        return Response({"message": "Chat not found.", "code": "chat_not_found"}, status=404)
 
     # AFC staff may READ any trial chat for oversight/moderation (feature "K-admin-chat-read",
     # disclosed in the Privacy Policy + Terms). The read gate allows the trial participants
@@ -1742,7 +1742,7 @@ def get_trial_chat_messages(request):
     # only â€” send_trial_chat_message keeps the participant-only gate, so an admin cannot post
     # into someone's trial conversation, only observe it.
     if not (_is_trial_chat_participant(user, chat) or _is_market_moderator(user)):
-        return Response({"message": "Unauthorized."}, status=403)
+        return Response({"message": "Unauthorized.", "code": "get_trial_chat_messages_unauthorized"}, status=403)
 
     messages = chat.messages.select_related("sender").all()
 
@@ -1775,30 +1775,30 @@ def send_trial_chat_message(request):
     # ---------------- AUTH ----------------
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid token."}, status=400)
+        return Response({"message": "Invalid token.", "code": "invalid_token"}, status=400)
 
     user = validate_token(auth.split(" ")[1])
     if not user:
-        return Response({"message": "Invalid session."}, status=401)
+        return Response({"message": "Invalid session.", "code": "invalid_session"}, status=401)
 
     chat_id = request.data.get("chat_id")
     message_text = request.data.get("message", "").strip()
 
     if not chat_id:
-        return Response({"message": "chat_id is required."}, status=400)
+        return Response({"message": "chat_id is required.", "code": "chat_required"}, status=400)
 
     if not message_text:
-        return Response({"message": "Message cannot be empty."}, status=400)
+        return Response({"message": "Message cannot be empty.", "code": "message_cannot_empty"}, status=400)
 
     try:
         chat = TrialChat.objects.select_related(
             "application__player", "application__team"
         ).get(id=chat_id)
     except (TrialChat.DoesNotExist, ValueError):
-        return Response({"message": "Chat not found."}, status=404)
+        return Response({"message": "Chat not found.", "code": "chat_not_found"}, status=404)
 
     if not _is_trial_chat_participant(user, chat):
-        return Response({"message": "Unauthorized."}, status=403)
+        return Response({"message": "Unauthorized.", "code": "send_trial_chat_message_unauthorized"}, status=403)
 
     msg = TrialChatMessage.objects.create(chat=chat, sender=user, message=message_text)
 
@@ -1815,11 +1815,11 @@ def view_my_applications(request):
     # ---------------- AUTH ----------------
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid token."}, status=400)
+        return Response({"message": "Invalid token.", "code": "invalid_token"}, status=400)
 
     user = validate_token(auth.split(" ")[1])
     if not user:
-        return Response({"message": "Invalid session."}, status=401)
+        return Response({"message": "Invalid session.", "code": "invalid_session"}, status=401)
 
 
     applications = RecruitmentApplication.objects.filter(player=user).order_by("-created_at")
@@ -1905,11 +1905,11 @@ def invite_player_to_trial(request):
     """
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid token."}, status=400)
+        return Response({"message": "Invalid token.", "code": "invalid_token"}, status=400)
 
     user = validate_token(auth.split(" ")[1])
     if not user:
-        return Response({"message": "Invalid session."}, status=401)
+        return Response({"message": "Invalid session.", "code": "invalid_session"}, status=401)
 
     # â”€â”€ MARKET-BAN GUARD (feature "J-market-reporting") â”€â”€
     # A banned user (or a member of a banned team) cannot send a trial invite.
@@ -1926,10 +1926,10 @@ def invite_player_to_trial(request):
     try:
         post = RecruitmentPost.objects.get(id=post_id)
     except RecruitmentPost.DoesNotExist:
-        return Response({"message": "Post not found."}, status=404)
+        return Response({"message": "Post not found.", "code": "post_not_found"}, status=404)
 
     if post.post_type != "PLAYER_AVAILABLE":
-        return Response({"message": "This post is not a player availability post."}, status=400)
+        return Response({"message": "This post is not a player availability post.", "code": "post_not_player_availability"}, status=400)
 
     # Resolve which team this user represents
     team = None
@@ -1943,7 +1943,7 @@ def invite_player_to_trial(request):
             team = membership.team
 
     if not team:
-        return Response({"message": "You must be a team owner, manager, or coach to send a trial invite."}, status=403)
+        return Response({"message": "You must be a team owner, manager, or coach to send a trial invite.", "code": "team_owner_manager_coach"}, status=403)
 
     # â”€â”€ COUNTRY GATE (feature "K-country-gate") â”€â”€
     # If the player's availability post targets specific countries (the countries they are
@@ -1954,14 +1954,14 @@ def invite_player_to_trial(request):
         return country_block
 
     if TeamMembers.objects.filter(team=team, member=post.player).exists():
-        return Response({"message": "This player is already in your team."}, status=400)
+        return Response({"message": "This player is already in your team.", "code": "player_already_team"}, status=400)
 
     if DirectTrialInvite.objects.filter(team=team, player_post=post, status="PENDING").exists():
-        return Response({"message": "You have already sent a pending trial invite to this player."}, status=400)
+        return Response({"message": "You have already sent a pending trial invite to this player.", "code": "already_sent_pending_trial"}, status=400)
 
     active_team_trials = RecruitmentApplication.objects.filter(team=team, status="TRIAL_ONGOING").count()
     if active_team_trials >= 4:
-        return Response({"message": "Your team already has 4 active trials. Finalize an existing trial before starting more."}, status=400)
+        return Response({"message": "Your team already has 4 active trials. Finalize an existing trial before starting more.", "code": "team_already_active_trials"}, status=400)
 
     invite = DirectTrialInvite.objects.create(
         team=team,
@@ -2053,11 +2053,11 @@ def view_my_trial_invites(request):
     """Player views all direct trial invites received from teams."""
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid token."}, status=400)
+        return Response({"message": "Invalid token.", "code": "invalid_token"}, status=400)
 
     user = validate_token(auth.split(" ")[1])
     if not user:
-        return Response({"message": "Invalid session."}, status=401)
+        return Response({"message": "Invalid session.", "code": "invalid_session"}, status=401)
 
     invites = DirectTrialInvite.objects.filter(player=user).select_related(
         "team", "player_post"
@@ -2094,11 +2094,11 @@ def respond_to_direct_trial_invite(request):
     """
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid token."}, status=400)
+        return Response({"message": "Invalid token.", "code": "invalid_token"}, status=400)
 
     user = validate_token(auth.split(" ")[1])
     if not user:
-        return Response({"message": "Invalid session."}, status=401)
+        return Response({"message": "Invalid session.", "code": "invalid_session"}, status=401)
 
     invite_id = request.data.get("invite_id")
     action = request.data.get("action")  # ACCEPT or DECLINE
@@ -2106,10 +2106,10 @@ def respond_to_direct_trial_invite(request):
     try:
         invite = DirectTrialInvite.objects.select_related("team", "player", "player_post").get(id=invite_id)
     except DirectTrialInvite.DoesNotExist:
-        return Response({"message": "Invite not found."}, status=404)
+        return Response({"message": "Invite not found.", "code": "invite_not_found"}, status=404)
 
     if invite.player != user:
-        return Response({"message": "Unauthorized."}, status=403)
+        return Response({"message": "Unauthorized.", "code": "respond_to_direct_trial_invite_unauthori"}, status=403)
 
     if invite.status != "PENDING":
         return Response({"message": f"This invite has already been {invite.status.lower()}."}, status=400)
@@ -2117,7 +2117,7 @@ def respond_to_direct_trial_invite(request):
     if invite.expires_at < timezone.now():
         invite.status = "EXPIRED"
         invite.save(update_fields=["status"])
-        return Response({"message": "This invite has expired."}, status=400)
+        return Response({"message": "This invite has expired.", "code": "invite_expired"}, status=400)
 
     if action == "DECLINE":
         invite.status = "REJECTED"
@@ -2238,18 +2238,18 @@ def respond_to_direct_trial_invite(request):
         return Response({"message": "Trial accepted.", "chat_id": chat.id}, status=200)
 
     else:
-        return Response({"message": "Invalid action. Use ACCEPT or DECLINE."}, status=400)
+        return Response({"message": "Invalid action. Use ACCEPT or DECLINE.", "code": "invalid_action_use_accept"}, status=400)
 
 
 @api_view(["GET"])
 def view_application_details(request):
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid token."}, status=400)
+        return Response({"message": "Invalid token.", "code": "invalid_token"}, status=400)
 
     user = validate_token(auth.split(" ")[1])
     if not user:
-        return Response({"message": "Invalid session."}, status=401)
+        return Response({"message": "Invalid session.", "code": "invalid_session"}, status=401)
 
     # `ref` is the application's public token or a legacy numeric id (owner rule R22);
     # `application_id` stays accepted for older callers. A legacy id answers the application PLUS
@@ -2258,7 +2258,7 @@ def view_application_details(request):
     ref = request.query_params.get("ref") or request.query_params.get("application_id")
     resolved, moved_to_token = resolve_by_token(RecruitmentApplication, ref, "a")
     if resolved is None:
-        return Response({"message": "Application not found."}, status=404)
+        return Response({"message": "Application not found.", "code": "application_not_found"}, status=404)
     app = RecruitmentApplication.objects.select_related(
         "player", "team", "recruitment_post", "recruitment_post__country"
     ).get(pk=resolved.pk)
@@ -2266,7 +2266,7 @@ def view_application_details(request):
     if app.player != user and app.team.team_owner != user and not TeamMembers.objects.filter(
         team=app.team, member=user, management_role__in=['coach', 'manager']
     ).exists():
-        return Response({"message": "Unauthorized."}, status=403)
+        return Response({"message": "Unauthorized.", "code": "view_application_details_unauthorized"}, status=403)
 
     player = app.player
 
@@ -2355,12 +2355,12 @@ def get_post_details(request):
     """Public endpoint - no auth required."""
     post_id = request.query_params.get("post_id")
     if not post_id:
-        return Response({"message": "post_id is required."}, status=400)
+        return Response({"message": "post_id is required.", "code": "post_required"}, status=400)
 
     try:
         post = RecruitmentPost.objects.select_related("player", "team", "country", "created_by").get(id=post_id)
     except RecruitmentPost.DoesNotExist:
-        return Response({"message": "Post not found."}, status=404)
+        return Response({"message": "Post not found.", "code": "post_not_found"}, status=404)
 
     data = {
         "id": post.id,
@@ -2412,11 +2412,11 @@ def get_posts_related_to_me(request):
     """Returns all recruitment posts created by the authenticated user."""
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid token."}, status=400)
+        return Response({"message": "Invalid token.", "code": "invalid_token"}, status=400)
 
     user = validate_token(auth.split(" ")[1])
     if not user:
-        return Response({"message": "Invalid session."}, status=401)
+        return Response({"message": "Invalid session.", "code": "invalid_session"}, status=401)
 
     posts = RecruitmentPost.objects.filter(created_by=user).order_by("-created_at")
 
@@ -2463,23 +2463,23 @@ def edit_recruitment_post(request):
     """Edit a recruitment post. Only the creator can edit it."""
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid token."}, status=400)
+        return Response({"message": "Invalid token.", "code": "invalid_token"}, status=400)
 
     user = validate_token(auth.split(" ")[1])
     if not user:
-        return Response({"message": "Invalid session."}, status=401)
+        return Response({"message": "Invalid session.", "code": "invalid_session"}, status=401)
 
     post_id = request.data.get("post_id")
     if not post_id:
-        return Response({"message": "post_id is required."}, status=400)
+        return Response({"message": "post_id is required.", "code": "post_required"}, status=400)
 
     try:
         post = RecruitmentPost.objects.get(id=post_id)
     except RecruitmentPost.DoesNotExist:
-        return Response({"message": "Post not found."}, status=404)
+        return Response({"message": "Post not found.", "code": "post_not_found"}, status=404)
 
     if post.created_by != user:
-        return Response({"message": "Unauthorized."}, status=403)
+        return Response({"message": "Unauthorized.", "code": "edit_recruitment_post_unauthorized"}, status=403)
 
     data = request.data
 
@@ -2488,7 +2488,7 @@ def edit_recruitment_post(request):
         try:
             new_expiry = datetime.strptime(data["post_expiry_date"], "%Y-%m-%d").date()
         except ValueError:
-            return Response({"message": "Invalid date format. Use YYYY-MM-DD."}, status=400)
+            return Response({"message": "Invalid date format. Use YYYY-MM-DD.", "code": "invalid_date_format_use"}, status=400)
 
         # â”€â”€ ONE-MONTH EXPIRY CAP (feature "L-market-expiry-cap") â”€â”€
         # An edit must not extend a post past one calendar month of TOTAL life, so the cap
@@ -2498,16 +2498,16 @@ def edit_recruitment_post(request):
         # Same bound the create path enforces from today; see add_one_month above.
         today = timezone.now().date()
         if new_expiry < today:
-            return Response({"message": "Post expiry cannot be in the past."}, status=400)
+            return Response({"message": "Post expiry cannot be in the past.", "code": "post_expiry_cannot_past"}, status=400)
         if new_expiry > add_one_month(post.created_at.date()):
-            return Response({"message": "Post expiry must be within 1 month of the post's start date."}, status=400)
+            return Response({"message": "Post expiry must be within 1 month of the post's start date.", "code": "post_expiry_within_month"}, status=400)
 
         post.post_expiry_date = new_expiry
 
     if "country_code" in data:
         country = Country.objects.filter(code=data["country_code"]).first()
         if not country:
-            return Response({"message": "Invalid country code."}, status=400)
+            return Response({"message": "Invalid country code.", "code": "invalid_country_code"}, status=400)
         post.country = country
 
     # Player post fields
@@ -2522,7 +2522,7 @@ def edit_recruitment_post(request):
             device = (data.get("mobile_device") or "").strip()
             if not device:
                 return Response(
-                    {"message": "mobile_device cannot be empty: tell teams the phone you currently play on."},
+                    {"message": "mobile_device cannot be empty: tell teams the phone you currently play on.", "code": "mobile_device_cannot_empty"},
                     status=400,
                 )
             post.mobile_device = device[:80]
@@ -2531,7 +2531,7 @@ def edit_recruitment_post(request):
         if "video_url" in data:
             video_url, video_err = _validate_video_url(data.get("video_url"))
             if video_err:
-                return Response({"message": video_err}, status=400)
+                return Response({"message": video_err, "code": "edit_recruitment_post_refused"}, status=400)
             # Resolve TikTok short links to the embeddable canonical URL (owner 2026-06-30).
             post.video_url = _resolve_video_url(video_url)
 
@@ -2568,7 +2568,7 @@ def edit_recruitment_post(request):
         image_files = _post_files(request)
         img_err = _validate_post_image_files(image_files)
         if img_err:
-            return Response({"message": img_err}, status=400)
+            return Response({"message": img_err, "code": "edit_recruitment_post_refused"}, status=400)
 
         clear_all = str(data.get("clear_images", "")).lower() in ("1", "true", "yes")
         remove_ids = [
@@ -2634,23 +2634,23 @@ def delete_recruitment_post(request):
     """Delete a recruitment post. Only the creator can delete it."""
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid token."}, status=400)
+        return Response({"message": "Invalid token.", "code": "invalid_token"}, status=400)
 
     user = validate_token(auth.split(" ")[1])
     if not user:
-        return Response({"message": "Invalid session."}, status=401)
+        return Response({"message": "Invalid session.", "code": "invalid_session"}, status=401)
 
     post_id = request.query_params.get("post_id")
     if not post_id:
-        return Response({"message": "post_id is required."}, status=400)
+        return Response({"message": "post_id is required.", "code": "post_required"}, status=400)
 
     try:
         post = RecruitmentPost.objects.get(id=post_id)
     except RecruitmentPost.DoesNotExist:
-        return Response({"message": "Post not found."}, status=404)
+        return Response({"message": "Post not found.", "code": "post_not_found"}, status=404)
 
     if post.created_by != user:
-        return Response({"message": "Unauthorized."}, status=403)
+        return Response({"message": "Unauthorized.", "code": "delete_recruitment_post_unauthorized"}, status=403)
 
     post.delete()
     return Response({"message": "Post deleted successfully."}, status=200)
@@ -2681,20 +2681,20 @@ def remove_post_image(request):
     """
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid token."}, status=400)
+        return Response({"message": "Invalid token.", "code": "invalid_token"}, status=400)
     user = validate_token(auth.split(" ")[1])
     if not user:
-        return Response({"message": "Invalid session."}, status=401)
+        return Response({"message": "Invalid session.", "code": "invalid_session"}, status=401)
 
     post_id = request.data.get("post_id")
     if not post_id:
-        return Response({"message": "post_id is required."}, status=400)
+        return Response({"message": "post_id is required.", "code": "post_required"}, status=400)
     try:
         post = RecruitmentPost.objects.get(id=post_id)
     except (RecruitmentPost.DoesNotExist, ValueError):
-        return Response({"message": "Post not found."}, status=404)
+        return Response({"message": "Post not found.", "code": "post_not_found"}, status=404)
     if post.created_by != user:
-        return Response({"message": "Unauthorized."}, status=403)
+        return Response({"message": "Unauthorized.", "code": "remove_post_image_unauthorized"}, status=403)
 
     # Accept a single image_id or a list (image_ids); normalise to a list of ints.
     raw_ids = _coerce_list(request.data.get("image_ids"))
@@ -2702,7 +2702,7 @@ def remove_post_image(request):
         raw_ids = [request.data.get("image_id")]
     ids = [int(i) for i in (raw_ids or []) if str(i).strip().isdigit()]
     if not ids:
-        return Response({"message": "image_id (or image_ids) is required."}, status=400)
+        return Response({"message": "image_id (or image_ids) is required.", "code": "image_image_ids_required"}, status=400)
 
     # Scoped delete: only rows that belong to THIS post are touched.
     post.images.filter(id__in=ids).delete()
@@ -2766,10 +2766,10 @@ def my_market_context(request):
     """
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid token."}, status=400)
+        return Response({"message": "Invalid token.", "code": "invalid_token"}, status=400)
     user = validate_token(auth.split(" ")[1])
     if not user:
-        return Response({"message": "Invalid session."}, status=401)
+        return Response({"message": "Invalid session.", "code": "invalid_session"}, status=401)
 
     alpha2 = _pycountry_alpha2(_actor_country_code(user))
     # Clean display name (avoids pycountry's inverted "Tanzania, United Republic of" form); same
@@ -2791,14 +2791,14 @@ def view_all_trials_and_applications(request):
     """Admin view to see all trials and applications in the system."""
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid token."}, status=400)
+        return Response({"message": "Invalid token.", "code": "invalid_token"}, status=400)
 
     user = validate_token(auth.split(" ")[1])
     if not user:
-        return Response({"message": "Invalid session."}, status=401)
+        return Response({"message": "Invalid session.", "code": "invalid_session"}, status=401)
 
     if user.role not in ["admin", "moderator"]:
-        return Response({"message": "Unauthorized."}, status=403)
+        return Response({"message": "Unauthorized.", "code": "view_all_trials_and_applications_unautho"}, status=403)
 
     # Optional filters via query params
     status_filter = request.query_params.get("status")    # e.g. ?status=TRIAL_ONGOING

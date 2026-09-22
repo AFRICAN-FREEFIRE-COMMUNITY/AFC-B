@@ -57,10 +57,10 @@ from .models import (
 def _auth_user(request):
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return None, Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return None, Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
     user = validate_token(auth.split(" ")[1])
     if not user:
-        return None, Response({"message": "Invalid or expired session token."}, status=401)
+        return None, Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
     return user, None
 
 
@@ -550,23 +550,23 @@ def create_link(request, event_id):
     try:
         source_event = Event.objects.get(event_id=event_id)
     except Event.DoesNotExist:
-        return Response({"message": "Event not found."}, status=404)
+        return Response({"message": "Event not found.", "code": "event_not_found"}, status=404)
     try:
         # Stages' PK is stage_id, so look up by pk (an `id=` lookup would FieldError).
         stage = Stages.objects.get(pk=request.data.get("source_stage_id"), event=source_event)
     except (Stages.DoesNotExist, ValueError, TypeError):
-        return Response({"message": "That stage does not belong to this event."}, status=404)
+        return Response({"message": "That stage does not belong to this event.", "code": "stage_not_belong_event"}, status=404)
     try:
         target = Event.objects.get(event_id=request.data.get("target_event_id"))
     except Event.DoesNotExist:
-        return Response({"message": "Target event not found."}, status=404)
+        return Response({"message": "Target event not found.", "code": "target_event_not_found"}, status=404)
 
     if target.event_id == source_event.event_id:
-        return Response({"message": "An event cannot qualify into itself."}, status=400)
+        return Response({"message": "An event cannot qualify into itself.", "code": "event_cannot_qualify_into"}, status=400)
     if target.participant_type != source_event.participant_type:
-        return Response({"message": "Source and target must have the same participant type."}, status=400)
+        return Response({"message": "Source and target must have the same participant type.", "code": "source_target_same_participant"}, status=400)
     if not _can_manage_link_events(user, source_event, target):
-        return Response({"message": "You do not have permission to link these events."}, status=403)
+        return Response({"message": "You do not have permission to link these events.", "code": "not_permission_link_events"}, status=403)
 
     # Cycle guard: from the target, walk outbound links; reaching the source event = cycle.
     seen, frontier = set(), {target.event_id}
@@ -577,7 +577,7 @@ def create_link(request, event_id):
             .values_list("target_event_id", flat=True)
         )
         if source_event.event_id in nxt:
-            return Response({"message": "That link would create a qualification cycle."}, status=400)
+            return Response({"message": "That link would create a qualification cycle.", "code": "link_create_qualification_cycle"}, status=400)
         seen |= frontier
         frontier = nxt - seen
 
@@ -587,10 +587,10 @@ def create_link(request, event_id):
         qualify_count = 2
     roster_mode = request.data.get("roster_mode") or "copy"
     if roster_mode not in ("copy", "captain_repick"):
-        return Response({"message": "roster_mode must be copy or captain_repick."}, status=400)
+        return Response({"message": "roster_mode must be copy or captain_repick.", "code": "roster_mode_copy_captain"}, status=400)
 
     if EventLink.objects.filter(source_stage=stage, target_event=target).exclude(status="cancelled").exists():
-        return Response({"message": "That stage is already linked to that event."}, status=400)
+        return Response({"message": "That stage is already linked to that event.", "code": "stage_already_linked_event"}, status=400)
 
     # A previously-CANCELLED link for this (stage, target) still occupies the DB unique constraint
     # (uniq_stage_target_link is unconditional, and MySQL cannot do a partial/filtered index). The
@@ -616,7 +616,7 @@ def create_link(request, event_id):
             # Defensive: a concurrent create raced us to the unique pair. Surface a clean message
             # instead of a 500 so the dialog shows why.
             return Response(
-                {"message": "That stage is already linked to that event."}, status=400
+                {"message": "That stage is already linked to that event.", "code": "stage_already_linked_event"}, status=400
             )
     return Response({"message": "Link created.", "link": _serialize_link(link)}, status=201)
 
@@ -632,9 +632,9 @@ def list_links(request, event_id):
     try:
         event = Event.objects.get(event_id=event_id)
     except Event.DoesNotExist:
-        return Response({"message": "Event not found."}, status=404)
+        return Response({"message": "Event not found.", "code": "event_not_found"}, status=404)
     if not (_is_event_admin(user) or org_can_event(user, "can_edit_events", event)):
-        return Response({"message": "You do not have permission to view this event's links."}, status=403)
+        return Response({"message": "You do not have permission to view this event's links.", "code": "not_permission_view_event"}, status=403)
 
     outbound = [
         _serialize_link(l, check_diff=True)
@@ -745,9 +745,9 @@ def link_chain(request, event_id):
     try:
         event = Event.objects.get(event_id=event_id)
     except Event.DoesNotExist:
-        return Response({"message": "Event not found."}, status=404)
+        return Response({"message": "Event not found.", "code": "event_not_found"}, status=404)
     if not (_is_event_admin(user) or org_can_event(user, "can_edit_events", event)):
-        return Response({"message": "You do not have permission to view this event's links."}, status=403)
+        return Response({"message": "You do not have permission to view this event's links.", "code": "not_permission_view_event"}, status=403)
 
     # Collect every event reachable through links in EITHER direction (the full season
     # cascade, not just direct neighbours). Bounded walk: each loop only follows edges that
@@ -823,18 +823,18 @@ def import_competitors(request, event_id):
     try:
         target = Event.objects.get(event_id=event_id)
     except Event.DoesNotExist:
-        return Response({"message": "Event not found."}, status=404)
+        return Response({"message": "Event not found.", "code": "event_not_found"}, status=404)
 
     raw_ids = request.data.get("source_event_ids") or []
     if not isinstance(raw_ids, list) or not raw_ids:
-        return Response({"message": "source_event_ids is required."}, status=400)
+        return Response({"message": "source_event_ids is required.", "code": "source_event_ids_required"}, status=400)
     sources = list(Event.objects.filter(event_id__in=raw_ids))
     if len(sources) != len(set(raw_ids)):
-        return Response({"message": "One or more source events were not found."}, status=404)
+        return Response({"message": "One or more source events were not found.", "code": "source_events_not_found"}, status=404)
 
     for src in sources:
         if src.event_id == target.event_id:
-            return Response({"message": "An event cannot import from itself."}, status=400)
+            return Response({"message": "An event cannot import from itself.", "code": "event_cannot_import_itself"}, status=400)
         if src.participant_type != target.participant_type:
             return Response({"message": f"{src.event_name} has a different participant type."}, status=400)
         if not _can_manage_link_events(user, src, target):
@@ -969,9 +969,9 @@ def cancel_link(request, link_id):
     try:
         link = EventLink.objects.select_related("source_event", "target_event").get(id=link_id)
     except EventLink.DoesNotExist:
-        return Response({"message": "Link not found."}, status=404)
+        return Response({"message": "Link not found.", "code": "link_not_found"}, status=404)
     if not _can_manage_link(user, link):
-        return Response({"message": "You do not have permission to manage this link."}, status=403)
+        return Response({"message": "You do not have permission to manage this link.", "code": "not_permission_manage_link"}, status=403)
 
     # Opt-out: ?keep_registrations=true cancels the rule without removing the promoted teams.
     keep = str(request.GET.get("keep_registrations", "")).lower() in ("1", "true", "yes")
@@ -1018,13 +1018,13 @@ def fire_link_view(request, link_id):
     try:
         link = EventLink.objects.select_related("source_event", "source_stage", "target_event").get(id=link_id)
     except EventLink.DoesNotExist:
-        return Response({"message": "Link not found."}, status=404)
+        return Response({"message": "Link not found.", "code": "link_not_found"}, status=404)
     if not _can_manage_link(user, link):
-        return Response({"message": "You do not have permission to manage this link."}, status=403)
+        return Response({"message": "You do not have permission to manage this link.", "code": "not_permission_manage_link"}, status=403)
 
     created, fire_err = fire_link(link, user)
     if fire_err:
-        return Response({"message": fire_err}, status=400)
+        return Response({"message": fire_err, "code": "fire_link_view_refused"}, status=400)
     return Response({"message": f"Link fired: {len(created)} qualification(s).",
                      "link": _serialize_link(link)})
 
@@ -1048,13 +1048,13 @@ def decide(request, link_id):
     try:
         link = EventLink.objects.select_related("source_event", "source_stage", "target_event").get(id=link_id)
     except EventLink.DoesNotExist:
-        return Response({"message": "Link not found."}, status=404)
+        return Response({"message": "Link not found.", "code": "link_not_found"}, status=404)
     try:
         qual = EventQualification.objects.select_related("team", "user").get(
             id=request.data.get("qualification_id"), link=link,
         )
     except EventQualification.DoesNotExist:
-        return Response({"message": "Qualification not found."}, status=404)
+        return Response({"message": "Qualification not found.", "code": "qualification_not_found"}, status=404)
 
     action = request.data.get("action")
     is_manager = _can_manage_link(user, link)
@@ -1065,7 +1065,7 @@ def decide(request, link_id):
         ).exists()
     ) or (qual.team_id and qual.team.team_owner_id == user.user_id) or (qual.user_id == user.user_id)
     if not is_manager and not (action == "decline" and is_own_captain):
-        return Response({"message": "You do not have permission to manage this link."}, status=403)
+        return Response({"message": "You do not have permission to manage this link.", "code": "not_permission_manage_link"}, status=403)
 
     def snapshot():
         qual.prev_status = qual.status
@@ -1073,7 +1073,7 @@ def decide(request, link_id):
 
     if action == "allow":
         if qual.status != "pending":
-            return Response({"message": "Only a pending qualification can be allowed."}, status=400)
+            return Response({"message": "Only a pending qualification can be allowed.", "code": "pending_qualification_allowed"}, status=400)
         snapshot()
         ok, reason = _promote(qual, user, bypass_window=True)
         if not ok:
@@ -1083,7 +1083,7 @@ def decide(request, link_id):
 
     elif action == "reject":
         if qual.status != "pending":
-            return Response({"message": "Only a pending qualification can be rejected."}, status=400)
+            return Response({"message": "Only a pending qualification can be rejected.", "code": "pending_qualification_rejected"}, status=400)
         snapshot()
         qual.status = "rejected"
         qual.note = "rejected by admin"
@@ -1092,7 +1092,7 @@ def decide(request, link_id):
 
     elif action == "decline":
         if qual.status not in ("promoted", "pending"):
-            return Response({"message": "Only a promoted or pending qualification can decline."}, status=400)
+            return Response({"message": "Only a promoted or pending qualification can decline.", "code": "promoted_pending_qualification_decline"}, status=400)
         snapshot()
         _withdraw_promotion(qual)
         qual.status = "declined"
@@ -1102,7 +1102,7 @@ def decide(request, link_id):
 
     elif action in ("replace_next", "replace_team"):
         if qual.status != "declined":
-            return Response({"message": "Replace a slot after it has been declined."}, status=400)
+            return Response({"message": "Replace a slot after it has been declined.", "code": "replace_slot_after_declined"}, status=400)
         if action == "replace_next":
             # Next in line: the first standings row not already used by ANY of this link's
             # qualifications (so #N+1, then #N+2 if they were used as a replacement before).
@@ -1116,14 +1116,14 @@ def decide(request, link_id):
                 None,
             )
             if not replacement:
-                return Response({"message": "No next-in-line competitor is available."}, status=400)
+                return Response({"message": "No next-in-line competitor is available.", "code": "no_next_line_competitor"}, status=400)
             new_team_id, new_user_id = replacement.get("team_id"), replacement.get("user_id")
             label = replacement["name"]
         else:
             try:
                 team = Team.objects.get(team_id=request.data.get("team_id"))
             except Team.DoesNotExist:
-                return Response({"message": "Replacement team not found."}, status=404)
+                return Response({"message": "Replacement team not found.", "code": "replacement_team_not_found"}, status=404)
             new_team_id, new_user_id, label = team.team_id, None, team.team_name
 
         snapshot()
@@ -1142,7 +1142,7 @@ def decide(request, link_id):
 
     elif action == "undo":
         if not qual.prev_status:
-            return Response({"message": "Nothing to undo."}, status=400)
+            return Response({"message": "Nothing to undo.", "code": "nothing_undo"}, status=400)
         _withdraw_promotion(qual)
         restored = qual.prev_status
         qual.status, qual.note = restored, (qual.prev_note + " (decision undone)").strip()
@@ -1164,6 +1164,6 @@ def decide(request, link_id):
                 qual.save(update_fields=["status", "note"])
 
     else:
-        return Response({"message": "Unknown action."}, status=400)
+        return Response({"message": "Unknown action.", "code": "unknown_action"}, status=400)
 
     return Response({"message": "Done.", "qualification": _serialize_qual(qual)})

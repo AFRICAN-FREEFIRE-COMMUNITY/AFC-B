@@ -157,11 +157,11 @@ def _authorise(request, order):
     (and so the vendor page + the WhatsApp inbound handler share one auth path)."""
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return None, None, Response({"message": "Invalid token"}, status=400)
+        return None, None, Response({"message": "Invalid token", "code": "invalid_token"}, status=400)
 
     user = validate_token(auth.split(" ")[1])
     if not user:
-        return None, None, Response({"message": "Invalid session"}, status=401)
+        return None, None, Response({"message": "Invalid session", "code": "invalid_session"}, status=401)
 
     vendor = _order_vendor(order)
 
@@ -173,10 +173,10 @@ def _authorise(request, order):
     if vendor and vendor.user_id == user.user_id:
         # A suspended vendor cannot drive transitions (access revoked by admin).
         if vendor.status != "active":
-            return None, None, Response({"message": "Your vendor access is suspended."}, status=403)
+            return None, None, Response({"message": "Your vendor access is suspended.", "code": "vendor_access_suspended"}, status=403)
         return user, vendor, None
 
-    return None, None, Response({"message": "You do not have permission for this order."}, status=403)
+    return None, None, Response({"message": "You do not have permission for this order.", "code": "not_permission_order"}, status=403)
 
 
 def _transition(order, target, *, set_fields=None):
@@ -464,7 +464,7 @@ def vendor_acknowledge_order(request):
     afc_shop/vendor_whatsapp.py.)"""
     order = _get_order_or_404(request.data.get("order_id"))
     if not order:
-        return Response({"message": "Order not found"}, status=404)
+        return Response({"message": "Order not found", "code": "order_not_found"}, status=404)
 
     user, vendor, err = _authorise(request, order)
     if err:
@@ -491,7 +491,7 @@ def vendor_set_ship_date(request):
     cannot carry a date, so it prompts the vendor to use this page.)"""
     order = _get_order_or_404(request.data.get("order_id"))
     if not order:
-        return Response({"message": "Order not found"}, status=404)
+        return Response({"message": "Order not found", "code": "order_not_found"}, status=404)
 
     user, vendor, err = _authorise(request, order)
     if err:
@@ -499,7 +499,7 @@ def vendor_set_ship_date(request):
 
     ship_date = request.data.get("ship_date")
     if not ship_date:
-        return Response({"message": "ship_date is required"}, status=400)
+        return Response({"message": "ship_date is required", "code": "ship_date_required"}, status=400)
 
     # Delegate the state change to the shared core (also used by the WhatsApp channel).
     ok, err = apply_set_ship_date(order, ship_date)
@@ -527,7 +527,7 @@ def vendor_mark_shipped(request):
     then sends lands as FulfillmentEvidence via afc_shop/vendor_whatsapp.py."""
     order = _get_order_or_404(request.data.get("order_id"))
     if not order:
-        return Response({"message": "Order not found"}, status=404)
+        return Response({"message": "Order not found", "code": "order_not_found"}, status=404)
 
     user, vendor, err = _authorise(request, order)
     if err:
@@ -575,7 +575,7 @@ def order_mark_completed(request):
     CONSUMED BY: the vendor page "Mark delivered" + an admin order action."""
     order = _get_order_or_404(request.data.get("order_id"))
     if not order:
-        return Response({"message": "Order not found"}, status=404)
+        return Response({"message": "Order not found", "code": "order_not_found"}, status=404)
 
     user, vendor, err = _authorise(request, order)
     if err:
@@ -663,11 +663,11 @@ def vendor_my_orders(request):
     CONSUMED BY: the per-order vendor page / vendor dashboard order list."""
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid token"}, status=400)
+        return Response({"message": "Invalid token", "code": "invalid_token"}, status=400)
 
     user = validate_token(auth.split(" ")[1])
     if not user:
-        return Response({"message": "Invalid session"}, status=401)
+        return Response({"message": "Invalid session", "code": "invalid_session"}, status=401)
 
     # ── super-admin god-mode (afc_auth.act_as) ──
     # A super admin managing-as a vendor (X-Act-As-Vendor header) sees THAT vendor's order
@@ -676,7 +676,7 @@ def vendor_my_orders(request):
     # via fulfilment._authorise, so no separate change is needed for those.
     vendor = resolve_acting_vendor(request, user) or Vendor.objects.filter(user=user).first()
     if not vendor:
-        return Response({"message": "You are not a vendor."}, status=403)
+        return Response({"message": "You are not a vendor.", "code": "not_vendor"}, status=403)
 
     # All PAID orders that contain at least one of THIS vendor's products, with the
     # data needed to render the queue. distinct() because an order can have several
@@ -766,7 +766,7 @@ def vendor_message_buyer(request, order_id):
     """
     order = Order.objects.filter(id=order_id).first()
     if not order:
-        return Response({"message": "Order not found."}, status=404)
+        return Response({"message": "Order not found.", "code": "order_not_found"}, status=404)
 
     user, vendor, err = _authorise(request, order)
     if err:
@@ -776,7 +776,7 @@ def vendor_message_buyer(request, order_id):
     # thing being written by the same kind of person, so the same room to say it.
     text = (request.data.get("message") or "").strip()[:2000]
     if not text:
-        return Response({"message": "A message is required."}, status=400)
+        return Response({"message": "A message is required.", "code": "message_required"}, status=400)
 
     sent = VendorOrderMessage.objects.filter(order=order).count()
     if sent >= VendorOrderMessage.MAX_PER_ORDER:

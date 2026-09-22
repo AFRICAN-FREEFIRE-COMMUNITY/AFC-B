@@ -169,11 +169,11 @@ def _require_active_vendor(request):
     revoked by an admin)."""
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return None, None, Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return None, None, Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
 
     user = validate_token(auth.split(" ")[1])
     if not user:
-        return None, None, Response({"message": "Invalid or expired session token."}, status=401)
+        return None, None, Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
 
     # ── super-admin god-mode (afc_auth.act_as) ──
     # A super admin (head_admin/super_admin) operating inside a vendor's dashboard sends
@@ -190,10 +190,10 @@ def _require_active_vendor(request):
     # one; Phase B1 uses the first, matching fulfilment.vendor_my_orders.)
     vendor = Vendor.objects.filter(user=user).first()
     if not vendor:
-        return None, None, Response({"message": "You are not a vendor."}, status=403)
+        return None, None, Response({"message": "You are not a vendor.", "code": "not_vendor"}, status=403)
 
     if vendor.status != "active":
-        return None, None, Response({"message": "Your vendor access is suspended."}, status=403)
+        return None, None, Response({"message": "Your vendor access is suspended.", "code": "vendor_access_suspended"}, status=403)
 
     return user, vendor, None
 
@@ -209,7 +209,7 @@ def _parse_variants(raw):
         try:
             return json.loads(raw), None
         except (ValueError, TypeError):
-            return None, Response({"message": "variants must be a valid JSON list."}, status=400)
+            return None, Response({"message": "variants must be a valid JSON list.", "code": "variants_valid_json_list"}, status=400)
     return raw, None
 
 
@@ -240,7 +240,7 @@ def admin_create_vendor(request):
 
     display_name = (request.data.get("display_name") or "").strip()
     if not display_name:
-        return Response({"message": "display_name is required."}, status=400)
+        return Response({"message": "display_name is required.", "code": "display_name_required"}, status=400)
 
     # Locate the User to link by user_id (preferred) or email. We never CREATE a
     # user here - invite-only means linking an existing login, like sponsors/organizers.
@@ -252,15 +252,15 @@ def admin_create_vendor(request):
     elif email:
         target = User.objects.filter(email__iexact=email).first()
     else:
-        return Response({"message": "Provide user_id or email of the user to grant vendor access."}, status=400)
+        return Response({"message": "Provide user_id or email of the user to grant vendor access.", "code": "provide_user_email_user"}, status=400)
 
     if not target:
-        return Response({"message": "User not found."}, status=404)
+        return Response({"message": "User not found.", "code": "user_not_found"}, status=404)
 
     # One active vendor identity per user is enough for Phase B1; refuse a duplicate
     # so an admin does not accidentally create two vendor rows for the same login.
     if Vendor.objects.filter(user=target).exists():
-        return Response({"message": "This user is already a vendor."}, status=400)
+        return Response({"message": "This user is already a vendor.", "code": "user_already_vendor"}, status=400)
 
     vendor = Vendor.objects.create(
         user=target,
@@ -326,9 +326,9 @@ def admin_set_vendor_status(request):
     vendor_id = request.data.get("vendor_id")
     new_status = request.data.get("status")
     if not vendor_id:
-        return Response({"message": "vendor_id is required."}, status=400)
+        return Response({"message": "vendor_id is required.", "code": "vendor_required"}, status=400)
     if new_status not in ("active", "suspended"):
-        return Response({"message": "status must be 'active' or 'suspended'."}, status=400)
+        return Response({"message": "status must be 'active' or 'suspended'.", "code": "status_active_suspended"}, status=400)
 
     vendor = get_object_or_404(Vendor, id=vendor_id)
     vendor.status = new_status
@@ -364,7 +364,7 @@ def admin_assign_product_vendor(request):
 
     product_id = request.data.get("product_id")
     if not product_id:
-        return Response({"message": "product_id is required."}, status=400)
+        return Response({"message": "product_id is required.", "code": "product_required"}, status=400)
 
     product = get_object_or_404(Product, id=product_id)
 
@@ -473,7 +473,7 @@ def admin_approve_product(request):
 
     product_id = request.data.get("product_id")
     if not product_id:
-        return Response({"message": "product_id is required."}, status=400)
+        return Response({"message": "product_id is required.", "code": "product_required"}, status=400)
 
     product = get_object_or_404(Product, id=product_id)
     if product.approval_status != "submitted":
@@ -524,9 +524,9 @@ def admin_reject_product(request):
     product_id = request.data.get("product_id")
     reason = (request.data.get("reason") or "").strip()
     if not product_id:
-        return Response({"message": "product_id is required."}, status=400)
+        return Response({"message": "product_id is required.", "code": "product_required"}, status=400)
     if not reason:
-        return Response({"message": "A rejection reason is required."}, status=400)
+        return Response({"message": "A rejection reason is required.", "code": "rejection_reason_required"}, status=400)
 
     product = get_object_or_404(Product, id=product_id)
     if product.approval_status != "submitted":
@@ -615,13 +615,13 @@ def vendor_create_product(request):
     is_limited_stock = str(request.data.get("is_limited_stock", "false")).lower() in ("true", "1", "yes")
 
     if not name or not product_type:
-        return Response({"message": "name and product_type are required."}, status=400)
+        return Response({"message": "name and product_type are required.", "code": "name_product_type_required"}, status=400)
 
     variants, err = _parse_variants(request.data.get("variants", []))
     if err:
         return err
     if not isinstance(variants, list) or len(variants) == 0:
-        return Response({"message": "variants must be a non-empty list."}, status=400)
+        return Response({"message": "variants must be a non-empty list.", "code": "variants_non_empty_list"}, status=400)
 
     image = request.FILES.get("image")
     if image is not None:
@@ -651,7 +651,7 @@ def vendor_create_product(request):
             # Roll back the half-built product so a bad variant does not leave an
             # orphan draft behind.
             product.delete()
-            return Response({"message": "Each variant needs sku and price."}, status=400)
+            return Response({"message": "Each variant needs sku and price.", "code": "variant_needs_sku_price"}, status=400)
 
         pv = ProductVariant.objects.create(
             product=product,
@@ -697,13 +697,13 @@ def vendor_update_product(request):
 
     product_id = request.data.get("product_id")
     if not product_id:
-        return Response({"message": "product_id is required."}, status=400)
+        return Response({"message": "product_id is required.", "code": "product_required"}, status=400)
 
     product = get_object_or_404(Product, id=product_id)
 
     # OWNERSHIP gate: a vendor may only touch their OWN product.
     if product.vendor_id != vendor.id:
-        return Response({"message": "You do not own this product."}, status=403)
+        return Response({"message": "You do not own this product.", "code": "not_product"}, status=403)
 
     # STATE gate: only draft or rejected products are editable by the vendor. A
     # submitted product is awaiting review; an approved one is live (admin territory).
@@ -737,7 +737,7 @@ def vendor_update_product(request):
         return err
     if variants is not None:
         if not isinstance(variants, list):
-            return Response({"message": "variants must be a list."}, status=400)
+            return Response({"message": "variants must be a list.", "code": "variants_list"}, status=400)
         for v in variants:
             vid = v.get("id")
             if not vid:
@@ -770,7 +770,7 @@ def _vendor_owns_editable_product(vendor, product):
     edits follow the exact same rules as field edits (no touching a submitted/approved
     product, no touching another vendor's product)."""
     if product.vendor_id != vendor.id:
-        return Response({"message": "You do not own this product."}, status=403)
+        return Response({"message": "You do not own this product.", "code": "not_product"}, status=403)
     if product.approval_status not in ("draft", "rejected"):
         return Response(
             {"message": f"Only a draft or rejected product can be edited (this one is '{product.approval_status}')."},
@@ -801,7 +801,7 @@ def vendor_add_product_media(request):
 
     product_id = request.data.get("product_id")
     if not product_id:
-        return Response({"message": "product_id is required."}, status=400)
+        return Response({"message": "product_id is required.", "code": "product_required"}, status=400)
     product = get_object_or_404(Product, id=product_id)
 
     err = _vendor_owns_editable_product(vendor, product)
@@ -810,7 +810,7 @@ def vendor_add_product_media(request):
 
     files = request.FILES.getlist("files") or request.FILES.getlist("file")
     if not files:
-        return Response({"message": "No files uploaded."}, status=400)
+        return Response({"message": "No files uploaded.", "code": "no_files_uploaded"}, status=400)
 
     created, err = _attach_media(request, product, files)
     if err:
@@ -838,7 +838,7 @@ def vendor_delete_product_media(request):
 
     media_id = request.data.get("media_id")
     if not media_id:
-        return Response({"message": "media_id is required."}, status=400)
+        return Response({"message": "media_id is required.", "code": "media_required"}, status=400)
     media = get_object_or_404(ProductMedia, id=media_id)
 
     err = _vendor_owns_editable_product(vendor, media.product)
@@ -871,12 +871,12 @@ def vendor_submit_product(request):
 
     product_id = request.data.get("product_id")
     if not product_id:
-        return Response({"message": "product_id is required."}, status=400)
+        return Response({"message": "product_id is required.", "code": "product_required"}, status=400)
 
     product = get_object_or_404(Product, id=product_id)
 
     if product.vendor_id != vendor.id:
-        return Response({"message": "You do not own this product."}, status=403)
+        return Response({"message": "You do not own this product.", "code": "not_product"}, status=403)
 
     # Only a draft or a rejected (resubmit) product may be submitted.
     if product.approval_status not in ("draft", "rejected"):

@@ -50,14 +50,14 @@ def _require_platform_admin(request):
     # auth failure yet) - matches afc_team/views.py wording/shape.
     if not session_token:
         return None, Response(
-            {"message": "Authorization header is required"},
+            {"message": "Authorization header is required", "code": "authorization_header_required"},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
     # 400 when the scheme is wrong - token format is the caller's mistake.
     if not session_token.startswith("Bearer "):
         return None, Response(
-            {"message": "Invalid token format"},
+            {"message": "Invalid token format", "code": "invalid_token_format"},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
@@ -68,7 +68,7 @@ def _require_platform_admin(request):
     # 401 when the token does not resolve to a live session/user.
     if not user:
         return None, Response(
-            {"message": "Invalid or expired session token."},
+            {"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"},
             status=status.HTTP_401_UNAUTHORIZED,
         )
 
@@ -76,7 +76,7 @@ def _require_platform_admin(request):
     # platform org admin must be refused with the exact message the spec dictates.
     if not is_platform_org_admin(user):
         return None, Response(
-            {"message": "You do not have permission to manage organizations."},
+            {"message": "You do not have permission to manage organizations.", "code": "not_permission_manage_organizations"},
             status=status.HTTP_403_FORBIDDEN,
         )
 
@@ -94,7 +94,7 @@ def _org_or_404(slug):
     org = Organization.objects.filter(slug=slug).first()
     if not org:
         return None, Response(
-            {"message": "Organization not found."},
+            {"message": "Organization not found.", "code": "organization_not_found"},
             status=status.HTTP_404_NOT_FOUND,
         )
     return org, None
@@ -164,14 +164,14 @@ def admin_create_organization(request):
     description = request.data.get("description", "")
 
     if not name:
-        return Response({"message": "Organization name is required."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "Organization name is required.", "code": "organization_name_required"}, status=status.HTTP_400_BAD_REQUEST)
     if not owner_username:
-        return Response({"message": "owner_username is required."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "owner_username is required.", "code": "owner_username_required"}, status=status.HTTP_400_BAD_REQUEST)
 
     # ── resolve the owner account (must already exist) ──
     owner = User.objects.filter(username=owner_username).first()
     if not owner:
-        return Response({"message": "Owner user not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "Owner user not found.", "code": "owner_user_not_found"}, status=status.HTTP_404_NOT_FOUND)
 
     # ── derive a unique slug ──
     # slugify the name, then suffix "-2", "-3", … until we hit a free handle.
@@ -351,16 +351,16 @@ def admin_edit_organization(request, slug):
     if "name" in request.data:
         new_name = (request.data.get("name") or "").strip()
         if not new_name:
-            return Response({"message": "Organization name cannot be empty."}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"message": "Organization name cannot be empty.", "code": "organization_name_cannot_empty"}, status=status.HTTP_400_BAD_REQUEST)
         org.name = new_name
 
     # ── slug (must stay unique across all OTHER orgs) ──
     if "slug" in request.data:
         new_slug = slugify(request.data.get("slug") or "")
         if not new_slug:
-            return Response({"message": "Slug cannot be empty."}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"message": "Slug cannot be empty.", "code": "slug_cannot_empty"}, status=status.HTTP_400_BAD_REQUEST)
         if Organization.objects.filter(slug=new_slug).exclude(pk=org.pk).exists():
-            return Response({"message": "That slug is already taken."}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"message": "That slug is already taken.", "code": "slug_already_taken"}, status=status.HTTP_400_BAD_REQUEST)
         org.slug = new_slug
 
     # ── email ──
@@ -376,7 +376,7 @@ def admin_edit_organization(request, slug):
         socials = request.data.get("socials")
         # Guard the JSONField against a non-object payload.
         if socials is not None and not isinstance(socials, dict):
-            return Response({"message": "socials must be an object."}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"message": "socials must be an object.", "code": "socials_object"}, status=status.HTTP_400_BAD_REQUEST)
         org.socials = socials or {}
 
     # ── status (active / suspended / deleted) ──
@@ -384,7 +384,7 @@ def admin_edit_organization(request, slug):
         new_status = request.data.get("status")
         valid_statuses = {choice[0] for choice in Organization.STATUS_CHOICES}
         if new_status not in valid_statuses:
-            return Response({"message": "Invalid status."}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"message": "Invalid status.", "code": "invalid_status"}, status=status.HTTP_400_BAD_REQUEST)
         # Keep the soft-delete stamps consistent with status so this generic edit path can't produce
         # an "active but stamped deleted" or "deleted with no audit stamps" row (the dedicated
         # delete/restore endpoints stamp/clear correctly; this one used to bypass them). Stamp on the
@@ -426,7 +426,7 @@ def admin_suspend_organization(request, slug):
     suspend = request.data.get("suspend")
     # Refuse on a soft-deleted org - see header comment.
     if org.status == "deleted":
-        return Response({"message": "Cannot change the status of a deleted organization."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "Cannot change the status of a deleted organization.", "code": "cannot_change_status_deleted"}, status=status.HTTP_400_BAD_REQUEST)
 
     # Truthy `suspend` → freeze; falsy → reactivate.
     org.status = "suspended" if suspend else "active"
@@ -488,7 +488,7 @@ def admin_restore_organization(request, slug):
 
     if org.status != "deleted":
         return Response(
-            {"message": "Organization is not deleted."}, status=status.HTTP_400_BAD_REQUEST
+            {"message": "Organization is not deleted.", "code": "organization_not_deleted"}, status=status.HTTP_400_BAD_REQUEST
         )
     org.status = "active"
     org.deleted_at = None
@@ -525,14 +525,14 @@ def admin_manage_organization_member(request, slug):
     username = (request.data.get("username") or "").strip()
 
     if action not in ("add", "remove", "set_owner"):
-        return Response({"message": "Invalid action."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "Invalid action.", "code": "invalid_action"}, status=status.HTTP_400_BAD_REQUEST)
     if not username:
-        return Response({"message": "username is required."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "username is required.", "code": "username_required"}, status=status.HTTP_400_BAD_REQUEST)
 
     # Resolve the target user - every action operates on an existing account.
     target = User.objects.filter(username=username).first()
     if not target:
-        return Response({"message": "User not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "User not found.", "code": "user_not_found"}, status=status.HTTP_404_NOT_FOUND)
 
     # ───────────────────────────── add ─────────────────────────────
     if action == "add":
@@ -540,7 +540,7 @@ def admin_manage_organization_member(request, slug):
         role = request.data.get("role") or "sub_organizer"
         valid_roles = {choice[0] for choice in OrganizationMember.ROLE_CHOICES}
         if role not in valid_roles:
-            return Response({"message": "Invalid role."}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"message": "Invalid role.", "code": "invalid_role"}, status=status.HTTP_400_BAD_REQUEST)
 
         # Create OR reactivate (the model has unique_together on org+user, so a
         # previously-removed person is updated in place, never duplicated).
@@ -570,10 +570,10 @@ def admin_manage_organization_member(request, slug):
     if action == "remove":
         member = OrganizationMember.objects.filter(organization=org, user=target).first()
         if not member:
-            return Response({"message": "Member not found."}, status=status.HTTP_404_NOT_FOUND)
+            return Response({"message": "Member not found.", "code": "member_not_found"}, status=status.HTTP_404_NOT_FOUND)
         # The owner cannot be removed - transfer ownership first (set_owner).
         if member.role == "owner":
-            return Response({"message": "Cannot remove the organization owner. Transfer ownership first."}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"message": "Cannot remove the organization owner. Transfer ownership first.", "code": "cannot_remove_organization_owner"}, status=status.HTTP_400_BAD_REQUEST)
         member.status = "removed"
         member.save()
         return Response({"message": "Member removed."}, status=status.HTTP_200_OK)
@@ -583,7 +583,7 @@ def admin_manage_organization_member(request, slug):
     # the target to owner. Target must already be a member of this org.
     new_owner = OrganizationMember.objects.filter(organization=org, user=target).first()
     if not new_owner:
-        return Response({"message": "Member not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "Member not found.", "code": "member_not_found"}, status=status.HTTP_404_NOT_FOUND)
 
     # Demote the existing owner(s) to sub_organizer (normally exactly one).
     OrganizationMember.objects.filter(organization=org, role="owner").update(role="sub_organizer")

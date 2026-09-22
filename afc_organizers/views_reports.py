@@ -128,7 +128,7 @@ def report_organization(request, slug):
     org = Organization.objects.filter(slug=slug).first()
     if not org:
         return Response(
-            {"message": "Organization not found."},
+            {"message": "Organization not found.", "code": "organization_not_found"},
             status=status.HTTP_404_NOT_FOUND,
         )
 
@@ -137,7 +137,7 @@ def report_organization(request, slug):
     category = request.data.get("category") or "other"
     if category not in valid_categories:
         return Response(
-            {"message": "Invalid report category."},
+            {"message": "Invalid report category.", "code": "invalid_report_category"},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
@@ -145,7 +145,7 @@ def report_organization(request, slug):
     details = (request.data.get("details") or "").strip()
     if not details:
         return Response(
-            {"message": "Report details are required."},
+            {"message": "Report details are required.", "code": "report_details_required"},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
@@ -158,7 +158,7 @@ def report_organization(request, slug):
         event = Event.objects.filter(pk=event_id, organization=org).first()
         if not event:
             return Response(
-                {"message": "Event does not belong to this organization."},
+                {"message": "Event does not belong to this organization.", "code": "event_not_belong_organization"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -207,7 +207,7 @@ def admin_list_reports(request):
     # AFC-staff gate - this is an oversight surface, not for organizers or users.
     if not is_platform_org_admin(user):
         return Response(
-            {"message": "You do not have permission to view organization reports."},
+            {"message": "You do not have permission to view organization reports.", "code": "not_permission_view_organization"},
             status=status.HTTP_403_FORBIDDEN,
         )
 
@@ -259,7 +259,7 @@ def admin_update_report(request, report_id):
     # AFC-staff gate.
     if not is_platform_org_admin(user):
         return Response(
-            {"message": "You do not have permission to manage organization reports."},
+            {"message": "You do not have permission to manage organization reports.", "code": "not_permission_manage_organization"},
             status=status.HTTP_403_FORBIDDEN,
         )
 
@@ -274,7 +274,7 @@ def admin_update_report(request, report_id):
     )
     if not report:
         return Response(
-            {"message": "Report not found."},
+            {"message": "Report not found.", "code": "report_not_found"},
             status=status.HTTP_404_NOT_FOUND,
         )
 
@@ -284,7 +284,7 @@ def admin_update_report(request, report_id):
         valid_statuses = {choice[0] for choice in OrganizationReport.STATUS_CHOICES}
         if new_status not in valid_statuses:
             return Response(
-                {"message": "Invalid report status."},
+                {"message": "Invalid report status.", "code": "invalid_report_status"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
         report.status = new_status

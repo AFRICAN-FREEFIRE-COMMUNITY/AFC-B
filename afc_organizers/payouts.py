@@ -46,17 +46,17 @@ AFC_FEE_PERCENT = Decimal("2")  # then AFC takes this %
 def _auth(request):
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return None, Response({"message": "Authorization header is required"}, status=status.HTTP_400_BAD_REQUEST)
+        return None, Response({"message": "Authorization header is required", "code": "authorization_header_required"}, status=status.HTTP_400_BAD_REQUEST)
     user = validate_token(auth.split(" ")[1])
     if not user:
-        return None, Response({"message": "Invalid or expired session token."}, status=status.HTTP_401_UNAUTHORIZED)
+        return None, Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=status.HTTP_401_UNAUTHORIZED)
     return user, None
 
 
 def _org_or_404(slug):
     org = Organization.objects.filter(slug=slug).first()
     if not org:
-        return None, Response({"message": "Organization not found."}, status=status.HTTP_404_NOT_FOUND)
+        return None, Response({"message": "Organization not found.", "code": "organization_not_found"}, status=status.HTTP_404_NOT_FOUND)
     return org, None
 
 
@@ -178,7 +178,7 @@ def save_payout_account(request, slug):
         organization=org, user=user, role="owner", status="active",
     ).exists()
     if not (is_owner or is_platform_org_admin(user)):
-        return Response({"message": "Only the organization owner can set payout details."}, status=status.HTTP_403_FORBIDDEN)
+        return Response({"message": "Only the organization owner can set payout details.", "code": "organization_owner_set_payout"}, status=status.HTTP_403_FORBIDDEN)
 
     org.payout_provider = (request.data.get("payout_provider") or org.payout_provider or "paystack")
     org.bank_code = request.data.get("bank_code", org.bank_code)
@@ -227,7 +227,7 @@ def my_org_earnings(request, slug):
     if err:
         return err
     if not org_can(user, "can_view_metrics", org):
-        return Response({"message": "You do not have permission to view this org's earnings."}, status=status.HTTP_403_FORBIDDEN)
+        return Response({"message": "You do not have permission to view this org's earnings.", "code": "not_permission_view_org"}, status=status.HTTP_403_FORBIDDEN)
     rows = OrganizationEarning.objects.filter(organization=org).select_related("event", "organization")
     total_owed = sum((float(r.amount) for r in rows if r.status != "paid"), 0.0)
     total_paid = sum((float(r.amount) for r in rows if r.status == "paid"), 0.0)
@@ -245,7 +245,7 @@ def admin_list_org_payouts(request):
     if err:
         return err
     if not is_platform_org_admin(user):
-        return Response({"message": "Unauthorized."}, status=status.HTTP_403_FORBIDDEN)
+        return Response({"message": "Unauthorized.", "code": "admin_list_org_payouts_unauthorized"}, status=status.HTTP_403_FORBIDDEN)
     rows = OrganizationEarning.objects.select_related("event", "organization").all()
     if request.GET.get("status"):
         rows = rows.filter(status=request.GET["status"])
@@ -269,12 +269,12 @@ def admin_release_org_payout(request):
     if err:
         return err
     if not is_platform_org_admin(user):
-        return Response({"message": "Unauthorized."}, status=status.HTTP_403_FORBIDDEN)
+        return Response({"message": "Unauthorized.", "code": "admin_release_org_payout_unauthorized"}, status=status.HTTP_403_FORBIDDEN)
     e = OrganizationEarning.objects.filter(id=request.data.get("earning_id")).select_related("organization").first()
     if not e:
-        return Response({"message": "Payout not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "Payout not found.", "code": "payout_not_found"}, status=status.HTTP_404_NOT_FOUND)
     if e.status == "paid":
-        return Response({"message": "Already paid."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "Already paid.", "code": "already_paid"}, status=status.HTTP_400_BAD_REQUEST)
     e.status = "released"
     e.released_at = timezone.now()
     e.save(update_fields=["status", "released_at", "updated_at"])
@@ -289,10 +289,10 @@ def admin_mark_org_payout_paid(request):
     if err:
         return err
     if not is_platform_org_admin(user):
-        return Response({"message": "Unauthorized."}, status=status.HTTP_403_FORBIDDEN)
+        return Response({"message": "Unauthorized.", "code": "admin_mark_org_payout_paid_unauthorized"}, status=status.HTTP_403_FORBIDDEN)
     e = OrganizationEarning.objects.filter(id=request.data.get("earning_id")).first()
     if not e:
-        return Response({"message": "Payout not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "Payout not found.", "code": "payout_not_found"}, status=status.HTTP_404_NOT_FOUND)
     e.status = "paid"
     e.paid_at = timezone.now()
     if request.data.get("transfer_ref"):

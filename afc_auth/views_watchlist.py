@@ -46,10 +46,10 @@ def _authenticate(request):
     shape/wording as views_player_reports._authenticate."""
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return None, Response({"message": "Invalid token."}, status=400)
+        return None, Response({"message": "Invalid token.", "code": "invalid_token"}, status=400)
     user = validate_token(auth.split(" ")[1])
     if not user:
-        return None, Response({"message": "Invalid session."}, status=401)
+        return None, Response({"message": "Invalid session.", "code": "invalid_session"}, status=401)
     return user, None
 
 
@@ -161,7 +161,7 @@ def watchlist_collection(request):
     if err:
         return err
     if not can_use_watchlist(user):
-        return Response({"message": "You do not have permission to use the watchlist."}, status=403)
+        return Response({"message": "You do not have permission to use the watchlist.", "code": "not_permission_use_watchlist"}, status=403)
 
     if request.method == "GET":
         qs = WatchlistEntry.objects.select_related("player", "team", "added_by", "cleared_by")
@@ -188,10 +188,10 @@ def watchlist_collection(request):
     # POST = add (or reactivate)
     subject_type = request.data.get("subject_type")
     if subject_type not in ("player", "team"):
-        return Response({"message": "subject_type must be 'player' or 'team'."}, status=400)
+        return Response({"message": "subject_type must be 'player' or 'team'.", "code": "subject_type_player_team"}, status=400)
     reason = (request.data.get("reason") or "").strip()
     if not reason:
-        return Response({"message": "A reason is required."}, status=400)
+        return Response({"message": "A reason is required.", "code": "reason_required"}, status=400)
     source = request.data.get("source") if request.data.get("source") in ("manual", "upload") else "manual"
     context = (request.data.get("context") or "").strip()[:255]
 
@@ -207,7 +207,7 @@ def watchlist_collection(request):
         elif uname:
             player = User.objects.filter(username__iexact=uname).first()
         if not player:
-            return Response({"message": "Player not found."}, status=404)
+            return Response({"message": "Player not found.", "code": "player_not_found"}, status=404)
     else:
         tid = request.data.get("team_id")
         tname = (request.data.get("team_name") or "").strip()
@@ -216,7 +216,7 @@ def watchlist_collection(request):
         elif tname:
             team = Team.objects.filter(team_name__iexact=tname).first()
         if not team:
-            return Response({"message": "Team not found."}, status=404)
+            return Response({"message": "Team not found.", "code": "team_not_found"}, status=404)
 
     # Dedup: reactivate/refresh an existing logical entry rather than creating a duplicate.
     existing = _find_subject_entry(subject_type, player=player, team=team)
@@ -261,20 +261,20 @@ def watchlist_item(request, watch_id):
     if err:
         return err
     if not can_use_watchlist(user):
-        return Response({"message": "You do not have permission to use the watchlist."}, status=403)
+        return Response({"message": "You do not have permission to use the watchlist.", "code": "not_permission_use_watchlist"}, status=403)
 
     entry = (
         WatchlistEntry.objects.select_related("player", "team", "added_by", "cleared_by")
         .filter(pk=watch_id).first()
     )
     if not entry:
-        return Response({"message": "Watchlist entry not found."}, status=404)
+        return Response({"message": "Watchlist entry not found.", "code": "watchlist_entry_not_found"}, status=404)
 
     # OWNERSHIP: only the original adder or an AFC admin may modify this entry. A plain organizer who
     # didn't add it is blocked (they can still SEE it via list_watchlist, just not remove/reactivate it).
     if not _is_watchlist_admin(user) and entry.added_by_id != user.user_id:
         return Response(
-            {"message": "You can only remove watchlist entries you added. Ask an admin to remove others."},
+            {"message": "You can only remove watchlist entries you added. Ask an admin to remove others.", "code": "remove_watchlist_entries_added"},
             status=403,
         )
 
@@ -303,7 +303,7 @@ def watchlist_tags(request):
     if err:
         return err
     if not can_use_watchlist(user):
-        return Response({"message": "You do not have permission to use the watchlist."}, status=403)
+        return Response({"message": "You do not have permission to use the watchlist.", "code": "not_permission_use_watchlist"}, status=403)
 
     def _ids(param):
         raw = request.GET.get(param) or ""

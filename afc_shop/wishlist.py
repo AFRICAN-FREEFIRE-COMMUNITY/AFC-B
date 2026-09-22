@@ -33,10 +33,10 @@ def _auth_user(request):
     """Bearer -> validate_token. Returns (user, error_response)."""
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return None, Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return None, Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
     user = validate_token(auth.split(" ")[1])
     if not user:
-        return None, Response({"message": "Invalid or expired session token."}, status=401)
+        return None, Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
     return user, None
 
 
@@ -70,10 +70,10 @@ def toggle_wishlist(request):
 
     product_id = request.data.get("product_id")
     if not product_id:
-        return Response({"message": "product_id is required."}, status=400)
+        return Response({"message": "product_id is required.", "code": "product_required"}, status=400)
     product = Product.objects.filter(id=product_id).first()
     if not product:
-        return Response({"message": "Product not found."}, status=404)
+        return Response({"message": "Product not found.", "code": "product_not_found"}, status=404)
 
     entry = Wishlist.objects.filter(user=user, product=product).first()
     if entry:

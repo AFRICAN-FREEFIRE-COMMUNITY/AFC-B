@@ -116,14 +116,14 @@ def _price_items(items):
     for item in items:
         variant = ProductVariant.objects.filter(id=item.get("variant_id"), is_active=True).first()
         if not variant:
-            return None, None, None, Response({"message": "Invalid product"}, status=404)
+            return None, None, None, Response({"message": "Invalid product", "code": "invalid_product"}, status=404)
 
         quantity = int(item.get("quantity", 1))
         if quantity <= 0:
-            return None, None, None, Response({"message": "Invalid quantity"}, status=400)
+            return None, None, None, Response({"message": "Invalid quantity", "code": "invalid_quantity"}, status=400)
 
         if variant.product.is_limited_stock and variant.stock_qty < quantity:
-            return None, None, None, Response({"message": "Insufficient stock"}, status=400)
+            return None, None, None, Response({"message": "Insufficient stock", "code": "insufficient_stock"}, status=400)
 
         base_price = (variant.price * quantity).quantize(Decimal("0.01"))
         tax = (base_price * TAX_RATE).quantize(Decimal("0.01"))
@@ -163,9 +163,9 @@ def _apply_coupon(items, subtotal):
     if coupon_code:
         coupon = Coupon.objects.filter(code=coupon_code).first()
         if not coupon:
-            return None, discount, Response({"message": "Invalid coupon code."}, status=400)
+            return None, discount, Response({"message": "Invalid coupon code.", "code": "invalid_coupon_code"}, status=400)
         if not coupon.is_valid_now():
-            return None, discount, Response({"message": "This coupon is not valid at the moment."}, status=400)
+            return None, discount, Response({"message": "This coupon is not valid at the moment.", "code": "coupon_not_valid_moment"}, status=400)
         if subtotal < coupon.min_order_amount:
             return None, discount, Response(
                 {"message": f"This coupon needs a minimum order of {coupon.min_order_amount}."},
@@ -286,15 +286,15 @@ def stripe_buy_now(request):
     AUTH: Bearer token -> validate_token (afc_auth), identical to buy_now."""
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid token"}, status=400)
+        return Response({"message": "Invalid token", "code": "invalid_token"}, status=400)
 
     user = validate_token(auth.split(" ")[1])
     if not user:
-        return Response({"message": "Invalid session"}, status=401)
+        return Response({"message": "Invalid session", "code": "invalid_session"}, status=401)
 
     items = request.data.get("items", [])
     if not items:
-        return Response({"message": "Items required"}, status=400)
+        return Response({"message": "Items required", "code": "items_required"}, status=400)
 
     # Same required delivery fields as buy_now.
     required_fields = ["first_name", "last_name", "email", "phone_number", "address", "city", "state", "postcode"]
@@ -318,7 +318,7 @@ def stripe_buy_now(request):
 
     # Stripe Checkout cannot charge a zero-amount line, so guard against a 100%-off order.
     if grand_total <= Decimal("0.00"):
-        return Response({"message": "Order total must be greater than zero to pay with Stripe."}, status=400)
+        return Response({"message": "Order total must be greater than zero to pay with Stripe.", "code": "order_total_greater_zero"}, status=400)
 
     # Create the order + items in one transaction (mirrors buy_now), tagged provider="stripe".
     with transaction.atomic():
@@ -448,11 +448,11 @@ def stripe_verify(request):
         order = Order.objects.prefetch_related("items__variant").filter(stripe_session_id=session_id, provider="stripe").first()
 
     if not order:
-        return Response({"message": "Order not found"}, status=404)
+        return Response({"message": "Order not found", "code": "order_not_found"}, status=404)
     if order.status == "paid":
         return Response({"message": "Already processed", "status": "paid"}, status=200)
     if not order.stripe_session_id:
-        return Response({"message": "No Stripe session on this order."}, status=400)
+        return Response({"message": "No Stripe session on this order.", "code": "no_stripe_session_order"}, status=400)
 
     ok, sess = _stripe("GET", f"/checkout/sessions/{order.stripe_session_id}")
     if not ok:
@@ -484,15 +484,15 @@ def stripe_webhook(request):
             signed = f"{parts.get('t','')}.".encode() + body
             expected = hmac.new(secret.encode(), signed, hashlib.sha256).hexdigest()
             if not hmac.compare_digest(expected, parts.get("v1", "")):
-                return Response({"message": "Bad signature."}, status=400)
+                return Response({"message": "Bad signature.", "code": "bad_signature"}, status=400)
         except Exception:
-            return Response({"message": "Bad signature."}, status=400)
+            return Response({"message": "Bad signature.", "code": "bad_signature"}, status=400)
     # else: no secret configured yet -> accept (test setup); set the secret in prod.
 
     try:
         event = json.loads(body.decode())
     except Exception:
-        return Response({"message": "Bad payload."}, status=400)
+        return Response({"message": "Bad payload.", "code": "bad_payload"}, status=400)
 
     if event.get("type") == "checkout.session.completed":
         obj = event.get("data", {}).get("object", {})

@@ -76,10 +76,10 @@ def _auth_user(request):
     """Resolve the Bearer token to a user. Returns (user, None) or (None, error Response)."""
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return None, Response({"message": "Invalid or missing Authorization token."}, status=400)
+        return None, Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
     user = validate_token(auth.split(" ")[1])
     if not user:
-        return None, Response({"message": "Invalid or expired session token."}, status=401)
+        return None, Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
     return user, None
 
 
@@ -202,7 +202,7 @@ def room_settings(request, scope, object_id):
     scope_object, event = _resolve_scope(scope, object_id)
     if scope_object is None:
         return Response(
-            {"message": "scope must be one of event, stage, group or match."}, status=400)
+            {"message": "scope must be one of event, stage, group or match.", "code": "scope_event_stage_group"}, status=400)
 
     if request.method == "GET":
         user = _optional_user(request)
@@ -215,7 +215,7 @@ def room_settings(request, scope, object_id):
         return err
     if not _can_manage(user, event):
         return Response(
-            {"message": "You do not have permission to change this event's room settings."},
+            {"message": "You do not have permission to change this event's room settings.", "code": "not_permission_change_event"},
             status=403)
 
     if request.method == "DELETE":
@@ -248,12 +248,12 @@ def room_settings(request, scope, object_id):
             preset = get_object_or_404(CSRoomPreset, cs_room_preset_id=preset_id)
             if preset.organization_id and not org_can(
                     user, "can_edit_events", preset.organization):
-                return Response({"message": "That preset belongs to another organization."},
+                return Response({"message": "That preset belongs to another organization.", "code": "preset_belongs_organization"},
                                 status=403)
             data = {**cs_room.apply_preset(preset), **data}
         config = cs_room.save_config(scope, scope_object, data, user=user)
     except cs_room.RoomConfigError as e:
-        return Response({"message": str(e)}, status=400)
+        return Response({"message": str(e), "code": "room_settings_refused"}, status=400)
 
     # First publish: hand the room ID and password to everybody it applies to (owner 2026-08-12 -
     # a CS competitor was never told anything by the platform). Best-effort inside the helper.
@@ -300,16 +300,16 @@ def room_presets(request):
     data = dict(request.data or {})
     name = str(data.get("name") or "").strip()
     if not name:
-        return Response({"message": "A preset needs a name."}, status=400)
+        return Response({"message": "A preset needs a name.", "code": "preset_needs_name"}, status=400)
 
     organization_id = data.get("organization_id")
     if organization_id:
         if int(organization_id) not in org_ids and not _is_event_admin(user):
-            return Response({"message": "You are not a member of that organization."}, status=403)
+            return Response({"message": "You are not a member of that organization.", "code": "not_member_organization"}, status=403)
     elif not _is_event_admin(user):
         return Response(
             {"message": "Only AFC admins can save a preset for everyone. Choose one of your "
-                        "organizations instead."}, status=403)
+                        "organizations instead.", "code": "afc_admins_save_preset"}, status=403)
 
     # Values come either from an existing configuration ("save these settings as a preset", the
     # normal path from the editor) or inline in the body.
@@ -317,19 +317,19 @@ def room_presets(request):
     if source:
         scope_object, event = _resolve_scope(source.get("scope"), source.get("object_id"))
         if scope_object is None:
-            return Response({"message": "from.scope must be event, stage, group or match."},
+            return Response({"message": "from.scope must be event, stage, group or match.", "code": "scope_event_stage_group"},
                             status=400)
         config = CSRoomConfig.objects.filter(
             **{cs_room.SCOPE_FIELD[source["scope"]]: scope_object}).first()
         if config is None:
             return Response(
-                {"message": "There are no room settings saved at that scope to copy."}, status=400)
+                {"message": "There are no room settings saved at that scope to copy.", "code": "no_room_settings_saved"}, status=400)
         values = cs_room.settings_payload(config)
     else:
         try:
             values = {**cs_room.blank_settings(), **cs_room.validate_settings(data)}
         except cs_room.RoomConfigError as e:
-            return Response({"message": str(e)}, status=400)
+            return Response({"message": str(e), "code": "room_presets_refused"}, status=400)
 
     preset, created = CSRoomPreset.objects.update_or_create(
         organization_id=organization_id or None,
@@ -361,12 +361,12 @@ def delete_room_preset(request, preset_id):
         return err
     preset = get_object_or_404(CSRoomPreset, cs_room_preset_id=preset_id)
     if preset.is_builtin:
-        return Response({"message": "Built-in Free Fire modes cannot be deleted."}, status=400)
+        return Response({"message": "Built-in Free Fire modes cannot be deleted.", "code": "built_free_fire_modes"}, status=400)
     if preset.organization_id:
         if not org_can(user, "can_edit_events", preset.organization) and not _is_event_admin(user):
-            return Response({"message": "You do not have permission to delete that preset."},
+            return Response({"message": "You do not have permission to delete that preset.", "code": "not_permission_delete_preset"},
                             status=403)
     elif not _is_event_admin(user):
-        return Response({"message": "Only AFC admins can delete a shared preset."}, status=403)
+        return Response({"message": "Only AFC admins can delete a shared preset.", "code": "afc_admins_delete_shared"}, status=403)
     preset.delete()
     return Response({"message": "Preset deleted."}, status=200)
