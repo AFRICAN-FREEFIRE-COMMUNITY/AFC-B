@@ -180,7 +180,7 @@ class CaptureRichStatsUploadTests(_Fixture):
         resp = self.client.post("/events/get-all-leaderboard-details-for-event/",
                                 data={"event_id": self.event.event_id}, format="json",
                                 HTTP_AUTHORIZATION=f"Bearer {self.token.token}")
-        self.assertEqual(resp.status_code, 200, getattr(resp, "data", resp.content)[:200])
+        self.assertEqual(resp.status_code, 200, str(getattr(resp, "data", resp.content))[:300])
         body = json.dumps(resp.data)
         players = []
 
