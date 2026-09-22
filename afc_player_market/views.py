@@ -18,6 +18,7 @@ from django.utils import timezone
 from django.db.models import Q, Sum
 
 from afc_auth.models import BannedPlayer, LoginHistory, Notifications
+from afc_auth.api_errors import internal_error
 from afc_team.models import Team, TeamMembers
 from .models import Country, DirectTrialInvite, PlayerReport, RecruitmentApplication, RecruitmentPost, RecruitmentPostImage, TrialChat, TrialChatMessage, TrialInvite
 from afc_auth.views import send_email, validate_token
@@ -722,7 +723,7 @@ def create_recruitment_post(request):
         }, status=201)
 
     except Exception as e:
-        return Response({"message": str(e)}, status=500)
+        return internal_error(e, where="create_recruitment_post", code="create_recruitment_post_failed")
     
 
 @api_view(["GET"])

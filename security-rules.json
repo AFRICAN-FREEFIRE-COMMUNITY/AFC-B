@@ -160,6 +160,101 @@
       "rule": "R63",
       "path": "afc_organizers/models.py",
       "reason": "the organizer payout bank account: Paystack needs the account number readable to create a transfer recipient, so it cannot be hashed and is not encrypted today. A recorded decision, not an oversight (WEBSITE/CLAUDE.md, R63 row, 2026-09-18) and carried in the security debt ledger as MEDIUM; revisit with a Fernet field if payouts ever stop needing the raw value"
+    },
+    {
+      "rule": "R79",
+      "path": "afc_auth/connections/views.py",
+      "reason": "GoogleAuthError.message: our own class, our own sentence about the Google sign-in step that failed (afc_auth/connections/google.py). No library text reaches the user."
+    },
+    {
+      "rule": "R79",
+      "path": "afc_auth/views.py",
+      "reason": "GoogleAuthError.message, as above. The sign-in path's own wording, written for the person signing in."
+    },
+    {
+      "rule": "R79",
+      "path": "afc_auth/views_account_deletion.py",
+      "reason": "a ValueError our own restore service raises with a written sentence ('that account was not deleted'), answered with the code not_deleted."
+    },
+    {
+      "rule": "R79",
+      "path": "afc_draws/views.py",
+      "reason": "services.DrawError.message: the draw engine's own refusals ('this group is full', 'that team is already seeded'), which are the answer the organizer needs."
+    },
+    {
+      "rule": "R79",
+      "path": "afc_leaderboard/views.py",
+      "reason": "_ParticipantResolutionError.message and ProviderError.message: our own classes. The first names the row of the uploaded result that could not be matched to a team, the second says which OCR provider refused and why; both are written by us."
+    },
+    {
+      "rule": "R79",
+      "path": "afc_ocr/views.py",
+      "reason": "ProviderError / RuntimeError / FileNotFoundError raised by afc_ocr's own services with written messages (a model that is not enabled, an image that is not readable). The OCR screen shows them so the organizer can fix the upload."
+    },
+    {
+      "rule": "R79",
+      "path": "afc_partner_api/views_partner.py",
+      "reason": "PartnerAuthError.message: the partner API's own refusal text, part of its documented contract with integrators."
+    },
+    {
+      "rule": "R79",
+      "path": "afc_player_market/views.py",
+      "reason": "the remaining sites are the market's own validation sentences; the one bare-Exception leak in this file was fixed on 2026-09-22 and answers through afc_auth.api_errors.internal_error."
+    },
+    {
+      "rule": "R79",
+      "path": "afc_polls/views.py",
+      "reason": "PollFieldError.message: names the poll field that is wrong, which is the whole point of the message."
+    },
+    {
+      "rule": "R79",
+      "path": "afc_results_import/views.py",
+      "reason": "ParseProblem.message: names the line and column of the uploaded file that could not be read. An importer that says 'something went wrong' is unusable."
+    },
+    {
+      "rule": "R79",
+      "path": "afc_team/views.py",
+      "reason": "what is left here are Team.DoesNotExist and permission refusals with our own wording; the eight bare-Exception leaks were fixed on 2026-09-22 (afc_auth.api_errors.internal_error)."
+    },
+    {
+      "rule": "R79",
+      "path": "afc_tournament_and_scrims/cs_room_views.py",
+      "reason": "cs_room.RoomConfigError: our own class, naming the room setting that is invalid."
+    },
+    {
+      "rule": "R79",
+      "path": "afc_tournament_and_scrims/h2h_submissions.py",
+      "reason": "head_to_head.BracketError and a ValueError our own submission parser raises; both say which side or which score is wrong."
+    },
+    {
+      "rule": "R79",
+      "path": "afc_tournament_and_scrims/head_to_head_views.py",
+      "reason": "head_to_head.BracketError.message: the bracket engine's own refusals."
+    },
+    {
+      "rule": "R79",
+      "path": "afc_tournament_and_scrims/seeding_management.py",
+      "reason": "GroupCapacityError: names the group and the capacity, which is what the organizer must change. One helper behind every seeder (2026-09-12)."
+    },
+    {
+      "rule": "R79",
+      "path": "afc_tournament_and_scrims/views.py",
+      "reason": "GroupCapacityError, WriteRefused, ProviderError and ValueErrors raised by this module's own parsers (_clean_required_connections and friends), each with a written sentence. The two sites the checker used to report inside commented-out code are no longer counted (codeLines, 2026-09-22)."
+    },
+    {
+      "rule": "R79",
+      "path": "afc_tournament_and_scrims/views_discord_reminders.py",
+      "reason": "a ValueError raised by the reminder parser naming the cadence that is not allowed."
+    },
+    {
+      "rule": "R79",
+      "path": "afc_tournament_and_scrims/views_team_submissions.py",
+      "reason": "a ValueError raised by the submission parser naming the field at fault."
+    },
+    {
+      "rule": "R79",
+      "path": "afc_tournament_and_scrims/waiver_views.py",
+      "reason": "a ValueError raised by the waiver service naming the offending requirement code or the missing reason, so the dialog can show it."
     }
   ],
   "auth": {

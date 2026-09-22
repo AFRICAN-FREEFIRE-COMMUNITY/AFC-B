@@ -10,6 +10,7 @@ from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
 from afc_auth.views import validate_token, is_stats_admin
+from afc_auth.api_errors import internal_error
 from afc_tournament_and_scrims.models import TournamentTeam, TournamentTeamMatchStats, EventPrizePayout
 from .models import Team, TeamMembers, Invite, Report, JoinRequest, TeamSocialMediaLinks
 # Team role permissions (owner 2026-08-08): the team OWNER decides which management roles may
@@ -600,7 +601,7 @@ def invite_member(request):
     except Team.DoesNotExist:
         return Response({'message': 'Team not found or you do not own this team.'}, status=status.HTTP_404_NOT_FOUND)
     except Exception as e:
-        return Response({'message': 'An error occurred.', 'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        return internal_error(e, where="invite_member", code="invite_member_failed")
 
 
 @api_view(["POST"])
@@ -681,7 +682,7 @@ def disband_team(request):
     except Team.DoesNotExist:
         return Response({'message': 'Team not found or you do not own this team.'}, status=status.HTTP_403_FORBIDDEN)
     except Exception as e:
-        return Response({'message': 'An error occurred.', 'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        return internal_error(e, where="disband_team", code="disband_team_failed")
 
 
 @api_view(["POST"])
@@ -780,7 +781,7 @@ def transfer_ownership(request):
     except Team.DoesNotExist:
         return Response({"message": "You do not own any team."}, status=status.HTTP_403_FORBIDDEN)
     except Exception as e:
-        return Response({"message": "An error occurred.", "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        return internal_error(e, where="transfer_ownership", code="transfer_ownership_failed")
 
 
 @api_view(["POST"])
@@ -839,7 +840,7 @@ def send_join_request(request):
     except Team.DoesNotExist:
         return Response({"message": "Team not found."}, status=status.HTTP_404_NOT_FOUND)
     except Exception as e:
-        return Response({"message": "An error occurred.", "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        return internal_error(e, where="send_join_request", code="send_join_request_failed")
 
 
 @api_view(["POST"])
@@ -952,7 +953,7 @@ def review_join_request(request):
     except JoinRequest.DoesNotExist:
         return Response({"message": "Join request not found."}, status=status.HTTP_404_NOT_FOUND)
     except Exception as e:
-        return Response({"message": "An error occurred.", "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        return internal_error(e, where="review_join_request", code="review_join_request_failed")
     
 
 def _join_requests_refusal():
@@ -2345,7 +2346,7 @@ def exit_team(request):
     except TeamMembers.DoesNotExist:
         return Response({"message": "You are not currently a member of any team.", "code": "not_in_team"}, status=status.HTTP_404_NOT_FOUND)
     except Exception as e:
-        return Response({"message": "An error occurred.", "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        return internal_error(e, where="exit_team", code="exit_team_failed")
 
 
 @api_view(["POST"])
@@ -3014,7 +3015,7 @@ def manage_team_roster(request):
         }, status=200)
 
     except Exception as e:
-        return Response({"error": str(e)}, status=500)
+        return internal_error(e, where="manage_team_roster", code="manage_team_roster_failed")
 
 
 @api_view(["POST"])
@@ -3119,7 +3120,7 @@ def kick_team_member(request):
         return Response({"message": f"Member {kicked_member_username} has been kicked from the team."}, status=200)
 
     except Exception as e:
-        return Response({"error": str(e)}, status=500)
+        return internal_error(e, where="kick_team_member", code="kick_team_member_failed")
 
 
 @api_view(["POST"])
