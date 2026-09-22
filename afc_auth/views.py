@@ -58,6 +58,7 @@ from afc_auth import trusted_devices
 # load: afc_whatsapp.phone imports nothing from this app (only `logging` and an optional
 # `phonenumbers`), so no cycle can form.
 from afc_whatsapp.phone import require_international
+from afc_auth.bot_protection import require_human
 # The outbox is where send_email puts a message when this process must not send (the test
 # runner, the scratch server). It imports nothing from this module, so no cycle.
 from afc_auth import outbox
@@ -1803,6 +1804,14 @@ def google_auth(request):
 
 @api_view(["POST"])
 def signup(request):
+    # Bot protection (owner 2026-09-22). FIRST: signup creates an account AND sends mail, so a
+    # script here costs the mail quota and fills the table with unverified rows. Verified
+    # server side against Cloudflare Turnstile (afc_auth/bot_protection.py); with no key set it
+    # allows the request rather than locking signup, and the security checker counts that.
+    refused = require_human(request, where="signup")
+    if refused is not None:
+        return refused
+
     in_game_name = request.data.get("in_game_name")
     uid = request.data.get("uid")
     email = request.data.get("email")

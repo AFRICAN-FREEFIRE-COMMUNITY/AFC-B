@@ -44,6 +44,7 @@ from rest_framework import status
 from rest_framework.decorators import api_view, parser_classes
 from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.response import Response
+from afc_auth.bot_protection import require_human
 from django.http import FileResponse, Http404
 
 from afc_auth.models import User
@@ -282,6 +283,14 @@ def support_contact(request):
     both allowed to fail without losing what the person wrote. That is the whole reason this app
     exists (see afc_support/models.py).
     """
+    # Bot protection (owner 2026-09-22). FIRST, before anything is written or emailed:
+    # this form is open to the whole internet and a script filling it costs a queue, a
+    # database row and mail quota. Verified server side against Cloudflare Turnstile; with
+    # no key configured it allows the request and the checker counts that as debt.
+    refused = require_human(request, where="support_contact")
+    if refused is not None:
+        return refused
+
     import re
 
     name = (request.data.get("name") or "").strip()

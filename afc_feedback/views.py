@@ -41,6 +41,7 @@ from django.utils import timezone
 from rest_framework import status
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
+from afc_auth.bot_protection import require_human
 
 from afc_auth.views import validate_token
 
@@ -381,6 +382,14 @@ def submit_feedback(request, key):
     submissions and FEEDBACK_RATE_LIMIT_PER_HOUR per clock hour. The slot is consumed only AFTER the
     row is written, so a validation failure does not eat the visitor's allowance.
     """
+    # Bot protection (owner 2026-09-22). FIRST, before anything is written or emailed:
+    # this form is open to the whole internet and a script filling it costs a queue, a
+    # database row and mail quota. Verified server side against Cloudflare Turnstile; with
+    # no key configured it allows the request and the checker counts that as debt.
+    refused = require_human(request, where="submit_feedback")
+    if refused is not None:
+        return refused
+
     # Inactive forms refuse writes here, independently of form_schema hiding them, so a stale open tab
     # or a scripted client cannot post to a form the owner has retired.
     form = (

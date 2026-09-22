@@ -47,6 +47,7 @@ from rest_framework import status
 from rest_framework.decorators import api_view, authentication_classes, parser_classes
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.response import Response
+from afc_auth.bot_protection import require_human
 
 from afc_sso.provisioning import (
     _clean_logo_upload, _clean_outbound_url, _clean_redirect_uris, _clean_url,
@@ -362,6 +363,14 @@ def submit_application(request):
     what makes it evidence that the address is theirs. A caller who mistyped their email gets a
     reference and no way in, which is the correct outcome and is why the form asks them to check.
     """
+    # Bot protection (owner 2026-09-22). FIRST, before anything is written or emailed:
+    # this form is open to the whole internet and a script filling it costs a queue, a
+    # database row and mail quota. Verified server side against Cloudflare Turnstile; with
+    # no key configured it allows the request and the checker counts that as debt.
+    refused = require_human(request, where="partner_application")
+    if refused is not None:
+        return refused
+
     ip_hash = _client_ip_hash(request)
     allowed, info = check_apply_rate(ip_hash)
     if not allowed:
