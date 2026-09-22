@@ -218,9 +218,10 @@ def debugger_backfill(request, event_id):
                 row.revives_received = stats["revives_received"]
                 row.survival_seconds = stats["survival_seconds"]
                 row.rich_stats_filled = True
+                row.rich_stats_source = "backfill"   # a capture upload of the same map overwrites this
                 row.save(update_fields=[
                     "deaths", "knockdowns", "headshots",
-                    "revives_received", "survival_seconds", "rich_stats_filled",
+                    "revives_received", "survival_seconds", "rich_stats_filled", "rich_stats_source",
                 ])
                 updated += 1
             applied.append({"round_index": ri, "match_id": match_id, "updated_rows": updated})

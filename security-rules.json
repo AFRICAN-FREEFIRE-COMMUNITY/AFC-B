@@ -155,6 +155,11 @@
       "rule": "R70",
       "path": "afc_tournament_and_scrims/views_media_audit.py",
       "reason": "the upload goes through require_image_upload (afc_auth/image_utils.py, 2026-09-18): Pillow decodes the BYTES and verifies them, the format must be JPEG / PNG / WEBP / GIF / HEIF, 10 MB cap, refused with a code, then re-encoded by normalize_image_upload; proven both ways in afc_auth/tests_image_upload_gate.py. The gate lives in one module, which is why this file shows no check of its own"
+    },
+    {
+      "rule": "R63",
+      "path": "afc_organizers/models.py",
+      "reason": "the organizer payout bank account: Paystack needs the account number readable to create a transfer recipient, so it cannot be hashed and is not encrypted today. A recorded decision, not an oversight (WEBSITE/CLAUDE.md, R63 row, 2026-09-18) and carried in the security debt ledger as MEDIUM; revisit with a Fernet field if payouts ever stop needing the raw value"
     }
   ],
   "auth": {
