@@ -1,58 +1,66 @@
-# The Gmail app password in this repository's history (owner rule R62)
+# Secrets that were in this repository's history (owner rule R62)
 
-Written 2026-09-23. **Read this before touching the R62 line in `security/debt.json`.**
+Rewritten out on **2026-09-23** with the owner's approval ("go"). This file is the record of what
+was in there, what was done, and what still needs a human at a provider console.
 
-## What it is
+**It names no secret values.** Each row says where a value lived and what it was, which is enough to
+find it at the provider.
 
-One Google app password for `africanfreefirecommunity3@gmail.com`, in a commented-out block at the
-top of `afc_auth/views.py`. Never live code: the site's mail goes through Office 365
-(`EMAIL_HOST` defaults to smtp.office365.com and the box's `.env` carries only `EMAIL_PASSWORD`).
-It was still a working door into that mailbox, for sending AND for IMAP, until it was revoked.
+## What history held: eight AFC-owned secrets, not one
 
-**It has been revoked at Google by the owner on 2026-09-22.** That, and only that, ended the
-exposure. Everything below is about tidying up after it.
+GitGuardian flagged one Google app password on 2026-09-22. Listing the rest found seven more.
 
-## Where it is
-
-| Commit | Date | Author | What it did |
+| What | Where it lived | Deployed today? | Rotated? |
 |---|---|---|---|
-| `1079d035` | 2025-11-23 | HabeebFF | added it, in a commented block, message "push it" |
-| `e6925698` | 2026-03-30 | HabeebFF | moved it within the same file, so the line was removed and re-added |
-| `21797e9e` | 2026-09-23 | this work | deleted the whole dead block |
-| `e46e2204` | 2026-09-23 | squash merge of #86 | carries that deletion onto `main` |
+| `MINTROUTE_SECRET_KEY` | `afc/settings.py`, `afc_shop/services/mintroute.py` | yes, and it matches the box's `.env` | **sandbox key** (owner, 2026-09-23), so it signs nothing that spends money. Replace when the live key is issued |
+| Google app password, `africanfreefirecommunity3@gmail.com` | `afc_auth/views.py`, commented mail block | no | revoked 2026-09-22 |
+| Three MORE Google app passwords, earlier copies of that block | `afc_auth/views.py` (`77a9f7d9`, `dab98ccb`, `5a1c9576`) | no | **NOT revoked: nobody knew they existed.** Owner action |
+| SMTP password, 16 characters | `afc_auth/views.py`, beside `from_address` | no | owner action |
+| Google API key (`AIza...`) | `ocr_local_app.py`, `ocr_test.py` | no | owner action |
+| Django `SECRET_KEY` | `afc/settings.py` | no, production reads its own from `.env` | not urgent; rotating signs every user out |
 
-Four commits, ONE credential. The scan reports a commit whenever a key-shaped line is added OR
-removed, so a removal shows up exactly like an addition: `git log -G` cannot tell the difference,
-and it should not try to.
+Whether each is deployed was settled by hashing every value in `/home/ubuntu/AFC-B/.env` and
+comparing against SHA-256 of the eight. Nothing secret crossed the wire in either direction. The
+owner-facing list is `WEBSITE/ROTATE-THESE-2026-09-23.md`.
 
-GitGuardian found it on 2026-09-22 at 22:44:30 UTC, not because it was new, but because the
-refusal-codes pass edited `afc_auth/views.py` and a file you touch is a file you republish.
+**Left in place on purpose:** nine key-shaped values inside vendored `venv/` and `eb-env/` files
+(botocore, allauth, httpx test data, from when the virtualenv was committed) are library test data,
+not AFC's. Four values are in the CURRENT tree and a history rewrite must never edit live code:
+three test fixtures, and a database password in tracked `PRODUCTION_DB_FIX.md`, which deserves its
+own fix because that is a secret in the repository, not merely in its history.
 
-## Why the checker missed it for ten months
+## What was done
 
-The generic rule wanted a long opaque value with no spaces. A Google app password is four
-four-letter words. Both the file scan and the history scan carry that shape now
-(`[a-z]{4} [a-z]{4} [a-z]{4} [a-z]{4}` within 60 characters of a gmail address), self-test 34/34.
+Two `git filter-repo` passes on a mirror clone, then a force-push of all 25 branches:
 
-## Why R62's ledger says 4 and not 0
+1. `--replace-text` with the eight values.
+2. `--invert-paths --path-glob '*__pycache__*' --path-glob '*.pyc' --prune-empty never`, because
+   three of the eight survived pass 1 inside committed compiled blobs. No branch tip tracks a
+   `.pyc`, so this changed no live code. `--prune-empty never` because the first attempt silently
+   dropped a commit the path pass had emptied (main went 1454 to 1453).
 
-The working tree is clean; history is not, and it cannot be cleaned without
-`git filter-repo --replace-text` plus a **force-push to a protected branch**, which invalidates
-every clone and every open branch. That is the owner's decision, not a checker's.
+Verified before pushing, and again afterwards from a **fresh clone of GitHub**:
 
-Leaving R62 at 0 in the ledger blocks every commit in BOTH repos, because the frontend's
-`check-all` runs this ledger too and a rise in HIGH fails the run. So the ceiling records the four
-commits, and this file is the reason a reader is owed. It is not "accepted debt" in the normal
-sense: the credential is dead, so the four HIGHs describe a string that no longer opens anything.
+- all eight values gone, and still present in the untouched backup mirror, so the check has teeth
+- 25 branches in, 25 branches out; every commit count identical; main still 1454 commits
+- **main's tip tree byte-identical at `b447f346`**, which is the proof that live code was untouched
+- `check-security --rule R62` on the fresh clone: **0 high, 0 medium**
 
-**When the history is rewritten, the count drops to 0 by itself.** Re-run
-`check-security --baseline` that day, and delete this section rather than editing the number.
+AFC-B has no tags, so nothing else pinned the old commits.
 
-## If the owner says go
+## What this does NOT do
 
-1. Confirm again that the password is revoked (it is; re-check at myaccount.google.com if in doubt).
-2. `git filter-repo --replace-text replacements.txt` with the literal old value on the left.
-   Keep `replacements.txt` OUT of the repo: it holds the secret by definition.
-3. Force-push `main` with branch protection lifted for the push, then restore protection.
-4. Everybody re-clones. Any open branch is rebased onto the rewritten history or abandoned.
-5. `check-security --baseline`, and R62 returns to 0.
+- **It does not end an exposure.** A string that has been on GitHub is a string somebody may hold.
+  Only rotating at the provider ends it, which is why the table above tracks rotation separately.
+- **GitHub keeps unreachable objects fetchable by SHA for a while** after a force-push, and an open
+  PR pins the commits it references. Ask GitHub Support to garbage-collect if the old SHAs must be
+  unreachable immediately.
+- **A clone made before 2026-09-23 still has everything.** Anyone holding one re-clones. On this
+  machine the worktrees were re-pointed the same day, except `backend/`, which sits on
+  `feat/fantasy-league` with uncommitted work and was deliberately left for the owner to rebase.
+
+## If R62 ever reads more than 0 again
+
+On a fresh clone it reads 0. A local checkout that still has pre-rewrite branches will report them,
+because the checker reads `git log --all`, and that includes stale local refs. That is local
+hygiene, not a finding: prune the branches whose upstream is `[gone]`, or re-clone.
