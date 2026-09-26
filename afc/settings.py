@@ -110,6 +110,8 @@ INSTALLED_APPS = [
     # replaced rather than extended. afc_awards stays installed until its historical Vote rows
     # have been migrated in a later phase. See afc_polls/models.py.
     'afc_polls',
+    # Short, counted QR links for events, teams, players and news (inbox #46). See afc_qr/models.py.
+    'afc_qr',
     # The AFC admin's Bot page (backlog item 31). Holds no models: it is a permission gate plus a
     # proxy to the Discord bot's own control API, which runs in a separate process and repo
     # (AFC/AFCBot). See afc_bot/views.py for why the browser must not call that API directly.

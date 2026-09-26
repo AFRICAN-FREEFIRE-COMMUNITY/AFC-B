@@ -87,6 +87,9 @@ urlpatterns = [
     # the awards/ routes above, which stay mounted until the historical votes are migrated.
     # See afc_polls/views.py.
     path("polls/", include('afc_polls.urls')),
+    # QR codes for events, teams, players and news: get-or-create a short link, the counted scan behind
+    # /q/<token>, and the owner-only scan count. See afc_qr/views.py.
+    path("qr/", include('afc_qr.urls')),
     path('bot/', include('afc_bot.urls')),
 
 ]
