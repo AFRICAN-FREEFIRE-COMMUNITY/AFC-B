@@ -226,6 +226,9 @@ class MineAndAdminTests(Base):
         again = self.client.post(f"/referrals/admin/rewards/{reward.public_token}/deliver/", {},
                                  format="json", HTTP_AUTHORIZATION=_bearer(self.head))
         self.assertEqual(again.data["code"], "reward_not_pending")
+        funnel = self.client.get("/referrals/admin/programs/bounty-drive/", HTTP_AUTHORIZATION=_bearer(self.head)).data["funnel"]
+        # every claim in this test typed the code: none came through an opened link
+        self.assertEqual((funnel["signups_via_link"], funnel["signups_typed"]), (0, funnel["signups"]))
         export = self.client.get("/referrals/admin/programs/bounty-drive/export/", HTTP_AUTHORIZATION=_bearer(self.head))
         self.assertEqual(export.status_code, 200)
         self.assertIn(b"refhost", export.content)

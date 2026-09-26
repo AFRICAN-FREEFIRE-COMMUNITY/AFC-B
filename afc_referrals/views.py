@@ -136,6 +136,8 @@ def program_public_dict(program):
 def program_admin_dict(program, detail=False):
     counts = program.referrals.aggregate(
         total=Count("pk"),
+        # Signups that arrived through an opened link; the rest typed the code (no click to count)
+        via_link=Count("pk", filter=Q(click__isnull=False)),
         counted=Count("pk", filter=Q(status=Referral.COUNTED)),
         pending=Count("pk", filter=Q(status=Referral.PENDING)),
         flagged=Count("pk", filter=Q(status=Referral.FLAGGED)),
@@ -157,6 +159,8 @@ def program_admin_dict(program, detail=False):
         "funnel": {
             "clicks": ReferralClick.objects.filter(code__program=program).count(),
             "signups": counts["total"],
+            "signups_via_link": counts["via_link"],
+            "signups_typed": counts["total"] - counts["via_link"],
             "counted": counts["counted"],
             "pending": counts["pending"],
             "flagged": counts["flagged"],
