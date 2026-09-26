@@ -112,6 +112,8 @@ INSTALLED_APPS = [
     'afc_polls',
     # Short, counted QR links for events, teams, players and news (inbox #46). See afc_qr/models.py.
     'afc_qr',
+    # Referral programs: admin-run programs, personal links and codes, counting and prizes (inbox #47).
+    'afc_referrals',
     # The AFC admin's Bot page (backlog item 31). Holds no models: it is a permission gate plus a
     # proxy to the Discord bot's own control API, which runs in a separate process and repo
     # (AFC/AFCBot). See afc_bot/views.py for why the browser must not call that API directly.

@@ -118,6 +118,11 @@
     },
     {
       "rule": "R69",
+      "path": "afc_referrals/views.py",
+      "reason": "read 2026-09-26: _parse_program names every accepted key and checks each (lengths, ISO dates, enums, list types, money ranges, a unique code), prizes are validated per type, list pages bound limit/offset with try/except, claim and click cap code and token lengths; every refusal is coded (Invalid / ClaimRefused)"
+    },
+    {
+      "rule": "R69",
       "path": "afc_auth/trusted_devices.py",
       "reason": "a helper, not a handler: device_from_request reads one token off the sign-in body for the callers (login, two-factor verify), which authenticate first; its write (remember) runs after a passed factor"
     },

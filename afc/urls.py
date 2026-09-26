@@ -90,6 +90,9 @@ urlpatterns = [
     # QR codes for events, teams, players and news: get-or-create a short link, the counted scan behind
     # /q/<token>, and the owner-only scan count. See afc_qr/views.py.
     path("qr/", include('afc_qr.urls')),
+    # Referral programs: the /r/<code> landing, the claim after signup, the profile card and the admin
+    # pages. See afc_referrals/views.py.
+    path("referrals/", include('afc_referrals.urls')),
     path('bot/', include('afc_bot.urls')),
 
 ]
