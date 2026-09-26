@@ -3,9 +3,11 @@ not a direct call), awards, and the admin gate.
 
 Run: .venv/Scripts/python.exe manage.py test afc_referrals --noinput --keepdb
 """
+import os
 import secrets
 from datetime import date, timedelta
 from decimal import Decimal
+from unittest.mock import patch
 
 from django.core.cache import cache
 from django.utils import timezone
@@ -232,3 +234,39 @@ class MineAndAdminTests(Base):
         export = self.client.get("/referrals/admin/programs/bounty-drive/export/", HTTP_AUTHORIZATION=_bearer(self.head))
         self.assertEqual(export.status_code, 200)
         self.assertIn(b"refhost", export.content)
+
+
+class SignupAcrossDevicesTests(Base):
+    """Inbox #53: an email sign-up that carries a code, confirmed on ANOTHER device (so no browser cookie
+    ever reaches a claim), still counts. The code travels in the sign-up body and is stored at once."""
+
+    def signup(self, name, code="", click=""):
+        body = {"in_game_name": name, "email": f"afc.reftest.{name.lower()}@gmail.com", "password": "Str0ng!Passw0rd",
+                "confirm_password": "Str0ng!Passw0rd", "full_name": "New Player", "referral_code": code,
+                "referral_click": click}
+        # No mail leaves the test (send_email is smtplib), and the bot check is off as in
+        # afc_auth/tests_bot_protection.py (a blank key means "not configured")
+        with patch("afc_auth.views.send_email", return_value=True),                 patch.dict(os.environ, {"TURNSTILE_SECRET_KEY": ""}, clear=False):
+            return self.client.post("/auth/signup/", body, format="json")
+
+    def test_code_in_signup_counts_when_confirmed_elsewhere(self):
+        r = self.signup("FarAwayPlayer", code=self.code.code.lower())
+        self.assertEqual(r.status_code, 201, r.data)
+        self.assertEqual(r.data["referral"], {"status": "pending"})
+        user = User.objects.get(username="FarAwayPlayer")
+        self.assertEqual(Referral.objects.get(referred=user).status, "pending")
+        # "another device": only the email and the code the email carried, no session, no cookie
+        code = cache.get(f"verification_code_{user.user_id}")
+        v = self.client.post("/auth/verify-code/", {"email": user.email, "code": code}, format="json")
+        self.assertIn(v.status_code, (200, 201), v.data)
+        self.assertEqual(Referral.objects.get(referred=user).status, "counted")
+
+    def test_a_bad_code_never_blocks_the_signup(self):
+        r = self.signup("BadCodePlayer", code="NOPE999")
+        self.assertEqual(r.status_code, 201, r.data)
+        self.assertEqual(r.data["referral"], {"refused": "bad_code"})
+        self.assertTrue(User.objects.filter(username="BadCodePlayer").exists())
+
+    def test_no_code_no_referral(self):
+        r = self.signup("PlainPlayer")
+        self.assertEqual((r.status_code, r.data["referral"]), (201, None))
