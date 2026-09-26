@@ -1909,6 +1909,17 @@ def signup(request):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        # Referral code typed or carried over from an invite link (inbox #53, owner 2026-09-26). Stored
+        # on the server now, so confirming the email on another device still counts it. Never blocks
+        # the sign-up; the outcome rides back in the response for the form to report. afc_referrals/engine.py
+        from afc_referrals.engine import claim_at_signup
+        referral_outcome = claim_at_signup(
+            user,
+            str(request.data.get("referral_code") or "")[:20],
+            click_token=str(request.data.get("referral_click") or "")[:16],
+            ip=(request.META.get("HTTP_X_FORWARDED_FOR", "").split(",")[0].strip() or request.META.get("REMOTE_ADDR", "")),
+        )
+
         # Generate verification code
         verification_code = random.randint(100000, 999999)
         cache.set(f"verification_code_{user.user_id}", verification_code, timeout=600)
@@ -1931,7 +1942,8 @@ def signup(request):
             print(f"Error sending email: {e}")
             return Response({"error": "Failed to send verification email. Please try again later."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-        return Response({"message": "Signup successful. Please check your email for the verification code."}, status=status.HTTP_201_CREATED)
+        return Response({"message": "Signup successful. Please check your email for the verification code.",
+                         "referral": referral_outcome}, status=status.HTTP_201_CREATED)
 
     except IntegrityError:
         # Final safety net: any unique-constraint error that escapes the inner handler still

@@ -171,6 +171,35 @@ def claim(user, raw_code, click_token="", ip_hash=""):
     return referral
 
 
+def hash_ip(ip):
+    """Salted hash of an address, the same shape the referral views store (never the raw address)."""
+    import hashlib
+    from django.conf import settings
+    return hashlib.sha256(f"{settings.SECRET_KEY}:{ip or ''}".encode()).hexdigest()[:32]
+
+
+def claim_at_signup(user, raw_code, click_token="", ip=""):
+    """The email sign-up's referral (inbox #53, owner 2026-09-26). Called by afc_auth.views.signup right
+    after the account is created, so the referral lives on the SERVER from that moment: confirming the
+    email on another phone or computer still counts it (the signals count a RULE_SIGNUP referral when
+    the account turns active). Before this, the code only waited in the first browser's cookie and was
+    lost when the person confirmed and signed in somewhere else.
+
+    Never raises and never blocks the sign-up: returns {"status": ...} or {"refused": code}, or None when
+    no code was sent. Google and Discord sign-ups still claim through the browser (they are signed in on
+    the same device at once)."""
+    if not (raw_code or "").strip():
+        return None
+    try:
+        referral = claim(user, raw_code, click_token=click_token or "", ip_hash=hash_ip(ip))
+        return {"status": referral.status}
+    except ClaimRefused as refused:
+        return {"refused": refused.code}
+    except Exception:  # noqa: BLE001 - a referral must never fail an account creation
+        logger.exception("referrals: claim at signup failed for user %s", getattr(user, "pk", None))
+        return {"refused": "error"}
+
+
 # ── counting and awards ───────────────────────────────────────────────────────────────────────────
 
 def on_action(user, rule, event=None, at=None):
