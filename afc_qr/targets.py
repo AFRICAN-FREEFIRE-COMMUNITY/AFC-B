@@ -7,9 +7,9 @@ type means one entry in each table below plus one value in QrLink.TARGET_TYPES; 
 Refs, matching the frontend routes:
   event   slug       /tournaments/<slug>   published events only (is_draft False)
   team    team_name  /teams/<team_name>
-  player  username   /players/<username>
+  player  username   /players/<username>   not deleted accounts
   news    slug       /news/<slug>          published posts only (is_published True)
-An unpublished event or post has no QR: the short link would otherwise reveal its title before it is out.
+An unpublished event or post, or a deleted account, has no QR: the short link would otherwise reveal its title before it is out.
 
 Owners, who may see the scan count (R58):
   everyone below, plus head admins (super_admin / head_admin) on every page
@@ -32,6 +32,9 @@ PK = {QrLink.EVENT: "event_id", QrLink.TEAM: "team_id", QrLink.PLAYER: "user_id"
 REF = {QrLink.EVENT: "slug", QrLink.TEAM: "team_name", QrLink.PLAYER: "username", QrLink.NEWS: "slug"}
 # Extra conditions a row must meet to be reachable by QR at all
 PUBLISHED = {QrLink.EVENT: {"is_draft": False}, QrLink.NEWS: {"is_published": True}}
+# ...and rows it must not be: a deleted account keeps a tombstone username, and its profile page
+# answers not-found (afc_player.views.get_public_player_stats excludes it the same way)
+HIDDEN = {QrLink.PLAYER: {"status": "deleted"}}
 
 HEAD_ROLES = ("super_admin", "head_admin")
 EVENT_ADMIN_ROLES = HEAD_ROLES + ("event_admin",)
@@ -48,7 +51,9 @@ def _is_news_admin(user):
 
 
 def _rows(target_type):
-    return MODELS[target_type].objects.filter(**PUBLISHED.get(target_type, {}))
+    rows = MODELS[target_type].objects.filter(**PUBLISHED.get(target_type, {}))
+    hidden = HIDDEN.get(target_type)
+    return rows.exclude(**hidden) if hidden else rows
 
 
 def find_target(target_type, ref):

@@ -65,6 +65,10 @@ class TargetTests(QrTestBase):
         self.assertIsNone(targets.find_target("event", "qr-cup"))
         self.assertIsNone(targets.find_target("news", "qr-news"))
 
+    def test_deleted_accounts_have_no_qr(self):
+        User.objects.filter(pk=self.stranger.pk).update(status="deleted")
+        self.assertIsNone(targets.find_target("player", "qrstranger"))
+
     def test_path_follows_a_rename(self):
         link = QrLink.objects.create(token="q_0000000001", target_type="team", target_id=self.team.team_id)
         self.team.team_name = "Renamed Squad"
