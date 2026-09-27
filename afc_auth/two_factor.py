@@ -423,6 +423,34 @@ def settings_for(user):
         return None
 
 
+def methods_on(user):
+    """The ways this user can get a sign-in code RIGHT NOW, in ENABLED_METHODS order.
+
+    BOTH AT ONCE (owner 2026-09-27, inbox #61: "users should be able to have both active and choose
+    which they want to use to sign during login each time"). Two-step sign-in used to be guarded by
+    exactly one method, TwoFactorSettings.method, and setting up the app replaced email. Now every
+    enabled method the account can actually use counts: email whenever there is a verified address,
+    the app whenever a confirmed secret exists. TwoFactorSettings.method is kept as the one used LAST
+    (marked on the sign-in chooser), no longer as the only one allowed.
+
+    Empty when 2FA is off. Callers: is_enabled_for, preferred_method, views.login_or_challenge,
+    views_two_factor (status payload, switch-method, remove-app)."""
+    row = settings_for(user)
+    if not row or not row.is_enabled:
+        return []
+    return [code for code in ENABLED_METHODS if METHODS[code].is_available(user)]
+
+
+def preferred_method(user):
+    """The method to use when nobody said which: the one used last if it still works, else the first
+    that does. DEFAULT_METHOD for an account with 2FA off (the enable flow proves email)."""
+    on = methods_on(user)
+    row = settings_for(user)
+    if row and row.method in on:
+        return row.method
+    return on[0] if on else DEFAULT_METHOD
+
+
 def is_enabled_for(user) -> bool:
     """True only when this user has explicitly switched 2FA on AND the method still works for them.
 
@@ -432,12 +460,9 @@ def is_enabled_for(user) -> bool:
     not strand it behind a factor that can never be satisfied. The user falls back to a one-step
     sign-in and can set the factor up again, which is a smaller failure than a permanent lockout
     that only a database edit can undo."""
-    row = settings_for(user)
-    if not row or not row.is_enabled:
-        return False
-    if not get_method(row.method).is_available(user):
-        return False
-    return True
+    # Any method still working keeps 2FA on (inbox #61): an account whose last-used app secret went
+    # bad but whose email still works is protected by email, not dropped to one-step sign-in.
+    return bool(methods_on(user))
 
 
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
@@ -466,8 +491,11 @@ def _live_challenges(user, purpose):
 def _sends_last_hour(user, purpose) -> int:
     """How many codes we have already sent this user for `purpose` in the last rolling hour."""
     since = timezone.now() - timezone.timedelta(hours=1)
+    # Only challenges that SENT something spend the send budget; an app challenge sends nothing
+    # (inbox #61: the sign-in chooser mints one on every password sign-in).
+    delivering = [code for code, m in METHODS.items() if m.requires_delivery]
     return TwoFactorChallenge.objects.filter(
-        user=user, purpose=purpose, created_at__gte=since,
+        user=user, purpose=purpose, created_at__gte=since, method__in=delivering,
     ).count()
 
 
@@ -497,8 +525,7 @@ def issue_challenge(user, purpose="login", method_code=None):
       • Only when there is nothing live AND the hour is spent do we return challenge=None, which the
         views turn into a 429.
     """
-    row = settings_for(user)
-    method_code = method_code or (row.method if row else DEFAULT_METHOD)
+    method_code = method_code or preferred_method(user)
     method = get_method(method_code)
     destination = method.destination_hint(user) if method.is_available(user) else ""
 
@@ -539,7 +566,11 @@ def issue_challenge(user, purpose="login", method_code=None):
         return {"challenge": challenge, "sent": False, "reason": None, "retry_after": 0,
                 "method": method.code, "destination": destination}
 
-    newest = _live_challenges(user, purpose).first()
+    # Only a live challenge of THIS method can be reused: with two methods on, the newest live
+    # challenge may be the app's (the sign-in chooser mints one that sends nothing), and handing
+    # that back as "the email code already in your inbox" would leave the person waiting for mail
+    # that was never sent.
+    newest = _live_challenges(user, purpose).filter(method=method.code).first()
 
     # (a) Still inside the cooldown: reuse the code already in their inbox.
     if newest and (now - newest.created_at) < TwoFactorChallenge.RESEND_COOLDOWN:

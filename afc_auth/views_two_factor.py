@@ -129,6 +129,11 @@ def _settings_payload(user):
         "destination": two_factor.get_method(row.method if row else two_factor.DEFAULT_METHOD)
                                  .destination_hint(user),
         "backup_codes_remaining": two_factor.backup_codes_remaining(user) if enabled else 0,
+        # Every way that works right now (inbox #61: email and the app can both be on) and the one
+        # used last. Read by TwoFactorSecurity.tsx to draw one row per way.
+        "methods_on": two_factor.methods_on(user),
+        "last_method": two_factor.preferred_method(user) if enabled else None,
+        "email_destination": two_factor.get_method("email").destination_hint(user),
     }
 
 
@@ -228,6 +233,9 @@ def two_factor_verify(request):
     # ── Path B: the emailed code. ──
     ok, reason = two_factor.verify_code(challenge, code)
     if ok:
+        # The way they just used is the one marked "used last time" next time (inbox #61).
+        TwoFactorSettings.objects.filter(user=user).exclude(method=challenge.method).update(
+            method=challenge.method, updated_at=timezone.now())
         return Response(_verified_session(request, user), status=status.HTTP_200_OK)
 
     if reason == "locked":
@@ -269,6 +277,50 @@ def two_factor_resend(request):
         "delivery_failed": issued["reason"] == "delivery_failed",
         "retry_after": issued["retry_after"],
         "destination": issued["destination"],
+    }, status=status.HTTP_200_OK)
+
+
+@api_view(["POST"])
+def two_factor_switch_method(request):
+    """POST /auth/two-factor/switch-method/  PUBLIC. Body: { challenge_token, method }.
+
+    Sign-in step two with more than one way on (inbox #61, owner 2026-09-27: "users should be able
+    to have both active and choose which they want to use to sign during login each time"). The
+    login response starts the person on the app's challenge, which sends nothing; picking "Email me
+    a code" (or switching back to the app) lands here and swaps the challenge for one of that method.
+    Issuing it burns the old one, so exactly one challenge is answerable at a time, and email keeps
+    every send limit it has on the login path (issue_challenge).
+
+    RESPONSE
+      - 200 { message, challenge_token, method, code_sent, delivery_failed, retry_after,
+              destination, expires_in } - the same keys the login challenge carries.
+      - 400 code two_factor_switch_refused - unknown or dead challenge, or a method this account
+              does not have on (the same generic sentence as verify, so a stolen token learns nothing).
+      - 429 code too_many_codes_requested - the hourly email budget is spent and no code is live.
+
+    AUTH: the challenge token. Consumed by lib/twoFactor.ts switchTwoFactorMethod(), from
+    app/(auth)/_components/TwoFactorStep.tsx."""
+    token = (request.data.get("challenge_token") or "").strip()
+    method_code = (request.data.get("method") or "").strip()
+    challenge = two_factor.get_challenge(token, purpose="login")
+    if challenge is None or method_code not in two_factor.methods_on(challenge.user):
+        return Response({"message": _GENERIC_CHALLENGE_ERROR, "code": "two_factor_switch_refused"},
+                        status=status.HTTP_400_BAD_REQUEST)
+
+    issued = two_factor.issue_challenge(challenge.user, purpose="login", method_code=method_code)
+    if issued["challenge"] is None:
+        return Response({"message": "Too many codes requested. Please try again in an hour.",
+                         "retry_after": issued["retry_after"], "code": "too_many_codes_requested"},
+                        status=status.HTTP_429_TOO_MANY_REQUESTS)
+    return Response({
+        "message": _send_message(issued),
+        "challenge_token": issued["challenge"].token,
+        "method": issued["method"],
+        "code_sent": issued["sent"],
+        "delivery_failed": issued["reason"] == "delivery_failed",
+        "retry_after": issued["retry_after"],
+        "destination": issued["destination"],
+        "expires_in": int(TwoFactorChallenge.CODE_LIFETIME.total_seconds()),
     }, status=status.HTTP_200_OK)
 
 
@@ -349,6 +401,16 @@ def two_factor_send_code(request):
     method_code = (row.method if row else two_factor.DEFAULT_METHOD)
     if purpose == "enable" and not two_factor.get_method(method_code).is_available(user):
         method_code = two_factor.DEFAULT_METHOD
+    # With both ways on (inbox #61) the person may prove with EITHER: somebody removing the app
+    # because the phone is gone must be able to prove by email. Only a way that is on is accepted.
+    asked = (request.data.get("method") or "").strip()
+    if purpose == "disable" and asked:
+        if asked not in two_factor.methods_on(user):
+            return Response({"message": "That way of getting a code is not on for this account.",
+                             "code": "two_factor_method_not_on"}, status=status.HTTP_400_BAD_REQUEST)
+        method_code = asked
+    elif purpose == "disable" and method_code not in two_factor.methods_on(user):
+        method_code = two_factor.preferred_method(user)
 
     issued = two_factor.issue_challenge(user, purpose=purpose, method_code=method_code)
     if issued["reason"] == "unavailable":
@@ -707,8 +769,62 @@ def totp_confirm(request):
     codes = [] if already_on else two_factor.generate_backup_codes(user)
 
     payload = _settings_payload(user)
-    payload["message"] = ("Your authenticator app is now your sign-in code."
+    payload["message"] = ("Your authenticator app is on. You can pick it or email each time you sign in."
                           if already_on
                           else "Two-factor authentication is on. Save your recovery codes now.")
     payload["backup_codes"] = codes
+    return Response(payload, status=status.HTTP_200_OK)
+
+
+@api_view(["POST"])
+def totp_remove(request):
+    """POST /auth/two-factor/totp/remove/  Bearer auth. Body: { challenge_token, code } or
+    { backup_code }.
+
+    Takes the authenticator app off the account and leaves two-step sign-in ON with email (inbox
+    #61: with both ways on, "Remove" on the app row). Proof as for turning 2FA off: a code from
+    /auth/two-factor/send-code/ (purpose "disable", either way that is on) or a recovery code,
+    because a live session alone must not be able to strip a factor.
+
+    Refused with code email_needed_to_remove_app when the account has no verified email: removing
+    the app would leave no way in, and "turn two-step sign-in off" is the honest action then.
+
+    RESPONSE
+      - 200 { message, ...status payload }
+      - 400 codes totp_not_on / email_needed_to_remove_app / totp_remove_refused / recovery_code_not_valid
+    Consumed by: lib/twoFactor.ts removeTotp(), from TwoFactorSecurity.tsx."""
+    user, err = _bearer_user(request)
+    if err:
+        return err
+
+    on = two_factor.methods_on(user)
+    if "totp" not in on:
+        return Response({"message": "There is no authenticator app on this account.", "code": "totp_not_on"},
+                        status=status.HTTP_400_BAD_REQUEST)
+    if "email" not in on:
+        return Response({"message": "Add a verified email first, or turn two-step sign-in off instead.",
+                         "code": "email_needed_to_remove_app"}, status=status.HTTP_400_BAD_REQUEST)
+
+    backup_code = (request.data.get("backup_code") or "").strip()
+    if backup_code:
+        if not two_factor.consume_backup_code(user, backup_code):
+            return Response({"message": "That recovery code is not valid.", "code": "recovery_code_not_valid"},
+                            status=status.HTTP_400_BAD_REQUEST)
+    else:
+        challenge = two_factor.get_challenge(
+            (request.data.get("challenge_token") or "").strip(), purpose="disable")
+        if challenge is None or challenge.user_id != user.user_id:
+            return Response({"message": _GENERIC_CHALLENGE_ERROR, "code": "totp_remove_refused"},
+                            status=status.HTTP_400_BAD_REQUEST)
+        ok, _reason = two_factor.verify_code(challenge, request.data.get("code"))
+        if not ok:
+            return Response({"message": _wrong_code_message(user),
+                             "attempts_left": two_factor.attempts_left(challenge), "code": "totp_remove_refused"},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+    two_factor.clear_totp_secret(user)
+    TwoFactorSettings.objects.filter(user=user).update(method="email", updated_at=timezone.now())
+
+    payload = _settings_payload(user)
+    payload["message"] = "The authenticator app is removed. Sign-in codes now come by email."
     return Response(payload, status=status.HTTP_200_OK)

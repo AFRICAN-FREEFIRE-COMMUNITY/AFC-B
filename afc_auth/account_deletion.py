@@ -132,7 +132,7 @@ def _profiles(user):
     return UserProfile.objects.filter(user=user)
 
 
-def soft_delete_user(user, *, reason="", by=None):
+def soft_delete_user(user, *, reason="", by=None, notify=True):
     """Mark the account deleted, archive its identity, release every unique column.
 
     Idempotent guard: a user already deleted is returned as is (the open archive row). The
@@ -193,7 +193,11 @@ def soft_delete_user(user, *, reason="", by=None):
         OrganizationMember.objects.filter(user=user).delete()
         SponsorMember.objects.filter(user=user).delete()
 
-    transaction.on_commit(lambda: _send_deleted_email(archive))
+    # A head admin acting on the person's request (inbox #59) sends the "at your request" wording,
+    # and may leave the email off (the person already has the answer in their ticket).
+    if notify:
+        on_request = bool(by) and by.pk != user.pk
+        transaction.on_commit(lambda: _send_deleted_email(archive, on_request=on_request))
     return archive
 
 
@@ -308,14 +312,14 @@ def serialize_deleted_account(archive):
 # §4  The two emails (hand-written en/fr/pt in afc_auth/email_i18n.py, sent through the
 #     single chokepoint send_email; imported lazily because views imports this module's models)
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
-def _send_deleted_email(archive):
+def _send_deleted_email(archive, on_request=False):
     try:
         from afc_support.notify import _shell_rows
         from .email_i18n import copy_for, subject_for
         from .views import SITE_URL, _email_shell, send_email
 
         lang = archive.user.language or "en"
-        c = copy_for("account_deleted", lang)
+        c = copy_for("account_deleted_on_request" if on_request else "account_deleted", lang)
         html = _email_shell(
             _shell_rows(c["heading"], [c["intro"], c["restore"], c["reuse"]],
                         f"{SITE_URL}/support", c["cta"], c["disclaimer"]),

@@ -1571,6 +1571,35 @@ COPY = {
         },
     },
 
+    # -- afc_auth.account_deletion: a head admin deleted it at the person's request (inbox #59) --
+    # Same restore / reuse / cta sentences as "account_deleted"; only who did it changes.
+    "account_deleted_on_request": {
+        "en": {
+            "heading": "Your account has been deleted",
+            "intro": "You asked AFC to delete your account, and a head admin did that today. You are signed out everywhere and your in-game name, email, UID and WhatsApp number are free for a new account to use.",
+            "restore": "Nothing has been thrown away. If you change your mind, write to support from this address and a head admin can put the account back exactly as it was, as long as nobody has taken your in-game name or email in the meantime.",
+            "reuse": "Your match results and history stay in AFC's records under a hidden name.",
+            "cta": "Contact support",
+            "disclaimer": "You are getting this because an AFC head admin deleted the account with this address after a request to do so. If you did not ask for this, contact support straight away and it can be restored.",
+        },
+        "fr": {
+            "heading": "Votre compte a été supprimé",
+            "intro": "Vous avez demandé à AFC de supprimer votre compte, et un head admin l'a fait aujourd'hui. Vous êtes déconnecté partout, et votre nom en jeu, votre e-mail, votre UID et votre numéro WhatsApp sont libres pour un nouveau compte.",
+            "restore": "Rien n'a été jeté. Si vous changez d'avis, écrivez au support depuis cette adresse : un head admin peut remettre le compte exactement comme il était, tant que personne n'a pris votre nom en jeu ou votre e-mail entre-temps.",
+            "reuse": "Vos résultats de matchs et votre historique restent dans les archives d'AFC sous un nom masqué.",
+            "cta": "Contacter le support",
+            "disclaimer": "Vous recevez ce message parce qu'un head admin d'AFC a supprimé le compte lié à cette adresse à la suite d'une demande. Si vous n'avez rien demandé, contactez le support tout de suite : le compte peut être restauré.",
+        },
+        "pt": {
+            "heading": "A sua conta foi eliminada",
+            "intro": "Pediu à AFC para eliminar a sua conta, e um head admin fê-lo hoje. Tem a sessão terminada em todo o lado, e o seu nome no jogo, e-mail, UID e número de WhatsApp ficam livres para uma nova conta.",
+            "restore": "Nada foi deitado fora. Se mudar de ideias, escreva ao suporte a partir deste endereço e um head admin pode repor a conta exatamente como estava, desde que ninguém tenha ficado com o seu nome no jogo ou e-mail entretanto.",
+            "reuse": "Os seus resultados de partidas e o seu histórico ficam nos registos da AFC sob um nome oculto.",
+            "cta": "Contactar o suporte",
+            "disclaimer": "Está a receber isto porque um head admin da AFC eliminou a conta com este endereço depois de um pedido nesse sentido. Se não pediu isto, contacte o suporte de imediato e a conta pode ser reposta.",
+        },
+    },
+
     # -- afc_auth.account_deletion: a head admin restored it --
     "account_restored": {
         "en": {
