@@ -789,14 +789,22 @@ class TotpStorageTests(TotpTestBase):
         self.assertEqual(two_factor.decrypt_totp_secret(row.totp_secret), secret)
 
     def test_a_secret_that_cannot_be_decrypted_fails_soft(self):
-        """A rotated Django secret key must not lock every authenticator user out permanently. It
-        degrades to a one-step sign-in they can re-enrol from."""
+        """A rotated Django secret key must not lock every authenticator user out permanently.
+
+        Since inbox #61 (2026-09-27, email and the app both on) the account falls back to the OTHER
+        way that still works, email, instead of to a one-step sign-in: the app drops out of
+        methods_on, two-step sign-in stays on, and the login sends an email code. It used to degrade
+        to password-only because the app was the account's only factor; it no longer is."""
         self.enrol_totp()
         TwoFactorSettings.objects.filter(user=self.user).update(totp_secret="not-a-fernet-token")
 
         self.assertEqual(two_factor.active_totp_secret(self.user), "")
-        self.assertFalse(two_factor.is_enabled_for(self.user))
-        self.assertIn("session_token", self.do_login().json())
+        self.assertEqual(two_factor.methods_on(self.user), ["email"])
+        self.assertTrue(two_factor.is_enabled_for(self.user))
+        body = self.do_login().json()
+        self.assertNotIn("session_token", body)
+        self.assertEqual(body["method"], "email")
+        self.assertFalse(body["choose_method"])
 
     def test_encrypt_decrypt_round_trips_and_is_not_deterministic(self):
         secret = two_factor.pyotp.random_base32()
@@ -818,9 +826,10 @@ class TotpStorageTests(TotpTestBase):
         # Force the flag on WITHOUT confirming, the state a bug would have to produce.
         TwoFactorSettings.objects.filter(user=self.user).update(is_enabled=True, method="totp")
 
-        # is_available is False, so the account is not stranded behind a factor it never proved.
+        # is_available is False, so the app never counts as a way in: only email, which the account
+        # does have (inbox #61 made the ways independent; before it the account fell to one step).
         self.assertEqual(two_factor.active_totp_secret(self.user), "")
-        self.assertFalse(two_factor.is_enabled_for(self.user))
+        self.assertNotIn("totp", two_factor.methods_on(self.user))
 
     def test_provisioning_uri_names_the_issuer_and_the_account(self):
         secret = two_factor.pyotp.random_base32()

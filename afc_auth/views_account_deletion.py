@@ -6,6 +6,7 @@ ROUTES (mounted by afc_auth/urls.py under the ``auth/`` prefix)
     POST delete-account/                       -> delete_account            (the person deletes their own)
     GET  admin/deleted-accounts/               -> admin_list_deleted_accounts (head admins)
     POST admin/deleted-accounts/<int:user_id>/restore/ -> admin_restore_account (head admins)
+    GET/POST admin/users/<int:user_id>/delete-account/ -> admin_delete_account (head admins, on request)
 
 The rules live in afc_auth/account_deletion.py; these views only authenticate, validate the
 confirmation, translate the outcomes into status codes with a ``code`` (R35 / R44), and audit.
@@ -198,3 +199,71 @@ def admin_restore_account(request, user_id):
     )
     return Response({"message": f"{archive.username} is back.",
                      "account": serialize_deleted_account(archive)})
+
+
+# ─────────────────────────────────────────────────────────────────────────────────────────────────
+# §3  Head admins: delete an account FOR somebody who asked (inbox #59, owner 2026-09-27)
+# ─────────────────────────────────────────────────────────────────────────────────────────────────
+# "Admins could ... help users delete their accounts." The same soft delete as the person's own
+# button (soft_delete_user, same blockers, same way back through admin_restore_account), with the
+# two differences the approved mockup (mockups/account-and-2fa) shows: no password, because the
+# admin is not the person; and the admin records HOW the person asked and WHY, which go into the
+# archive's reason and the admin history. Caller: the "Delete account" button on /a/players/<name>
+# (frontend app/(a)/a/players/[id]/_components/AdminDeleteAccountDialog.tsx).
+ADMIN_DELETE_CHANNELS = ("ticket", "email", "discord", "whatsapp", "in_person")
+
+
+@api_view(["GET", "POST"])
+def admin_delete_account(request, user_id):
+    """GET/POST auth/admin/users/<user_id>/delete-account/  Head admins only.
+
+    GET  -> 200 {"can_delete", "blockers": [{"code", "message"}], "username"} - what stands in the
+            way, read when the dialog opens so it can say "remove them from the team first".
+    POST {"channel": one of ADMIN_DELETE_CHANNELS, "reference": "optional ticket or link",
+          "reason": "required", "notify": true, "confirm_username": "their in-game name"}
+         -> 200 {"message", "deleted_at"}
+         -> 400 codes channel_invalid / reason_required / confirm_mismatch
+         -> 404 not_found (no such account, or already deleted)
+         -> 409 deletion_blocked {"blockers": [...]}
+    Audited: AdminHistory "deleted_account_on_request" + set_audit."""
+    admin, err = _require_head_admin(request)
+    if err:
+        return err
+    target = User.objects.filter(pk=user_id).exclude(status="deleted").first()
+    if target is None:
+        return Response({"message": "No such account.", "code": "not_found"},
+                        status=status.HTTP_404_NOT_FOUND)
+
+    blockers = deletion_blockers(target)
+    if request.method == "GET":
+        return Response({"can_delete": not blockers, "blockers": blockers,
+                         "username": target.username})
+
+    if blockers:
+        return Response({"message": blockers[0]["message"], "code": "deletion_blocked",
+                         "blockers": blockers}, status=status.HTTP_409_CONFLICT)
+
+    channel = (request.data.get("channel") or "").strip()
+    if channel not in ADMIN_DELETE_CHANNELS:
+        return Response({"message": "Say how the person asked.", "code": "channel_invalid"},
+                        status=status.HTTP_400_BAD_REQUEST)
+    reason = (request.data.get("reason") or "").strip()
+    if not reason:
+        return Response({"message": "A reason is required.", "code": "reason_required"},
+                        status=status.HTTP_400_BAD_REQUEST)
+    if (request.data.get("confirm_username") or "").strip() != target.username:
+        return Response({"message": "Type their in-game name exactly to confirm.",
+                         "code": "confirm_mismatch"}, status=status.HTTP_400_BAD_REQUEST)
+    reference = (request.data.get("reference") or "").strip()[:120]
+    notify = request.data.get("notify", True) is not False
+
+    username = target.username
+    recorded = f"Asked by {channel}" + (f" ({reference})" if reference else "") + f": {reason}"
+    archive = soft_delete_user(target, reason=recorded, by=admin, notify=notify)
+
+    sentence = f"Deleted the account {username} (ID: {target.user_id}) at their request. {recorded}"
+    set_audit(request, sentence)
+    AdminHistory.objects.create(admin_user=admin, action="deleted_account_on_request",
+                                description=sentence[:1000])
+    return Response({"message": f"{username}'s account is deleted.",
+                     "deleted_at": archive.deleted_at.isoformat()})

@@ -49,6 +49,7 @@
           "/auth/resend-token/",
           "/auth/two-factor/resend/",
           "/auth/two-factor/send-code/",
+          "/auth/two-factor/switch-method/",
           "/auth/recovery/whatsapp/start/"
         ],
         "verified": "2026-09-17"

@@ -1431,7 +1431,17 @@ def login_or_challenge(request, user, extra=None):
                 payload.update(extra)
             return (payload, status.HTTP_200_OK)
 
-        issued = two_factor.issue_challenge(user, purpose="login")
+        # MORE THAN ONE WAY ON (inbox #61, owner 2026-09-27): the person picks which to use each
+        # time. Start them on the app's challenge, which SENDS NOTHING, so no email goes out unless
+        # they choose email on the next screen (POST two-factor/switch-method/). One way on: exactly
+        # the flow as before. `methods` and `last_method` tell app/(auth)/_components/TwoFactorStep.tsx
+        # whether to show the chooser and which choice to mark "used last time".
+        methods = two_factor.methods_on(user)
+        choose = len(methods) > 1
+        last_method = two_factor.preferred_method(user)
+        issued = two_factor.issue_challenge(
+            user, purpose="login",
+            method_code=("totp" if choose and "totp" in methods else None))
         challenge = issued["challenge"]
         if challenge is None:
             # No live challenge AND the hourly budget is spent. The only case we refuse outright.
@@ -1449,6 +1459,7 @@ def login_or_challenge(request, user, extra=None):
         return ({
             'message': ('We could not send your sign-in code just now. Try again, or use a '
                         'recovery code.') if delivery_failed
+                       else 'Choose how to get your sign-in code.' if choose
                        else 'Enter the code we sent you to finish signing in.',
             'two_factor_required': True,
             'challenge_token': challenge.token,
@@ -1458,6 +1469,12 @@ def login_or_challenge(request, user, extra=None):
             'delivery_failed': delivery_failed,
             'expires_in': int(two_factor.TwoFactorChallenge.CODE_LIFETIME.total_seconds()),
             'retry_after': issued["retry_after"],
+            'methods': methods,
+            'choose_method': choose,
+            'last_method': last_method,
+            # Masked, for the chooser's "Email me a code" line before anything is sent
+            'email_destination': (two_factor.get_method('email').destination_hint(user)
+                                  if 'email' in methods else ''),
         }, status.HTTP_200_OK)
 
     payload = establish_session(request, user)
@@ -1482,7 +1499,10 @@ def login(request):
       • 200, no 2FA (every account today): { message, session_token, user{id,username,language}, geo }
         - byte-for-byte what this endpoint has always returned.
       • 200, 2FA on for this user: { message, two_factor_required: true, challenge_token, method,
-        destination (masked), code_sent, expires_in, retry_after } and NO session_token. The client
+        destination (masked), code_sent, expires_in, retry_after, methods, choose_method,
+        last_method } and NO session_token. With choose_method true (both email and the app on,
+        inbox #61) nothing has been sent: the client asks which way, and email goes out only via
+        /auth/two-factor/switch-method/. The client
         then posts the challenge token plus the emailed code to /auth/two-factor/verify/, which is
         what actually mints the session (via establish_session above).
       • 403 unverified email, 401 bad credentials - both unchanged.
