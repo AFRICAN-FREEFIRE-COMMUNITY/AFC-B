@@ -8396,7 +8396,7 @@ def confirm_player(request):
 
           <tr>
             <td align="center" style="padding: 30px;">
-              <img src="https://africanfreefirecommunity.com/static/logo.png"
+              <img src="https://africanfreefirecommunity.com/logo.png"
                    alt="AFC Logo"
                    style="max-height: 50px; display:block;">
             </td>
@@ -8459,7 +8459,7 @@ def confirm_player(request):
 
           <tr>
             <td align="center" style="padding: 30px;">
-              <img src="https://africanfreefirecommunity.com/static/logo.png"
+              <img src="https://africanfreefirecommunity.com/logo.png"
                    alt="AFC Logo"
                    style="max-height: 50px; display:block;">
             </td>
@@ -8676,7 +8676,7 @@ def reject_player(request):
 
           <tr>
             <td align="center" style="padding:30px;">
-              <img src="https://africanfreefirecommunity.com/static/logo.png"
+              <img src="https://africanfreefirecommunity.com/logo.png"
                    alt="AFC Logo"
                    style="max-height:50px;display:block;">
             </td>
@@ -8756,7 +8756,7 @@ def reject_player(request):
 
           <tr>
             <td align="center" style="padding:30px;">
-              <img src="https://africanfreefirecommunity.com/static/logo.png"
+              <img src="https://africanfreefirecommunity.com/logo.png"
                    alt="AFC Logo"
                    style="max-height:50px;display:block;">
             </td>

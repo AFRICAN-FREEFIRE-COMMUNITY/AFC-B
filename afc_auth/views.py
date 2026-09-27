@@ -696,7 +696,7 @@ def email_verification_code(username, code, lang="en"):
     from afc_auth.email_i18n import copy_for
     c = copy_for("verification_code", lang)
     username_html = f'<span style="color:#e8efe9;font-weight:600;">{username}</span>'
-    site_html = f'<a href="{SITE_URL}/verify" style="color:#34d27b;text-decoration:none;font-weight:600;">africanfreefirecommunity.com</a>'
+    site_html = f'<a href="{SITE_URL}/" style="color:#34d27b;text-decoration:none;font-weight:600;">africanfreefirecommunity.com</a>'
     inner = f"""
   <tr><td style="padding:38px 44px 8px;">
     <div style="font-size:21px;font-weight:700;color:#ffffff;">{c["heading"]}</div>

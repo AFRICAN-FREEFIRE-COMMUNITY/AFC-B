@@ -322,7 +322,10 @@ def _send_deleted_email(archive, on_request=False):
         c = copy_for("account_deleted_on_request" if on_request else "account_deleted", lang)
         html = _email_shell(
             _shell_rows(c["heading"], [c["intro"], c["restore"], c["reuse"]],
-                        f"{SITE_URL}/support", c["cta"], c["disclaimer"]),
+                        # /contact: the form that opens a support ticket, and works signed out,
+                        # which a deleted person is. It said /support, a page that never existed
+                        # (owner, 27 Sep 2026, inbox #68)
+                        f"{SITE_URL}/contact", c["cta"], c["disclaimer"]),
             "green",
         )
         send_email(archive.email, subject_for("account_deleted", lang), html,
