@@ -61,6 +61,8 @@ from .views_broadcast_audience import (
 # Admin dashboard aggregate (owner audit 2026-09-02). One request for every number /a/dashboard
 # shows, replacing thirteen, three of which downloaded a whole table to call .length on it.
 from .views_dashboard import admin_dashboard_detail, admin_dashboard_stats
+# Waiting counts on the admin menu (inbox #57): components/nav-main.tsx
+from .views_admin_nav import admin_nav_counts
 # Two-factor authentication (owner 2026-08-06, authenticator apps added 2026-08-07). Opt-in codes
 # as a second sign-in step, by email or from an authenticator app; see views_two_factor.py for the
 # endpoint docs and two_factor.py for the rules they enforce.
@@ -209,6 +211,7 @@ urlpatterns = [
     path('report-team/', file_team_report, name='file_team_report'),
     path('my-player-reports/', my_player_reports, name='my_player_reports'),
     path('admin/player-reports/', admin_list_player_reports, name='admin_list_player_reports'),
+    path('admin/nav-counts/', admin_nav_counts, name='admin_nav_counts'),
     path('admin/player-reports/<int:report_id>/', admin_respond_player_report, name='admin_respond_player_report'),
 
     # ── Per-event Discord bot (owner 2026-06-22): invite the AFC bot to an organizer's server +

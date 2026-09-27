@@ -367,6 +367,10 @@ class Roles(models.Model):
         ("teams_admin", "Teams Admin"),
         ("partner_admin", "Partner Admin"),
         ("sponsor_admin", "Sponsor Admin"),
+        # The support desk and nothing else (afc_support.views._SUPPORT_GRANULAR_ROLES). Used since
+        # 2026-09-14 but never listed here, so it could only exist if somebody typed it into the
+        # roles table by hand (inbox #56, 2026-09-27). ensure_role_rows() now creates it.
+        ("support_admin", "Support Admin"),
         ("organizer", "Organizer"),              # granted to any active OrganizationMember
         ("organizer_admin", "Organizer Admin"),  # AFC staff who oversee organizations
     ]

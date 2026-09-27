@@ -349,6 +349,40 @@ def _user_role_names(user):
     return set(user.userroles.values_list("role__role_name", flat=True))
 
 
+# ── Granting roles makes the admin panel reachable (inbox #58, owner 2026-09-27) ──────────────
+# "when giving admin roles to people they should automatically be able to see the admin
+# dashboard". The panel's API gate is the coarse User.role == "admin" (require_admin and friends),
+# so a grant must set it, and must set it only for a STAFF role: "organizer" is an organization
+# member, not AFC staff, and used to turn anybody given it into an admin as well.
+# Frontend twin: lib/adminRoles.ts ADMIN_GRANULAR_ROLES. Callers: assign_roles_to_user,
+# edit_user_roles.
+NON_STAFF_ROLE_NAMES = {"organizer"}
+
+
+def _coarse_role_after_grant(current_role, role_names):
+    """The coarse User.role a person should hold once `role_names` are their granular roles.
+
+    Any staff role -> "admin". No staff role: an "admin" whose staff roles were all taken away goes
+    back to "player"; "moderator" and "support" (coarse staff roles of their own) are left alone.
+    """
+    if set(role_names) - NON_STAFF_ROLE_NAMES:
+        return "admin"
+    if current_role == "admin":
+        return "player"
+    return current_role
+
+
+def ensure_role_rows():
+    """Create any role in Roles.ROLES that the roles table does not hold yet, so the Settings > Roles
+    picker (get_all_roles) can grant every role the code knows. Idempotent, one read when nothing is
+    missing. support_admin was the one missing on 2026-09-27."""
+    have = set(Roles.objects.values_list("role_name", flat=True))
+    missing = [(name, label) for name, label in Roles.ROLES if name not in have]
+    for name, label in missing:
+        Roles.objects.get_or_create(role_name=name, defaults={"description": label})
+    return [name for name, _ in missing]
+
+
 def _is_super_admin(user):
     """super_admin = the top role, above head_admin. Only a super_admin can manage the super_admin
     role or modify another super_admin (see assign_roles_to_user / edit_user_roles)."""
@@ -5108,9 +5142,6 @@ def assign_roles_to_user(request):
             status=status.HTTP_404_NOT_FOUND
         )
 
-    user.role = "admin"
-    user.save()
-
     # Ensure role_ids is a list of integers
     if not isinstance(role_ids, list) or not all(isinstance(r, int) for r in role_ids):
         return Response(
@@ -5145,6 +5176,11 @@ def assign_roles_to_user(request):
     for role in roles:
         UserRoles.objects.create(user=user, role=role)
 
+    # Only now, with every id valid: the coarse role that opens the admin panel (inbox #58). This
+    # used to be set to "admin" BEFORE the ids were checked, so a request with a bad id left the
+    # person an admin holding their old roles, and it made an organizer grant an admin too.
+    user.role = _coarse_role_after_grant(user.role, new_role_names)
+    user.save(update_fields=["role"])
 
 
     set_audit(request, f"Assigned roles ({', '.join([role.role_name for role in roles])}) to {user.username}")
@@ -5205,12 +5241,19 @@ def edit_user_roles(request):
     except User.DoesNotExist:
         return Response({"message": "User not found.", "code": "user_not_found"}, status=status.HTTP_404_NOT_FOUND)
 
+    # Every id checked BEFORE anything is deleted (inbox #56, 2026-09-27). The loop below used to
+    # meet an unknown id after the reset, answer 404, and leave the person holding only the roles
+    # that happened to come before it.
+    if not isinstance(new_role_ids, list) or not all(isinstance(r, int) for r in new_role_ids):
+        return Response({"message": "new_role_ids must be a list of integers.", "code": "role_ids_list_integers"}, status=status.HTTP_400_BAD_REQUEST)
+    new_roles = list(Roles.objects.filter(role_id__in=new_role_ids))
+    if len(new_roles) != len(set(new_role_ids)):
+        return Response({"message": "One or more role IDs are invalid.", "code": "role_ids_invalid"}, status=status.HTTP_404_NOT_FOUND)
+
     # super_admin protection: only a super_admin may grant/remove the super_admin role or modify a
     # user who already holds it. Runs before the role reset below so a head_admin can never strip a
     # super_admin. (new_role_ids=[] would remove all roles, so the target-is-super check matters too.)
-    new_role_names = set(
-        Roles.objects.filter(role_id__in=new_role_ids).values_list("role_name", flat=True)
-    )
+    new_role_names = {role.role_name for role in new_roles}
     if not _is_super_admin(admin_user) and (
         "super_admin" in new_role_names or "super_admin" in _user_role_names(user)
     ):
@@ -5230,8 +5273,9 @@ def edit_user_roles(request):
 
     # if the new roles are empty, downgrade user to regular user
     if new_role_ids == []:
-        user.role = "player"
-        user.save()
+        # An admin goes back to player; a coarse moderator / support keeps that (inbox #58)
+        user.role = _coarse_role_after_grant(user.role, set())
+        user.save(update_fields=["role"])
         set_audit(request, f"Removed all admin roles from {user.username}")
         AdminHistory.objects.create(
             admin_user=admin_user,
@@ -5252,16 +5296,13 @@ def edit_user_roles(request):
 
         return Response({"message": f"User {user.username}'s roles updated successfully."}, status=status.HTTP_200_OK)
 
-    # Assign new roles
-    for role_id in new_role_ids:
-        try:
-            role = Roles.objects.get(role_id=role_id)
-            UserRoles.objects.create(user=user, role=role)
-        except Roles.DoesNotExist:
-            return Response({"message": f"Role with ID {role_id} not found."}, status=status.HTTP_404_NOT_FOUND)
+    # Assign new roles (all validated above)
+    for role in new_roles:
+        UserRoles.objects.create(user=user, role=role)
 
-    user.role = "admin"
-    user.save()
+    # Staff role -> "admin" so the panel opens; organizer only -> not an admin (inbox #58)
+    user.role = _coarse_role_after_grant(user.role, new_role_names)
+    user.save(update_fields=["role"])
     
     set_audit(request, f"Updated {user.username}'s roles to: {', '.join(new_role_names) or 'none'}")
     AdminHistory.objects.create(
@@ -5271,7 +5312,7 @@ def edit_user_roles(request):
     )
 
     # Notify the user
-    notification_message = f"Your roles have been updated to: {', '.join([Roles.objects.get(role_id=rid).role_name for rid in new_role_ids])}."
+    notification_message = f"Your roles have been updated to: {', '.join(sorted(new_role_names))}."
     Notifications.objects.create(
         user=user,
         message=notification_message,
@@ -5392,6 +5433,8 @@ def get_all_roles(request):
     admin, err = require_admin(request)
     if err:
         return err
+    # Every role the code knows is grantable, whether or not somebody seeded its row (inbox #56)
+    ensure_role_rows()
     roles = Roles.objects.all()
     roles_data = [{"role_id": role.role_id, "role_name": role.role_name, "description": role.description} for role in roles]
     return Response({"roles": roles_data}, status=status.HTTP_200_OK)
