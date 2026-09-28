@@ -45,6 +45,13 @@ class SupportDeskTests(TestCase):
                        self.dms.append((discord_id, content)) or True))
         p2.start()
         self.addCleanup(p2.stop)
+        # The bot check is stubbed at the same boundary (afc_auth.bot_protection has its own tests).
+        # Without this the suite read TURNSTILE_SECRET_KEY from the machine's environment, so on a
+        # box with the real secret every contact post was refused and 17 tests failed for a reason
+        # that had nothing to do with the desk (found 28 Sep 2026, inbox #71).
+        p3 = patch("afc_support.views.require_human", return_value=None)
+        p3.start()
+        self.addCleanup(p3.stop)
 
         self.player = User.objects.create(username="writer", email="writer@gmail.com",
                                           full_name="Writer Person", password="x",

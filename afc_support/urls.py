@@ -17,6 +17,7 @@ from afc_support.views import (
     support_contact,
     support_thread,
     support_thread_reply,
+    support_mine,
     support_ticket_detail,
     support_ticket_reply,
     support_ticket_status,
@@ -28,6 +29,8 @@ urlpatterns = [
     path("contact/", support_contact, name="support_contact"),
     path("t/<str:token>/", support_thread, name="support_thread"),
     path("t/<str:token>/reply/", support_thread_reply, name="support_thread_reply"),
+    # ── signed in: the player's own tickets (the /support page, the menu count) ──
+    path("mine/", support_mine, name="support_mine"),
     # ── staff ──
     path("access/", support_access, name="support_access"),
     path("tickets/", support_tickets, name="support_tickets"),

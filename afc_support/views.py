@@ -13,6 +13,11 @@ THE ENDPOINTS, AND WHO OPENS EACH
                                           in their email (R22). Consumed by app/(root)/support/t/[token].
     POST support/t/<token>/reply/         they answer, with files. Same page.
 
+  SIGNED IN (Bearer SessionToken; the player's own tickets only, 28 Sep 2026)
+    GET  support/mine/                    My tickets on the /support page, and the menu's count of
+                                          tickets waiting on the player. Consumed by the frontend's
+                                          components/support/MyTickets.tsx and hooks/useSupportWaiting.ts.
+
   STAFF (Bearer SessionToken; support role, see _is_support_staff)
     GET  support/tickets/                 the queue, filterable, paginated with the house envelope.
     GET  support/tickets/<number>/        one conversation in full.
@@ -400,6 +405,81 @@ def support_thread_reply(request, token):
                      "rejected_files": rejected,
                      "ticket": _ticket_dict(ticket, for_staff=False, with_messages=True)},
                     status=status.HTTP_200_OK)
+
+
+# ─────────────────────────────────────────────────────────────────────────────────────────────────
+# §5b  A signed-in player's own tickets (inbox #71, 28 Sep 2026)
+# ─────────────────────────────────────────────────────────────────────────────────────────────────
+MINE_DEFAULT_LIMIT = 20
+MINE_MAX_LIMIT = 50
+
+
+def _mine_queryset(user):
+    """The tickets that are this player's: linked to the account, or sent signed out from the
+    account's email address and not linked to ANY account (owner's answer: "Account + same email").
+    A ticket linked to another account is never theirs, even when it carries their address: the
+    link is the stronger fact (an email can be typed by anybody; R58)."""
+    mine = Q(user=user)
+    if user.email:
+        mine |= Q(user__isnull=True, email__iexact=user.email)
+    return SupportTicket.objects.filter(mine)
+
+
+def _mine_row(ticket):
+    """Only what the list shows (R71). The token is the ticket page's address, which the player
+    already holds in their email; the list is signed in, so handing it back adds no new access."""
+    subject = ticket.subject.strip()
+    if not subject:
+        first = ticket.messages.filter(direction="in").order_by("created_at").values_list("body", flat=True).first()
+        lines = (first or "").strip().splitlines()
+        subject = lines[0][:120] if lines else ""
+    return {
+        "ticket_number": ticket.ticket_number,
+        "token": ticket.public_token,
+        "subject": subject,
+        "status": ticket.status,
+        "created_at": ticket.created_at.isoformat(),
+        "last_message_at": (ticket.last_message_at or ticket.created_at).isoformat(),
+    }
+
+
+@api_view(["GET"])
+def support_mine(request):
+    """GET support/mine/?limit=&offset= - the signed-in player's own tickets.
+
+    Auth: Bearer SessionToken (validate_token via _actor), else 401 code auth_required.
+    Returns the house envelope {results, has_more, next_offset, total_count} plus waiting_count,
+    the tickets AFC has answered that wait on the player (status "waiting"), which the site menu
+    shows as a count. Newest activity first; limit defaults to 20, at most 50.
+    Consumed by the frontend's /support page (components/support/MyTickets.tsx) and the menu count
+    (hooks/useSupportWaiting.ts). A row opens app/(user)/support/t/[token], served by
+    support_thread above.
+    """
+    user = _actor(request)
+    if not user:
+        return Response({"message": "Log in to see your tickets.", "code": "auth_required"},
+                        status=status.HTTP_401_UNAUTHORIZED)
+    qs = _mine_queryset(user)
+    try:
+        limit = max(1, min(int(request.GET.get("limit", MINE_DEFAULT_LIMIT)), MINE_MAX_LIMIT))
+    except (TypeError, ValueError):
+        limit = MINE_DEFAULT_LIMIT
+    try:
+        offset = max(0, int(request.GET.get("offset", 0)))
+    except (TypeError, ValueError):
+        offset = 0
+    total = qs.count()
+    rows = list(qs.order_by("-last_message_at", "-created_at")[offset:offset + limit])
+    return Response(
+        {
+            "results": [_mine_row(t) for t in rows],
+            "has_more": offset + len(rows) < total,
+            "next_offset": offset + len(rows),
+            "total_count": total,
+            "waiting_count": qs.filter(status=SupportTicket.STATUS_WAITING).count(),
+        },
+        status=status.HTTP_200_OK,
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
