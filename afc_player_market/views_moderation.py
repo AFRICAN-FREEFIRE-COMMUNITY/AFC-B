@@ -161,14 +161,13 @@ MAX_REPORT_VIDEO_BYTES = 50 * 1024 * 1024     # 50 MB per video (a short screen 
 
 
 def _evidence_media_type(f):
-    """"image" / "video" for an uploaded evidence file, or None if it is neither. Reads the
-    multipart content-type the browser set on the file (image/* or video/*)."""
-    ct = (getattr(f, "content_type", "") or "").lower()
-    if ct.startswith("image/"):
-        return "image"
-    if ct.startswith("video/"):
-        return "video"
-    return None
+    """"image" / "video" for an uploaded evidence file, or None if it is neither.
+
+    Read from the file's BYTES (owner rule R87, 2026-09-30). This used to trust the content type
+    the browser declared, so "x.html" declared image/png was accepted, stored as .html under
+    /media/ and would have opened as a page on the API's own origin."""
+    from afc_auth.upload_safety import sniff_upload
+    return sniff_upload(f, {"image", "video"})[0]
 
 
 def _validate_report_evidence(files):
@@ -184,6 +183,26 @@ def _validate_report_evidence(files):
         if f.size > cap:
             return "Each image must be 10 MB or smaller." if kind == "image" else "Each video must be 50 MB or smaller."
     return None
+
+
+def _clean_report_evidence(files):
+    """(error, cleaned files) for a batch _validate_report_evidence already passed. Pictures are
+    decoded and re-encoded (require_image_upload: drops anything hidden in a valid image and the GPS
+    EXIF); videos keep their bytes. Every file gets an opaque name whose extension came from the
+    sniff, so neither the client's extension nor a guessable name reaches storage (R87)."""
+    from afc_auth.image_utils import require_image_upload
+    from afc_auth.upload_safety import opaque_name, sniff_upload
+    cleaned = []
+    for f in files:
+        kind, ext, _mime = sniff_upload(f, {"image", "video"})
+        if kind == "image":
+            f, bad = require_image_upload(f, max_bytes=MAX_REPORT_IMAGE_BYTES)
+            if bad:
+                return "Evidence must be an image or a video.", []
+        else:
+            f.name = opaque_name(ext)
+        cleaned.append(f)
+    return None, cleaned
 
 
 def _save_report_evidence(report, files):
@@ -357,6 +376,8 @@ def file_market_report(request):
         return Response({"message": "Evidence is required to file a report.", "code": "evidence_required_file_report"}, status=400)
 
     evidence_err = _validate_report_evidence(evidence_files)
+    if not evidence_err:
+        evidence_err, evidence_files = _clean_report_evidence(evidence_files)
     if evidence_err:
         return Response({"message": evidence_err, "code": "file_market_report_refused"}, status=400)
 

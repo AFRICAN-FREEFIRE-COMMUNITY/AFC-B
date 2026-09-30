@@ -215,15 +215,23 @@ def upload_ocr_session(request):
     # file (.seek(0)) before create() because .read() above consumed it (image= re-reads from 0).
     payloads = []            # (image_bytes, mime_type) per screenshot, in upload order
     first_result_image = None
+    # R87 (2026-09-30): the reader gets the ORIGINAL bytes (re-encoding could cost OCR accuracy),
+    # typed by what the bytes are rather than what the browser declared; what is STORED is the
+    # re-encoded copy under an opaque name (require_image_upload), never the client's file.
+    from afc_auth.image_utils import require_image_upload
+    from afc_auth.upload_safety import sniff_upload
     for shot in screenshots:
         data = shot.read()
-        mime = shot.content_type or "image/jpeg"
+        mime = sniff_upload(shot, {"image"})[2] or "image/jpeg"
         payloads.append((data, mime))
         try:
             shot.seek(0)
+            stored, bad = require_image_upload(shot)
+            if bad:
+                continue
             img = MatchResultImage.objects.create(
                 match=match,
-                image=shot,
+                image=stored,
                 uploaded_by=user,
                 note="OCR upload",
             )

@@ -1573,7 +1573,10 @@ def ocr_extract(request, lb_id):
     prompt_kind = "team_standings" if is_team else None
 
     image_bytes = screenshot.read()
-    mime_type = screenshot.content_type or "image/jpeg"
+    # Typed by its bytes, never by the declared content type (R87, 2026-09-30). This path only
+    # READS the screenshot for OCR; nothing here stores it.
+    from afc_auth.upload_safety import sniff_upload
+    mime_type = sniff_upload(screenshot, {"image"})[2] or "image/jpeg"
 
     # Own-key OCR (owner 2026-09-12): the leaderboard's organization pays for an escalated read,
     # or spends its free read, or the upload is refused with the connect-your-key sentence.

@@ -197,9 +197,16 @@ def _save_attachments(message, files):
     """Store the uploaded files on `message`. Returns (saved, rejected) where rejected names the
     files we refused and why, so the caller can tell the person instead of silently dropping them.
 
-    A file is refused for its EXTENSION, not its declared content type: a browser will happily send
-    application/octet-stream for a video, and the type a client claims is not evidence anyway.
+    What a file IS comes from its BYTES (owner rule R87, 2026-09-30): the extension was checked
+    before, but a script renamed "notes.txt" or "x.pdf" passed that, and the stored copy kept the
+    client's name. Now the extension must be on the list AND the bytes must agree with a kind we
+    accept (afc_auth.upload_safety.sniff_upload); the file is stored under an opaque name with the
+    sniffed extension and labelled with the sniffed type. Pictures are decoded and re-encoded
+    (require_image_upload). original_name is kept only as the label shown to people.
     """
+    from afc_auth.image_utils import require_image_upload
+    from afc_auth.upload_safety import opaque_name, sniff_upload
+
     saved, rejected = [], []
     for f in files[:MAX_FILES_PER_MESSAGE]:
         name = getattr(f, "name", "") or "file"
@@ -210,12 +217,23 @@ def _save_attachments(message, files):
         if getattr(f, "size", 0) > MAX_FILE_BYTES:
             rejected.append({"name": name, "reason": "size"})
             continue
+        kind, sniffed_ext, mime = sniff_upload(f, {"image", "video", "pdf", "office", "text"})
+        if kind is None:
+            rejected.append({"name": name, "reason": "type"})
+            continue
+        if kind == "image":
+            f, bad = require_image_upload(f, max_bytes=MAX_FILE_BYTES)
+            if bad:
+                rejected.append({"name": name, "reason": "type"})
+                continue
+            mime = "image/png" if f.name.endswith(".png") else "image/jpeg"
+        else:
+            f.name = opaque_name(sniffed_ext)
         att = SupportAttachment.objects.create(
             message=message,
             file=f,
             original_name=name[:255],
-            content_type=(getattr(f, "content_type", "") or
-                          mimetypes.guess_type(name)[0] or "")[:120],
+            content_type=mime[:120],
             size_bytes=getattr(f, "size", 0) or 0,
         )
         saved.append(att)
@@ -661,9 +679,17 @@ def support_attachment(request, attachment_id):
         handle = att.file.open("rb")
     except Exception:
         raise Http404
-    response = FileResponse(handle, content_type=att.content_type or "application/octet-stream")
-    # inline so a picture opens in the tab and a document offers itself, with the ORIGINAL name.
-    response["Content-Disposition"] = f'inline; filename="{header_safe(att.original_name, 200)}"'
+    # R87 (2026-09-30): only a picture opens in the tab. Everything else is a DOWNLOAD typed as a
+    # plain binary, whatever content_type the row holds: rows written before 2026-09-30 carry the
+    # type the uploader's browser DECLARED, and "text/html" served inline from the API origin is a
+    # page running under our name. nosniff stops a browser second-guessing either answer.
+    inline_types = {"image/jpeg", "image/png", "image/gif", "image/webp"}
+    stored_type = (att.content_type or "").lower()
+    inline = stored_type in inline_types
+    response = FileResponse(handle, content_type=stored_type if inline else "application/octet-stream")
+    disposition = "inline" if inline else "attachment"
+    response["Content-Disposition"] = f'{disposition}; filename="{header_safe(att.original_name, 200)}"'
+    response["X-Content-Type-Options"] = "nosniff"
     return response
 
 

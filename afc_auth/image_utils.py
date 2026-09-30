@@ -151,4 +151,19 @@ def require_image_upload(uploaded, *, max_bytes=MAX_IMAGE_BYTES, **normalize_kwa
         return None, NOT_AN_IMAGE
     if fmt not in IMAGE_FORMATS:
         return None, NOT_AN_IMAGE
-    return normalize_image_upload(uploaded, **normalize_kwargs), None
+    cleaned = normalize_image_upload(uploaded, **normalize_kwargs)
+    # R87 (2026-09-30): the stored name is opaque and its extension is the format the bytes turned
+    # out to be. normalize_image_upload names its re-encoded copy after the client's file
+    # ("x.php.jpg" stayed "x.php.jpg"), and hands the ORIGINAL back if re-encoding fails, name
+    # and all; neither is a name that should reach storage.
+    from afc_auth.upload_safety import opaque_name
+    stored_ext = {"JPEG": ".jpg", "PNG": ".png", "WEBP": ".webp", "GIF": ".gif", "HEIF": ".heic"}
+    if cleaned is uploaded:
+        ext = stored_ext[fmt]  # not re-encoded: the bytes are still the sniffed format
+    else:
+        ext = ".png" if (getattr(cleaned, "name", "") or "").lower().endswith(".png") else ".jpg"
+    try:
+        cleaned.name = opaque_name(ext)
+    except Exception:
+        pass
+    return cleaned, None

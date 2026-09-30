@@ -501,6 +501,11 @@
       "rule": "R80",
       "path": "requirements.txt",
       "reason": "pip-audit is not on PATH on the Windows workstation, so the checker cannot run it; it IS installed in the backend virtualenv and was run on 2026-09-22. 99 advisories across five packages, all pinned to the first release on their own line carrying the fix, re-audit clean. The run, the versions and how to repeat it are in security/dependency-audit.md."
+    },
+    {
+      "rule": "R87",
+      "path": "afc_leaderboard/views.py",
+      "reason": "standalone OCR read: the screenshot is read into memory for the OCR engine and never stored; its type comes from sniff_upload (2026-09-30) and validate_ocr_images refuses bytes that are not PNG / JPEG / WEBP"
     }
   ],
   "auth": {
@@ -532,10 +537,11 @@
   "uploads": {
     "gate": [
       "require_image_upload",
-      "_clean_logo_upload"
+      "_clean_logo_upload",
+      "sniff_upload"
     ],
-    "verified": "2026-09-22",
-    "note": "afc_auth/image_utils.py require_image_upload is the one image door: it decodes the bytes with Pillow, allows JPEG / PNG / WEBP / GIF / HEIF only, caps at 10 MB and returns a code for the refusal. A file that calls it is typed, sniffed and capped; the rule judges every other file exactly as before. _clean_logo_upload (afc_sso/provisioning.py) is the second door, used by the partner and sponsor logo paths: size first, then a Pillow decode that must agree the bytes are PNG / JPEG / WEBP, then a dimension cap, then a rename so no attacker-chosen extension reaches the media directory."
+    "verified": "2026-09-30",
+    "note": "afc_auth/image_utils.py require_image_upload is the one image door: it decodes the bytes with Pillow, allows JPEG / PNG / WEBP / GIF / HEIF only, caps at 10 MB and returns a code for the refusal. A file that calls it is typed, sniffed and capped; the rule judges every other file exactly as before. _clean_logo_upload (afc_sso/provisioning.py) is the second door, used by the partner and sponsor logo paths: size first, then a Pillow decode that must agree the bytes are PNG / JPEG / WEBP, then a dimension cap, then a rename so no attacker-chosen extension reaches the media directory. Since 2026-09-30 (R87, inbox #98): afc_auth/upload_safety.py sniff_upload reads the BYTES of every non-image upload (support attachments, report evidence videos, leaderboard fonts) and opaque_name stores it as <32 hex> + the sniffed extension; require_image_upload now also gives images an opaque name. Proven both ways in afc_auth/tests_upload_hardening.py."
   },
   "validation": {
     "style": "per-handler",

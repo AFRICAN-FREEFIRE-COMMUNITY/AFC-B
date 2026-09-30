@@ -798,11 +798,18 @@ def _read_claim_evidence(request):
         return None, Response(
             {"message": "That image is larger than 5MB. Please upload a smaller one.", "code": "image_larger_upload_smaller"},
             status=status.HTTP_400_BAD_REQUEST)
-    if (getattr(f, "content_type", "") or "").lower() not in _CLAIM_EVIDENCE_TYPES:
+    # R87 (2026-09-30): the BYTES decide, not the content type the browser declared (the check that
+    # used to sit here). require_image_upload decodes with Pillow, re-encodes and gives the file an
+    # opaque name. The declared-type list stays as the first, friendlier refusal.
+    from afc_auth.image_utils import require_image_upload
+    cleaned, bad = (None, "not_an_image")
+    if (getattr(f, "content_type", "") or "").lower() in _CLAIM_EVIDENCE_TYPES:
+        cleaned, bad = require_image_upload(f, max_bytes=MAX_CLAIM_EVIDENCE_BYTES)
+    if bad:
         return None, Response(
             {"message": "Please upload an image (PNG, JPEG, WEBP or GIF).", "code": "upload_image_png_jpeg"},
             status=status.HTTP_400_BAD_REQUEST)
-    return f, None
+    return cleaned, None
 
 
 # ───────────────────────── CLAIM REQUEST (user-facing - the initiate step) ─────────────────────────
