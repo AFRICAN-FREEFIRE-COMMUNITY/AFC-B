@@ -37,7 +37,7 @@ from afc_auth.audit import set_audit
 # by afc_auth/backends.py.
 from afc_auth.identifiers import (
     WHATSAPP_TAKEN_CODE, WHATSAPP_TAKEN_MESSAGE, anonymous_conflict_message, cross_field_conflict,
-    whatsapp_number_holder,
+    uid_format_error, whatsapp_number_holder,
 )
 # i18n Phase 0 (owner 2026-06-15): map the login geo country to a default language for first-time users.
 # Used in login() (auto-detect) and read alongside User.language in the auth payloads below.
@@ -1802,6 +1802,14 @@ def signup(request):
 
         if password != confirm_password:
             return Response({"error": "Passwords do not match.", "code": "signup_refused"}, status=status.HTTP_400_BAD_REQUEST)
+
+        # UID is optional at signup (the form no longer asks for it), but when a client does send
+        # one it is digits only, same rule as every other UID write (identifiers.uid_format_error,
+        # owner 2026-09-30, inbox #89).
+        uid = str(uid or "").strip()
+        uid_error, uid_code = uid_format_error(uid)
+        if uid_error:
+            return Response({"message": uid_error, "code": uid_code}, status=status.HTTP_400_BAD_REQUEST)
 
         # THE COUNTRY CODE IS COMPULSORY when a number is given. Checked HERE, before any of the
         # uniqueness work below, so a bad number costs one round trip instead of being discovered
@@ -3577,6 +3585,13 @@ def edit_profile(request):
     # intentionally CLEARS a UID, so preserving here is always correct.
     uid = (uid or "").strip() or (user.uid or "")
     uid = uid or None
+    # Digits only (owner 2026-09-30, inbox #89), judged only when the UID is CHANGING: the page
+    # resends the stored value on every save, and a legacy dirty UID (".4646454948") must not
+    # block a player from saving their name or picture. It is cleaned by the admin identity tool.
+    if uid != (user.uid or None):
+        uid_error, uid_code = uid_format_error(uid)
+        if uid_error:
+            return Response({"message": uid_error, "code": uid_code}, status=status.HTTP_400_BAD_REQUEST)
     profile_pic = request.FILES.get("profile_pic")
     # HEIC/HEIF -> JPEG + downscale so the avatar displays + stays small (owner 2026-06-21).
     from .image_utils import normalize_image_upload

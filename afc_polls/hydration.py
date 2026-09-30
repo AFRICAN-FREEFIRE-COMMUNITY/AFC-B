@@ -33,6 +33,7 @@ HOW THIS CONNECTS
     surfaces under app/(user)/awards/.
 """
 from .models import PollOption
+from afc_auth.site_paths import player_path, team_path
 
 
 def _absolute(request, image_field):
@@ -86,7 +87,7 @@ def hydrate_options(options, request=None):
                 ),
                 "team_name": "",
                 "team_logo_url": None,
-                "profile_url": f"/players/{user.username}",
+                "profile_url": player_path(user.username),
             }
         _attach_teams(users, request)
 
@@ -104,7 +105,7 @@ def hydrate_options(options, request=None):
                 # The team route takes the NAME, not the id. Getting this wrong ships a 404 deep
                 # link that looks fine in a test that asserts the same mistake, which has already
                 # happened once on this project (team invites, 2026-08-08).
-                "profile_url": f"/teams/{team.team_name}",
+                "profile_url": team_path(team.team_name),
             }
 
     hydrated = {}

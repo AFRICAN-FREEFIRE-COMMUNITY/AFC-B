@@ -2768,6 +2768,20 @@ def _transfer_window_reopen_hint(season=None):
     if opens and opens > today:
         return f" The window opens on {opens.strftime('%d %B %Y')}."
     if closes and closes < today:
+        # Name the NEXT window when a future season already has one on record, the same lookup the
+        # site's warning uses (frontend lib/useTransferLock.ts: the earliest future
+        # transfer_window_open across all seasons), so the join warning and this refusal always
+        # quote the same date (inbox #92). No future window on record: say "next season", never a
+        # date nobody has set.
+        from afc_rankings.models import Season
+        next_open = (Season.objects.filter(transfer_window_open__gt=today)
+                     .order_by("transfer_window_open")
+                     .values_list("transfer_window_open", flat=True).first())
+        if next_open:
+            return (
+                f" The window closed on {closes.strftime('%d %B %Y')} "
+                f"and the next one opens on {next_open.strftime('%d %B %Y')}."
+            )
         return (
             f" The window closed on {closes.strftime('%d %B %Y')} "
             "and reopens next season."

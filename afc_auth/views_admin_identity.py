@@ -88,7 +88,7 @@ from .audit import set_audit
 from .country_grouping import canonical_country, canonical_country_name
 # The ONE place the "a value may not be two different login identifiers" rule lives, shared with
 # register / edit_profile / the Google SSO username generator in views.py (see identifiers.py).
-from .identifiers import IDENTIFIER_LABELS, cross_field_conflict
+from .identifiers import IDENTIFIER_LABELS, cross_field_conflict, uid_format_error
 from .models import (
     AdminHistory,
     EmailChangeRequest,
@@ -121,13 +121,11 @@ from .email_i18n import subject_for
 # §0  Shared rules
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
 
-# A Free Fire UID is numeric, and User.uid is a CharField(max_length=15). Both new values typed here
-# are held to that: digits only, 1 to 15 of them. This is deliberately STRICTER than edit_profile
-# (which only checks uniqueness), because the whole reason this endpoint exists is to clean up rows
-# where a spreadsheet turned a UID into ".4646454948" or "527.0848242". Letting an admin type
-# another one of those would defeat the point. Reading an existing dirty value is untouched - the
-# rule only applies to what gets written.
-UID_MAX_LENGTH = 15
+# A Free Fire UID is numeric, and User.uid is a CharField(max_length=15). The rule (digits only, 1 to
+# 15 of them) started here, to clean up rows where a spreadsheet turned a UID into ".4646454948" or
+# "527.0848242". Since 2026-09-30 (inbox #89) it lives in identifiers.uid_format_error and every UID
+# write path calls it, with UID_MAX_LENGTH beside it. Reading an existing dirty value is
+# untouched - the rule only applies to what gets written.
 
 # User.username is CharField(max_length=40) and IS the in-game name on this site. Checked here so an
 # over-long value is refused with a sentence instead of a MySQL "Data too long" 500. No format rule
@@ -370,14 +368,11 @@ def admin_set_user_uid(request):
     previous_uid = (target.uid or "").strip()
 
     if new_uid:
-        # Format: digits only, within the column width. See UID_MAX_LENGTH for why this is stricter
-        # than edit_profile.
-        if not new_uid.isdigit():
-            return Response({"message": "A Free Fire UID is numbers only.", "code": "free_fire_uid_numbers"},
-                            status=status.HTTP_400_BAD_REQUEST)
-        if len(new_uid) > UID_MAX_LENGTH:
-            return Response({"message": f"A UID can be at most {UID_MAX_LENGTH} digits."},
-                            status=status.HTTP_400_BAD_REQUEST)
+        # Format: digits only, within the column width (identifiers.uid_format_error, the rule every
+        # UID write shares).
+        uid_error, uid_code = uid_format_error(new_uid)
+        if uid_error:
+            return Response({"message": uid_error, "code": uid_code}, status=status.HTTP_400_BAD_REQUEST)
         if new_uid == previous_uid:
             return Response({"message": "That is already this user's UID.", "code": "already_user_uid"},
                             status=status.HTTP_400_BAD_REQUEST)

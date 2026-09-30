@@ -48,6 +48,24 @@ class TransferWindowHintTests(TestCase):
         self.assertIn("closed on", hint)
         self.assertIn((today - datetime.timedelta(days=10)).strftime("%d %B %Y"), hint)
 
+    def test_a_spent_window_names_the_next_window_when_one_is_on_record(self):
+        """Inbox #92: the join warning on the site names the earliest future window; this refusal
+        must quote the same date, not 'next season', when that window already exists."""
+        today = timezone.localdate()
+        season = self._season(today - datetime.timedelta(days=30),
+                              today - datetime.timedelta(days=10))
+        Season.objects.create(
+            year=2026, quarter=4, is_active=False,
+            start_date=today + datetime.timedelta(days=1), end_date=today + datetime.timedelta(days=90),
+            transfer_window_open=today + datetime.timedelta(days=6),
+            transfer_window_close=today + datetime.timedelta(days=20))
+
+        hint = _transfer_window_reopen_hint(season)
+
+        self.assertIn("next one opens on", hint)
+        self.assertIn((today + datetime.timedelta(days=6)).strftime("%d %B %Y"), hint)
+        self.assertNotIn("next season", hint)
+
     def test_an_open_window_adds_nothing(self):
         """The caller only builds this hint when it is refusing a move, and a refusal while the
         window is open is about something else entirely, so a date here would misdirect."""

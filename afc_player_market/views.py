@@ -5,10 +5,10 @@ from django.shortcuts import render
 
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
+from afc_auth.site_paths import team_path
 import calendar  # monthrange() for the one-month expiry cap (add_one_month, below)
 import json       # decode JSON-encoded list fields sent as multipart strings (_coerce_list)
 import pycountry  # ISO 3166-2 subdivisions for the residential-state picker (location feature)
-from urllib.parse import quote  # team names in email links (/teams/<name>/applications)
 from datetime import datetime
 # timezone is also imported lower in this module (line ~363) for the trial/invite
 # expiry logic; we import it at the top too so create_recruitment_post (the first view
@@ -1367,7 +1367,7 @@ def update_application_status(request):
         _tst_team = application.team.team_name
         # The team's own applications page, where the trial is (it said /team/trials, a page that
         # never existed; inbox #68, 27 Sep 2026)
-        _tst_team_url = f"https://africanfreefirecommunity.com/teams/{quote(_tst_team, safe='')}/applications"
+        _tst_team_url = f"https://africanfreefirecommunity.com{team_path(_tst_team, '/applications')}"
         _tst_player = player.username
 
         def _build_pm_trial_started_team(lang):
@@ -2190,7 +2190,7 @@ def respond_to_direct_trial_invite(request):
         from afc_auth.email_i18n import copy_for, subject_for
         _ta_team = team.team_name
         # See _tst_team_url above: the team's applications page, not the old /team/trials
-        _ta_team_url = f"https://africanfreefirecommunity.com/teams/{quote(_ta_team, safe='')}/applications"
+        _ta_team_url = f"https://africanfreefirecommunity.com{team_path(_ta_team, '/applications')}"
         _ta_player = user.username
 
         def _build_pm_trial_accepted_team(lang):

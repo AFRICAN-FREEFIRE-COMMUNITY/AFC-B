@@ -51,6 +51,7 @@ from urllib.parse import quote
 from django.conf import settings
 
 from afc_auth.models import Notifications
+from afc_auth.site_paths import team_path
 
 
 # Every delivery in this module is best-effort per channel and per recipient: an invitation that
@@ -338,7 +339,7 @@ def deliver_invitation(*, team=None, player=None, event=None, delivery=None,
     else:
         link_target_type = "team"
         link_target_id = team.team_name
-        link_path = f"/teams/{quote(team.team_name, safe='')}"
+        link_path = team_path(team.team_name)
         answer_hint = "Open your team page to accept or decline."
 
     if PUSH in channels:

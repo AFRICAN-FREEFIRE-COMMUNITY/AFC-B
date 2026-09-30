@@ -95,6 +95,28 @@
         "afc_whatsapp/client.py",
         "afc_support/notify.py"
       ]
+    },
+    {
+      "id": "be-raw-name-in-site-link",
+      "title": "A player or team name pasted raw into a website address",
+      "why": "Player and team pages are addressed by the name, and names carry spaces, '#', '?', '/', '%' and Free Fire glyphs. A raw one breaks the link: '/teams/A#1' opens '/teams/A', 'AC/DC' becomes two segments. urllib's default quote() leaves '/' alone.",
+      "seen": [
+        "2026-08-08 team invitation notifications pointed at /teams/<id>, then at the raw name",
+        "2026-09-30 NG.KILLA (name ends U+F8FF): the admin player page said Player not found; notification, poll and QR links were raw or half-encoded (inbox #90, #91)"
+      ],
+      "fix": "build the path with afc_auth/site_paths.py (player_path, team_path, admin_player_path, referral_path, segment); it is quote(value, safe='')",
+      "kind": "regex",
+      "pattern": "f[\"'](https://africanfreefirecommunity\\.com)?/(players|teams|a/players|a/teams|a/sponsors|r)/\\{",
+      "globs": [
+        "**/*.py"
+      ],
+      "except": [
+        "afc_auth/site_paths.py",
+        "tools/check_email_links.py",
+        "**/test*.py",
+        "**/migrations/**",
+        ".venv/**"
+      ]
     }
   ]
 }

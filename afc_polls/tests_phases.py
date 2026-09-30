@@ -506,7 +506,8 @@ class HydrationAndAnchorTests(TestCase):
         self.second.linked_type = PollOption.LINK_TEAM
         self.second.linked_id = self.team.pk
         self.second.save()
-        self.assertEqual(self._options()[1]["linked"]["profile_url"], "/teams/V-ENT ESPORTS")
+        # Percent-encoded since inbox #91: the space would otherwise sit raw in the address.
+        self.assertEqual(self._options()[1]["linked"]["profile_url"], "/teams/V-ENT%20ESPORTS")
 
     def test_an_option_whose_entity_is_gone_still_renders_its_label(self):
         """A published award winner cannot vanish from the record because somebody closed their

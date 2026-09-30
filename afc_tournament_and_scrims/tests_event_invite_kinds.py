@@ -452,7 +452,7 @@ class InvitationKindTests(InviteFixtureMixin, TestCase):
         """The deep link must address the team the way the ROUTE does, i.e. by NAME.
 
         Regression, found in the browser on 2026-08-08: the notification stored the numeric team_id,
-        afc_auth.notification_links turns target_type="team" into "/teams/<target_id>" verbatim, and
+        afc_auth.notification_links turns target_type="team" into "/teams/<target_id>", and
         app/(user)/teams/[id]/page.tsx resolves that segment as the team NAME. So every invitation
         notification pointed at /teams/817, which is a hard 404. Asserted against the real link
         builder rather than against a hardcoded string, so this still holds if the route changes.
@@ -470,8 +470,9 @@ class InvitationKindTests(InviteFixtureMixin, TestCase):
         self.assertIsNotNone(row)
         self.assertEqual(row.target_id, team.team_name,
                          "the link must carry the team NAME, which is what /teams/[id] resolves")
+        # Percent-encoded since inbox #91 (a name with a space, "#" or "/" was a broken link).
         self.assertEqual(build_notification_link(row.target_type, row.target_id),
-                         f"/teams/{team.team_name}")
+                         "/teams/Team%20Staffed")
 
     def test_the_email_button_points_at_the_team_page_url_encoded(self):
         """The same link in the email, where it is a raw href and therefore has to be quoted."""
