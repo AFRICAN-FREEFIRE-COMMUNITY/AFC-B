@@ -23009,12 +23009,17 @@ def create_sponsor_account(request):
     fullname = request.data.get("fullname")
     email = request.data.get("email")
     username = request.data.get("username")
-    uid = request.data.get("uid")
+    # Digits only, same rule as every UID write (afc_auth.identifiers.uid_format_error, inbox #89).
+    uid = str(request.data.get("uid") or "").strip()
     password = request.data.get("password")
     confirm_password = request.data.get("confirm_password")
 
     if not all([fullname, email, username, uid, password, confirm_password]):
         return Response({"message": "All fields are required.", "code": "fields_required"}, status=400)
+    from afc_auth.identifiers import uid_format_error
+    uid_error, uid_code = uid_format_error(uid)
+    if uid_error:
+        return Response({"message": uid_error, "code": uid_code}, status=400)
     if password != confirm_password:
         return Response({"message": "Passwords do not match.", "code": "passwords_not_match"}, status=400)
     if User.objects.filter(username=username).exists():

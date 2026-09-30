@@ -277,3 +277,43 @@ def anonymous_conflict_message(field, held_as):
         f"{IDENTIFIER_LABELS[held_as]}. Players can sign in with their in-game name, their email "
         f"or their UID, so the same value cannot be used for both. Please use a different one."
     )
+
+
+# ─────────────────────────────────────────────────────────────────────────────────────────────────
+# §5  A Free Fire UID is digits and nothing else (owner 2026-09-30, inbox #89)
+# ─────────────────────────────────────────────────────────────────────────────────────────────────
+# Owner: "when users are inputting UIDs only numbers should be allowed, no special characters, full
+# stops, commas, alpahbets etc, only numbers are allowed."
+#
+# The admin identity tool already held this rule on its own (views_admin_identity.py, written to
+# clean up rows a spreadsheet had turned into ".4646454948" or "527.0848242"). Every other door that
+# WRITES a UID accepted anything, so the dirty rows kept arriving. This is now the one rule every
+# write path calls:
+#   edit_profile (profile edit, onboarding, the tournament UID prompt, member self-edit),
+#   signup, create_sponsor_account, admin_set_uid, broadcast_kit_download (caster UID).
+# The frontend's components/UidInput.tsx strips non-digits as they are typed or pasted, so an honest
+# user never sees these refusals; they exist for every client that is not our form.
+#
+# Only a value being WRITTEN is judged. Reading an existing dirty value, and lookups by UID on the
+# password reset path, are untouched: refusing those would lock people out of their own accounts.
+# User.uid is CharField(max_length=15), which is where UID_MAX_LENGTH comes from.
+UID_MAX_LENGTH = 15
+UID_NOT_DIGITS_CODE = "free_fire_uid_numbers"
+UID_TOO_LONG_CODE = "free_fire_uid_too_long"
+
+
+def uid_format_error(value):
+    """Why `value` cannot be stored as a Free Fire UID, as (message, code), or (None, None) if fine.
+
+    `value` is the already-stripped string. An empty value is the caller's business (some doors
+    treat it as "no change", some as "remove", some as "required"), so it is not judged here.
+    str.isdigit() is True for superscripts and other Unicode digits, so the check is ASCII 0-9 only.
+    """
+    if not value:
+        return None, None
+    if not all("0" <= ch <= "9" for ch in value):
+        return ("A Free Fire UID is numbers only: no letters, spaces, full stops, commas or other "
+                "symbols."), UID_NOT_DIGITS_CODE
+    if len(value) > UID_MAX_LENGTH:
+        return f"A Free Fire UID can be at most {UID_MAX_LENGTH} digits.", UID_TOO_LONG_CODE
+    return None, None
