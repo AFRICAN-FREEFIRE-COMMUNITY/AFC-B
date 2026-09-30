@@ -686,7 +686,15 @@ def request_lift(request, blacklist_id):
         .filter(pk=blacklist_id)
         .first()
     )
-    if not blacklist:
+    # Only someone this blacklist concerns may use it at all, checked BEFORE the body is read, and a
+    # stranger gets the same answer as for a blacklist that does not exist (owner rule R88,
+    # 2026-09-30). Before this, anyone signed in could send target_user_id after target_user_id and
+    # read "That player is not on this blacklist" off the answers: who an organizer had blocked.
+    connected = blacklist is not None and (
+        (blacklist.team is not None and _is_team_manager(user, blacklist.team))
+        or OrganizerBlacklistPlayer.objects.filter(blacklist=blacklist, user_id=user.user_id).exists()
+    )
+    if not connected:
         return Response({"message": "Blacklist not found.", "code": "blacklist_not_found"}, status=status.HTTP_404_NOT_FOUND)
 
     scope = request.data.get("scope")
