@@ -27493,6 +27493,18 @@ def download_esport_media(request):
     logo_target = _LOGO_SIZES.get(request.data.get("logo_size"))
     esport_naming = (request.data.get("esport_naming") or "both").lower()
 
+    def _real_ext(raw):
+        """The extension of the format the BYTES are (R87), or None when Pillow cannot read them.
+        _resize returns no extension when no resize was asked for, or when resizing fails, so the
+        packed file's ending comes from here, never from the name it was stored under."""
+        try:
+            from PIL import Image
+            with Image.open(io.BytesIO(raw)) as im:
+                fmt = (im.format or "").upper()
+        except Exception:
+            return None
+        return {"JPEG": ".jpg", "PNG": ".png", "WEBP": ".webp", "GIF": ".gif"}.get(fmt)
+
     def _resize(raw, target, keep_alpha):
         """Return (bytes, ext_or_None). target None -> original bytes (ext_or_None=None).
         Resizes to the EXACT target via cover-crop (ImageOps.fit - scales + centre-crops,
@@ -27519,9 +27531,13 @@ def download_esport_media(request):
         for team in Team.objects.filter(team_id__in=team_ids):
             if team.team_logo:
                 try:
-                    data, new_ext = _resize(team.team_logo.read(), logo_target, keep_alpha=True)
-                    # A logo Pillow could not decode is not an image, whatever its stored name
-                    # says: it is listed as missing rather than packed under that name (R87).
+                    raw_logo = team.team_logo.read()
+                    data, new_ext = _resize(raw_logo, logo_target, keep_alpha=True)
+                    # The ending comes from what the bytes ARE (R87): the resized format, else the
+                    # original's real format. Bytes Pillow cannot read are listed as missing.
+                    # (Hotfix 2026-10-01: _resize gives no extension for the DEFAULT "original"
+                    # size, so the first version of this listed every image as missing.)
+                    new_ext = new_ext or _real_ext(raw_logo)
                     if not new_ext:
                         raise ValueError("not a decodable image")
                     zf.writestr(f"team_logos/{_safe(team.team_name, team.team_id)}{new_ext}", data)
@@ -27540,9 +27556,10 @@ def download_esport_media(request):
             profile = profiles.get(u.user_id)
             if profile and profile.esports_pic:
                 try:
-                    data, new_ext = _resize(profile.esports_pic.read(), esport_target, keep_alpha=False)
-                    # Not decodable = not an image: listed as missing, never packed under its
-                    # stored name (R87, same as the team logos above).
+                    raw_pic = profile.esports_pic.read()
+                    data, new_ext = _resize(raw_pic, esport_target, keep_alpha=False)
+                    # Same rule as the team logos above (R87).
+                    new_ext = new_ext or _real_ext(raw_pic)
                     if not new_ext:
                         raise ValueError("not a decodable image")
                     ext = new_ext
