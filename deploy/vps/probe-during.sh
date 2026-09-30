@@ -6,7 +6,7 @@
 # image already live), then prints how many answered wrong. Used by gates P5 and P6 in
 # GATES-push-to-deploy.md; harmless to run any time.
 #
-# backend: probes /auth/connections/ (an auth-required endpoint), which must answer 400 from
+# backend: probes /auth/connections/ (an auth-required endpoint), which must answer 401 from
 # Django every single time. A 502 or timeout is a failure.
 # frontend: probes / on the site host, which must answer 200 every time, and checks that the
 # upstream port actually changed, so the run cannot pass by swapping nothing.
@@ -15,7 +15,7 @@ set -u
 target="${1:?backend|frontend}"
 UPSTREAM=/etc/nginx/afc-frontend-upstream.conf
 case "$target" in
-  backend)  url="https://api.africanfreefirecommunity.com/auth/connections/"; want=400; res="api.africanfreefirecommunity.com:443:127.0.0.1" ;;
+  backend)  url="https://api.africanfreefirecommunity.com/auth/connections/"; want=401; res="api.africanfreefirecommunity.com:443:127.0.0.1" ;;
   frontend) url="https://africanfreefirecommunity.com/";                       want=200; res="africanfreefirecommunity.com:443:127.0.0.1" ;;
   *) echo "backend|frontend"; exit 64 ;;
 esac

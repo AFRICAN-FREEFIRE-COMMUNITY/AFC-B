@@ -56,5 +56,5 @@ sudo systemctl enable --now certbot.timer
 echo "NGINX_CERT_OK"
 sudo certbot certificates 2>/dev/null | grep -E "Domains|Expiry"
 systemctl is-active nginx certbot.timer
-curl -sk -o /dev/null -w "api via nginx (expect 400): %{http_code}\n" --resolve api.africanfreefirecommunity.com:443:127.0.0.1 https://api.africanfreefirecommunity.com/auth/connections/
+curl -sk -o /dev/null -w "api via nginx (expect 401): %{http_code}\n" --resolve api.africanfreefirecommunity.com:443:127.0.0.1 https://api.africanfreefirecommunity.com/auth/connections/
 curl -sk -o /dev/null -w "site via nginx (expect 200): %{http_code}\n" --resolve africanfreefirecommunity.com:443:127.0.0.1 https://africanfreefirecommunity.com/
