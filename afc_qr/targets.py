@@ -21,6 +21,7 @@ Owners, who may see the scan count (R58):
 from urllib.parse import quote
 
 from afc_auth.models import News, User, canonical_profile
+from afc_auth.site_paths import player_path, team_path
 from afc_organizers.permissions import org_can_event
 from afc_team.models import Team
 from afc_tournament_and_scrims.models import Event
@@ -94,10 +95,10 @@ def describe(link, request):
     if kind == QrLink.EVENT:
         name, path, picture = obj.event_name, f"/tournaments/{quote(obj.slug or '')}", obj.event_banner
     elif kind == QrLink.TEAM:
-        name, path, picture = obj.team_name, f"/teams/{quote(obj.team_name)}", obj.team_logo
+        name, path, picture = obj.team_name, team_path(obj.team_name), obj.team_logo
     elif kind == QrLink.PLAYER:
         profile = canonical_profile(obj)
-        name, path, picture = obj.username, f"/players/{quote(obj.username)}", getattr(profile, "profile_pic", None)
+        name, path, picture = obj.username, player_path(obj.username), getattr(profile, "profile_pic", None)
     else:
         name, path, picture = obj.news_title, f"/news/{quote(obj.slug or '')}", obj.images
     if path.endswith("/"):  # a published event or post with no slug yet has no address to send anyone to

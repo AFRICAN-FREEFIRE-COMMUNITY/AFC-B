@@ -454,7 +454,10 @@ def get_player_details(request):
         "recent_matches": agg["recent_matches"],
     }
     if moved_to_username:
-        body["moved_to"] = f"/a/players/{moved_to_username}"
+        # Percent-encoded: in-game names carry "#", "?", "/", spaces and private-use glyphs
+        # (NG.KILLA ends in U+F8FF, inbox #90), and a raw one is not a usable path segment.
+        from afc_auth.site_paths import admin_player_path
+        body["moved_to"] = admin_player_path(moved_to_username)
     return Response(body, status=200)
 
 

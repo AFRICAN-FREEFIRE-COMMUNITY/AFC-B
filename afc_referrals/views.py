@@ -38,6 +38,8 @@ from datetime import timezone as dt_timezone
 from decimal import Decimal, InvalidOperation
 
 from django.conf import settings
+
+from afc_auth.site_paths import referral_path
 from django.core.cache import cache
 from django.db import transaction
 from django.db.models import Count, Q
@@ -284,7 +286,7 @@ def mine(request):
         programs.append({
             **program_public_dict(program),
             "code": code.code,
-            "link_path": f"/r/{code.code}",
+            "link_path": referral_path(code.code),
             "clicks": code.clicks.count(),
             "signups": mine_q.count(),
             "counted": counted,

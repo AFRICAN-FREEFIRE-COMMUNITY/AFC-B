@@ -21,6 +21,7 @@ Exit 1 = red run. Exit 2 = the registry itself is broken.
 """
 from __future__ import annotations
 
+import fnmatch
 import json
 import re
 import sys
@@ -33,10 +34,17 @@ SKIP_DIRS = {"venv", ".venv", "node_modules", ".git", "__pycache__", "media", "s
 
 def files_for(globs: list[str], allowed: list[str] | None = None) -> list[Path]:
     out: set[Path] = set()
-    skip = {ROOT / a for a in (allowed or [])}
+    # `except` entries are exact paths, or globs ("**/test*.py") matched against the repo-relative
+    # posix path, so a whole class of files (tests that spell an expected address) can be excused.
+    allowed = allowed or []
+    skip = {ROOT / a for a in allowed if not any(ch in a for ch in "*?[")}
+    skip_globs = [a for a in allowed if any(ch in a for ch in "*?[")]
     for g in globs:
         for p in ROOT.glob(g):
-            if p.is_file() and p not in skip and not any(part in SKIP_DIRS for part in p.relative_to(ROOT).parts):
+            relp = p.relative_to(ROOT)
+            if any(relp.match(sg) or fnmatch.fnmatch(relp.as_posix(), sg) for sg in skip_globs):
+                continue
+            if p.is_file() and p not in skip and not any(part in SKIP_DIRS for part in relp.parts):
                 out.add(p)
     return sorted(out)
 
