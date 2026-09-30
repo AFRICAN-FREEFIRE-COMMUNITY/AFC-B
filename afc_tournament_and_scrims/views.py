@@ -27520,8 +27520,11 @@ def download_esport_media(request):
             if team.team_logo:
                 try:
                     data, new_ext = _resize(team.team_logo.read(), logo_target, keep_alpha=True)
-                    ext = new_ext or (os.path.splitext(team.team_logo.name)[1] or ".png")
-                    zf.writestr(f"team_logos/{_safe(team.team_name, team.team_id)}{ext}", data)
+                    # A logo Pillow could not decode is not an image, whatever its stored name
+                    # says: it is listed as missing rather than packed under that name (R87).
+                    if not new_ext:
+                        raise ValueError("not a decodable image")
+                    zf.writestr(f"team_logos/{_safe(team.team_name, team.team_id)}{new_ext}", data)
                     included.append(f"team logo: {team.team_name}")
                     continue
                 except Exception:
@@ -27538,7 +27541,11 @@ def download_esport_media(request):
             if profile and profile.esports_pic:
                 try:
                     data, new_ext = _resize(profile.esports_pic.read(), esport_target, keep_alpha=False)
-                    ext = new_ext or (os.path.splitext(profile.esports_pic.name)[1] or ".png")
+                    # Not decodable = not an image: listed as missing, never packed under its
+                    # stored name (R87, same as the team logos above).
+                    if not new_ext:
+                        raise ValueError("not a decodable image")
+                    ext = new_ext
                     # File name per esport_naming (owner 2026-06-21): ign | uid | both (ign_uid,
                     # default) so graphics teams can match files to game accounts how they prefer.
                     if esport_naming == "ign":

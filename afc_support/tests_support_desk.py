@@ -28,6 +28,16 @@ from afc_auth.models import Roles, SessionToken, User, UserRoles
 from afc_support.models import SupportAttachment, SupportMessage, SupportTicket
 
 
+def _real_png():
+    """A REAL picture (RGBA, so the re-encode keeps it PNG). Since R87 (2026-09-30) the bytes decide
+    what a file is, so the old b"\\x89PNG fake bytes" fixture is refused like any disguised file."""
+    import io
+    from PIL import Image
+    buf = io.BytesIO()
+    Image.new("RGBA", (8, 8), (20, 160, 80, 255)).save(buf, "PNG")
+    return buf.getvalue()
+
+
 class SupportDeskTests(TestCase):
     def setUp(self):
         self.client = Client()
@@ -128,7 +138,7 @@ class SupportDeskTests(TestCase):
 
     # ── files ────────────────────────────────────────────────────────────────────────────────
     def test_an_attached_picture_is_stored_with_its_real_name(self):
-        upload = SimpleUploadedFile("proof of payment.png", b"\x89PNG fake bytes",
+        upload = SimpleUploadedFile("proof of payment.png", _real_png(),
                                     content_type="image/png")
         r = self._contact(files=[upload])
         self.assertEqual(r.status_code, 200, r.content[:300])
@@ -239,7 +249,7 @@ class SupportDeskTests(TestCase):
 
     # ── attachments are private ──────────────────────────────────────────────────────────────
     def test_an_attachment_needs_staff_or_the_tickets_own_token(self):
-        upload = SimpleUploadedFile("id card.png", b"\x89PNG bytes", content_type="image/png")
+        upload = SimpleUploadedFile("id card.png", _real_png(), content_type="image/png")
         self._contact(files=[upload])
         att = SupportAttachment.objects.get()
         ticket = SupportTicket.objects.first()

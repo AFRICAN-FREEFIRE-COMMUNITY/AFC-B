@@ -1230,6 +1230,9 @@ def design_text_item(request, design_id, text_id):
 
 # ───────────── FONT library (uploaded TTF/OTF, org-scoped or AFC-native) ─────────────
 FONT_EXTS = (".ttf", ".otf")
+# A full CJK font can be ~20 MB; the scoreboard fonts organizers bring are Latin display faces,
+# a few hundred KB. 5 MB leaves room and keeps an upload from being used as file storage.
+MAX_FONT_BYTES = 5 * 1024 * 1024
 
 
 @api_view(["GET", "POST"])
@@ -1266,10 +1269,19 @@ def fonts_collection(request):
     upload = request.FILES.get("file")
     if not upload:
         return Response({"message": "A font file is required.", "code": "font_file_required"}, status=status.HTTP_400_BAD_REQUEST)
-    if not upload.name.lower().endswith(FONT_EXTS):
+    # R87 (2026-09-30): the name check alone let anything ending ".ttf" through and kept the client's
+    # filename on disk. Now the BYTES must be a TrueType / OpenType font, the file is capped, and it
+    # is stored under an opaque name whose extension came from the sniff.
+    from afc_auth.upload_safety import opaque_name, sniff_upload
+    kind, font_ext, _mime = sniff_upload(upload, {"font"})
+    if not upload.name.lower().endswith(FONT_EXTS) or kind != "font":
         return Response({"message": "Only .ttf or .otf font files are allowed.", "code": "ttf_otf_font_files"},
                         status=status.HTTP_400_BAD_REQUEST)
+    if upload.size > MAX_FONT_BYTES:
+        return Response({"message": "A font file can be at most 5 MB.", "code": "font_file_too_large"},
+                        status=status.HTTP_400_BAD_REQUEST)
     name = (request.data.get("name") or "").strip() or upload.name.rsplit(".", 1)[0][:80]
+    upload.name = opaque_name(font_ext)
     f = OrgLeaderboardDesignFont.objects.create(
         organization=org, name=name, file=upload, created_by=user)
     return Response({"font": _serialize_font(f, request)}, status=status.HTTP_201_CREATED)
