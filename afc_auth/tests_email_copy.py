@@ -272,6 +272,9 @@ CALLER_PLACEHOLDERS = {
     # Account deletion and restore (afc_auth.account_deletion, 2026-09-17). The deleted mail names
     # nobody (the address it goes to is the released one); the restore mail greets by name.
     "account_deleted": dict.fromkeys(("heading", "intro", "restore", "reuse", "cta", "disclaimer"), set()),
+    # Added with the head-admin "delete on request" email (27 Sep 2026) without its row, so these
+    # three contract tests had failed since; found by the full run on 2026-09-30.
+    "account_deleted_on_request": dict.fromkeys(("heading", "intro", "restore", "reuse", "cta", "disclaimer"), set()),
     "account_restored": {
         "heading": set(), "intro": {"username"}, "password": set(), "cta": set(), "disclaimer": set(),
     },
