@@ -210,7 +210,7 @@ class PermissionGateTests(AdminIdentityTestBase):
         self.assertEqual(self.set_email("new@gmail.com", token=token).status_code, 403)
 
     def test_missing_and_invalid_tokens(self):
-        self.assertEqual(self.post("/auth/admin/set-user-uid/", {}).status_code, 400)
+        self.assertEqual(self.post("/auth/admin/set-user-uid/", {}).status_code, 401)
         self.assertEqual(self.set_uid("9999999999", token="not-a-real-token").status_code, 401)
 
     def test_head_admin_accepted(self):

@@ -294,25 +294,25 @@ class ConnectedAppsTests(TestCase):
     # ── auth, the house preamble ──
 
     def test_the_list_rejects_a_request_with_no_authorization_header(self):
-        self.assertEqual(self.client.get(LIST_URL).status_code, 400)
+        self.assertEqual(self.client.get(LIST_URL).status_code, 401)
 
     def test_the_list_rejects_a_non_bearer_authorization_header(self):
         resp = self.client.get(LIST_URL, headers={"authorization": "Token tok-player"})
-        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.status_code, 401)
 
     def test_the_list_rejects_an_invalid_token(self):
         self.assertEqual(self._list(token="not-a-real-token").status_code, 401)
 
     def test_revoke_rejects_a_request_with_no_authorization_header(self):
         self._connect_everything(self.player, self.app, "x")
-        self.assertEqual(self.client.delete(f"{LIST_URL}{self.app.pk}/").status_code, 400)
+        self.assertEqual(self.client.delete(f"{LIST_URL}{self.app.pk}/").status_code, 401)
         self.assertTrue(AccessToken.objects.filter(application=self.app).exists())
 
     def test_revoke_rejects_a_non_bearer_authorization_header(self):
         resp = self.client.delete(
             f"{LIST_URL}{self.app.pk}/", headers={"authorization": "tok-player"}
         )
-        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.status_code, 401)
 
     def test_revoke_rejects_an_invalid_token(self):
         self.assertEqual(self._revoke(self.app.pk, token="not-a-real-token").status_code, 401)

@@ -70,8 +70,8 @@ def _auth(request, roles=RANKING_ADMIN_ROLES):
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
         return None, Response(
-            {"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"},
-            status=status.HTTP_400_BAD_REQUEST,
+            {"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"},
+            status=status.HTTP_401_UNAUTHORIZED,
         )
     user = validate_token(auth.split(" ")[1])
     if not user:

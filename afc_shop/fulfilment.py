@@ -157,7 +157,7 @@ def _authorise(request, order):
     (and so the vendor page + the WhatsApp inbound handler share one auth path)."""
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return None, None, Response({"message": "Invalid token", "code": "invalid_token"}, status=400)
+        return None, None, Response({"message": "Please sign in to continue.", "code": "invalid_token"}, status=401)
 
     user = validate_token(auth.split(" ")[1])
     if not user:
@@ -663,7 +663,7 @@ def vendor_my_orders(request):
     CONSUMED BY: the per-order vendor page / vendor dashboard order list."""
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid token", "code": "invalid_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_token"}, status=401)
 
     user = validate_token(auth.split(" ")[1])
     if not user:

@@ -78,7 +78,7 @@ def _auth(request):
     """Returns (user, error_response). If error_response is not None, return it immediately."""
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return None, Response({"message": "Invalid token.", "code": "invalid_token"}, status=400)
+        return None, Response({"message": "Please sign in to continue.", "code": "invalid_token"}, status=401)
     user = validate_token(auth.split(" ")[1])
     if not user:
         return None, Response({"message": "Invalid session.", "code": "invalid_session"}, status=401)

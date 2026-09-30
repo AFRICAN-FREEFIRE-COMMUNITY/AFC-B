@@ -69,7 +69,7 @@ class HandoffCodeTests(TestCase):
 
     # ── the gate ──
     def test_no_authorization_header_is_a_400(self):
-        self.assertEqual(self.client.post(HANDOFF_URL).status_code, 400)
+        self.assertEqual(self.client.post(HANDOFF_URL).status_code, 401)
 
     def test_a_dead_token_is_a_401_and_mints_nothing(self):
         resp = self._mint("tok-nonsense")

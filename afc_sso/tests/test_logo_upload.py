@@ -260,7 +260,7 @@ class SSOApplicationLogoTests(TestCase):
 
     def test_missing_and_dead_tokens_are_refused(self):
         resp = self.client.post(self._logo_url(), data={})
-        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.status_code, 401)
 
         resp = self.client.post(
             self._logo_url(), data={}, HTTP_AUTHORIZATION="Bearer nope"

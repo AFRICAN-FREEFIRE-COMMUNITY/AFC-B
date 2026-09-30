@@ -83,11 +83,11 @@ def _require_apply_admin(request):
     """
     session_token = request.headers.get("Authorization")
     if not session_token:
-        return None, Response({"message": "Authorization header is required", "code": "authorization_header_required"},
-                             status=status.HTTP_400_BAD_REQUEST)
+        return None, Response({"message": "Please sign in to continue.", "code": "authorization_header_required"},
+                             status=status.HTTP_401_UNAUTHORIZED)
     if not session_token.startswith("Bearer "):
-        return None, Response({"message": "Invalid token format", "code": "invalid_token_format"},
-                             status=status.HTTP_400_BAD_REQUEST)
+        return None, Response({"message": "Please sign in to continue.", "code": "invalid_token_format"},
+                             status=status.HTTP_401_UNAUTHORIZED)
 
     from afc_auth.views import validate_token  # local import: avoids an app-loading cycle
 

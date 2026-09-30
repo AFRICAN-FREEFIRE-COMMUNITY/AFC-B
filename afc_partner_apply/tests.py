@@ -613,7 +613,7 @@ class DecisionTests(PartnerApplyTestCase):
         self.assertEqual(resp.status_code, 403)
 
     def test_an_anonymous_caller_cannot_read_the_queue(self):
-        self.assertEqual(self.client.get(ADMIN_LIST_URL).status_code, 400)
+        self.assertEqual(self.client.get(ADMIN_LIST_URL).status_code, 401)
 
     def test_a_player_cannot_decide(self):
         resp = self.client.post(

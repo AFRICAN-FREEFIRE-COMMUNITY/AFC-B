@@ -212,7 +212,7 @@ class EnableFlowTests(TwoFactorTestBase):
         self.assertEqual(body["destination"], "pl*****@gmail.com")
 
     def test_status_requires_a_session(self):
-        self.assertEqual(self.client.get("/auth/two-factor/status/").status_code, 400)
+        self.assertEqual(self.client.get("/auth/two-factor/status/").status_code, 401)
         self.assertEqual(
             self.client.get("/auth/two-factor/status/", HTTP_AUTHORIZATION="Bearer nope")
             .status_code, 401)

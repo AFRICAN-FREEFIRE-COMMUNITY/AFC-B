@@ -61,7 +61,7 @@ def _bearer(request):
     thing that identifies it. Same two status codes as every other afc_auth auth gate."""
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return None, None, Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+        return None, None, Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
     token = auth.split(" ")[1]
     user = validate_token(token)
     if not user:

@@ -39,7 +39,7 @@ def _auth_user(request, required=True):
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
         if required:
-            return None, Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+            return None, Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
         return None, None
     user = validate_token(auth.split(" ", 1)[1])
     if not user:

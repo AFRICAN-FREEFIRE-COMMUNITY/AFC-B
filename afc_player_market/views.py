@@ -515,7 +515,7 @@ def create_recruitment_post(request):
     # ---------------- AUTH ----------------
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid token.", "code": "invalid_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_token"}, status=401)
 
     user = validate_token(auth.split(" ")[1])
     if not user:
@@ -883,7 +883,7 @@ def apply_to_team(request):
     # ---------------- AUTH ----------------
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid token.", "code": "invalid_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_token"}, status=401)
 
     user = validate_token(auth.split(" ")[1])
     if not user:
@@ -1068,7 +1068,7 @@ def update_application_status(request):
     # ---------------- AUTH ----------------
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid token.", "code": "invalid_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_token"}, status=401)
 
     user = validate_token(auth.split(" ")[1])
     if not user:
@@ -1471,7 +1471,7 @@ def get_player_contact(request):
     # ---------------- AUTH ----------------
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid token.", "code": "invalid_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_token"}, status=401)
 
     user = validate_token(auth.split(" ")[1])
     if not user:
@@ -1539,7 +1539,7 @@ def finalize_trial(request):
     # ---------------- AUTH ----------------
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid token.", "code": "invalid_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_token"}, status=401)
 
     user = validate_token(auth.split(" ")[1])
     if not user:
@@ -1587,7 +1587,7 @@ def view_applications(request):
     # ---------------- AUTH ----------------
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid token.", "code": "invalid_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_token"}, status=401)
 
     user = validate_token(auth.split(" ")[1])
     if not user:
@@ -1691,7 +1691,7 @@ def get_my_trial_chats(request):
     # ---------------- AUTH ----------------
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid token.", "code": "invalid_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_token"}, status=401)
 
     user = validate_token(auth.split(" ")[1])
     if not user:
@@ -1721,7 +1721,7 @@ def get_trial_chat_messages(request):
     # ---------------- AUTH ----------------
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid token.", "code": "invalid_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_token"}, status=401)
 
     user = validate_token(auth.split(" ")[1])
     if not user:
@@ -1779,7 +1779,7 @@ def send_trial_chat_message(request):
     # ---------------- AUTH ----------------
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid token.", "code": "invalid_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_token"}, status=401)
 
     user = validate_token(auth.split(" ")[1])
     if not user:
@@ -1819,7 +1819,7 @@ def view_my_applications(request):
     # ---------------- AUTH ----------------
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid token.", "code": "invalid_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_token"}, status=401)
 
     user = validate_token(auth.split(" ")[1])
     if not user:
@@ -1909,7 +1909,7 @@ def invite_player_to_trial(request):
     """
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid token.", "code": "invalid_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_token"}, status=401)
 
     user = validate_token(auth.split(" ")[1])
     if not user:
@@ -2057,7 +2057,7 @@ def view_my_trial_invites(request):
     """Player views all direct trial invites received from teams."""
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid token.", "code": "invalid_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_token"}, status=401)
 
     user = validate_token(auth.split(" ")[1])
     if not user:
@@ -2098,7 +2098,7 @@ def respond_to_direct_trial_invite(request):
     """
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid token.", "code": "invalid_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_token"}, status=401)
 
     user = validate_token(auth.split(" ")[1])
     if not user:
@@ -2251,7 +2251,7 @@ def respond_to_direct_trial_invite(request):
 def view_application_details(request):
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid token.", "code": "invalid_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_token"}, status=401)
 
     user = validate_token(auth.split(" ")[1])
     if not user:
@@ -2418,7 +2418,7 @@ def get_posts_related_to_me(request):
     """Returns all recruitment posts created by the authenticated user."""
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid token.", "code": "invalid_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_token"}, status=401)
 
     user = validate_token(auth.split(" ")[1])
     if not user:
@@ -2469,7 +2469,7 @@ def edit_recruitment_post(request):
     """Edit a recruitment post. Only the creator can edit it."""
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid token.", "code": "invalid_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_token"}, status=401)
 
     user = validate_token(auth.split(" ")[1])
     if not user:
@@ -2640,7 +2640,7 @@ def delete_recruitment_post(request):
     """Delete a recruitment post. Only the creator can delete it."""
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid token.", "code": "invalid_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_token"}, status=401)
 
     user = validate_token(auth.split(" ")[1])
     if not user:
@@ -2687,7 +2687,7 @@ def remove_post_image(request):
     """
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid token.", "code": "invalid_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_token"}, status=401)
     user = validate_token(auth.split(" ")[1])
     if not user:
         return Response({"message": "Invalid session.", "code": "invalid_session"}, status=401)
@@ -2772,7 +2772,7 @@ def my_market_context(request):
     """
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid token.", "code": "invalid_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_token"}, status=401)
     user = validate_token(auth.split(" ")[1])
     if not user:
         return Response({"message": "Invalid session.", "code": "invalid_session"}, status=401)
@@ -2797,7 +2797,7 @@ def view_all_trials_and_applications(request):
     """Admin view to see all trials and applications in the system."""
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid token.", "code": "invalid_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_token"}, status=401)
 
     user = validate_token(auth.split(" ")[1])
     if not user:

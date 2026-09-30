@@ -365,7 +365,7 @@ class EndpointTests(TestCase):
         r = _get(self.helper_tok, self.url)
         self.assertEqual(r.status_code, 403, r.content)
         self.assertIn("manages the organization", r.json()["message"])
-        self.assertEqual(Client().get(self.url).status_code, 400)
+        self.assertEqual(Client().get(self.url).status_code, 401)
 
     def test_get_carries_the_providers_in_the_owners_order_and_no_key(self):
         body = _get(self.owner_tok, self.url).json()

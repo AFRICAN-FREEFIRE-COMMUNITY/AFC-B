@@ -53,7 +53,7 @@ TEST_WINDOW_SECONDS = 600
 def _auth(request):
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return None, Response({"message": "Authorization header is required", "code": "authorization_header_required"}, status=400)
+        return None, Response({"message": "Please sign in to continue.", "code": "authorization_header_required"}, status=401)
     user = validate_token(auth.split(" ")[1])
     if not user:
         return None, Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)

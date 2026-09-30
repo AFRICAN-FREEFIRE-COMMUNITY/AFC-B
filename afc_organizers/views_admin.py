@@ -50,15 +50,15 @@ def _require_platform_admin(request):
     # auth failure yet) - matches afc_team/views.py wording/shape.
     if not session_token:
         return None, Response(
-            {"message": "Authorization header is required", "code": "authorization_header_required"},
-            status=status.HTTP_400_BAD_REQUEST,
+            {"message": "Please sign in to continue.", "code": "authorization_header_required"},
+            status=status.HTTP_401_UNAUTHORIZED,
         )
 
     # 400 when the scheme is wrong - token format is the caller's mistake.
     if not session_token.startswith("Bearer "):
         return None, Response(
-            {"message": "Invalid token format", "code": "invalid_token_format"},
-            status=status.HTTP_400_BAD_REQUEST,
+            {"message": "Please sign in to continue.", "code": "invalid_token_format"},
+            status=status.HTTP_401_UNAUTHORIZED,
         )
 
     # Strip the "Bearer " prefix and resolve the session → user.

@@ -372,7 +372,7 @@ def get_player_details(request):
     # (coarse role admin/moderator/support OR any granular UserRoles row).
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid token.", "code": "invalid_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_token"}, status=401)
     caller = validate_token(auth.split(" ")[1])
     if not caller:
         return Response({"message": "Invalid session.", "code": "invalid_session"}, status=401)

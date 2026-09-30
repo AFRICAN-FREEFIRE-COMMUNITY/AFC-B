@@ -286,7 +286,7 @@ def stripe_buy_now(request):
     AUTH: Bearer token -> validate_token (afc_auth), identical to buy_now."""
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid token", "code": "invalid_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_token"}, status=401)
 
     user = validate_token(auth.split(" ")[1])
     if not user:

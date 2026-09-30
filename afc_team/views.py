@@ -360,10 +360,10 @@ def create_team(request):
     session_token = request.headers.get("Authorization")
 
     if not session_token:
-        return Response({'status': 'error', 'message': 'Authorization header is required', "code": "authorization_header_required"}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'status': 'error', 'message': 'Please sign in to continue.', "code": "authorization_header_required"}, status=status.HTTP_401_UNAUTHORIZED)
 
     if not session_token.startswith("Bearer "):
-        return Response({'status': 'error', 'message': 'Invalid token format', "code": "invalid_token_format"}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'status': 'error', 'message': 'Please sign in to continue.', "code": "invalid_token_format"}, status=status.HTTP_401_UNAUTHORIZED)
 
     session_token = session_token.split(" ")[1]
 
@@ -484,10 +484,10 @@ def invite_member(request):
     session_token = request.headers.get("Authorization")
 
     if not session_token:
-        return Response({'status': 'error', 'message': 'Authorization header is required', "code": "authorization_header_required"}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'status': 'error', 'message': 'Please sign in to continue.', "code": "authorization_header_required"}, status=status.HTTP_401_UNAUTHORIZED)
 
     if not session_token.startswith("Bearer "):
-        return Response({'status': 'error', 'message': 'Invalid token format', "code": "invalid_token_format"}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'status': 'error', 'message': 'Please sign in to continue.', "code": "invalid_token_format"}, status=status.HTTP_401_UNAUTHORIZED)
 
     session_token = session_token.split(" ")[1]
 
@@ -618,10 +618,10 @@ def disband_team(request):
     session_token = request.headers.get("Authorization")
 
     if not session_token:
-        return Response({'status': 'error', 'message': 'Authorization header is required', "code": "authorization_header_required"}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'status': 'error', 'message': 'Please sign in to continue.', "code": "authorization_header_required"}, status=status.HTTP_401_UNAUTHORIZED)
 
     if not session_token.startswith("Bearer "):
-        return Response({'status': 'error', 'message': 'Invalid token format', "code": "invalid_token_format"}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'status': 'error', 'message': 'Please sign in to continue.', "code": "invalid_token_format"}, status=status.HTTP_401_UNAUTHORIZED)
 
     session_token = session_token.split(" ")[1]
     
@@ -699,10 +699,10 @@ def transfer_ownership(request):
     session_token = request.headers.get("Authorization")
 
     if not session_token:
-        return Response({'status': 'error', 'message': 'Authorization header is required', "code": "authorization_header_required"}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'status': 'error', 'message': 'Please sign in to continue.', "code": "authorization_header_required"}, status=status.HTTP_401_UNAUTHORIZED)
 
     if not session_token.startswith("Bearer "):
-        return Response({'status': 'error', 'message': 'Invalid token format', "code": "invalid_token_format"}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'status': 'error', 'message': 'Please sign in to continue.', "code": "invalid_token_format"}, status=status.HTTP_401_UNAUTHORIZED)
 
     session_token = session_token.split(" ")[1]
     
@@ -798,10 +798,10 @@ def send_join_request(request):
     session_token = request.headers.get("Authorization")
 
     if not session_token:
-        return Response({'status': 'error', 'message': 'Authorization header is required', "code": "authorization_header_required"}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'status': 'error', 'message': 'Please sign in to continue.', "code": "authorization_header_required"}, status=status.HTTP_401_UNAUTHORIZED)
 
     if not session_token.startswith("Bearer "):
-        return Response({'status': 'error', 'message': 'Invalid token format', "code": "invalid_token_format"}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'status': 'error', 'message': 'Please sign in to continue.', "code": "invalid_token_format"}, status=status.HTTP_401_UNAUTHORIZED)
 
     session_token = session_token.split(" ")[1]
     
@@ -857,10 +857,10 @@ def review_join_request(request):
     session_token = request.headers.get("Authorization")
 
     if not session_token:
-        return Response({'status': 'error', 'message': 'Authorization header is required', "code": "authorization_header_required"}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'status': 'error', 'message': 'Please sign in to continue.', "code": "authorization_header_required"}, status=status.HTTP_401_UNAUTHORIZED)
 
     if not session_token.startswith("Bearer "):
-        return Response({'status': 'error', 'message': 'Invalid token format', "code": "invalid_token_format"}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'status': 'error', 'message': 'Please sign in to continue.', "code": "invalid_token_format"}, status=status.HTTP_401_UNAUTHORIZED)
 
     session_token = session_token.split(" ")[1]
 
@@ -1048,10 +1048,10 @@ def edit_team(request):
     session_token = request.headers.get("Authorization")
 
     if not session_token:
-        return Response({'status': 'error', 'message': 'Authorization header is required', "code": "authorization_header_required"}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'status': 'error', 'message': 'Please sign in to continue.', "code": "authorization_header_required"}, status=status.HTTP_401_UNAUTHORIZED)
 
     if not session_token.startswith("Bearer "):
-        return Response({'status': 'error', 'message': 'Invalid token format', "code": "invalid_token_format"}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'status': 'error', 'message': 'Please sign in to continue.', "code": "invalid_token_format"}, status=status.HTTP_401_UNAUTHORIZED)
 
     session_token = session_token.split(" ")[1]
 
@@ -1531,7 +1531,7 @@ def set_team_letters(request):
     """
     session_token = request.headers.get("Authorization")
     if not session_token or not session_token.startswith("Bearer "):
-        return Response({"message": "Authorization header is required.", "code": "authorization_header_required"}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "Please sign in to continue.", "code": "authorization_header_required"}, status=status.HTTP_401_UNAUTHORIZED)
     user = validate_token(session_token.split(" ")[1])
     if not user:
         return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=status.HTTP_401_UNAUTHORIZED)
@@ -1616,7 +1616,7 @@ def set_team_stats_visibility(request):
     """
     session_token = request.headers.get("Authorization")
     if not session_token or not session_token.startswith("Bearer "):
-        return Response({"message": "Authorization header is required.", "code": "authorization_header_required"}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "Please sign in to continue.", "code": "authorization_header_required"}, status=status.HTTP_401_UNAUTHORIZED)
     user = validate_token(session_token.split(" ")[1])
     if not user:
         return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=status.HTTP_401_UNAUTHORIZED)
@@ -2227,10 +2227,10 @@ def get_user_current_team(request):
     session_token = request.headers.get("Authorization")
 
     if not session_token:
-        return Response({'status': 'error', 'message': 'Authorization header is required', "code": "authorization_header_required"}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'status': 'error', 'message': 'Please sign in to continue.', "code": "authorization_header_required"}, status=status.HTTP_401_UNAUTHORIZED)
 
     if not session_token.startswith("Bearer "):
-        return Response({'status': 'error', 'message': 'Invalid token format', "code": "invalid_token_format"}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'status': 'error', 'message': 'Please sign in to continue.', "code": "invalid_token_format"}, status=status.HTTP_401_UNAUTHORIZED)
 
     session_token = session_token.split(" ")[1]
 
@@ -2277,10 +2277,10 @@ def exit_team(request):
     session_token = request.headers.get("Authorization")
 
     if not session_token:
-        return Response({'status': 'error', 'message': 'Authorization header is required', "code": "authorization_header_required"}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'status': 'error', 'message': 'Please sign in to continue.', "code": "authorization_header_required"}, status=status.HTTP_401_UNAUTHORIZED)
 
     if not session_token.startswith("Bearer "):
-        return Response({'status': 'error', 'message': 'Invalid token format', "code": "invalid_token_format"}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'status': 'error', 'message': 'Please sign in to continue.', "code": "invalid_token_format"}, status=status.HTTP_401_UNAUTHORIZED)
 
     session_token = session_token.split(" ")[1]
 
@@ -2369,7 +2369,7 @@ def exit_team(request):
 def generate_invite_link(request):
     session_token = request.headers.get("Authorization")
     if not session_token or not session_token.startswith("Bearer "):
-        return Response({"message": "Invalid token", "code": "invalid_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_token"}, status=401)
     
     session_token = session_token.split(" ")[1]
 
@@ -2454,7 +2454,7 @@ def respond_invite(request, invite_id):
     """
     session_token = request.headers.get("Authorization")
     if not session_token or not session_token.startswith("Bearer "):
-        return Response({"message": "Invalid token", "code": "invalid_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_token"}, status=401)
     
     session_token = session_token.split(" ")[1]
     
@@ -3159,10 +3159,10 @@ def join_team(request):
     session_token = request.headers.get("Authorization")
 
     if not session_token:
-        return Response({'status': 'error', 'message': 'Authorization header is required', "code": "authorization_header_required"}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'status': 'error', 'message': 'Please sign in to continue.', "code": "authorization_header_required"}, status=status.HTTP_401_UNAUTHORIZED)
 
     if not session_token.startswith("Bearer "):
-        return Response({'status': 'error', 'message': 'Invalid token format', "code": "invalid_token_format"}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'status': 'error', 'message': 'Please sign in to continue.', "code": "invalid_token_format"}, status=status.HTTP_401_UNAUTHORIZED)
 
     session_token = session_token.split(" ")[1]
 
@@ -3243,7 +3243,7 @@ def _get_authed_user(request):
     """Validate Bearer token and return (user, error_response)."""
     session_token = request.headers.get("Authorization", "")
     if not session_token or not session_token.startswith("Bearer "):
-        return None, Response({"message": "Authorization header is required.", "code": "authorization_header_required"}, status=status.HTTP_400_BAD_REQUEST)
+        return None, Response({"message": "Please sign in to continue.", "code": "authorization_header_required"}, status=status.HTTP_401_UNAUTHORIZED)
     user = validate_token(session_token.split(" ")[1])
     if not user:
         return None, Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=status.HTTP_401_UNAUTHORIZED)
@@ -3436,7 +3436,7 @@ def _require_team_admin(request):
     """Validate Bearer token and require admin/moderator/support role. Returns (user, err)."""
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return None, Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+        return None, Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
     user = validate_token(auth.split(" ")[1])
     if not user:
         return None, Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
@@ -3606,7 +3606,7 @@ def search_teams(request):
     """
     auth = request.headers.get("Authorization", "")
     if not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=status.HTTP_401_UNAUTHORIZED)
     requester = validate_token(auth.split(" ", 1)[1])
     if not requester:
         return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=status.HTTP_401_UNAUTHORIZED)

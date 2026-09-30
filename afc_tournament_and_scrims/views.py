@@ -2027,7 +2027,7 @@ def set_event_tier(request, event_id):
     """
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
     user = validate_token(auth.split(" ")[1])
     if not user:
         return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
@@ -2061,7 +2061,7 @@ def create_event(request):
     # ---------------- AUTH ----------------
     session_token = request.headers.get("Authorization")
     if not session_token or not session_token.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
 
     token = session_token.split(" ")[1]
     user = validate_token(token)
@@ -2723,7 +2723,7 @@ def duplicate_event(request, event_id):
     # Same bearer-token shape as create_event / edit_event (no DRF auth classes are wired).
     session_token = request.headers.get("Authorization")
     if not session_token or not session_token.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
 
     token = session_token.split(" ")[1]
     user = validate_token(token)
@@ -2889,7 +2889,7 @@ def duplicate_event(request, event_id):
 #     session_token = request.headers.get("Authorization")
 
 #     if not session_token or not session_token.startswith("Bearer "):
-#         return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+#         return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
 
 #     token = session_token.split(" ")[1]
 
@@ -3044,7 +3044,7 @@ def delete_event(request):
     session_token = request.headers.get("Authorization")
 
     if not session_token or not session_token.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
 
     token = session_token.split(" ")[1]
 
@@ -3102,7 +3102,7 @@ def delete_event(request):
 #     session_token = request.headers.get("Authorization")
 
 #     if not session_token or not session_token.startswith("Bearer "):
-#         return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+#         return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
 
 #     token = session_token.split(" ")[1]
 
@@ -3239,7 +3239,7 @@ def delete_event(request):
 #     session_token = request.headers.get("Authorization")
 
 #     if not session_token or not session_token.startswith("Bearer "):
-#         return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+#         return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
 
 #     token = session_token.split(" ")[1]
 
@@ -3554,7 +3554,7 @@ def diff_stages(old_stages, new_stages):
 def edit_event(request):
     session_token = request.headers.get("Authorization")
     if not session_token or not session_token.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
 
     token = session_token.split(" ")[1]
     user = validate_token(token)
@@ -4226,7 +4226,7 @@ def edit_event(request):
 # def edit_event(request):
 #     session_token = request.headers.get("Authorization")
 #     if not session_token or not session_token.startswith("Bearer "):
-#         return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+#         return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
 
 #     token = session_token.split(" ")[1]
 #     user = validate_token(token)
@@ -4726,7 +4726,7 @@ def get_most_popular_event_format(request):
 #     session_token = request.headers.get("Authorization")
 
 #     if not session_token or not session_token.startswith("Bearer "):
-#         return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+#         return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
 
 #     token = session_token.split(" ")[1]
 
@@ -4951,7 +4951,7 @@ def resolve_event(request):
     """
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
     if not validate_token(auth.split(" ")[1]):
         return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
     from afc_auth.slugs import resolve_or_redirect
@@ -5865,7 +5865,7 @@ def get_event_details(request):
 #                 return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=status.HTTP_401_UNAUTHORIZED)
 
 #     # if not session_token or not session_token.startswith("Bearer "):
-#     #     return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+#     #     return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
 
 
 #     # event_id = request.data.get("event_id")
@@ -6999,7 +6999,7 @@ def register_for_event(request):
     # -------------------------
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
 
     user = validate_token(auth.split(" ")[1])
     if not user:
@@ -8326,7 +8326,7 @@ def confirm_player(request):
     # ---------------- AUTH ----------------
     session_token = request.headers.get("Authorization")
     if not session_token or not session_token.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
 
     user = validate_token(session_token.split(" ")[1])
     if not user:
@@ -8604,7 +8604,7 @@ def reject_player(request):
     # ---------------- AUTH ----------------
     session_token = request.headers.get("Authorization")
     if not session_token or not session_token.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
 
     user = validate_token(session_token.split(" ")[1])
     if not user:
@@ -8915,7 +8915,7 @@ def get_all_competitors_and_their_sponsor_id(request):
     """
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
     user = validate_token(auth.split(" ")[1])
     if not user:
         return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
@@ -9157,7 +9157,7 @@ def assign_stage_roles_for_team_task(self, progress_id, stage_id, user_ids, batc
 #     # -------------------------
 #     auth = request.headers.get("Authorization")
 #     if not auth or not auth.startswith("Bearer "):
-#         return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+#         return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
 
 #     user = validate_token(auth.split(" ")[1])
 #     if not user:
@@ -9345,7 +9345,7 @@ def validate_team_roster_discord(request):
     # -------- AUTH --------
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
 
     user = validate_token(auth.split(" ")[1])
     if not user:
@@ -9479,10 +9479,10 @@ def validate_team_roster_discord(request):
 #     session_token = request.headers.get("Authorization")
 
 #     if not session_token:
-#         return Response({'status': 'error', 'message': 'Authorization header is required', "code": "authorization_header_required"}, status=400)
+#         return Response({'status': 'error', 'message': 'Please sign in to continue.', "code": "authorization_header_required"}, status=401)
 
 #     if not session_token.startswith("Bearer "):
-#         return Response({'status': 'error', 'message': 'Invalid token format', "code": "invalid_token_format"}, status=400)
+#         return Response({'status': 'error', 'message': 'Please sign in to continue.', "code": "invalid_token_format"}, status=401)
 
 #     session_token = session_token.split(" ")[1]
 
@@ -9739,7 +9739,7 @@ def assign_event_roles_from_db_task(self, batch_size=10):
 #     # --- auth + basic checks ---
 #     session_token = request.headers.get("Authorization")
 #     if not session_token or not session_token.startswith("Bearer "):
-#         return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+#         return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
 #     token = session_token.split(" ")[1]
 
 #     try:
@@ -9930,7 +9930,7 @@ def assign_event_roles_from_db_task(self, batch_size=10):
 #     # ---------------- AUTH ----------------
 #     session_token = request.headers.get("Authorization")
 #     if not session_token or not session_token.startswith("Bearer "):
-#         return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+#         return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
 
 #     token = session_token.split(" ")[1]
 
@@ -10082,7 +10082,7 @@ def assign_event_roles_from_db_task(self, batch_size=10):
 #     # ---------------- AUTH ----------------
 #     session_token = request.headers.get("Authorization")
 #     if not session_token or not session_token.startswith("Bearer "):
-#         return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+#         return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
 #     token = session_token.split(" ")[1]
 
 #     try:
@@ -10228,7 +10228,7 @@ def assign_event_roles_from_db_task(self, batch_size=10):
 #     # ---------------- AUTH ----------------
 #     session_token = request.headers.get("Authorization")
 #     if not session_token or not session_token.startswith("Bearer "):
-#         return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+#         return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
 #     token = session_token.split(" ")[1]
 
 #     try:
@@ -10370,7 +10370,7 @@ def assign_event_roles_from_db_task(self, batch_size=10):
 #     # ---------------- AUTH ----------------
 #     session_token = request.headers.get("Authorization")
 #     if not session_token or not session_token.startswith("Bearer "):
-#         return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+#         return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
 #     token = session_token.split(" ")[1]
 
 #     admin = validate_token(token)
@@ -10532,7 +10532,7 @@ from rest_framework import status
 #     # ---------------- AUTH ----------------
 #     session_token = request.headers.get("Authorization")
 #     if not session_token or not session_token.startswith("Bearer "):
-#         return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+#         return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
 
 #     token = session_token.split(" ")[1]
 #     admin = validate_token(token)
@@ -10742,7 +10742,7 @@ def get_event_details_for_admin(request):
     """
     session_token = request.headers.get("Authorization")
     if not session_token or not session_token.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
 
     token = session_token.split(" ")[1]
     admin = validate_token(token)
@@ -11627,7 +11627,7 @@ def assign_group_roles_from_db_task(self, stage_id, batch_size=10):
 #     # ---------------- AUTH ----------------
 #     auth = request.headers.get("Authorization")
 #     if not auth or not auth.startswith("Bearer "):
-#         return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+#         return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
 
 #     token = auth.split(" ")[1]
 #     admin = validate_token(token)
@@ -11712,7 +11712,7 @@ def assign_group_roles_from_db_task(self, stage_id, batch_size=10):
 # def seed_solo_players_to_stage(request):
 #     auth = request.headers.get("Authorization")
 #     if not auth or not auth.startswith("Bearer "):
-#         return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+#         return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
 
 #     admin = validate_token(auth.split(" ")[1])
 #     if not admin:
@@ -11824,7 +11824,7 @@ def seed_solo_players_to_stage(request):
     """
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
 
     admin = validate_token(auth.split(" ")[1])
     if not admin:
@@ -11915,7 +11915,7 @@ def seed_solo_players_to_stage(request):
 # def seed_solo_players_to_stage(request):
 #     auth = request.headers.get("Authorization")
 #     if not auth or not auth.startswith("Bearer "):
-#         return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+#         return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
 
 #     admin = validate_token(auth.split(" ")[1])
 #     if not admin or admin.role != "admin":
@@ -11997,7 +11997,7 @@ def seed_solo_players_to_stage(request):
 #     # ---------------- AUTH ----------------
 #     auth = request.headers.get("Authorization")
 #     if not auth or not auth.startswith("Bearer "):
-#         return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+#         return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
 
 #     admin = validate_token(auth.split(" ")[1])
 #     if not admin:
@@ -12082,7 +12082,7 @@ def seed_solo_players_to_stage(request):
 #     # ---------------- AUTH ----------------
 #     auth = request.headers.get("Authorization")
 #     if not auth or not auth.startswith("Bearer "):
-#         return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+#         return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
 
 #     token = auth.split(" ")[1]
 #     admin = validate_token(token)
@@ -12150,7 +12150,7 @@ from afc_tournament_and_scrims.models import StageGroups, StageCompetitor, Stage
 #     # ---------------- AUTH ----------------
 #     auth = request.headers.get("Authorization")
 #     if not auth or not auth.startswith("Bearer "):
-#         return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+#         return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
 
 #     token = auth.split(" ")[1]
 #     admin = validate_token(token)
@@ -12215,7 +12215,7 @@ from afc_tournament_and_scrims.models import StageGroups, StageCompetitor, Stage
 #     # ---------------- AUTH ----------------
 #     auth = request.headers.get("Authorization")
 #     if not auth or not auth.startswith("Bearer "):
-#         return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+#         return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
 
 #     token = auth.split(" ")[1]
 #     admin = validate_token(token)
@@ -12270,7 +12270,7 @@ from afc_tournament_and_scrims.models import StageGroups, StageCompetitor, Stage
 #     # ---------------- AUTH ----------------
 #     auth = request.headers.get("Authorization")
 #     if not auth or not auth.startswith("Bearer "):
-#         return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+#         return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
 
 #     token = auth.split(" ")[1]
 #     admin = validate_token(token)
@@ -12353,7 +12353,7 @@ from afc_tournament_and_scrims.models import StageGroups, StageCompetitor, Stage
 # def seed_stage_competitors_to_groups(request):
 #     auth = request.headers.get("Authorization")
 #     if not auth or not auth.startswith("Bearer "):
-#         return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+#         return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
 
 #     admin = validate_token(auth.split(" ")[1])
 #     if not admin:
@@ -12435,7 +12435,7 @@ from django.shortcuts import get_object_or_404
 def seed_stage_competitors_to_groups(request):
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
 
     admin = validate_token(auth.split(" ")[1])
     if not admin:
@@ -12536,7 +12536,7 @@ def seed_stage_competitors_to_groups(request):
 # def seed_stage_competitors_to_groups(request):
 #     auth = request.headers.get("Authorization")
 #     if not auth or not auth.startswith("Bearer "):
-#         return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+#         return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
 
 #     admin = validate_token(auth.split(" ")[1])
 #     if not admin:
@@ -12660,7 +12660,7 @@ def disqualify_registered_competitor(request):
     # ---------------- AUTH ----------------
     session_token = request.headers.get("Authorization")
     if not session_token or not session_token.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
     token = session_token.split(" ")[1]
     admin = validate_token(token)
     if not admin:
@@ -12729,7 +12729,7 @@ def reactivate_registered_competitor(request):
     # ---------------- AUTH ----------------
     session_token = request.headers.get("Authorization")
     if not session_token or not session_token.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
     token = session_token.split(" ")[1]
     admin = validate_token(token)
     if not admin:
@@ -12764,7 +12764,7 @@ def reactivate_registered_competitor(request):
 #     # ---------------- AUTH ----------------
 #     session_token = request.headers.get("Authorization")
 #     if not session_token or not session_token.startswith("Bearer "):
-#         return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+#         return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
     
 #     token = session_token.split(" ")[1]
 #     admin = validate_token(token)
@@ -12804,7 +12804,7 @@ def reactivate_registered_competitor(request):
 #     # ---------------- AUTH ----------------
 #     auth = request.headers.get("Authorization")
 #     if not auth or not auth.startswith("Bearer "):
-#         return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+#         return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
 
 #     admin = validate_token(auth.split(" ")[1])
 #     if not admin:
@@ -12892,7 +12892,7 @@ def reactivate_registered_competitor(request):
 def send_match_room_details_notification_to_competitor(request):
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
 
     admin = validate_token(auth.split(" ")[1])
     if not admin:
@@ -13017,7 +13017,7 @@ def delete_stage(request):
     # ---------------- AUTH ----------------
     session_token = request.headers.get("Authorization")
     if not session_token or not session_token.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
     token = session_token.split(" ")[1]
     admin = validate_token(token)
     if not admin:
@@ -13056,7 +13056,7 @@ def delete_group(request):
     # ---------------- AUTH ----------------
     session_token = request.headers.get("Authorization")
     if not session_token or not session_token.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
     token = session_token.split(" ")[1]
     admin = validate_token(token)
     if not admin:
@@ -13222,7 +13222,7 @@ def create_leaderboard(request):
     # (UpdatedConfigurePointSystem) is dead code. Retained only to avoid churn.
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
 
     admin = validate_token(auth.split(" ")[1])
     if not admin:
@@ -13309,7 +13309,7 @@ def create_leaderboard(request):
 # def create_leaderboard(request):
 #     auth = request.headers.get("Authorization")
 #     if not auth or not auth.startswith("Bearer "):
-#         return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+#         return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
 
 #     admin = validate_token(auth.split(" ")[1])
 #     if not admin:
@@ -13373,7 +13373,7 @@ def create_leaderboard(request):
 # def upload_solo_match_result(request):
 #     auth = request.headers.get("Authorization")
 #     if not auth or not auth.startswith("Bearer "):
-#         return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+#         return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
 
 #     admin = validate_token(auth.split(" ")[1])
 #     if not admin:
@@ -13511,7 +13511,7 @@ def create_leaderboard(request):
 #     # ---------------- AUTH ----------------
 #     auth = request.headers.get("Authorization")
 #     if not auth or not auth.startswith("Bearer "):
-#         return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+#         return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
 
 #     admin = validate_token(auth.split(" ")[1])
 #     if not admin:
@@ -13656,7 +13656,7 @@ def upload_solo_match_result(request):
     # ---------------- AUTH ----------------
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
 
     admin = validate_token(auth.split(" ")[1])
     if not admin:
@@ -13874,7 +13874,7 @@ def get_all_leaderboards(request):
 
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
     user = validate_token(auth.split(" ")[1])
     if not user:
         return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
@@ -13935,7 +13935,7 @@ def get_all_leaderboards(request):
 # def reconcile_group_discord_roles(request):
 #     auth = request.headers.get("Authorization")
 #     if not auth or not auth.startswith("Bearer "):
-#         return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+#         return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
 
 #     admin = validate_token(auth.split(" ")[1])
 #     if not admin or admin.role != "admin":
@@ -14098,7 +14098,7 @@ def _normalize_points_json(points_raw):
 #     # ---------------- AUTH ----------------
 #     auth = request.headers.get("Authorization")
 #     if not auth or not auth.startswith("Bearer "):
-#         return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+#         return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
 #     admin = validate_token(auth.split(" ")[1])
 #     if not admin or admin.role != "admin":
 #         return Response({"message": "Unauthorized.", "code": "normalize_points_json_unauthorized"}, status=401)
@@ -14269,7 +14269,7 @@ from django.shortcuts import get_object_or_404
 # def get_all_leaderboard_details_for_event(request):
 #     auth = request.headers.get("Authorization")
 #     if not auth or not auth.startswith("Bearer "):
-#         return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+#         return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
 
 #     admin = validate_token(auth.split(" ")[1])
 #     if not admin:
@@ -14532,7 +14532,7 @@ def _fold_carry_over(rows, stage, participant_type, *, id_key, metric_key, sort_
 def get_all_leaderboard_details_for_event(request):
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
 
     admin = validate_token(auth.split(" ")[1])
     if not admin:
@@ -15080,7 +15080,7 @@ def get_event_group_rosters(request):
     # ── AUTH: identical preamble to get_all_leaderboard_details_for_event ──
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
 
     admin = validate_token(auth.split(" ")[1])
     if not admin:
@@ -15425,7 +15425,7 @@ def get_round_robin_standings(request):
 
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
 
     user = validate_token(auth.split(" ")[1])
     if not user:
@@ -15495,7 +15495,7 @@ def get_round_robin_standings(request):
 # def get_all_leaderboard_details_for_event(request):
 #     auth = request.headers.get("Authorization")
 #     if not auth or not auth.startswith("Bearer "):
-#         return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+#         return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
 
 #     admin = validate_token(auth.split(" ")[1])
 #     if not admin:
@@ -15584,7 +15584,7 @@ def _get_group_leaderboard(event, stage, group):
 #     # ---------------- AUTH ----------------
 #     auth = request.headers.get("Authorization")
 #     if not auth or not auth.startswith("Bearer "):
-#         return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+#         return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
 #     admin = validate_token(auth.split(" ")[1])
 #     if not admin or admin.role != "admin":
 #         return Response({"message": "Unauthorized.", "code": "get_group_leaderboard_unauthorized"}, status=401)
@@ -15759,7 +15759,7 @@ from django.db.models import Q
 # def advance_group_competitors_to_next_stage(request):
 #     auth = request.headers.get("Authorization")
 #     if not auth or not auth.startswith("Bearer "):
-#         return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+#         return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
 
 #     admin = validate_token(auth.split(" ")[1])
 #     if not admin:
@@ -15867,7 +15867,7 @@ from django.shortcuts import get_object_or_404
 def advance_group_competitors_to_next_stage(request):
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
 
     admin = validate_token(auth.split(" ")[1])
     if not admin:
@@ -16085,7 +16085,7 @@ def advance_round_robin(request):
 
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
 
     user = validate_token(auth.split(" ")[1])
     if not user:
@@ -16254,7 +16254,7 @@ def advance_round_robin(request):
 # def advance_group_competitors_to_next_stage(request):
 #     auth = request.headers.get("Authorization")
 #     if not auth or not auth.startswith("Bearer "):
-#         return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+#         return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
 
 #     admin = validate_token(auth.split(" ")[1])
 #     if not admin:
@@ -16455,7 +16455,7 @@ def _recompute_solo_leaderboard_points(lb):
 def edit_leaderboard(request):
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
 
     admin = validate_token(auth.split(" ")[1])
     if not admin:
@@ -16531,7 +16531,7 @@ def edit_leaderboard(request):
 def edit_solo_match_result(request):
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
 
     admin = validate_token(auth.split(" ")[1])
     if not admin:
@@ -16736,7 +16736,7 @@ def delete_match(request):
     # -------------- AUTH --------------
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
 
     admin = validate_token(auth.split(" ")[1])
     if not admin:
@@ -16829,7 +16829,7 @@ def clear_match_result(request):
     # -------------- AUTH --------------
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
     admin = validate_token(auth.split(" ")[1])
     if not admin:
         return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
@@ -16867,7 +16867,7 @@ def clear_match_result(request):
 def edit_match_details(request):
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
 
     user = validate_token(auth.split(" ")[1])
     if not user:
@@ -16954,7 +16954,7 @@ def _normalize_placement_points(pp):
 #     # ---- AUTH (your existing pattern) ----
 #     auth = request.headers.get("Authorization")
 #     if not auth or not auth.startswith("Bearer "):
-#         return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+#         return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
 
 #     admin = validate_token(auth.split(" ")[1])
 #     if not admin:
@@ -17017,7 +17017,7 @@ def create_leaderboard_manually(request):
     # wire it back up without removing the auto-create paths first.
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid token", "code": "invalid_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_token"}, status=401)
 
     admin = validate_token(auth.split(" ")[1])
     if not admin:
@@ -17264,7 +17264,7 @@ def enter_team_match_result_manual(request):
     # ---------------- AUTH ----------------
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
 
     admin = validate_token(auth.split(" ")[1])
     if not admin:
@@ -17449,7 +17449,7 @@ def enter_team_match_result_manual(request):
 #     # ---------------- AUTH ----------------
 #     auth = request.headers.get("Authorization")
 #     if not auth or not auth.startswith("Bearer "):
-#         return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+#         return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
 
 #     admin = validate_token(auth.split(" ")[1])
 #     if not admin:
@@ -17633,7 +17633,7 @@ def enter_team_match_result_manual(request):
 #     # ---- AUTH ----
 #     auth = request.headers.get("Authorization")
 #     if not auth or not auth.startswith("Bearer "):
-#         return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+#         return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
 
 #     admin = validate_token(auth.split(" ")[1])
 #     if not admin:
@@ -17798,7 +17798,7 @@ def enter_solo_match_result_manual(request):
     # ---- AUTH ----
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
 
     admin = validate_token(auth.split(" ")[1])
     if not admin:
@@ -17932,7 +17932,7 @@ def edit_match_result(request):
     # ---------------- AUTH ----------------
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
 
     admin = validate_token(auth.split(" ")[1])
     if not admin:
@@ -18213,7 +18213,7 @@ def edit_match_result(request):
 #     # ---------------- AUTH ----------------
 #     auth = request.headers.get("Authorization")
 #     if not auth or not auth.startswith("Bearer "):
-#         return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+#         return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
 
 #     admin = validate_token(auth.split(" ")[1])
 #     if not admin or admin.role != "admin":
@@ -18410,7 +18410,7 @@ def edit_match_result(request):
 # def edit_match_result(request):
 #     auth = request.headers.get("Authorization")
 #     if not auth or not auth.startswith("Bearer "):
-#         return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+#         return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
 
 #     admin = validate_token(auth.split(" ")[1])
 #     if not admin or admin.role != "admin":
@@ -18679,7 +18679,7 @@ def disqualify_player(request):
     # -------- AUTH --------
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
 
     admin = validate_token(auth.split(" ")[1])
     if not admin:
@@ -18777,7 +18777,7 @@ def disqualify_team(request):
     # -------- AUTH --------
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
 
     admin = validate_token(auth.split(" ")[1])
     if not admin:
@@ -18878,7 +18878,7 @@ def _resolve_event_team(request):
     only (duo/squad)."""
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return None, None, None, Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+        return None, None, None, Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
     admin = validate_token(auth.split(" ")[1])
     if not admin:
         return None, None, None, Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
@@ -19010,7 +19010,7 @@ def reactivate_team(request):
 def get_drafted_events(request):
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
     user = validate_token(auth.split(" ")[1])
     if not user:
         return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
@@ -19081,7 +19081,7 @@ def get_drafted_events(request):
 def get_my_drafted_events(request):
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
     user = validate_token(auth.split(" ")[1])
     if not user:
         return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
@@ -19131,7 +19131,7 @@ def generate_single_use_invite_link_for_private_event(request):
     """
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
     admin = validate_token(auth.split(" ")[1])
     if not admin:
         return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
@@ -19212,7 +19212,7 @@ def generate_multiple_single_use_invite_links_for_private_event(request):
     """
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
     admin = validate_token(auth.split(" ")[1])
     if not admin:
         return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
@@ -19260,7 +19260,7 @@ def get_all_invite_links_for_private_event(request):
     """
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
     admin = validate_token(auth.split(" ")[1])
     if not admin:
         return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
@@ -19310,7 +19310,7 @@ from django.shortcuts import get_object_or_404
 # def leave_event(request):
 #     auth = request.headers.get("Authorization")
 #     if not auth or not auth.startswith("Bearer "):
-#         return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+#         return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
 
 #     user = validate_token(auth.split(" ")[1])
 #     if not user:
@@ -19398,7 +19398,7 @@ from django.shortcuts import get_object_or_404
 def leave_event(request):
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
 
     user = validate_token(auth.split(" ")[1])
     if not user:
@@ -19524,7 +19524,7 @@ def seed_event_competitors_to_stage(request):
     """
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid token", "code": "invalid_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_token"}, status=401)
 
     admin = validate_token(auth.split(" ")[1])
     if not admin:
@@ -19637,7 +19637,7 @@ import random
 def seed_stage_competitors_to_groups_team(request):
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid token", "code": "invalid_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_token"}, status=401)
 
     admin = validate_token(auth.split(" ")[1])
     if not admin:
@@ -19944,7 +19944,7 @@ def add_teams_to_stage(request):
     """
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid token", "code": "invalid_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_token"}, status=401)
     admin = validate_token(auth.split(" ")[1])
     if not admin:
         return Response({"message": "Invalid session", "code": "invalid_session"}, status=401)
@@ -20037,7 +20037,7 @@ PLAYER_RE = re.compile(
 #     # -------- AUTH --------
 #     auth = request.headers.get("Authorization")
 #     if not auth or not auth.startswith("Bearer "):
-#         return Response({"message": "Invalid token.", "code": "invalid_token"}, status=400)
+#         return Response({"message": "Please sign in to continue.", "code": "invalid_token"}, status=401)
 
 #     admin = validate_token(auth.split(" ")[1])
 #     if not admin or admin.role != "admin":
@@ -20222,7 +20222,7 @@ def _overlay_bearer_user(request):
     the two is non-None. Kept tiny + local so both token endpoints gate identically."""
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return None, Response({"message": "Invalid token.", "code": "invalid_token"}, status=400)
+        return None, Response({"message": "Please sign in to continue.", "code": "invalid_token"}, status=401)
     user = validate_token(auth.split(" ")[1])
     if not user:
         return None, Response({"message": "Unauthorized.", "code": "overlay_bearer_user_unauthorized"}, status=403)
@@ -21432,7 +21432,7 @@ def upload_team_match_result(request):
     else:
         auth = request.headers.get("Authorization")
         if not auth or not auth.startswith("Bearer "):
-            return Response({"message": "Invalid token.", "code": "invalid_token"}, status=400)
+            return Response({"message": "Please sign in to continue.", "code": "invalid_token"}, status=401)
 
         admin = validate_token(auth.split(" ")[1])
         if not admin:
@@ -22613,7 +22613,7 @@ def add_teams_to_event(request):
     """
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid token.", "code": "invalid_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_token"}, status=401)
 
     admin = validate_token(auth.split(" ")[1])
     if not admin:
@@ -22871,7 +22871,7 @@ def add_teams_to_group(request):
     """
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid token.", "code": "invalid_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_token"}, status=401)
     admin = validate_token(auth.split(" ")[1])
     if not admin:
         return Response({"message": "Unauthorized.", "code": "add_teams_to_group_unauthorized"}, status=403)
@@ -22995,7 +22995,7 @@ def get_all_tournament_player_match_stats(requests):
 def create_sponsor_account(request):
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid token.", "code": "invalid_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_token"}, status=401)
     admin = validate_token(auth.split(" ")[1])
     if not admin or admin.role != "admin":
         return Response({"message": "Unauthorized.", "code": "create_sponsor_account_unauthorized"}, status=403)
@@ -23053,7 +23053,7 @@ def create_sponsor_account(request):
 def assign_sponsor_to_event(request):
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid token.", "code": "invalid_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_token"}, status=401)
     admin = validate_token(auth.split(" ")[1])
     if not admin:
         return Response({"message": "Unauthorized.", "code": "assign_sponsor_to_event_unauthorized"}, status=401)
@@ -23105,7 +23105,7 @@ def get_all_sponsors(request):
 def get_list_of_players_in_sponsor_event(request):
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid token.", "code": "invalid_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_token"}, status=401)
     sponsor = validate_token(auth.split(" ")[1])
 
     role = Roles.objects.get(role_name="sponsor_admin")
@@ -23213,7 +23213,7 @@ def _recompute_team_match_points(match):
 def edit_match_scoring_config(request):
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid token.", "code": "invalid_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_token"}, status=401)
     admin = validate_token(auth.split(" ")[1])
     if not admin:
         return Response({"message": "Unauthorized.", "code": "edit_match_scoring_config_unauthorized"}, status=403)
@@ -23256,14 +23256,14 @@ def edit_match_scoring_config(request):
 def get_sponsor_details(request):
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid token.", "code": "invalid_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_token"}, status=401)
     admin = validate_token(auth.split(" ")[1])
 
     sponsor_username = request.data.get("sponsor_username")
     sponsor = get_object_or_404(User, username=sponsor_username, role="admin", userroles__role__role_name="sponsor_admin")
 
     if not sponsor:
-        return Response({"message": "Invalid token.", "code": "invalid_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_token"}, status=401)
 
     # get events that the sponsr is linked to
     sponsor_events = SponsorEvent.objects.filter(sponsor=sponsor).select_related("event")
@@ -23288,7 +23288,7 @@ def edit_sponsor_details(request):
 
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid token.", "code": "invalid_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_token"}, status=401)
 
     admin = validate_token(auth.split(" ")[1])
     if not admin:
@@ -23376,7 +23376,7 @@ def edit_sponsor_details(request):
 #     # -------------------------
 #     auth = request.headers.get("Authorization")
 #     if not auth or not auth.startswith("Bearer "):
-#         return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+#         return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
 
 #     user = validate_token(auth.split(" ")[1])
 #     if not user:
@@ -23546,7 +23546,7 @@ def set_roster_edit_window(request):
 
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
     user = validate_token(auth.split(" ")[1])
     if not user:
         return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
@@ -23615,7 +23615,7 @@ def set_team_roster_edit_window(request):
 
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
     user = validate_token(auth.split(" ")[1])
     if not user:
         return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
@@ -23702,7 +23702,7 @@ def assign_team_letter(request):
     """
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
     user = validate_token(auth.split(" ")[1])
     if not user:
         return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
@@ -23832,7 +23832,7 @@ def get_event_team_letters(request):
     """
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
     user = validate_token(auth.split(" ")[1])
     if not user:
         return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
@@ -23899,7 +23899,7 @@ def edit_roster(request):
     # ---------------- AUTH ----------------
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid token.", "code": "invalid_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_token"}, status=401)
 
     user = validate_token(auth.split(" ")[1])
     if not user:
@@ -24245,7 +24245,7 @@ def add_player_to_event_roster(request):
     # ---------------- AUTH ----------------
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
 
     user = validate_token(auth.split(" ")[1])
     if not user:
@@ -24374,7 +24374,7 @@ def add_player_to_event_roster(request):
 #     # ---------------- AUTH ----------------
 #     auth = request.headers.get("Authorization")
 #     if not auth or not auth.startswith("Bearer "):
-#         return Response({"message": "Invalid token.", "code": "invalid_token"}, status=400)
+#         return Response({"message": "Please sign in to continue.", "code": "invalid_token"}, status=401)
 
 #     user = validate_token(auth.split(" ")[1])
 #     if not user:
@@ -24513,7 +24513,7 @@ def add_player_to_event_roster(request):
 def get_roster_details(request):
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid token.", "code": "invalid_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_token"}, status=401)
     user = validate_token(auth.split(" ")[1])
     if not user:
         return Response({"message": "Invalid session.", "code": "invalid_session"}, status=401)
@@ -24710,7 +24710,7 @@ def _merge_solo_results(all_results):
 def upload_match_result_image(request):
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
 
     admin = validate_token(auth.split(" ")[1])
     if not admin:
@@ -25020,7 +25020,7 @@ def upload_match_result_image(request):
 def get_match_result_images(request):
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
 
     admin = validate_token(auth.split(" ")[1])
     if not admin:
@@ -25064,7 +25064,7 @@ def get_match_result_images(request):
 def delete_match_result_image(request):
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
 
     admin = validate_token(auth.split(" ")[1])
     if not admin:
@@ -25101,7 +25101,7 @@ def get_match_result_logs(request):
     from .models import MatchResultLog
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
     admin = validate_token(auth.split(" ")[1])
     if not admin:
         return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
@@ -25132,7 +25132,7 @@ def delete_match_result_log(request):
     from .models import MatchResultLog
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
     admin = validate_token(auth.split(" ")[1])
     if not admin:
         return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
@@ -25163,7 +25163,7 @@ def _get_event_action_user(request, event=None, org_perm=None):
     -> 500; corrected to `role__role_name__in`."""
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return None, Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+        return None, Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
     user = validate_token(auth.split(" ")[1])
     if not user:
         return None, Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
@@ -25439,7 +25439,7 @@ def reopen_event(request):
     (app/(a)/a/events/[slug]/edit) and organizer (app/(organizer)/.../edit) event-edit pages."""
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
     user = validate_token(auth.split(" ")[1])
     if not user:
         return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
@@ -25530,7 +25530,7 @@ def set_results_visibility(request):
     admin (app/(a)/a/events/[slug]/edit) and organizer (app/(organizer)/.../edit) event-edit pages."""
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
     user = validate_token(auth.split(" ")[1])
     if not user:
         return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
@@ -25769,7 +25769,7 @@ def _auth_event_results(request, event):
     used by the result-save endpoints. Returns (user, None) or (None, error_response)."""
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return None, Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+        return None, Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
     admin = validate_token(auth.split(" ")[1])
     if not admin:
         return None, Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
@@ -26142,7 +26142,7 @@ def broadcast_announcement(request):
     # using the shared ActionsTab "Whole event" scope got a 403.
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
     user = validate_token(auth.split(" ")[1])
     if not user:
         return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
@@ -26358,7 +26358,7 @@ def broadcast_match_room_details(request):
     Consumed by: EditMatchModal "Send to players" button (per match row, admin + organizer)."""
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
     user = validate_token(auth.split(" ")[1])
     if not user:
         return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
@@ -26484,7 +26484,7 @@ def broadcast_to_group(request):
     """
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
     user = validate_token(auth.split(" ")[1])
     if not user:
         return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
@@ -26620,7 +26620,7 @@ def broadcast_to_stage(request):
     Consumed by: the broadcast composer's "Stage" scope (admin event page + organizer event page)."""
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
     user = validate_token(auth.split(" ")[1])
     if not user:
         return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
@@ -26727,7 +26727,7 @@ def get_broadcast_history(request):
     Consumed by: the "Broadcast history" view on the admin event page + organizer event page."""
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
     user = validate_token(auth.split(" ")[1])
     if not user:
         return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
@@ -26771,7 +26771,7 @@ def broadcast_rate_status(request):
     Consumed by: SendNotificationModal / ActionsTab broadcast composer (admin + organizer event pages)."""
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
     user = validate_token(auth.split(" ")[1])
     if not user:
         return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
@@ -26789,7 +26789,7 @@ def search_events(request):
     Consumed by: frontend NotificationTargetSelector event search-select."""
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
     user = validate_token(auth.split(" ")[1])
     if not user:
         return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
@@ -26822,7 +26822,7 @@ def _waitlist_gate(request):
     Returns (user, event, None) on success or (None, None, error_response)."""
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return None, None, Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+        return None, None, Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
     user = validate_token(auth.split(" ")[1])
     if not user:
         return None, None, Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
@@ -27167,7 +27167,7 @@ def set_stage_status(request):
     the Complete flow). Auth: AFC event admin OR an organizer who can edit this event."""
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
     user = validate_token(auth.split(" ")[1])
     if not user:
         return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
@@ -27367,7 +27367,7 @@ def export_participants(request):
 def verify_event(request):
     session_token = request.headers.get("Authorization")
     if not session_token or not session_token.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
 
     user = validate_token(session_token.split(" ")[1])
     if not user:
@@ -27439,7 +27439,7 @@ def download_esport_media(request):
 
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
     user = validate_token(auth.split(" ")[1])
     if not user:
         return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
@@ -27619,7 +27619,7 @@ def download_single_media(request):
 
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
     user = validate_token(auth.split(" ")[1])
     if not user:
         return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
@@ -27746,7 +27746,7 @@ def _reorder_auth(request):
     Mirrors the seed endpoints' inline auth shape (Authorization: Bearer <SessionToken>)."""
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return None, Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+        return None, Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
     user = validate_token(auth.split(" ")[1])
     if not user:
         return None, Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
