@@ -57,7 +57,7 @@ from .models import (
 def _auth_user(request):
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return None, Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+        return None, Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
     user = validate_token(auth.split(" ")[1])
     if not user:
         return None, Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
@@ -820,9 +820,11 @@ def import_competitors(request, event_id):
     user, err = _auth_user(request)
     if err:
         return err
-    try:
-        target = Event.objects.get(event_id=event_id)
-    except Event.DoesNotExist:
+    # Ownership BEFORE the body is read, and one answer for "missing" and "not yours" (owner rule
+    # R88, 2026-09-30): the body used to be validated first, so a stranger got 400 "source_event_ids
+    # is required" for any event, and a real id answered differently from a missing one.
+    target = Event.objects.filter(event_id=event_id).first()
+    if target is None or not (_is_event_admin(user) or org_can_event(user, "can_edit_events", target)):
         return Response({"message": "Event not found.", "code": "event_not_found"}, status=404)
 
     raw_ids = request.data.get("source_event_ids") or []

@@ -86,7 +86,7 @@ def roster_discord_status(request):
     # ── AUTH (house Bearer idiom, mirrors validate_team_roster_discord) ──
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
 
     user = validate_token(auth.split(" ")[1])
     if not user:

@@ -110,13 +110,13 @@ def get_my_organizations(request):
     session_token = request.headers.get("Authorization")
     if not session_token:
         return Response(
-            {"message": "Authorization header is required", "code": "authorization_header_required"},
-            status=status.HTTP_400_BAD_REQUEST,
+            {"message": "Please sign in to continue.", "code": "authorization_header_required"},
+            status=status.HTTP_401_UNAUTHORIZED,
         )
     if not session_token.startswith("Bearer "):
         return Response(
-            {"message": "Invalid token format", "code": "invalid_token_format"},
-            status=status.HTTP_400_BAD_REQUEST,
+            {"message": "Please sign in to continue.", "code": "invalid_token_format"},
+            status=status.HTTP_401_UNAUTHORIZED,
         )
     session_token = session_token.split(" ")[1]
     user = validate_token(session_token)
@@ -190,13 +190,13 @@ def get_organization(request, slug):
     session_token = request.headers.get("Authorization")
     if not session_token:
         return Response(
-            {"message": "Authorization header is required", "code": "authorization_header_required"},
-            status=status.HTTP_400_BAD_REQUEST,
+            {"message": "Please sign in to continue.", "code": "authorization_header_required"},
+            status=status.HTTP_401_UNAUTHORIZED,
         )
     if not session_token.startswith("Bearer "):
         return Response(
-            {"message": "Invalid token format", "code": "invalid_token_format"},
-            status=status.HTTP_400_BAD_REQUEST,
+            {"message": "Please sign in to continue.", "code": "invalid_token_format"},
+            status=status.HTTP_401_UNAUTHORIZED,
         )
     session_token = session_token.split(" ")[1]
     user = validate_token(session_token)
@@ -273,13 +273,13 @@ def edit_organization_profile(request, slug):
     session_token = request.headers.get("Authorization")
     if not session_token:
         return Response(
-            {"message": "Authorization header is required", "code": "authorization_header_required"},
-            status=status.HTTP_400_BAD_REQUEST,
+            {"message": "Please sign in to continue.", "code": "authorization_header_required"},
+            status=status.HTTP_401_UNAUTHORIZED,
         )
     if not session_token.startswith("Bearer "):
         return Response(
-            {"message": "Invalid token format", "code": "invalid_token_format"},
-            status=status.HTTP_400_BAD_REQUEST,
+            {"message": "Please sign in to continue.", "code": "invalid_token_format"},
+            status=status.HTTP_401_UNAUTHORIZED,
         )
     session_token = session_token.split(" ")[1]
     user = validate_token(session_token)
@@ -384,13 +384,13 @@ def get_organization_members(request, slug):
     session_token = request.headers.get("Authorization")
     if not session_token:
         return Response(
-            {"message": "Authorization header is required", "code": "authorization_header_required"},
-            status=status.HTTP_400_BAD_REQUEST,
+            {"message": "Please sign in to continue.", "code": "authorization_header_required"},
+            status=status.HTTP_401_UNAUTHORIZED,
         )
     if not session_token.startswith("Bearer "):
         return Response(
-            {"message": "Invalid token format", "code": "invalid_token_format"},
-            status=status.HTTP_400_BAD_REQUEST,
+            {"message": "Please sign in to continue.", "code": "invalid_token_format"},
+            status=status.HTTP_401_UNAUTHORIZED,
         )
     session_token = session_token.split(" ")[1]
     user = validate_token(session_token)
@@ -440,13 +440,13 @@ def add_organization_member(request, slug):
     session_token = request.headers.get("Authorization")
     if not session_token:
         return Response(
-            {"message": "Authorization header is required", "code": "authorization_header_required"},
-            status=status.HTTP_400_BAD_REQUEST,
+            {"message": "Please sign in to continue.", "code": "authorization_header_required"},
+            status=status.HTTP_401_UNAUTHORIZED,
         )
     if not session_token.startswith("Bearer "):
         return Response(
-            {"message": "Invalid token format", "code": "invalid_token_format"},
-            status=status.HTTP_400_BAD_REQUEST,
+            {"message": "Please sign in to continue.", "code": "invalid_token_format"},
+            status=status.HTTP_401_UNAUTHORIZED,
         )
     session_token = session_token.split(" ")[1]
     user = validate_token(session_token)
@@ -546,13 +546,13 @@ def edit_organization_member(request, slug, user_id):
     session_token = request.headers.get("Authorization")
     if not session_token:
         return Response(
-            {"message": "Authorization header is required", "code": "authorization_header_required"},
-            status=status.HTTP_400_BAD_REQUEST,
+            {"message": "Please sign in to continue.", "code": "authorization_header_required"},
+            status=status.HTTP_401_UNAUTHORIZED,
         )
     if not session_token.startswith("Bearer "):
         return Response(
-            {"message": "Invalid token format", "code": "invalid_token_format"},
-            status=status.HTTP_400_BAD_REQUEST,
+            {"message": "Please sign in to continue.", "code": "invalid_token_format"},
+            status=status.HTTP_401_UNAUTHORIZED,
         )
     session_token = session_token.split(" ")[1]
     user = validate_token(session_token)
@@ -623,13 +623,13 @@ def remove_organization_member(request, slug, user_id):
     session_token = request.headers.get("Authorization")
     if not session_token:
         return Response(
-            {"message": "Authorization header is required", "code": "authorization_header_required"},
-            status=status.HTTP_400_BAD_REQUEST,
+            {"message": "Please sign in to continue.", "code": "authorization_header_required"},
+            status=status.HTTP_401_UNAUTHORIZED,
         )
     if not session_token.startswith("Bearer "):
         return Response(
-            {"message": "Invalid token format", "code": "invalid_token_format"},
-            status=status.HTTP_400_BAD_REQUEST,
+            {"message": "Please sign in to continue.", "code": "invalid_token_format"},
+            status=status.HTTP_401_UNAUTHORIZED,
         )
     session_token = session_token.split(" ")[1]
     user = validate_token(session_token)
@@ -686,8 +686,8 @@ def _org_lifecycle_auth(request, slug):
     Returns (user, org, None) or (None, None, error_response)."""
     session_token = request.headers.get("Authorization")
     if not session_token or not session_token.startswith("Bearer "):
-        return None, None, Response({"message": "Authorization header is required", "code": "authorization_header_required"},
-                                    status=status.HTTP_400_BAD_REQUEST)
+        return None, None, Response({"message": "Please sign in to continue.", "code": "authorization_header_required"},
+                                    status=status.HTTP_401_UNAUTHORIZED)
     user = validate_token(session_token.split(" ")[1])
     if not user:
         return None, None, Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"},

@@ -148,7 +148,7 @@ class NavCountsTests(TestCase):
         return res.json()["counts"]
 
     def test_signed_out_refused(self):
-        self.assertEqual(self.client.get("/auth/admin/nav-counts/").status_code, 400)
+        self.assertEqual(self.client.get("/auth/admin/nav-counts/").status_code, 401)
 
     def test_player_sees_nothing(self):
         self.assertEqual(self._counts(self._user("plain")), {})

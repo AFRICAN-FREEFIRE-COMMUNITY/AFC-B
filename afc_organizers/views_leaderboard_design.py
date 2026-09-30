@@ -1333,9 +1333,17 @@ def font_file(request, font_id):
     # is inferred by the browser regardless, but a correct type keeps caches/proxies happy.
     name = f.file.name.lower()
     ctype = "font/otf" if name.endswith(".otf") else "font/ttf"
-    resp = FileResponse(f.file.open("rb"), content_type=ctype)
+    # A row whose file is gone from disk is "not found", never a 500 (found by the R88 probe,
+    # 2026-09-30).
+    try:
+        handle = f.file.open("rb")
+    except (FileNotFoundError, OSError):
+        raise Http404("Font not found.")
+    resp = FileResponse(handle, content_type=ctype)
     # Font bytes are immutable for a given id, and the FE loads each once per session, so cache hard.
     resp["Cache-Control"] = "public, max-age=31536000, immutable"
+    # An uploaded file served from our own origin (owner rule R87): never sniffed into something else.
+    resp["X-Content-Type-Options"] = "nosniff"
     return resp
 
 

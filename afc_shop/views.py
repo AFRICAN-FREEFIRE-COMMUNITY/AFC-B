@@ -1000,7 +1000,7 @@ def add_to_cart(request):
     # ---------------- AUTH ----------------
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
 
     user = validate_token(auth.split(" ")[1])
     if not user:
@@ -1112,7 +1112,7 @@ def get_my_cart(request):
     # -------- AUTH --------
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
 
     user = validate_token(auth.split(" ")[1])
     if not user:
@@ -1165,7 +1165,7 @@ def get_my_cart(request):
 def remove_from_cart(request):
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
 
     user = validate_token(auth.split(" ")[1])
     if not user:
@@ -1192,7 +1192,7 @@ def remove_from_cart(request):
 def update_cart_item_quantity(request):
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
 
     user = validate_token(auth.split(" ")[1])
     if not user:
@@ -1242,7 +1242,7 @@ def update_cart_item_quantity(request):
 def clear_cart(request):
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
 
     user = validate_token(auth.split(" ")[1])
     if not user:
@@ -1270,7 +1270,7 @@ from decimal import Decimal, ROUND_HALF_UP
 # def buy_now(request):
 #     auth = request.headers.get("Authorization")
 #     if not auth or not auth.startswith("Bearer "):
-#         return Response({"message": "Invalid token", "code": "invalid_token"}, status=400)
+#         return Response({"message": "Please sign in to continue.", "code": "invalid_token"}, status=401)
 
 #     user = validate_token(auth.split(" ")[1])
 #     if not user:
@@ -1458,7 +1458,7 @@ def buy_now(request):
     auth = request.headers.get("Authorization")
 
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid token", "code": "invalid_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_token"}, status=401)
 
     user = validate_token(auth.split(" ")[1])
     if not user:
@@ -2105,7 +2105,7 @@ def test_brands(request):
 def get_all_fulfillments(request):
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
 
     user = validate_token(auth.split(" ")[1])
     if not user:
@@ -2131,7 +2131,7 @@ def get_all_fulfillments(request):
 def get_my_orders(request):
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
 
     user = validate_token(auth.split(" ")[1])
     if not user:
@@ -2179,7 +2179,7 @@ def get_my_orders(request):
 def get_order_details(request):
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
 
     user = validate_token(auth.split(" ")[1])
     if not user:
@@ -2231,7 +2231,7 @@ def get_order_details(request):
 def get_order_details_for_admin(request):
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
 
     user = validate_token(auth.split(" ")[1])
     if not user or not user.role == "admin":
@@ -2288,7 +2288,7 @@ def get_order_details_for_admin(request):
 def mark_order_as_paid(request):
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
 
     user = validate_token(auth.split(" ")[1])
     if not user or not user.role == "admin":
@@ -2354,7 +2354,7 @@ def mark_order_as_paid(request):
 def delete_coupon(request):
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
 
     user = validate_token(auth.split(" ")[1])
     if not user or not user.role == "admin":
@@ -2378,7 +2378,7 @@ def delete_coupon(request):
 def deactivate_coupon(request):
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
 
     user = validate_token(auth.split(" ")[1])
     if not user or not user.role == "admin":
@@ -2403,7 +2403,7 @@ def deactivate_coupon(request):
 def activate_coupon(request):
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
 
     user = validate_token(auth.split(" ")[1])
     if not user or not user.role == "admin":
@@ -2428,7 +2428,7 @@ def activate_coupon(request):
 def edit_coupon(request):
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
 
     user = validate_token(auth.split(" ")[1])
     if not user or not user.role == "admin":
@@ -2510,7 +2510,7 @@ def edit_coupon(request):
 def get_total_customer_savings(request):
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
 
     user = validate_token(auth.split(" ")[1])
     if not user or not user.role == "admin":
@@ -2544,7 +2544,7 @@ def get_total_customer_savings(request):
 def get_total_coupon_uses(request):
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
 
     user = validate_token(auth.split(" ")[1])
     if not user or not user.role == "admin":
@@ -2571,7 +2571,7 @@ def get_total_coupon_uses(request):
 def get_total_revenue_generated(request):
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
 
     user = validate_token(auth.split(" ")[1])
     if not user or not user.role == "admin":
@@ -2601,7 +2601,7 @@ def get_total_revenue_generated(request):
 def get_weekly_usage_and_saving_generated(request):
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
 
     user = validate_token(auth.split(" ")[1])
     if not user or not user.role == "admin":
@@ -2692,7 +2692,7 @@ def get_coupon_conversion_rate(request):
 def get_coupon_details(request):
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
 
     user = validate_token(auth.split(" ")[1])
     if not user or not user.role == "admin":
@@ -2732,7 +2732,7 @@ def get_coupon_details(request):
 def get_coupon_details_with_code(request):
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=400)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
 
     user = validate_token(auth.split(" ")[1])
     if not user or not user.role == "admin":

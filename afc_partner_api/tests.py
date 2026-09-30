@@ -1176,7 +1176,7 @@ class PartnerAdminEndpointTests(TestCase):
     def test_missing_token_400(self):
         # No Authorization header at all -> 400 (malformed request, not an auth failure yet).
         resp = self.client.get("/partners/admin/list/")
-        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.status_code, 401)
 
     def test_bad_token_401(self):
         # Well-formed Bearer header but the token resolves to no session -> 401.
@@ -1916,7 +1916,7 @@ class PartnerKeyLifecycleAuditTests(TestCase):
         self._issue_via_endpoint({})
         key_id = PartnerApiKey.objects.get().key_id
         self.assertEqual(
-            self.client.delete(f"/partners/admin/keys/{key_id}/delete/").status_code, 400)
+            self.client.delete(f"/partners/admin/keys/{key_id}/delete/").status_code, 401)
         self.assertEqual(
             self.client.delete(f"/partners/admin/keys/{key_id}/delete/",
                                HTTP_AUTHORIZATION="Bearer nonsense").status_code, 401)

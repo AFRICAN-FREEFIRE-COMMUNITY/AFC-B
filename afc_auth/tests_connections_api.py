@@ -40,7 +40,7 @@ class ListConnectionsTests(TestCase):
         return Client().get("/auth/connections/", HTTP_AUTHORIZATION=f"Bearer {self.token}")
 
     def test_requires_a_session_token(self):
-        self.assertEqual(Client().get("/auth/connections/").status_code, 400)
+        self.assertEqual(Client().get("/auth/connections/").status_code, 401)
 
     def test_an_invalid_token_is_401(self):
         resp = Client().get("/auth/connections/", HTTP_AUTHORIZATION="Bearer nonsense")
@@ -83,7 +83,7 @@ class ProviderListTests(TestCase):
         )
 
     def test_requires_authentication(self):
-        self.assertEqual(Client().get("/auth/connections/providers/").status_code, 400)
+        self.assertEqual(Client().get("/auth/connections/providers/").status_code, 401)
 
 
 @override_settings(
@@ -156,7 +156,7 @@ class StartConnectionTests(TestCase):
         self.assertIn("code_challenge_method=S256", authorize_url)
 
     def test_start_requires_authentication(self):
-        self.assertEqual(Client().get("/auth/connections/discord/start/").status_code, 400)
+        self.assertEqual(Client().get("/auth/connections/discord/start/").status_code, 401)
 
     def test_start_on_a_disabled_provider_is_a_404(self):
         resp = Client().get(

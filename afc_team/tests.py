@@ -38,7 +38,7 @@ class SearchTeamsTests(TestCase):
         return self.client.get("/team/search-teams/", params, **headers)
 
     def test_requires_auth(self):
-        self.assertEqual(self._get(q="dyn").status_code, 400)  # no token
+        self.assertEqual(self._get(q="dyn").status_code, 401)  # no token
 
     def test_q_under_two_chars_returns_empty(self):
         body = self._get(q="d", tok=self.tok).json()

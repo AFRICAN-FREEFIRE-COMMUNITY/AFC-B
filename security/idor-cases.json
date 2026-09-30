@@ -23,7 +23,8 @@
         "method": "GET",
         "path": "/events/5/discord-reminders/",
         "expect": [
-          403
+          403,
+          404
         ]
       }
     },
@@ -38,7 +39,8 @@
           "note": ""
         },
         "expect": [
-          403
+          403,
+          404
         ]
       }
     },
@@ -133,6 +135,3978 @@
         "path": "/support/attachments/1/",
         "expect": [
           404
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: DELETE auth/connections/<str:provider_slug>/",
+      "generated": true,
+      "route": "auth/connections/<str:provider_slug>/",
+      "attempt": {
+        "as": "b",
+        "method": "DELETE",
+        "path": "/auth/connections/google/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: DELETE events/cs-room-presets/<int:preset_id>/",
+      "generated": true,
+      "route": "events/cs-room-presets/<int:preset_id>/",
+      "attempt": {
+        "as": "b",
+        "method": "DELETE",
+        "path": "/events/cs-room-presets/6/",
+        "expect": [
+          400,
+          403,
+          404
+        ]
+      },
+      "r88": {
+        "skip": [
+          "existence"
+        ],
+        "reason": "the snapshot's newest preset is a BUILT-IN Free Fire mode, which nobody may delete (400); an organization's own preset answers 403 to anyone who cannot edit that organization's events"
+      }
+    },
+    {
+      "name": "R88 generated: DELETE events/links/<int:link_id>/",
+      "generated": true,
+      "route": "events/links/<int:link_id>/",
+      "attempt": {
+        "as": "b",
+        "method": "DELETE",
+        "path": "/events/links/20/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: DELETE events/public-sponsors/<int:sponsor_id>/delete/",
+      "generated": true,
+      "route": "events/public-sponsors/<int:sponsor_id>/delete/",
+      "attempt": {
+        "as": "b",
+        "method": "DELETE",
+        "path": "/events/public-sponsors/2/delete/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: DELETE events/waivers/<int:waiver_id>/",
+      "generated": true,
+      "route": "events/waivers/<int:waiver_id>/",
+      "attempt": {
+        "as": "b",
+        "method": "DELETE",
+        "path": "/events/waivers/999999/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: DELETE leaderboards/standalone/<int:lb_id>/delete/",
+      "generated": true,
+      "route": "leaderboards/standalone/<int:lb_id>/delete/",
+      "attempt": {
+        "as": "b",
+        "method": "DELETE",
+        "path": "/leaderboards/standalone/11/delete/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: DELETE leaderboards/standalone/<int:lb_id>/ocr/jobs/<uuid:job_id>/",
+      "generated": true,
+      "route": "leaderboards/standalone/<int:lb_id>/ocr/jobs/<uuid:job_id>/",
+      "attempt": {
+        "as": "b",
+        "method": "DELETE",
+        "path": "/leaderboards/standalone/11/ocr/jobs/722313d7-af34-4e73-aa93-19fc3a9e5a9b/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: DELETE leaderboards/standalone/<int:lb_id>/participants/<int:pid>/",
+      "generated": true,
+      "route": "leaderboards/standalone/<int:lb_id>/participants/<int:pid>/",
+      "attempt": {
+        "as": "b",
+        "method": "DELETE",
+        "path": "/leaderboards/standalone/11/participants/1/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: DELETE leaderboards/standalone/matches/<int:mid>/",
+      "generated": true,
+      "route": "leaderboards/standalone/matches/<int:mid>/",
+      "attempt": {
+        "as": "b",
+        "method": "DELETE",
+        "path": "/leaderboards/standalone/matches/999999/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: DELETE organizers/admin/delete-organization/<slug:slug>/",
+      "generated": true,
+      "route": "organizers/admin/delete-organization/<slug:slug>/",
+      "attempt": {
+        "as": "b",
+        "method": "DELETE",
+        "path": "/organizers/admin/delete-organization/ssa-league/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: DELETE organizers/leaderboard-fonts/by-id/<int:font_id>/",
+      "generated": true,
+      "route": "organizers/leaderboard-fonts/by-id/<int:font_id>/",
+      "attempt": {
+        "as": "b",
+        "method": "DELETE",
+        "path": "/organizers/leaderboard-fonts/by-id/4/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: DELETE organizers/remove-organization-member/<slug:slug>/<int:user_id>/",
+      "generated": true,
+      "route": "organizers/remove-organization-member/<slug:slug>/<int:user_id>/",
+      "attempt": {
+        "as": "b",
+        "method": "DELETE",
+        "path": "/organizers/remove-organization-member/ssa-league/9114/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: DELETE partners/admin/keys/<int:key_id>/delete/",
+      "generated": true,
+      "route": "partners/admin/keys/<int:key_id>/delete/",
+      "attempt": {
+        "as": "b",
+        "method": "DELETE",
+        "path": "/partners/admin/keys/20/delete/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: DELETE rankings/result-exclusions/<int:exclusion_id>/",
+      "generated": true,
+      "route": "rankings/result-exclusions/<int:exclusion_id>/",
+      "attempt": {
+        "as": "b",
+        "method": "DELETE",
+        "path": "/rankings/result-exclusions/999999/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: DELETE sponsors/<int:sponsor_id>/events/<int:event_id>/",
+      "generated": true,
+      "route": "sponsors/<int:sponsor_id>/events/<int:event_id>/",
+      "attempt": {
+        "as": "b",
+        "method": "DELETE",
+        "path": "/sponsors/2/events/229/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: DELETE sponsors/<int:sponsor_id>/members/<int:member_id>/",
+      "generated": true,
+      "route": "sponsors/<int:sponsor_id>/members/<int:member_id>/",
+      "attempt": {
+        "as": "b",
+        "method": "DELETE",
+        "path": "/sponsors/2/members/2/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: DELETE sponsors/<int:sponsor_id>/members/invites/<int:invite_id>/",
+      "generated": true,
+      "route": "sponsors/<int:sponsor_id>/members/invites/<int:invite_id>/",
+      "attempt": {
+        "as": "b",
+        "method": "DELETE",
+        "path": "/sponsors/2/members/invites/1/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: DELETE sso/admin/apps/<int:application_id>/logo/",
+      "generated": true,
+      "route": "sso/admin/apps/<int:application_id>/logo/",
+      "attempt": {
+        "as": "b",
+        "method": "DELETE",
+        "path": "/sso/admin/apps/6/logo/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: DELETE sso/me/connected-apps/<int:application_id>/",
+      "generated": true,
+      "route": "sso/me/connected-apps/<int:application_id>/",
+      "attempt": {
+        "as": "b",
+        "method": "DELETE",
+        "path": "/sso/me/connected-apps/6/",
+        "expect": [
+          200
+        ]
+      },
+      "r88": {
+        "skip": [
+          "existence"
+        ],
+        "reason": "revokes the CALLER's own tokens for that app; every queryset is filtered by user, so naming another app deletes nothing (revoke_connected_app docstring)"
+      }
+    },
+    {
+      "name": "R88 generated: GET api/v1/partner/events/<slug:event_slug>/",
+      "generated": true,
+      "route": "api/v1/partner/events/<slug:event_slug>/",
+      "attempt": {
+        "as": "b",
+        "method": "GET",
+        "path": "/api/v1/partner/events/invite-flow-walk/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: GET api/v1/partner/events/<slug:event_slug>/designs/",
+      "generated": true,
+      "route": "api/v1/partner/events/<slug:event_slug>/designs/",
+      "attempt": {
+        "as": "b",
+        "method": "GET",
+        "path": "/api/v1/partner/events/invite-flow-walk/designs/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: GET api/v1/partner/events/<slug:event_slug>/matches/",
+      "generated": true,
+      "route": "api/v1/partner/events/<slug:event_slug>/matches/",
+      "attempt": {
+        "as": "b",
+        "method": "GET",
+        "path": "/api/v1/partner/events/invite-flow-walk/matches/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: GET api/v1/partner/events/<slug:event_slug>/players/",
+      "generated": true,
+      "route": "api/v1/partner/events/<slug:event_slug>/players/",
+      "attempt": {
+        "as": "b",
+        "method": "GET",
+        "path": "/api/v1/partner/events/invite-flow-walk/players/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: GET api/v1/partner/events/<slug:event_slug>/stages/",
+      "generated": true,
+      "route": "api/v1/partner/events/<slug:event_slug>/stages/",
+      "attempt": {
+        "as": "b",
+        "method": "GET",
+        "path": "/api/v1/partner/events/invite-flow-walk/stages/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: GET api/v1/partner/events/<slug:event_slug>/standings/",
+      "generated": true,
+      "route": "api/v1/partner/events/<slug:event_slug>/standings/",
+      "attempt": {
+        "as": "b",
+        "method": "GET",
+        "path": "/api/v1/partner/events/invite-flow-walk/standings/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: GET api/v1/partner/events/<slug:event_slug>/teams/",
+      "generated": true,
+      "route": "api/v1/partner/events/<slug:event_slug>/teams/",
+      "attempt": {
+        "as": "b",
+        "method": "GET",
+        "path": "/api/v1/partner/events/invite-flow-walk/teams/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: GET auth/admin/user-identity/<int:user_id>/",
+      "generated": true,
+      "route": "auth/admin/user-identity/<int:user_id>/",
+      "attempt": {
+        "as": "b",
+        "method": "GET",
+        "path": "/auth/admin/user-identity/9114/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: GET auth/admin/users/<int:user_id>/delete-account/",
+      "generated": true,
+      "route": "auth/admin/users/<int:user_id>/delete-account/",
+      "attempt": {
+        "as": "b",
+        "method": "GET",
+        "path": "/auth/admin/users/9114/delete-account/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: GET auth/connections/<str:provider_slug>/callback/",
+      "generated": true,
+      "route": "auth/connections/<str:provider_slug>/callback/",
+      "attempt": {
+        "as": "b",
+        "method": "GET",
+        "path": "/auth/connections/google/callback/",
+        "expect": [
+          200,
+          302,
+          400
+        ]
+      },
+      "r88": {
+        "skip": [
+          "existence",
+          "neighbours"
+        ],
+        "reason": "OAuth return address for the caller's own linking; carries the provider's state, not another user's record"
+      }
+    },
+    {
+      "name": "R88 generated: GET auth/connections/<str:provider_slug>/start/",
+      "generated": true,
+      "route": "auth/connections/<str:provider_slug>/start/",
+      "attempt": {
+        "as": "b",
+        "method": "GET",
+        "path": "/auth/connections/google/start/",
+        "expect": [
+          200,
+          400
+        ]
+      },
+      "r88": {
+        "skip": [
+          "existence",
+          "neighbours"
+        ],
+        "reason": "starts linking a provider (google, discord) to the CALLER's own account; the slug is a provider name, not a record"
+      }
+    },
+    {
+      "name": "R88 generated: GET draws/<int:draw_id>/board/",
+      "generated": true,
+      "route": "draws/<int:draw_id>/board/",
+      "attempt": {
+        "as": "b",
+        "method": "GET",
+        "path": "/draws/999999/board/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: GET draws/events/<int:event_id>/",
+      "generated": true,
+      "route": "draws/events/<int:event_id>/",
+      "attempt": {
+        "as": "b",
+        "method": "GET",
+        "path": "/draws/events/229/",
+        "expect": [
+          200
+        ]
+      },
+      "r88": {
+        "skip": [
+          "existence"
+        ],
+        "reason": "the event's draw board as players see it (which stages have a draw, open or closed); the admin controls are separate addresses that refuse"
+      }
+    },
+    {
+      "name": "R88 generated: GET events/<int:event_id>/broadcast-kit/",
+      "generated": true,
+      "route": "events/<int:event_id>/broadcast-kit/",
+      "attempt": {
+        "as": "b",
+        "method": "GET",
+        "path": "/events/229/broadcast-kit/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: GET events/<int:event_id>/broadcast/",
+      "generated": true,
+      "route": "events/<int:event_id>/broadcast/",
+      "attempt": {
+        "as": "b",
+        "method": "GET",
+        "path": "/events/229/broadcast/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: GET events/<int:event_id>/discord-reminders/",
+      "generated": true,
+      "route": "events/<int:event_id>/discord-reminders/",
+      "attempt": {
+        "as": "b",
+        "method": "GET",
+        "path": "/events/229/discord-reminders/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: GET events/<int:event_id>/links/",
+      "generated": true,
+      "route": "events/<int:event_id>/links/",
+      "attempt": {
+        "as": "b",
+        "method": "GET",
+        "path": "/events/229/links/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: GET events/<int:event_id>/links/chain/",
+      "generated": true,
+      "route": "events/<int:event_id>/links/chain/",
+      "attempt": {
+        "as": "b",
+        "method": "GET",
+        "path": "/events/229/links/chain/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: GET events/<int:event_id>/links/public/",
+      "generated": true,
+      "route": "events/<int:event_id>/links/public/",
+      "attempt": {
+        "as": "b",
+        "method": "GET",
+        "path": "/events/229/links/public/",
+        "expect": [
+          200
+        ]
+      },
+      "r88": {
+        "skip": [
+          "anon",
+          "neighbours",
+          "existence"
+        ],
+        "reason": "public by design: public content, decided 2026-09-13"
+      }
+    },
+    {
+      "name": "R88 generated: GET events/<int:event_id>/links/structure/",
+      "generated": true,
+      "route": "events/<int:event_id>/links/structure/",
+      "attempt": {
+        "as": "b",
+        "method": "GET",
+        "path": "/events/229/links/structure/",
+        "expect": [
+          200
+        ]
+      },
+      "r88": {
+        "skip": [
+          "anon",
+          "neighbours",
+          "existence"
+        ],
+        "reason": "public by design: public content, decided 2026-09-13"
+      }
+    },
+    {
+      "name": "R88 generated: GET events/<int:event_id>/media-audit/",
+      "generated": true,
+      "route": "events/<int:event_id>/media-audit/",
+      "attempt": {
+        "as": "b",
+        "method": "GET",
+        "path": "/events/229/media-audit/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: GET events/<int:event_id>/mvp/",
+      "generated": true,
+      "route": "events/<int:event_id>/mvp/",
+      "attempt": {
+        "as": "b",
+        "method": "GET",
+        "path": "/events/229/mvp/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: GET events/<int:event_id>/overlays/",
+      "generated": true,
+      "route": "events/<int:event_id>/overlays/",
+      "attempt": {
+        "as": "b",
+        "method": "GET",
+        "path": "/events/229/overlays/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: GET events/<int:event_id>/pending-captures/",
+      "generated": true,
+      "route": "events/<int:event_id>/pending-captures/",
+      "attempt": {
+        "as": "b",
+        "method": "GET",
+        "path": "/events/229/pending-captures/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: GET events/<int:event_id>/player-board-graphic/",
+      "generated": true,
+      "route": "events/<int:event_id>/player-board-graphic/",
+      "attempt": {
+        "as": "b",
+        "method": "GET",
+        "path": "/events/229/player-board-graphic/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: GET events/<int:event_id>/stages/<int:stage_id>/graphic/",
+      "generated": true,
+      "route": "events/<int:event_id>/stages/<int:stage_id>/graphic/",
+      "attempt": {
+        "as": "b",
+        "method": "GET",
+        "path": "/events/229/stages/378/graphic/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: GET events/<int:event_id>/tie-breakers/",
+      "generated": true,
+      "route": "events/<int:event_id>/tie-breakers/",
+      "attempt": {
+        "as": "b",
+        "method": "GET",
+        "path": "/events/229/tie-breakers/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: GET events/<int:event_id>/top-killers/",
+      "generated": true,
+      "route": "events/<int:event_id>/top-killers/",
+      "attempt": {
+        "as": "b",
+        "method": "GET",
+        "path": "/events/229/top-killers/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: GET events/<int:event_id>/waivers/",
+      "generated": true,
+      "route": "events/<int:event_id>/waivers/",
+      "attempt": {
+        "as": "b",
+        "method": "GET",
+        "path": "/events/229/waivers/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: GET events/cs-room-settings/<str:scope>/<int:object_id>/",
+      "generated": true,
+      "route": "events/cs-room-settings/<str:scope>/<int:object_id>/",
+      "attempt": {
+        "as": "b",
+        "method": "GET",
+        "path": "/events/cs-room-settings/event/229/",
+        "expect": [
+          200
+        ]
+      },
+      "r88": {
+        "skip": [
+          "existence"
+        ],
+        "reason": "public by design (cs_room_views.room_settings docstring); checked 2026-09-30 that an ordinary player's answer carries no room id or password"
+      }
+    },
+    {
+      "name": "R88 generated: GET events/h2h-matches/<int:match_id>/rosters/",
+      "generated": true,
+      "route": "events/h2h-matches/<int:match_id>/rosters/",
+      "attempt": {
+        "as": "b",
+        "method": "GET",
+        "path": "/events/h2h-matches/3816/rosters/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: GET events/h2h-matches/<int:match_id>/submissions/",
+      "generated": true,
+      "route": "events/h2h-matches/<int:match_id>/submissions/",
+      "attempt": {
+        "as": "b",
+        "method": "GET",
+        "path": "/events/h2h-matches/3816/submissions/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: GET events/ocr-session/<uuid:session_id>/",
+      "generated": true,
+      "route": "events/ocr-session/<uuid:session_id>/",
+      "attempt": {
+        "as": "b",
+        "method": "GET",
+        "path": "/events/ocr-session/799784ad-211d-4bbc-88a2-b45c27fe8bd2/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: GET events/ocr-session/<uuid:session_id>/roster/",
+      "generated": true,
+      "route": "events/ocr-session/<uuid:session_id>/roster/",
+      "attempt": {
+        "as": "b",
+        "method": "GET",
+        "path": "/events/ocr-session/799784ad-211d-4bbc-88a2-b45c27fe8bd2/roster/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: GET events/stages/<int:stage_id>/bracket/",
+      "generated": true,
+      "route": "events/stages/<int:stage_id>/bracket/",
+      "attempt": {
+        "as": "b",
+        "method": "GET",
+        "path": "/events/stages/378/bracket/",
+        "expect": [
+          200
+        ]
+      },
+      "r88": {
+        "skip": [
+          "existence"
+        ],
+        "reason": "a stage bracket is published tournament structure, shown on the public event page"
+      }
+    },
+    {
+      "name": "R88 generated: GET leaderboards/standalone/<int:lb_id>/",
+      "generated": true,
+      "route": "leaderboards/standalone/<int:lb_id>/",
+      "attempt": {
+        "as": "b",
+        "method": "GET",
+        "path": "/leaderboards/standalone/11/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: GET leaderboards/standalone/<int:lb_id>/graphic/",
+      "generated": true,
+      "route": "leaderboards/standalone/<int:lb_id>/graphic/",
+      "attempt": {
+        "as": "b",
+        "method": "GET",
+        "path": "/leaderboards/standalone/11/graphic/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: GET leaderboards/standalone/<int:lb_id>/ocr/jobs/",
+      "generated": true,
+      "route": "leaderboards/standalone/<int:lb_id>/ocr/jobs/",
+      "attempt": {
+        "as": "b",
+        "method": "GET",
+        "path": "/leaderboards/standalone/11/ocr/jobs/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: GET leaderboards/standalone/<int:lb_id>/participants/<int:pid>/roster/",
+      "generated": true,
+      "route": "leaderboards/standalone/<int:lb_id>/participants/<int:pid>/roster/",
+      "attempt": {
+        "as": "b",
+        "method": "GET",
+        "path": "/leaderboards/standalone/11/participants/1/roster/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: GET organizers/<slug:slug>/earnings/",
+      "generated": true,
+      "route": "organizers/<slug:slug>/earnings/",
+      "attempt": {
+        "as": "b",
+        "method": "GET",
+        "path": "/organizers/ssa-league/earnings/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: GET organizers/admin/get-organization/<slug:slug>/",
+      "generated": true,
+      "route": "organizers/admin/get-organization/<slug:slug>/",
+      "attempt": {
+        "as": "b",
+        "method": "GET",
+        "path": "/organizers/admin/get-organization/ssa-league/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: GET organizers/event-comments/<int:event_id>/",
+      "generated": true,
+      "route": "organizers/event-comments/<int:event_id>/",
+      "attempt": {
+        "as": "b",
+        "method": "GET",
+        "path": "/organizers/event-comments/229/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: GET organizers/events/<int:event_id>/rating/",
+      "generated": true,
+      "route": "organizers/events/<int:event_id>/rating/",
+      "attempt": {
+        "as": "b",
+        "method": "GET",
+        "path": "/organizers/events/229/rating/",
+        "expect": [
+          200
+        ]
+      },
+      "r88": {
+        "skip": [
+          "anon",
+          "neighbours",
+          "existence"
+        ],
+        "reason": "public by design: public content, decided 2026-09-13"
+      }
+    },
+    {
+      "name": "R88 generated: GET organizers/get-organization-members/<slug:slug>/",
+      "generated": true,
+      "route": "organizers/get-organization-members/<slug:slug>/",
+      "attempt": {
+        "as": "b",
+        "method": "GET",
+        "path": "/organizers/get-organization-members/ssa-league/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: GET organizers/get-organization-public/<slug:slug>/",
+      "generated": true,
+      "route": "organizers/get-organization-public/<slug:slug>/",
+      "attempt": {
+        "as": "b",
+        "method": "GET",
+        "path": "/organizers/get-organization-public/ssa-league/",
+        "expect": [
+          200
+        ]
+      },
+      "r88": {
+        "skip": [
+          "existence"
+        ],
+        "reason": "an organization's public page, by name"
+      }
+    },
+    {
+      "name": "R88 generated: GET organizers/get-organization/<slug:slug>/",
+      "generated": true,
+      "route": "organizers/get-organization/<slug:slug>/",
+      "attempt": {
+        "as": "b",
+        "method": "GET",
+        "path": "/organizers/get-organization/ssa-league/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: GET organizers/leaderboard-fonts/by-id/<int:font_id>/file/",
+      "generated": true,
+      "route": "organizers/leaderboard-fonts/by-id/<int:font_id>/file/",
+      "attempt": {
+        "as": "b",
+        "method": "GET",
+        "path": "/organizers/leaderboard-fonts/by-id/4/file/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: GET organizers/metrics/<slug:slug>/",
+      "generated": true,
+      "route": "organizers/metrics/<slug:slug>/",
+      "attempt": {
+        "as": "b",
+        "method": "GET",
+        "path": "/organizers/metrics/ssa-league/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: GET organizers/organization/<slug:slug>/ai-key/",
+      "generated": true,
+      "route": "organizers/organization/<slug:slug>/ai-key/",
+      "attempt": {
+        "as": "b",
+        "method": "GET",
+        "path": "/organizers/organization/ssa-league/ai-key/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: GET organizers/organization/<slug:slug>/ai-key/history/",
+      "generated": true,
+      "route": "organizers/organization/<slug:slug>/ai-key/history/",
+      "attempt": {
+        "as": "b",
+        "method": "GET",
+        "path": "/organizers/organization/ssa-league/ai-key/history/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: GET organizers/organization/<slug:slug>/ai-key/usage/",
+      "generated": true,
+      "route": "organizers/organization/<slug:slug>/ai-key/usage/",
+      "attempt": {
+        "as": "b",
+        "method": "GET",
+        "path": "/organizers/organization/ssa-league/ai-key/usage/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: GET partner-apply/admin/applications/<int:application_id>/",
+      "generated": true,
+      "route": "partner-apply/admin/applications/<int:application_id>/",
+      "attempt": {
+        "as": "b",
+        "method": "GET",
+        "path": "/partner-apply/admin/applications/5/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: GET partners/admin/<slug:slug>/",
+      "generated": true,
+      "route": "partners/admin/<slug:slug>/",
+      "attempt": {
+        "as": "b",
+        "method": "GET",
+        "path": "/partners/admin/no-such-slug/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: GET polls/<slug:slug>/",
+      "generated": true,
+      "route": "polls/<slug:slug>/",
+      "attempt": {
+        "as": "b",
+        "method": "GET",
+        "path": "/polls/best-moment-of-the-season/",
+        "expect": [
+          200
+        ]
+      },
+      "r88": {
+        "skip": [
+          "existence"
+        ],
+        "reason": "a published poll players answer; drafts and results management are the admin/ addresses, which refuse"
+      }
+    },
+    {
+      "name": "R88 generated: GET polls/admin/editions/<slug:slug>/",
+      "generated": true,
+      "route": "polls/admin/editions/<slug:slug>/",
+      "attempt": {
+        "as": "b",
+        "method": "GET",
+        "path": "/polls/admin/editions/best-moment-of-the-season/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: GET polls/admin/polls/<slug:slug>/",
+      "generated": true,
+      "route": "polls/admin/polls/<slug:slug>/",
+      "attempt": {
+        "as": "b",
+        "method": "GET",
+        "path": "/polls/admin/polls/best-moment-of-the-season/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: GET polls/admin/polls/<slug:slug>/results/",
+      "generated": true,
+      "route": "polls/admin/polls/<slug:slug>/results/",
+      "attempt": {
+        "as": "b",
+        "method": "GET",
+        "path": "/polls/admin/polls/best-moment-of-the-season/results/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: GET polls/editions/<slug:slug>/",
+      "generated": true,
+      "route": "polls/editions/<slug:slug>/",
+      "attempt": {
+        "as": "b",
+        "method": "GET",
+        "path": "/polls/editions/best-moment-of-the-season/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: GET rankings/admin/players/<int:player_id>/raw/",
+      "generated": true,
+      "route": "rankings/admin/players/<int:player_id>/raw/",
+      "attempt": {
+        "as": "b",
+        "method": "GET",
+        "path": "/rankings/admin/players/9114/raw/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: GET rankings/admin/seasons/<int:season_id>/social/",
+      "generated": true,
+      "route": "rankings/admin/seasons/<int:season_id>/social/",
+      "attempt": {
+        "as": "b",
+        "method": "GET",
+        "path": "/rankings/admin/seasons/4/social/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: GET rankings/admin/teams/<int:team_id>/raw/",
+      "generated": true,
+      "route": "rankings/admin/teams/<int:team_id>/raw/",
+      "attempt": {
+        "as": "b",
+        "method": "GET",
+        "path": "/rankings/admin/teams/820/raw/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: GET rankings/event-counting/<int:event_id>/",
+      "generated": true,
+      "route": "rankings/event-counting/<int:event_id>/",
+      "attempt": {
+        "as": "b",
+        "method": "GET",
+        "path": "/rankings/event-counting/229/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: GET rankings/event-tier-rules/<int:rule_id>/",
+      "generated": true,
+      "route": "rankings/event-tier-rules/<int:rule_id>/",
+      "attempt": {
+        "as": "b",
+        "method": "GET",
+        "path": "/rankings/event-tier-rules/20/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: GET rankings/ghost-teams/<uuid:ghost_team_id>/",
+      "generated": true,
+      "route": "rankings/ghost-teams/<uuid:ghost_team_id>/",
+      "attempt": {
+        "as": "b",
+        "method": "GET",
+        "path": "/rankings/ghost-teams/ff24afe9-f225-40d3-97eb-8045c0f8a6af/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: GET rankings/players/<int:player_id>/score/",
+      "generated": true,
+      "route": "rankings/players/<int:player_id>/score/",
+      "attempt": {
+        "as": "b",
+        "method": "GET",
+        "path": "/rankings/players/9114/score/",
+        "expect": [
+          200
+        ]
+      },
+      "r88": {
+        "skip": [
+          "anon",
+          "neighbours",
+          "existence"
+        ],
+        "reason": "public by design: public content, decided 2026-09-13"
+      }
+    },
+    {
+      "name": "R88 generated: GET rankings/prize/<int:payout_id>/",
+      "generated": true,
+      "route": "rankings/prize/<int:payout_id>/",
+      "attempt": {
+        "as": "b",
+        "method": "GET",
+        "path": "/rankings/prize/128/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: GET rankings/seasons/<int:season_id>/transfer-log/",
+      "generated": true,
+      "route": "rankings/seasons/<int:season_id>/transfer-log/",
+      "attempt": {
+        "as": "b",
+        "method": "GET",
+        "path": "/rankings/seasons/4/transfer-log/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: GET rankings/teams/<int:team_id>/score/",
+      "generated": true,
+      "route": "rankings/teams/<int:team_id>/score/",
+      "attempt": {
+        "as": "b",
+        "method": "GET",
+        "path": "/rankings/teams/820/score/",
+        "expect": [
+          200
+        ]
+      },
+      "r88": {
+        "skip": [
+          "anon",
+          "neighbours",
+          "existence"
+        ],
+        "reason": "public by design: public content, decided 2026-09-13"
+      }
+    },
+    {
+      "name": "R88 generated: GET referrals/admin/programs/<slug:slug>/",
+      "generated": true,
+      "route": "referrals/admin/programs/<slug:slug>/",
+      "attempt": {
+        "as": "b",
+        "method": "GET",
+        "path": "/referrals/admin/programs/no-such-slug/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: GET referrals/admin/programs/<slug:slug>/export/",
+      "generated": true,
+      "route": "referrals/admin/programs/<slug:slug>/export/",
+      "attempt": {
+        "as": "b",
+        "method": "GET",
+        "path": "/referrals/admin/programs/no-such-slug/export/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: GET referrals/admin/programs/<slug:slug>/referrals/",
+      "generated": true,
+      "route": "referrals/admin/programs/<slug:slug>/referrals/",
+      "attempt": {
+        "as": "b",
+        "method": "GET",
+        "path": "/referrals/admin/programs/no-such-slug/referrals/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: GET referrals/admin/programs/<slug:slug>/rewards/",
+      "generated": true,
+      "route": "referrals/admin/programs/<slug:slug>/rewards/",
+      "attempt": {
+        "as": "b",
+        "method": "GET",
+        "path": "/referrals/admin/programs/no-such-slug/rewards/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: GET sponsors/<int:sponsor_id>/",
+      "generated": true,
+      "route": "sponsors/<int:sponsor_id>/",
+      "attempt": {
+        "as": "b",
+        "method": "GET",
+        "path": "/sponsors/2/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: GET sponsors/<int:sponsor_id>/events/",
+      "generated": true,
+      "route": "sponsors/<int:sponsor_id>/events/",
+      "attempt": {
+        "as": "b",
+        "method": "GET",
+        "path": "/sponsors/2/events/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: GET sponsors/<int:sponsor_id>/events/<int:event_id>/engagement-submissions/",
+      "generated": true,
+      "route": "sponsors/<int:sponsor_id>/events/<int:event_id>/engagement-submissions/",
+      "attempt": {
+        "as": "b",
+        "method": "GET",
+        "path": "/sponsors/2/events/229/engagement-submissions/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: GET sponsors/<int:sponsor_id>/events/<int:event_id>/submissions/",
+      "generated": true,
+      "route": "sponsors/<int:sponsor_id>/events/<int:event_id>/submissions/",
+      "attempt": {
+        "as": "b",
+        "method": "GET",
+        "path": "/sponsors/2/events/229/submissions/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: GET sponsors/<int:sponsor_id>/members/invites/",
+      "generated": true,
+      "route": "sponsors/<int:sponsor_id>/members/invites/",
+      "attempt": {
+        "as": "b",
+        "method": "GET",
+        "path": "/sponsors/2/members/invites/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: GET sponsors/for-event/<int:event_id>/",
+      "generated": true,
+      "route": "sponsors/for-event/<int:event_id>/",
+      "attempt": {
+        "as": "b",
+        "method": "GET",
+        "path": "/sponsors/for-event/229/",
+        "expect": [
+          200
+        ]
+      },
+      "r88": {
+        "skip": [
+          "anon",
+          "neighbours",
+          "existence"
+        ],
+        "reason": "public by design: public content, decided 2026-09-13"
+      }
+    },
+    {
+      "name": "R88 generated: GET sponsors/my-submissions/<int:event_id>/",
+      "generated": true,
+      "route": "sponsors/my-submissions/<int:event_id>/",
+      "attempt": {
+        "as": "b",
+        "method": "GET",
+        "path": "/sponsors/my-submissions/229/",
+        "expect": [
+          200
+        ]
+      },
+      "r88": {
+        "skip": [
+          "existence"
+        ],
+        "reason": "the CALLER's own engagement submissions for that event, filtered by the session user"
+      }
+    },
+    {
+      "name": "R88 generated: GET sso/admin/apps/<int:application_id>/",
+      "generated": true,
+      "route": "sso/admin/apps/<int:application_id>/",
+      "attempt": {
+        "as": "b",
+        "method": "GET",
+        "path": "/sso/admin/apps/6/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: GET support/attachments/<int:attachment_id>/",
+      "generated": true,
+      "route": "support/attachments/<int:attachment_id>/",
+      "attempt": {
+        "as": "b",
+        "method": "GET",
+        "path": "/support/attachments/1/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: GET team/get-team-details-based-on-invite/<str:invite_id>/",
+      "generated": true,
+      "route": "team/get-team-details-based-on-invite/<str:invite_id>/",
+      "attempt": {
+        "as": "b",
+        "method": "GET",
+        "path": "/team/get-team-details-based-on-invite/ffeb8613-a389-4513-aa48-87533f4a3a18/",
+        "expect": [
+          200,
+          400
+        ]
+      },
+      "r88": {
+        "skip": [
+          "existence",
+          "neighbours"
+        ],
+        "reason": "the invite link's own landing data (team name, logo); the uuid is the capability"
+      }
+    },
+    {
+      "name": "R88 generated: PATCH auth/admin/player-reports/<int:report_id>/",
+      "generated": true,
+      "route": "auth/admin/player-reports/<int:report_id>/",
+      "attempt": {
+        "as": "b",
+        "method": "PATCH",
+        "path": "/auth/admin/player-reports/1/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: PATCH auth/watchlist/<int:watch_id>/",
+      "generated": true,
+      "route": "auth/watchlist/<int:watch_id>/",
+      "attempt": {
+        "as": "b",
+        "method": "PATCH",
+        "path": "/auth/watchlist/1/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: PATCH events/h2h-matches/<int:match_id>/",
+      "generated": true,
+      "route": "events/h2h-matches/<int:match_id>/",
+      "attempt": {
+        "as": "b",
+        "method": "PATCH",
+        "path": "/events/h2h-matches/3816/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: PATCH feedback/admin/submissions/<int:submission_id>/",
+      "generated": true,
+      "route": "feedback/admin/submissions/<int:submission_id>/",
+      "attempt": {
+        "as": "b",
+        "method": "PATCH",
+        "path": "/feedback/admin/submissions/999999/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: PATCH leaderboards/standalone/<int:lb_id>/edit/",
+      "generated": true,
+      "route": "leaderboards/standalone/<int:lb_id>/edit/",
+      "attempt": {
+        "as": "b",
+        "method": "PATCH",
+        "path": "/leaderboards/standalone/11/edit/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: PATCH organizers/admin/edit-organization/<slug:slug>/",
+      "generated": true,
+      "route": "organizers/admin/edit-organization/<slug:slug>/",
+      "attempt": {
+        "as": "b",
+        "method": "PATCH",
+        "path": "/organizers/admin/edit-organization/ssa-league/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: PATCH organizers/admin/reports/<int:report_id>/",
+      "generated": true,
+      "route": "organizers/admin/reports/<int:report_id>/",
+      "attempt": {
+        "as": "b",
+        "method": "PATCH",
+        "path": "/organizers/admin/reports/999999/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: PATCH organizers/edit-organization-member/<slug:slug>/<int:user_id>/",
+      "generated": true,
+      "route": "organizers/edit-organization-member/<slug:slug>/<int:user_id>/",
+      "attempt": {
+        "as": "b",
+        "method": "PATCH",
+        "path": "/organizers/edit-organization-member/ssa-league/9114/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: PATCH organizers/edit-organization-profile/<slug:slug>/",
+      "generated": true,
+      "route": "organizers/edit-organization-profile/<slug:slug>/",
+      "attempt": {
+        "as": "b",
+        "method": "PATCH",
+        "path": "/organizers/edit-organization-profile/ssa-league/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: PATCH organizers/leaderboard-designs/by-id/<int:design_id>/",
+      "generated": true,
+      "route": "organizers/leaderboard-designs/by-id/<int:design_id>/",
+      "attempt": {
+        "as": "b",
+        "method": "PATCH",
+        "path": "/organizers/leaderboard-designs/by-id/11/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: PATCH organizers/leaderboard-designs/by-id/<int:design_id>/fields/<int:field_id>/",
+      "generated": true,
+      "route": "organizers/leaderboard-designs/by-id/<int:design_id>/fields/<int:field_id>/",
+      "attempt": {
+        "as": "b",
+        "method": "PATCH",
+        "path": "/organizers/leaderboard-designs/by-id/11/fields/83/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: PATCH organizers/leaderboard-designs/by-id/<int:design_id>/logos/<int:logo_id>/",
+      "generated": true,
+      "route": "organizers/leaderboard-designs/by-id/<int:design_id>/logos/<int:logo_id>/",
+      "attempt": {
+        "as": "b",
+        "method": "PATCH",
+        "path": "/organizers/leaderboard-designs/by-id/11/logos/1/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: PATCH organizers/leaderboard-designs/by-id/<int:design_id>/pages/<int:page_id>/",
+      "generated": true,
+      "route": "organizers/leaderboard-designs/by-id/<int:design_id>/pages/<int:page_id>/",
+      "attempt": {
+        "as": "b",
+        "method": "PATCH",
+        "path": "/organizers/leaderboard-designs/by-id/11/pages/1/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: PATCH organizers/leaderboard-designs/by-id/<int:design_id>/texts/<int:text_id>/",
+      "generated": true,
+      "route": "organizers/leaderboard-designs/by-id/<int:design_id>/texts/<int:text_id>/",
+      "attempt": {
+        "as": "b",
+        "method": "PATCH",
+        "path": "/organizers/leaderboard-designs/by-id/11/texts/2/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: PATCH player-market/admin/reports/<int:report_id>/",
+      "generated": true,
+      "route": "player-market/admin/reports/<int:report_id>/",
+      "attempt": {
+        "as": "b",
+        "method": "PATCH",
+        "path": "/player-market/admin/reports/999999/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: PATCH rankings/admin/seasons/<int:season_id>/social/<int:team_id>/",
+      "generated": true,
+      "route": "rankings/admin/seasons/<int:season_id>/social/<int:team_id>/",
+      "attempt": {
+        "as": "b",
+        "method": "PATCH",
+        "path": "/rankings/admin/seasons/4/social/820/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: PATCH rankings/seasons/<int:season_id>/",
+      "generated": true,
+      "route": "rankings/seasons/<int:season_id>/",
+      "attempt": {
+        "as": "b",
+        "method": "PATCH",
+        "path": "/rankings/seasons/4/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: PATCH rankings/seasons/<int:season_id>/publish/",
+      "generated": true,
+      "route": "rankings/seasons/<int:season_id>/publish/",
+      "attempt": {
+        "as": "b",
+        "method": "PATCH",
+        "path": "/rankings/seasons/4/publish/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: PATCH rankings/seasons/<int:season_id>/team-tier/<int:team_id>/",
+      "generated": true,
+      "route": "rankings/seasons/<int:season_id>/team-tier/<int:team_id>/",
+      "attempt": {
+        "as": "b",
+        "method": "PATCH",
+        "path": "/rankings/seasons/4/team-tier/820/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: PATCH rankings/seasons/<int:season_id>/transfer-window/",
+      "generated": true,
+      "route": "rankings/seasons/<int:season_id>/transfer-window/",
+      "attempt": {
+        "as": "b",
+        "method": "PATCH",
+        "path": "/rankings/seasons/4/transfer-window/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: PATCH sponsors/<int:sponsor_id>/edit/",
+      "generated": true,
+      "route": "sponsors/<int:sponsor_id>/edit/",
+      "attempt": {
+        "as": "b",
+        "method": "PATCH",
+        "path": "/sponsors/2/edit/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: PATCH sponsors/<int:sponsor_id>/events/<int:event_id>/configure/",
+      "generated": true,
+      "route": "sponsors/<int:sponsor_id>/events/<int:event_id>/configure/",
+      "attempt": {
+        "as": "b",
+        "method": "PATCH",
+        "path": "/sponsors/2/events/229/configure/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: POST auth/admin/deleted-accounts/<int:user_id>/restore/",
+      "generated": true,
+      "route": "auth/admin/deleted-accounts/<int:user_id>/restore/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/auth/admin/deleted-accounts/9114/restore/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: POST draws/<int:draw_id>/close/",
+      "generated": true,
+      "route": "draws/<int:draw_id>/close/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/draws/999999/close/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: POST draws/<int:draw_id>/open/",
+      "generated": true,
+      "route": "draws/<int:draw_id>/open/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/draws/999999/open/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: POST draws/<int:draw_id>/pick/",
+      "generated": true,
+      "route": "draws/<int:draw_id>/pick/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/draws/999999/pick/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: POST draws/<int:draw_id>/remind/",
+      "generated": true,
+      "route": "draws/<int:draw_id>/remind/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/draws/999999/remind/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: POST draws/<int:draw_id>/reset/",
+      "generated": true,
+      "route": "draws/<int:draw_id>/reset/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/draws/999999/reset/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: POST draws/<int:draw_id>/window/",
+      "generated": true,
+      "route": "draws/<int:draw_id>/window/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/draws/999999/window/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: POST draws/stages/<int:stage_id>/create/",
+      "generated": true,
+      "route": "draws/stages/<int:stage_id>/create/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/draws/stages/378/create/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: POST events/<int:event_id>/broadcast-kit/download/",
+      "generated": true,
+      "route": "events/<int:event_id>/broadcast-kit/download/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/events/229/broadcast-kit/download/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: POST events/<int:event_id>/broadcast/set/",
+      "generated": true,
+      "route": "events/<int:event_id>/broadcast/set/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/events/229/broadcast/set/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: POST events/<int:event_id>/debugger-backfill/",
+      "generated": true,
+      "route": "events/<int:event_id>/debugger-backfill/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/events/229/debugger-backfill/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: POST events/<int:event_id>/duplicate-event/",
+      "generated": true,
+      "route": "events/<int:event_id>/duplicate-event/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/events/229/duplicate-event/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: POST events/<int:event_id>/import-competitors/",
+      "generated": true,
+      "route": "events/<int:event_id>/import-competitors/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/events/229/import-competitors/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: POST events/<int:event_id>/links/create/",
+      "generated": true,
+      "route": "events/<int:event_id>/links/create/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/events/229/links/create/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: POST events/<int:event_id>/media-flags/",
+      "generated": true,
+      "route": "events/<int:event_id>/media-flags/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/events/229/media-flags/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: POST events/<int:event_id>/media-flags/<int:flag_id>/resolve/",
+      "generated": true,
+      "route": "events/<int:event_id>/media-flags/<int:flag_id>/resolve/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/events/229/media-flags/2/resolve/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: POST events/<int:event_id>/media-image-check/clear/",
+      "generated": true,
+      "route": "events/<int:event_id>/media-image-check/clear/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/events/229/media-image-check/clear/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: POST events/<int:event_id>/media-opt-outs/",
+      "generated": true,
+      "route": "events/<int:event_id>/media-opt-outs/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/events/229/media-opt-outs/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: POST events/<int:event_id>/media-upload/",
+      "generated": true,
+      "route": "events/<int:event_id>/media-upload/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/events/229/media-upload/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: POST events/<int:event_id>/overlay/token/",
+      "generated": true,
+      "route": "events/<int:event_id>/overlay/token/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/events/229/overlay/token/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: POST events/<int:event_id>/overlays/<int:overlay_id>/delete/",
+      "generated": true,
+      "route": "events/<int:event_id>/overlays/<int:overlay_id>/delete/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/events/229/overlays/13/delete/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: POST events/<int:event_id>/overlays/<int:overlay_id>/duplicate/",
+      "generated": true,
+      "route": "events/<int:event_id>/overlays/<int:overlay_id>/duplicate/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/events/229/overlays/13/duplicate/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: POST events/<int:event_id>/overlays/<int:overlay_id>/update/",
+      "generated": true,
+      "route": "events/<int:event_id>/overlays/<int:overlay_id>/update/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/events/229/overlays/13/update/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: POST events/<int:event_id>/overlays/create/",
+      "generated": true,
+      "route": "events/<int:event_id>/overlays/create/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/events/229/overlays/create/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: POST events/<int:event_id>/pending-captures/<int:pending_id>/discard/",
+      "generated": true,
+      "route": "events/<int:event_id>/pending-captures/<int:pending_id>/discard/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/events/229/pending-captures/999999/discard/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: POST events/<int:event_id>/pending-captures/<int:pending_id>/resolve/",
+      "generated": true,
+      "route": "events/<int:event_id>/pending-captures/<int:pending_id>/resolve/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/events/229/pending-captures/999999/resolve/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: POST events/<int:event_id>/set-tier/",
+      "generated": true,
+      "route": "events/<int:event_id>/set-tier/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/events/229/set-tier/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: POST events/<int:event_id>/upload/token/",
+      "generated": true,
+      "route": "events/<int:event_id>/upload/token/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/events/229/upload/token/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: POST events/h2h-matches/<int:match_id>/result/",
+      "generated": true,
+      "route": "events/h2h-matches/<int:match_id>/result/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/events/h2h-matches/3816/result/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: POST events/h2h-matches/<int:match_id>/submit-result/",
+      "generated": true,
+      "route": "events/h2h-matches/<int:match_id>/submit-result/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/events/h2h-matches/3816/submit-result/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: POST events/h2h-submissions/<int:submission_id>/approve/",
+      "generated": true,
+      "route": "events/h2h-submissions/<int:submission_id>/approve/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/events/h2h-submissions/999999/approve/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: POST events/h2h-submissions/<int:submission_id>/reject/",
+      "generated": true,
+      "route": "events/h2h-submissions/<int:submission_id>/reject/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/events/h2h-submissions/999999/reject/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: POST events/invitation-campaigns/<int:campaign_id>/accept/",
+      "generated": true,
+      "route": "events/invitation-campaigns/<int:campaign_id>/accept/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/events/invitation-campaigns/11/accept/",
+        "expect": [
+          400
+        ]
+      },
+      "r88": {
+        "skip": [
+          "existence"
+        ],
+        "reason": "team-scoped: whoever may register the invited team (views._user_can_register_team on the body's team_id); 400 is the empty body"
+      }
+    },
+    {
+      "name": "R88 generated: POST events/invitation-campaigns/<int:campaign_id>/close/",
+      "generated": true,
+      "route": "events/invitation-campaigns/<int:campaign_id>/close/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/events/invitation-campaigns/11/close/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: POST events/invitation-campaigns/<int:campaign_id>/decline/",
+      "generated": true,
+      "route": "events/invitation-campaigns/<int:campaign_id>/decline/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/events/invitation-campaigns/11/decline/",
+        "expect": [
+          400
+        ]
+      },
+      "r88": {
+        "skip": [
+          "existence"
+        ],
+        "reason": "same gate as accept"
+      }
+    },
+    {
+      "name": "R88 generated: POST events/links/<int:link_id>/decide/",
+      "generated": true,
+      "route": "events/links/<int:link_id>/decide/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/events/links/20/decide/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: POST events/links/<int:link_id>/fire/",
+      "generated": true,
+      "route": "events/links/<int:link_id>/fire/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/events/links/20/fire/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: POST events/ocr-session/<uuid:session_id>/commit/",
+      "generated": true,
+      "route": "events/ocr-session/<uuid:session_id>/commit/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/events/ocr-session/799784ad-211d-4bbc-88a2-b45c27fe8bd2/commit/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: POST events/public-sponsors/<int:sponsor_id>/update/",
+      "generated": true,
+      "route": "events/public-sponsors/<int:sponsor_id>/update/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/events/public-sponsors/2/update/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: POST events/stages/<int:stage_id>/bracket/generate/",
+      "generated": true,
+      "route": "events/stages/<int:stage_id>/bracket/generate/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/events/stages/378/bracket/generate/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: POST events/team-invitations/<int:invitation_id>/accept/",
+      "generated": true,
+      "route": "events/team-invitations/<int:invitation_id>/accept/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/events/team-invitations/27/accept/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: POST events/team-invitations/<int:invitation_id>/cancel/",
+      "generated": true,
+      "route": "events/team-invitations/<int:invitation_id>/cancel/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/events/team-invitations/27/cancel/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: POST events/team-invitations/<int:invitation_id>/decline/",
+      "generated": true,
+      "route": "events/team-invitations/<int:invitation_id>/decline/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/events/team-invitations/27/decline/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: POST events/team-map-results/<int:submission_id>/approve/",
+      "generated": true,
+      "route": "events/team-map-results/<int:submission_id>/approve/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/events/team-map-results/999999/approve/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: POST events/team-map-results/<int:submission_id>/reject/",
+      "generated": true,
+      "route": "events/team-map-results/<int:submission_id>/reject/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/events/team-map-results/999999/reject/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: POST leaderboards/standalone/<int:lb_id>/matches/",
+      "generated": true,
+      "route": "leaderboards/standalone/<int:lb_id>/matches/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/leaderboards/standalone/11/matches/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: POST leaderboards/standalone/<int:lb_id>/ocr/",
+      "generated": true,
+      "route": "leaderboards/standalone/<int:lb_id>/ocr/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/leaderboards/standalone/11/ocr/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: POST leaderboards/standalone/<int:lb_id>/ocr/apply/",
+      "generated": true,
+      "route": "leaderboards/standalone/<int:lb_id>/ocr/apply/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/leaderboards/standalone/11/ocr/apply/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: POST leaderboards/standalone/<int:lb_id>/ocr/jobs/<uuid:job_id>/apply/",
+      "generated": true,
+      "route": "leaderboards/standalone/<int:lb_id>/ocr/jobs/<uuid:job_id>/apply/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/leaderboards/standalone/11/ocr/jobs/722313d7-af34-4e73-aa93-19fc3a9e5a9b/apply/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: POST leaderboards/standalone/<int:lb_id>/ocr/jobs/<uuid:job_id>/run/",
+      "generated": true,
+      "route": "leaderboards/standalone/<int:lb_id>/ocr/jobs/<uuid:job_id>/run/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/leaderboards/standalone/11/ocr/jobs/722313d7-af34-4e73-aa93-19fc3a9e5a9b/run/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: POST leaderboards/standalone/<int:lb_id>/ocr/jobs/create/",
+      "generated": true,
+      "route": "leaderboards/standalone/<int:lb_id>/ocr/jobs/create/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/leaderboards/standalone/11/ocr/jobs/create/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: POST leaderboards/standalone/<int:lb_id>/ocr/run-all/",
+      "generated": true,
+      "route": "leaderboards/standalone/<int:lb_id>/ocr/run-all/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/leaderboards/standalone/11/ocr/run-all/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: POST leaderboards/standalone/<int:lb_id>/participants/",
+      "generated": true,
+      "route": "leaderboards/standalone/<int:lb_id>/participants/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/leaderboards/standalone/11/participants/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: POST leaderboards/standalone/<int:lb_id>/results-file/",
+      "generated": true,
+      "route": "leaderboards/standalone/<int:lb_id>/results-file/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/leaderboards/standalone/11/results-file/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: POST leaderboards/standalone/matches/<int:mid>/results/",
+      "generated": true,
+      "route": "leaderboards/standalone/matches/<int:mid>/results/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/leaderboards/standalone/matches/999999/results/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: POST organizers/<slug:slug>/payout-account/",
+      "generated": true,
+      "route": "organizers/<slug:slug>/payout-account/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/organizers/ssa-league/payout-account/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: POST organizers/add-organization-member/<slug:slug>/",
+      "generated": true,
+      "route": "organizers/add-organization-member/<slug:slug>/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/organizers/add-organization-member/ssa-league/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: POST organizers/admin/manage-organization-member/<slug:slug>/",
+      "generated": true,
+      "route": "organizers/admin/manage-organization-member/<slug:slug>/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/organizers/admin/manage-organization-member/ssa-league/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: POST organizers/admin/restore-organization/<slug:slug>/",
+      "generated": true,
+      "route": "organizers/admin/restore-organization/<slug:slug>/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/organizers/admin/restore-organization/ssa-league/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: POST organizers/admin/suspend-organization/<slug:slug>/",
+      "generated": true,
+      "route": "organizers/admin/suspend-organization/<slug:slug>/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/organizers/admin/suspend-organization/ssa-league/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: POST organizers/blacklists/<int:blacklist_id>/lift/",
+      "generated": true,
+      "route": "organizers/blacklists/<int:blacklist_id>/lift/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/organizers/blacklists/5/lift/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: POST organizers/blacklists/<int:blacklist_id>/request-lift/",
+      "generated": true,
+      "route": "organizers/blacklists/<int:blacklist_id>/request-lift/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/organizers/blacklists/5/request-lift/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: POST organizers/blacklists/lift-requests/<int:request_id>/decide/",
+      "generated": true,
+      "route": "organizers/blacklists/lift-requests/<int:request_id>/decide/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/organizers/blacklists/lift-requests/999999/decide/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: POST organizers/events/<int:event_id>/comment/",
+      "generated": true,
+      "route": "organizers/events/<int:event_id>/comment/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/organizers/events/229/comment/",
+        "expect": [
+          400
+        ]
+      },
+      "r88": {
+        "skip": [
+          "existence"
+        ],
+        "reason": "any signed-in player may comment on an event; 400 is the empty test body"
+      }
+    },
+    {
+      "name": "R88 generated: POST organizers/events/<int:event_id>/rate/",
+      "generated": true,
+      "route": "organizers/events/<int:event_id>/rate/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/organizers/events/229/rate/",
+        "expect": [
+          400
+        ]
+      },
+      "r88": {
+        "skip": [
+          "existence"
+        ],
+        "reason": "any signed-in player may rate an event they played; 400 is the empty test body"
+      }
+    },
+    {
+      "name": "R88 generated: POST organizers/leaderboard-designs/by-id/<int:design_id>/apply-background-to-all/",
+      "generated": true,
+      "route": "organizers/leaderboard-designs/by-id/<int:design_id>/apply-background-to-all/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/organizers/leaderboard-designs/by-id/11/apply-background-to-all/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: POST organizers/leaderboard-designs/by-id/<int:design_id>/apply-field-enablement-to-all/",
+      "generated": true,
+      "route": "organizers/leaderboard-designs/by-id/<int:design_id>/apply-field-enablement-to-all/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/organizers/leaderboard-designs/by-id/11/apply-field-enablement-to-all/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: POST organizers/leaderboard-designs/by-id/<int:design_id>/duplicate/",
+      "generated": true,
+      "route": "organizers/leaderboard-designs/by-id/<int:design_id>/duplicate/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/organizers/leaderboard-designs/by-id/11/duplicate/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: POST organizers/leaderboard-designs/by-id/<int:design_id>/fields/",
+      "generated": true,
+      "route": "organizers/leaderboard-designs/by-id/<int:design_id>/fields/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/organizers/leaderboard-designs/by-id/11/fields/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: POST organizers/leaderboard-designs/by-id/<int:design_id>/logos/",
+      "generated": true,
+      "route": "organizers/leaderboard-designs/by-id/<int:design_id>/logos/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/organizers/leaderboard-designs/by-id/11/logos/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: POST organizers/leaderboard-designs/by-id/<int:design_id>/pages/",
+      "generated": true,
+      "route": "organizers/leaderboard-designs/by-id/<int:design_id>/pages/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/organizers/leaderboard-designs/by-id/11/pages/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: POST organizers/leaderboard-designs/by-id/<int:design_id>/texts/",
+      "generated": true,
+      "route": "organizers/leaderboard-designs/by-id/<int:design_id>/texts/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/organizers/leaderboard-designs/by-id/11/texts/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: POST organizers/leave-organization/<slug:slug>/",
+      "generated": true,
+      "route": "organizers/leave-organization/<slug:slug>/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/organizers/leave-organization/ssa-league/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: POST organizers/organization/<slug:slug>/ai-key/test/",
+      "generated": true,
+      "route": "organizers/organization/<slug:slug>/ai-key/test/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/organizers/organization/ssa-league/ai-key/test/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: POST organizers/organization/<slug:slug>/delete/",
+      "generated": true,
+      "route": "organizers/organization/<slug:slug>/delete/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/organizers/organization/ssa-league/delete/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: POST organizers/organization/<slug:slug>/suspend/",
+      "generated": true,
+      "route": "organizers/organization/<slug:slug>/suspend/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/organizers/organization/ssa-league/suspend/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: POST organizers/report-organization/<slug:slug>/",
+      "generated": true,
+      "route": "organizers/report-organization/<slug:slug>/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/organizers/report-organization/ssa-league/",
+        "expect": [
+          400
+        ]
+      },
+      "r88": {
+        "skip": [
+          "existence"
+        ],
+        "reason": "any signed-in player may report an organization; 400 is the empty test body"
+      }
+    },
+    {
+      "name": "R88 generated: POST partner-apply/admin/applications/<int:application_id>/decide/",
+      "generated": true,
+      "route": "partner-apply/admin/applications/<int:application_id>/decide/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/partner-apply/admin/applications/5/decide/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: POST partner-apply/admin/applications/<int:application_id>/resend-credentials/",
+      "generated": true,
+      "route": "partner-apply/admin/applications/<int:application_id>/resend-credentials/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/partner-apply/admin/applications/5/resend-credentials/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: POST partners/admin/<slug:slug>/keys/",
+      "generated": true,
+      "route": "partners/admin/<slug:slug>/keys/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/partners/admin/no-such-slug/keys/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: POST partners/admin/<slug:slug>/suspend/",
+      "generated": true,
+      "route": "partners/admin/<slug:slug>/suspend/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/partners/admin/no-such-slug/suspend/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: POST partners/admin/events/<slug:event_slug>/publish/",
+      "generated": true,
+      "route": "partners/admin/events/<slug:event_slug>/publish/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/partners/admin/events/invite-flow-walk/publish/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: POST partners/admin/keys/<int:key_id>/revoke/",
+      "generated": true,
+      "route": "partners/admin/keys/<int:key_id>/revoke/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/partners/admin/keys/20/revoke/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: POST polls/<slug:slug>/responses/",
+      "generated": true,
+      "route": "polls/<slug:slug>/responses/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/polls/best-moment-of-the-season/responses/",
+        "expect": [
+          400
+        ]
+      },
+      "r88": {
+        "skip": [
+          "existence"
+        ],
+        "reason": "answering a poll is the point of a poll; 400 is the empty test body"
+      }
+    },
+    {
+      "name": "R88 generated: POST polls/<slug:slug>/team-answer/",
+      "generated": true,
+      "route": "polls/<slug:slug>/team-answer/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/polls/best-moment-of-the-season/team-answer/",
+        "expect": [
+          400
+        ]
+      },
+      "r88": {
+        "skip": [
+          "existence"
+        ],
+        "reason": "a team's answer to a poll, submitted by its manager; 400 is the empty test body (the team is checked from the body)"
+      }
+    },
+    {
+      "name": "R88 generated: POST polls/admin/polls/<slug:slug>/announce/",
+      "generated": true,
+      "route": "polls/admin/polls/<slug:slug>/announce/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/polls/admin/polls/best-moment-of-the-season/announce/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: POST polls/admin/polls/<slug:slug>/publish-winner/",
+      "generated": true,
+      "route": "polls/admin/polls/<slug:slug>/publish-winner/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/polls/admin/polls/best-moment-of-the-season/publish-winner/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: POST rankings/admin/seasons/<int:season_id>/social/<int:team_id>/connect/",
+      "generated": true,
+      "route": "rankings/admin/seasons/<int:season_id>/social/<int:team_id>/connect/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/rankings/admin/seasons/4/social/820/connect/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: POST rankings/admin/seasons/<int:season_id>/social/<int:team_id>/unverify/",
+      "generated": true,
+      "route": "rankings/admin/seasons/<int:season_id>/social/<int:team_id>/unverify/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/rankings/admin/seasons/4/social/820/unverify/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: POST rankings/admin/seasons/<int:season_id>/social/<int:team_id>/verify/",
+      "generated": true,
+      "route": "rankings/admin/seasons/<int:season_id>/social/<int:team_id>/verify/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/rankings/admin/seasons/4/social/820/verify/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: POST rankings/event-tier-rules/<int:rule_id>/restore/",
+      "generated": true,
+      "route": "rankings/event-tier-rules/<int:rule_id>/restore/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/rankings/event-tier-rules/20/restore/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: POST rankings/ghost-players/<int:player_id>/approve-claim/",
+      "generated": true,
+      "route": "rankings/ghost-players/<int:player_id>/approve-claim/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/rankings/ghost-players/9114/approve-claim/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: POST rankings/ghost-players/<int:player_id>/reject-claim/",
+      "generated": true,
+      "route": "rankings/ghost-players/<int:player_id>/reject-claim/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/rankings/ghost-players/9114/reject-claim/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: POST rankings/ghost-players/<int:player_id>/request-claim/",
+      "generated": true,
+      "route": "rankings/ghost-players/<int:player_id>/request-claim/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/rankings/ghost-players/9114/request-claim/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: POST rankings/ghost-teams/<uuid:ghost_team_id>/approve-claim/",
+      "generated": true,
+      "route": "rankings/ghost-teams/<uuid:ghost_team_id>/approve-claim/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/rankings/ghost-teams/ff24afe9-f225-40d3-97eb-8045c0f8a6af/approve-claim/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: POST rankings/ghost-teams/<uuid:ghost_team_id>/attribute/",
+      "generated": true,
+      "route": "rankings/ghost-teams/<uuid:ghost_team_id>/attribute/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/rankings/ghost-teams/ff24afe9-f225-40d3-97eb-8045c0f8a6af/attribute/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: POST rankings/ghost-teams/<uuid:ghost_team_id>/players/",
+      "generated": true,
+      "route": "rankings/ghost-teams/<uuid:ghost_team_id>/players/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/rankings/ghost-teams/ff24afe9-f225-40d3-97eb-8045c0f8a6af/players/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: POST rankings/ghost-teams/<uuid:ghost_team_id>/reject-claim/",
+      "generated": true,
+      "route": "rankings/ghost-teams/<uuid:ghost_team_id>/reject-claim/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/rankings/ghost-teams/ff24afe9-f225-40d3-97eb-8045c0f8a6af/reject-claim/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: POST rankings/ghost-teams/<uuid:ghost_team_id>/request-claim/",
+      "generated": true,
+      "route": "rankings/ghost-teams/<uuid:ghost_team_id>/request-claim/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/rankings/ghost-teams/ff24afe9-f225-40d3-97eb-8045c0f8a6af/request-claim/",
+        "expect": [
+          400
+        ]
+      },
+      "r88": {
+        "skip": [
+          "existence"
+        ],
+        "reason": "a real team's manager asks to claim a ghost team; the team_id in the body is checked against the caller (_user_can_act_for_team); 400 is the empty body"
+      }
+    },
+    {
+      "name": "R88 generated: POST rankings/ghost-teams/<uuid:ghost_team_id>/revoke-claim/",
+      "generated": true,
+      "route": "rankings/ghost-teams/<uuid:ghost_team_id>/revoke-claim/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/rankings/ghost-teams/ff24afe9-f225-40d3-97eb-8045c0f8a6af/revoke-claim/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: POST rankings/seasons/<int:season_id>/clear-deduction/<int:team_id>/",
+      "generated": true,
+      "route": "rankings/seasons/<int:season_id>/clear-deduction/<int:team_id>/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/rankings/seasons/4/clear-deduction/820/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: POST rankings/seasons/<int:season_id>/deduct-points/<int:team_id>/",
+      "generated": true,
+      "route": "rankings/seasons/<int:season_id>/deduct-points/<int:team_id>/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/rankings/seasons/4/deduct-points/820/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: POST rankings/seasons/<int:season_id>/run-evaluation/",
+      "generated": true,
+      "route": "rankings/seasons/<int:season_id>/run-evaluation/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/rankings/seasons/4/run-evaluation/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: POST rankings/seasons/<int:season_id>/unzero-team/<int:team_id>/",
+      "generated": true,
+      "route": "rankings/seasons/<int:season_id>/unzero-team/<int:team_id>/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/rankings/seasons/4/unzero-team/820/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: POST rankings/seasons/<int:season_id>/zero-player/<int:player_id>/",
+      "generated": true,
+      "route": "rankings/seasons/<int:season_id>/zero-player/<int:player_id>/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/rankings/seasons/4/zero-player/9114/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: POST rankings/seasons/<int:season_id>/zero-team/<int:team_id>/",
+      "generated": true,
+      "route": "rankings/seasons/<int:season_id>/zero-team/<int:team_id>/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/rankings/seasons/4/zero-team/820/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: POST referrals/admin/programs/<slug:slug>/award-ranks/",
+      "generated": true,
+      "route": "referrals/admin/programs/<slug:slug>/award-ranks/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/referrals/admin/programs/no-such-slug/award-ranks/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: POST shop/fulfilment/orders/<int:order_id>/message/",
+      "generated": true,
+      "route": "shop/fulfilment/orders/<int:order_id>/message/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/shop/fulfilment/orders/999999/message/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: POST sponsors/<int:sponsor_id>/events/attach/",
+      "generated": true,
+      "route": "sponsors/<int:sponsor_id>/events/attach/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/sponsors/2/events/attach/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: POST sponsors/<int:sponsor_id>/members/add/",
+      "generated": true,
+      "route": "sponsors/<int:sponsor_id>/members/add/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/sponsors/2/members/add/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: POST sponsors/<int:sponsor_id>/members/invite/",
+      "generated": true,
+      "route": "sponsors/<int:sponsor_id>/members/invite/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/sponsors/2/members/invite/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: POST sponsors/submissions/<int:submission_id>/decide/",
+      "generated": true,
+      "route": "sponsors/submissions/<int:submission_id>/decide/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/sponsors/submissions/5/decide/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: POST sponsors/submissions/<int:submission_id>/resubmit/",
+      "generated": true,
+      "route": "sponsors/submissions/<int:submission_id>/resubmit/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/sponsors/submissions/5/resubmit/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: POST sso/admin/apps/<int:application_id>/rotate-secret/",
+      "generated": true,
+      "route": "sso/admin/apps/<int:application_id>/rotate-secret/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/sso/admin/apps/6/rotate-secret/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: POST sso/admin/apps/<int:application_id>/suspend/",
+      "generated": true,
+      "route": "sso/admin/apps/<int:application_id>/suspend/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/sso/admin/apps/6/suspend/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: POST team/respond-invite/<str:invite_id>/",
+      "generated": true,
+      "route": "team/respond-invite/<str:invite_id>/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/team/respond-invite/ffeb8613-a389-4513-aa48-87533f4a3a18/",
+        "expect": [
+          400
+        ]
+      },
+      "r88": {
+        "skip": [
+          "existence",
+          "neighbours"
+        ],
+        "reason": "the invite id IS the capability (an unguessable uuid sent as a link); answering it is the point. 400 is the empty action"
+      }
+    },
+    {
+      "name": "R88 generated: PUT organizers/admin/ai-keys/<int:org_id>/allowance/",
+      "generated": true,
+      "route": "organizers/admin/ai-keys/<int:org_id>/allowance/",
+      "attempt": {
+        "as": "b",
+        "method": "PUT",
+        "path": "/organizers/admin/ai-keys/10/allowance/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: PUT organizers/admin/ai-keys/<int:org_id>/ocr-disabled/",
+      "generated": true,
+      "route": "organizers/admin/ai-keys/<int:org_id>/ocr-disabled/",
+      "attempt": {
+        "as": "b",
+        "method": "PUT",
+        "path": "/organizers/admin/ai-keys/10/ocr-disabled/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "R88 generated: PUT polls/admin/polls/<slug:slug>/questions/",
+      "generated": true,
+      "route": "polls/admin/polls/<slug:slug>/questions/",
+      "attempt": {
+        "as": "b",
+        "method": "PUT",
+        "path": "/polls/admin/polls/best-moment-of-the-season/questions/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
         ]
       }
     }

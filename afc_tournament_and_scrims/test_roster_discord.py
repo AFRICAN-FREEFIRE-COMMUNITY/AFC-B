@@ -161,7 +161,7 @@ class RosterDiscordStatusTests(TestCase):
             URL, data=json.dumps({"user_ids": [1]}),
             content_type="application/json",
         )
-        self.assertEqual(res.status_code, 400)
+        self.assertEqual(res.status_code, 401)
 
     def test_bad_token_401(self):
         res = self._post([1], tok="not_a_real_token")

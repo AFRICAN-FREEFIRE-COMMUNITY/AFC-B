@@ -93,13 +93,13 @@ def _require_auth(request):
     session_token = request.headers.get("Authorization")
     if not session_token:
         return None, Response(
-            {"message": "Authorization header is required", "code": "authorization_header_required"},
-            status=status.HTTP_400_BAD_REQUEST,
+            {"message": "Please sign in to continue.", "code": "authorization_header_required"},
+            status=status.HTTP_401_UNAUTHORIZED,
         )
     if not session_token.startswith("Bearer "):
         return None, Response(
-            {"message": "Invalid token format", "code": "invalid_token_format"},
-            status=status.HTTP_400_BAD_REQUEST,
+            {"message": "Please sign in to continue.", "code": "invalid_token_format"},
+            status=status.HTTP_401_UNAUTHORIZED,
         )
     session_token = session_token.split(" ")[1]
     user = validate_token(session_token)

@@ -36,8 +36,8 @@ def _require_player(request):
     header = request.headers.get("Authorization")
     if not header or not header.startswith("Bearer "):
         return None, Response(
-            {"message": "Authorization header is required", "code": "authorization_header_required"},
-            status=status.HTTP_400_BAD_REQUEST,
+            {"message": "Please sign in to continue.", "code": "authorization_header_required"},
+            status=status.HTTP_401_UNAUTHORIZED,
         )
     user = validate_token(header.split(" ")[1])
     if not user:

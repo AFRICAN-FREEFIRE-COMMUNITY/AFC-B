@@ -35,7 +35,7 @@ _WAITING_REPORT_STATES = ("open", "reviewing")
 def admin_nav_counts(request):
     auth = request.headers.get("Authorization") or ""
     if not auth.startswith("Bearer "):
-        return Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=status.HTTP_401_UNAUTHORIZED)
     user = validate_token(auth.split(" ", 1)[1].strip())
     if not user:
         return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=status.HTTP_401_UNAUTHORIZED)

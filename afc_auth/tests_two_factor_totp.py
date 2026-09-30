@@ -276,7 +276,7 @@ class TotpEnrolmentTests(TotpTestBase):
         self.assertIn("session_token", self.do_login().json())
 
     def test_setup_requires_a_session(self):
-        self.assertEqual(self.post("/auth/two-factor/totp/setup/", {}).status_code, 400)
+        self.assertEqual(self.post("/auth/two-factor/totp/setup/", {}).status_code, 401)
         self.assertEqual(
             self.post("/auth/two-factor/totp/setup/", {}, token="nope").status_code, 401)
 

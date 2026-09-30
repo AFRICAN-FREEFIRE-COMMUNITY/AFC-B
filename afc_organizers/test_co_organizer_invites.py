@@ -78,7 +78,7 @@ class CoOrganizerInviteTests(TestCase):
             r = self.client.get("/organizers/co-organizers/mine/", **auth)
             self.assertEqual(r.status_code, 200)
             self.assertEqual(r.json()["invites"], [])
-        self.assertEqual(self.client.get("/organizers/co-organizers/mine/").status_code, 400)
+        self.assertEqual(self.client.get("/organizers/co-organizers/mine/").status_code, 401)
 
     def test_the_notification_opens_the_invites_page(self):
         self._invite(can_view_metrics=True)

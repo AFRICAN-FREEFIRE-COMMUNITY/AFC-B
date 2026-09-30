@@ -31,7 +31,7 @@ def _require_event_manager(request, event):
     """(user, None) when the caller may manage this event's registrations, else (None, Response)."""
     header = request.headers.get("Authorization")
     if not header or not header.startswith("Bearer "):
-        return None, Response({"message": "Invalid token.", "code": "invalid_token"}, status=400)
+        return None, Response({"message": "Please sign in to continue.", "code": "invalid_token"}, status=401)
     user = validate_token(header.split(" ")[1])
     if not user:
         return None, Response({"message": "Unauthorized.", "code": "require_event_manager_unauthorized"}, status=403)

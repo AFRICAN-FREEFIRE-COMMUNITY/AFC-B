@@ -69,7 +69,7 @@ class CrudTests(TestCase):
 
     def test_create_requires_auth(self):
         resp = self.client.post("/leaderboards/standalone/create/", data=json.dumps({"name": "X", "format": "team"}), content_type="application/json")
-        self.assertEqual(resp.status_code, 400)  # missing Authorization header
+        self.assertEqual(resp.status_code, 401)  # missing Authorization header
 
     # ── list ────────────────────────────────────────────────────────────────────────────────
     def test_list_scoping(self):

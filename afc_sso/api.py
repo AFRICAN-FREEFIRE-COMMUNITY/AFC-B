@@ -70,14 +70,14 @@ def _require_player(request):
     session_token = request.headers.get("Authorization")
     if not session_token:
         return None, Response(
-            {"status": "error", "message": "Authorization header is required", "code": "authorization_header_required"},
-            status=status.HTTP_400_BAD_REQUEST,
+            {"status": "error", "message": "Please sign in to continue.", "code": "authorization_header_required"},
+            status=status.HTTP_401_UNAUTHORIZED,
         )
 
     if not session_token.startswith("Bearer "):
         return None, Response(
-            {"status": "error", "message": "Invalid token format", "code": "invalid_token_format"},
-            status=status.HTTP_400_BAD_REQUEST,
+            {"status": "error", "message": "Please sign in to continue.", "code": "invalid_token_format"},
+            status=status.HTTP_401_UNAUTHORIZED,
         )
 
     from afc_auth.views import validate_token  # local import: avoids an app-loading cycle

@@ -251,8 +251,8 @@ def _auth_user(request):
     """
     auth = request.headers.get("Authorization", "")
     if not auth.startswith("Bearer "):
-        return None, Response({"message": "Invalid or missing Authorization token.", "code": "invalid_missing_authorization_token"},
-                              status=status.HTTP_400_BAD_REQUEST)
+        return None, Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"},
+                              status=status.HTTP_401_UNAUTHORIZED)
     user = validate_token(auth.split(" ", 1)[1])
     if not user:
         return None, Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"},
