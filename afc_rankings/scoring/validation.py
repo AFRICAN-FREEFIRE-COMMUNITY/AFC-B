@@ -422,6 +422,31 @@ def validate_config(blob):
                         ))
                     previous_min = min_score if previous_min is None else min(previous_min, min_score)
 
+            # ── tier numbering: from Tier 1 down, no gaps ──
+            # Tiers can be ADDED at any time (owner 2026-10-01: the backend is built so a new
+            # tier can be added whenever wanted), but they are always numbered the same way:
+            # the top cutoff row is tier code 0 (shown as Tier 1), each row below it is the
+            # next code, and the fall-through default is the code just under the last row.
+            # Inbox #108: the config saved on 2026-09-14 numbered the rows 1..4 with a default
+            # of 4, so nobody could reach code 0, every team landed one code low, and pages
+            # that draw a tier crashed on a code they had never seen. Any other numbering is a
+            # shift like that one, so it is refused with the number the row should carry.
+            for index, row in enumerate(rows):
+                if not isinstance(row, dict) or _as_number(row.get("tier")) is None:
+                    continue
+                if int(row["tier"]) != index:
+                    errors.append(_err(
+                        "tier_out_of_order", f"tier_thresholds.brackets[{index}].tier",
+                        f"This row should be Tier {index + 1}. The highest cutoff is Tier 1 and "
+                        f"each row below it is the next tier, with no gaps.",
+                    ))
+            if default_tier is not None and _as_number(default_tier) is not None                     and int(default_tier) != len(rows):
+                errors.append(_err(
+                    "tier_out_of_order", "tier_thresholds.default_tier",
+                    f"The default tier should be Tier {len(rows) + 1}, the tier just below the "
+                    f"last cutoff.",
+                ))
+
     # ── reachability of the scale as a whole ──
     # Only meaningful once the individual numbers are sound; running it on a broken blob
     # would produce a confusing second error about a value already reported.
