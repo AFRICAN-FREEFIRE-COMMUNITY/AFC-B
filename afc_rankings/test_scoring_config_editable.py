@@ -241,6 +241,9 @@ class ValidationTests(TestCase):
         """A floor above any achievable score would pin every team to the default tier."""
         config = copy.deepcopy(defaults_config())
         config["tier_thresholds"]["brackets"] = [{"min": 1_000_000, "tier": 0}]
+        # One cutoff, so the default is the next tier down (tiers are numbered with no gaps
+        # since inbox #108); the only fault left is the unreachable cutoff under test.
+        config["tier_thresholds"]["default_tier"] = 1
         response = self._post(config)
         self.assertEqual(response.status_code, 400)
         self.assertIn("unreachable_scale", self._codes(response))

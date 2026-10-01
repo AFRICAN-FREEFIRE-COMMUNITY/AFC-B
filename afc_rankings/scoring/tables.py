@@ -495,7 +495,7 @@ def normalize_config(blob: dict) -> dict:
          legacy key, so there is ONE editable value instead of two that can disagree.
       2. Fills any missing (or null) key of a scalar group from defaults_config().
       3. Fills any missing top-level scalar (currently ``finals_base``) the same way.
-      4. Drops a tier label whose key is not one of the four tier codes (inbox #108).
+      4. Drops a tier name for a tier no cutoff row or default uses (inbox #108).
     Lists (tiers, the bracket tables) are left untouched: a missing list is a structural
     problem validation.py must report, not something to invent rows for.
 
@@ -546,20 +546,27 @@ def normalize_config(blob: dict) -> dict:
         if out.get(key) is None:
             out[key] = value
 
-    # ── 4. tier labels only for the four tier codes ──
-    # A label is a NAME for one of C.TIER_CODES; it cannot create a tier. The config saved on
-    # 2026-09-14 carried "4": "Beginner" (inbox #108), and the editor has no control to delete
-    # a label whose tier no row uses, so a refusal here would leave the admin unable to save
-    # the fix. Dropped instead, the same "ignored, never refused" treatment the event contract
-    # gives a key nobody may write. The bracket and default codes themselves ARE refused by
-    # validation.py, because those decide where teams land.
+    # ── 4. a tier name only for a tier that is in use ──
+    # Tiers can be added at any time, so any number of them may carry a name. But a name for a
+    # tier that no cutoff row and not the default uses names nothing, and the editor has no
+    # control to delete one (its name boxes sit on the rows). The config saved on 2026-09-14
+    # left "4": "Beginner" behind once its rows were renumbered back (inbox #108), so such a
+    # name is dropped here rather than kept forever. Ignored, never refused.
     thresholds = out.get("tier_thresholds")
     if isinstance(thresholds, dict) and isinstance(thresholds.get("labels"), dict):
-        codes = {str(c) for c in C.TIER_CODES}
-        out["tier_thresholds"] = {
-            **thresholds,
-            "labels": {k: v for k, v in thresholds["labels"].items() if str(k) in codes},
-        }
+        in_use = []
+        for row in thresholds.get("brackets") or []:
+            if isinstance(row, dict) and isinstance(row.get("tier"), (int, float)):
+                in_use.append(int(row["tier"]))
+        if isinstance(thresholds.get("default_tier"), (int, float)):
+            in_use.append(int(thresholds["default_tier"]))
+        if in_use:
+            top = max(in_use)
+            out["tier_thresholds"] = {
+                **thresholds,
+                "labels": {k: v for k, v in thresholds["labels"].items()
+                           if not str(k).isdigit() or int(k) <= top},
+            }
 
     return out
 
