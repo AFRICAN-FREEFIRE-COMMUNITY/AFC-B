@@ -495,6 +495,7 @@ def normalize_config(blob: dict) -> dict:
          legacy key, so there is ONE editable value instead of two that can disagree.
       2. Fills any missing (or null) key of a scalar group from defaults_config().
       3. Fills any missing top-level scalar (currently ``finals_base``) the same way.
+      4. Drops a tier label whose key is not one of the four tier codes (inbox #108).
     Lists (tiers, the bracket tables) are left untouched: a missing list is a structural
     problem validation.py must report, not something to invent rows for.
 
@@ -544,6 +545,21 @@ def normalize_config(blob: dict) -> dict:
             continue
         if out.get(key) is None:
             out[key] = value
+
+    # ── 4. tier labels only for the four tier codes ──
+    # A label is a NAME for one of C.TIER_CODES; it cannot create a tier. The config saved on
+    # 2026-09-14 carried "4": "Beginner" (inbox #108), and the editor has no control to delete
+    # a label whose tier no row uses, so a refusal here would leave the admin unable to save
+    # the fix. Dropped instead, the same "ignored, never refused" treatment the event contract
+    # gives a key nobody may write. The bracket and default codes themselves ARE refused by
+    # validation.py, because those decide where teams land.
+    thresholds = out.get("tier_thresholds")
+    if isinstance(thresholds, dict) and isinstance(thresholds.get("labels"), dict):
+        codes = {str(c) for c in C.TIER_CODES}
+        out["tier_thresholds"] = {
+            **thresholds,
+            "labels": {k: v for k, v in thresholds["labels"].items() if str(k) in codes},
+        }
 
     return out
 

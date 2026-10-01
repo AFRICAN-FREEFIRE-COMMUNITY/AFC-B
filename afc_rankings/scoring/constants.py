@@ -170,6 +170,15 @@ TIER_MODE_TOP_N = "top_n"
 TIER_MODES = (TIER_MODE_THRESHOLD, TIER_MODE_TOP_N)
 TIER_MODE_DEFAULT = TIER_MODE_THRESHOLD
 
+# The tier CODES the whole system understands: 0 is Tier 1 (best) ... 3 is Tier 4. Not just the
+# engine: the score models' TIER_CHOICES, the serializers' labels, poll eligibility, audience
+# filters and every frontend tier badge are all built on exactly these four. A scoring config
+# may rename them or move their cutoffs, never add a fifth or renumber them. On 2026-09-14 a
+# config saved the cutoffs as 1..4 (the numbers people read, "Tier 1".."Tier 4") with a label
+# for 4, the validator accepted it because 4 now had a label, every recalculated team landed
+# one code low, and the admin rankings pages and the public Tiers tab crashed on code 4.
+TIER_CODES: tuple[int, ...] = (0, 1, 2, 3)
+
 # Human-readable labels, for callers that want them (not used in math).
 TIER_LABELS = MappingProxyType(
     {

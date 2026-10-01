@@ -29,7 +29,7 @@ HOW IT CONNECTS
 
 from __future__ import annotations
 
-from .constants import TIER_MODE_DEFAULT, TIER_MODE_THRESHOLD, TIER_MODE_TOP_N, TIER_MODES
+from .constants import TIER_CODES, TIER_MODE_DEFAULT, TIER_MODE_THRESHOLD, TIER_MODE_TOP_N, TIER_MODES
 from .tables import (
     ALLOWED_TOP_LEVEL_KEYS,
     FIELD_META,
@@ -356,10 +356,25 @@ def validate_config(blob):
             labels = thresholds_blob.get("labels") if isinstance(
                 thresholds_blob.get("labels"), dict) else {}
             known_tiers = {int(k) for k in labels if str(k).lstrip("-").isdigit()}
+            # Tier codes are fixed (constants.TIER_CODES): a label can rename one, never add
+            # one. A label for any other code is refused, because accepting it is exactly what
+            # let the 2026-09-14 config renumber every tier (see TIER_CODES for the outage).
+            for code in sorted(known_tiers - set(TIER_CODES)):
+                errors.append(_err(
+                    "unknown_tier", f"tier_thresholds.labels.{code}",
+                    f"There is no Tier {code + 1}. There are four tiers, Tier 1 to Tier 4: "
+                    f"rename one of those instead of adding another.",
+                ))
+            known_tiers = (known_tiers & set(TIER_CODES)) or set(TIER_CODES)
             default_tier = thresholds_blob.get("default_tier")
             if default_tier is None or _as_number(default_tier) is None:
                 errors.append(_err("not_a_number", "tier_thresholds.default_tier",
                                    "A default tier is required for anyone below every cutoff."))
+            elif int(default_tier) not in TIER_CODES:
+                errors.append(_err(
+                    "unknown_tier", "tier_thresholds.default_tier",
+                    f"There is no Tier {int(default_tier) + 1}. Pick Tier 1, 2, 3 or 4.",
+                ))
             elif known_tiers and int(default_tier) not in known_tiers:
                 errors.append(_err(
                     "unknown_tier", "tier_thresholds.default_tier",
@@ -383,6 +398,11 @@ def validate_config(blob):
                 if _as_number(tier_int) is None:
                     errors.append(_err("not_a_number", f"{path}.tier",
                                        "Each cutoff must name the tier it awards."))
+                elif int(tier_int) not in TIER_CODES:
+                    errors.append(_err(
+                        "unknown_tier", f"{path}.tier",
+                        f"There is no Tier {int(tier_int) + 1}. Pick Tier 1, 2, 3 or 4.",
+                    ))
                 elif known_tiers and int(tier_int) not in known_tiers:
                     errors.append(_err(
                         "unknown_tier", f"{path}.tier",
