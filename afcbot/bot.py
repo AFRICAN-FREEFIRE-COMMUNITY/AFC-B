@@ -37,7 +37,8 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 # clean "AI temporarily unavailable" notice instead of a raw error.
 #   FALLBACK_API_KEY   - the backup provider's API key
 #   FALLBACK_BASE_URL  - its OpenAI-compatible endpoint, e.g. https://api.groq.com/openai/v1
-#   FALLBACK_MODEL     - model for normal replies   (default: llama-3.3-70b-versatile)
+#   FALLBACK_MODEL     - model for normal replies   (default: openai/gpt-oss-120b; Groq retired
+#                        llama-3.3-70b-versatile, found 5 Oct 2026)
 #   FALLBACK_MINI_MODEL- model for the cheap classifier (defaults to FALLBACK_MODEL)
 #   FALLBACK2_*        - an OPTIONAL second fallback (same four keys with a "2"
 #     suffix), tried only if FALLBACK also fails. Providers run as a chain:
@@ -50,15 +51,23 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 #     limit (e.g. Groq 70b = 12k TPM → otherwise a hard 413 on every reply).
 FALLBACK_API_KEY    = os.getenv("FALLBACK_API_KEY")
 FALLBACK_BASE_URL   = os.getenv("FALLBACK_BASE_URL")
-FALLBACK_MODEL      = os.getenv("FALLBACK_MODEL", "llama-3.3-70b-versatile")
+FALLBACK_MODEL      = os.getenv("FALLBACK_MODEL", "openai/gpt-oss-120b")
 FALLBACK_MINI_MODEL = os.getenv("FALLBACK_MINI_MODEL", FALLBACK_MODEL)
 
 FALLBACK2_API_KEY    = os.getenv("FALLBACK2_API_KEY")
 FALLBACK2_BASE_URL   = os.getenv("FALLBACK2_BASE_URL")
-FALLBACK2_MODEL      = os.getenv("FALLBACK2_MODEL", "llama-3.3-70b-versatile")
+FALLBACK2_MODEL      = os.getenv("FALLBACK2_MODEL", "openai/gpt-oss-120b")
 FALLBACK2_MINI_MODEL = os.getenv("FALLBACK2_MINI_MODEL", FALLBACK2_MODEL)
 
 FALLBACK_MAX_PROMPT_CHARS = int(os.getenv("FALLBACK_MAX_PROMPT_CHARS", "28000"))
+
+# Fallback models that REASON before they answer (Groq's gpt-oss). The reasoning counts against
+# max_tokens, so a short call comes back empty: on 5 Oct 2026 the 5-token "should I reply?"
+# classifier returned "" with finish_reason "length", which should_bot_respond reads as NO, so
+# the Discord bot would have ignored people. _call_fallback_provider keeps their reasoning short
+# and leaves room for the answer; the same call then answered "YES" in 27 tokens.
+REASONING_MODEL_TAGS = ("gpt-oss",)
+REASONING_MIN_TOKENS = 512
 
 # ── Which AI answers the WEBSITE's Help panel (owner, 5 Oct 2026) ─────────────
 # Owner: "do it without the openai monthly cap, we'll use gemini". So website
@@ -2553,6 +2562,9 @@ def _call_fallback_provider(provider, kwargs, primary_exc, max_chars=None):
     # classifier and short replies come back blank). "none" turns thinking off.
     if provider["is_gemini"]:
         fb_kwargs["reasoning_effort"] = "none"
+    elif any(tag in fb_kwargs["model"] for tag in REASONING_MODEL_TAGS):
+        fb_kwargs["reasoning_effort"] = "low"
+        fb_kwargs["max_tokens"] = max(fb_kwargs.get("max_tokens") or 0, REASONING_MIN_TOKENS)
     # Free-tier fallbacks have a tight per-request token cap; the full
     # knowledge base would 413. Shrink the prompt to fit before sending.
     if "messages" in fb_kwargs:
