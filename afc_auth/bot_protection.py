@@ -81,9 +81,8 @@ def _token_from(request):
     return (request.META.get(TOKEN_HEADER) or "").strip()
 
 
-def _client_ip(request):
-    forwarded = (request.META.get("HTTP_X_FORWARDED_FOR") or "").split(",")[0].strip()
-    return forwarded or (request.META.get("REMOTE_ADDR") or "")
+# The visitor's address: one rule for the whole API (afc_auth/client_ip.py, inbox #141).
+from afc_auth.client_ip import client_ip as _client_ip  # noqa: E402
 
 
 def verify(request, where=""):

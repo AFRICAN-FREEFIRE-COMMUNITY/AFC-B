@@ -117,6 +117,28 @@
         "**/migrations/**",
         ".venv/**"
       ]
+    },
+    {
+      "id": "be-forwarded-for-read",
+      "title": "The visitor's address read from a header outside afc_auth/client_ip.py",
+      "why": "nginx APPENDS to whatever X-Forwarded-For a request arrives with ($proxy_add_x_forwarded_for), so the FIRST entry is written by the visitor. Every copy took that entry as the visitor's address, so a script sending a new X-Forwarded-For per request looked like a new person each time and walked past every per-address limit (feedback 5 an hour, partner applications, QR link creation, referral clicks, the Turnstile remoteip, the audit log, sign-in device and country). The one rule lives in afc_auth/client_ip.py: X-Real-IP (set by nginx from the connection) is the caller, and only a private or loopback caller (our own Next.js server) may name a visitor in X-Forwarded-For. Reading X-Real-IP directly is not the hole, but it is a second rule, so it is caught too.",
+      "seen": [
+        "2025-12-17 to 2026-09-23 afc_auth/views.py get_client_ip, afc_auth/middleware.py (audit log, 2026-06-09), afc_feedback (2026-08-03), afc_partner_apply (2026-08-04), afc_auth/bot_protection.py (2026-09-23): each its own copy of the first-entry read",
+        "2026-09-26 the same copy three more times in one day: afc_qr, afc_referrals, and the signup referral line in afc_auth/views.py; all eight found together 2026-10-04 (inbox #141), plus the frontend QR route forwarding the visitor's own chain (AFC_Frontend fe-forwarded-for-read)"
+      ],
+      "fix": "from afc_auth.client_ip import client_ip; ip = client_ip(request). Never read HTTP_X_FORWARDED_FOR or HTTP_X_REAL_IP (or request.headers X-Forwarded-For / X-Real-IP) anywhere else",
+      "kind": "regex",
+      "pattern": "^(?!\\s*#).*(HTTP_X_FORWARDED_FOR|HTTP_X_REAL_IP|headers(\\.get\\(|\\[)\\s*[\\\"'](?i:x-forwarded-for|x-real-ip)[\\\"'])",
+      "globs": [
+        "**/*.py"
+      ],
+      "except": [
+        "afc_auth/client_ip.py",
+        "**/test*.py",
+        "**/migrations/**",
+        ".venv/**",
+        "venv/**"
+      ]
     }
   ]
 }

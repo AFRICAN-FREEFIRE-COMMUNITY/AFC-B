@@ -67,13 +67,10 @@ FEEDBACK_RATE_LIMIT_PER_HOUR = 5
 FEEDBACK_COOLDOWN_SECONDS = 30
 
 
-def _client_ip(request):
-    """Best-effort client IP. Honours X-Forwarded-For's FIRST entry (the original client) because AFC
-    runs behind a load balancer, and falls back to REMOTE_ADDR."""
-    forwarded = request.META.get("HTTP_X_FORWARDED_FOR", "")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
-    return request.META.get("REMOTE_ADDR", "") or ""
+# The visitor's address: one rule for the whole API (afc_auth/client_ip.py, inbox #141).
+# It used to take the FIRST X-Forwarded-For entry, which the visitor writes, so a script could post
+# past the hourly limit below by sending a new one each time.
+from afc_auth.client_ip import client_ip as _client_ip  # noqa: E402
 
 
 def _client_ip_hash(request):
