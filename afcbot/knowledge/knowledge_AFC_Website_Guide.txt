@@ -139,12 +139,16 @@ from certain countries, which is why a team can be refused even if some members 
 country. If the country looks wrong, contact Support.
 
 --- 6. SEASONS AND TRANSFER WINDOWS ---
-AFC runs in quarterly seasons. Each season has a transfer window: a set period when roster moves are
-free. The dates are set by AFC staff for each season and shown on the site (the banner on the
-Rankings page and on team pages).
+AFC runs in seasons of three months. Each season has a transfer window: a set period when roster
+moves are free. Since 5 October 2026 the next season is created automatically when the current one
+begins, starting the day after it ends, with its transfer window in its first two weeks. AFC staff
+can still change any season's dates. The site shows them (the banner on the Rankings page and on team
+pages), including the date the next window opens.
 - SEASON 4 2026 runs from 11 September to 31 December 2026. Its transfer window ran from 11 to
-  25 September 2026 and is now CLOSED. The next window's dates had not been announced as of
-  1 October 2026; the site shows them once set.
+  25 September 2026 and is now CLOSED. As of 5 October 2026 the next window opens on 1 January 2027,
+  the first day of SEASON 1 2027 (its window runs 1 to 14 January 2027).
+- The next window opens the day after the current season's last day, unless the next season on
+  record says otherwise. After a season's last day, its lock no longer applies.
 
 While the window is CLOSED:
 - You CAN still create a team, join a team, send a join request, or accept an invite.

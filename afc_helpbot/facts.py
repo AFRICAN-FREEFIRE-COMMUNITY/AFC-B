@@ -87,9 +87,9 @@ def _transfer_window():
 
     today = timezone.localdate()
     season = Season.objects.filter(is_active=True).order_by("-year", "-quarter").first()
-    next_open = (Season.objects.filter(transfer_window_open__gt=today)
-                 .order_by("transfer_window_open")
-                 .values_list("transfer_window_open", flat=True).first())
+    # Season.next_window_opens is the one rule for the next opening (inbox #150): the banner and the
+    # refusal messages quote the same date.
+    next_open = season.next_window_opens(today) if season else None
     if season is None:
         return {"season": None, "rule": "There is no active season, so team moves are not locked by a window.",
                 "next_window_opens": next_open.isoformat() if next_open else None}

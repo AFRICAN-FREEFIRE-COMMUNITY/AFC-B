@@ -9,6 +9,9 @@ Conventions (locked in master plan):
 - `finalized` on monthly scores (archive + skip-closed-month).
 - team XOR ghost_team enforced via CheckConstraint (MySQL 8.0.16+; afc_db = mysql:8.0 ✓).
 """
+import calendar
+import datetime
+import logging
 import uuid
 from django.conf import settings
 from django.db import models
@@ -28,6 +31,10 @@ def auto_rollover_seasons():
     from django.utils import timezone
     from django.db import transaction
     today = timezone.localdate()
+    try:
+        ensure_next_season(today)
+    except Exception:  # a failed auto-create must never break a season read; the admin can add it
+        logging.getLogger(__name__).exception("ensure_next_season failed")
     due = (Season.objects
            .filter(start_date__lte=today, end_date__gte=today, is_active=False)
            .order_by("-year", "-quarter")
@@ -39,6 +46,57 @@ def auto_rollover_seasons():
         due.is_active = True
         due.save(update_fields=["is_active"])
     return due
+
+
+# How long an automatically created season runs and how long its transfer window stays open.
+AUTO_SEASON_MONTHS = 3
+AUTO_SEASON_WINDOW_DAYS = 14
+
+
+def _add_months(day, months):
+    """The same day-of-month `months` later, clamped to that month's last day (31 Jan + 1 = 28/29 Feb)."""
+    index = day.month - 1 + months
+    year, month = day.year + index // 12, index % 12 + 1
+    return day.replace(year=year, month=month, day=min(day.day, calendar.monthrange(year, month)[1]))
+
+
+def ensure_next_season(today=None):
+    """AUTO season creation (owner 2026-10-05, inbox #157): "CAN WE MAKE SEASON BE CREATED
+    AUTOMATICALLY, BUT STILL CAN BE EDITED, THE CURRENT FLOW WORKS, EVERY 3 MONTHS, WITH THE FIRST
+    2 WEEKS OF THE 1ST MONTH OF THE SEASON BEING MADE FOR TRANSFER WINDOW."
+
+    Keeps one season on record after the latest one that has begun. When the latest season by start
+    date has started and nothing follows it, the next one is created, chained to it: it starts the
+    day after the latest ends, runs AUTO_SEASON_MONTHS months, its transfer window is its first
+    AUTO_SEASON_WINDOW_DAYS days, and it is named and numbered like the admin's own ("SEASON 2 2027",
+    the next quarter). It is an ordinary row, inactive until auto_rollover_seasons activates it on its
+    start date, and the admin seasons page edits it like any other (admin_seasons.season_update).
+    Nothing is created while a future season is already on record (the admin's own, or an earlier
+    automatic one), so an edit is never overwritten. Returns the created season or None.
+
+    Called from auto_rollover_seasons, so it runs on the same on-read sweep that activates seasons,
+    one cheap query when nothing is due. No RankingAuditLog row (its changed_by needs a user, and
+    the date-driven activation beside it writes none either); a log line records it instead."""
+    today = today or timezone.localdate()
+    latest = Season.objects.order_by("-start_date").first()
+    if latest is None or latest.start_date > today:
+        return None
+    quarter = latest.quarter % 4 + 1
+    year = latest.year + (1 if latest.quarter == 4 else 0)
+    if Season.objects.filter(year=year, quarter=quarter).exists():
+        return None  # the admin already holds that number for some other dates; leave it to them
+    start = latest.end_date + datetime.timedelta(days=1)
+    season = Season.objects.create(
+        name=f"SEASON {quarter} {year}", quarter=quarter, year=year,
+        start_date=start, end_date=_add_months(start, AUTO_SEASON_MONTHS) - datetime.timedelta(days=1),
+        transfer_window_open=start,
+        transfer_window_close=start + datetime.timedelta(days=AUTO_SEASON_WINDOW_DAYS - 1),
+        is_active=False,
+    )
+    logging.getLogger(__name__).info("auto-created %s (%s to %s, window %s to %s)", season.name,
+                                     season.start_date, season.end_date,
+                                     season.transfer_window_open, season.transfer_window_close)
+    return season
 
 
 class Season(models.Model):
@@ -82,9 +140,39 @@ class Season(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
 
     def is_transfer_window_open(self, on=None):
-        """True if the transfer window is open on the given date (default: today)."""
+        """True when roster moves are allowed under this season on the given date (default: today):
+        inside its transfer window, or after the season's last day.
+
+        The second half is the owner's rule (2026-10-05, inbox #150): "the next open date is the day
+        after the last day of the season". Before it, a season that had ended with no successor
+        stayed is_active (auto_rollover_seasons only switches when a NEW season's dates begin) and
+        kept every team locked indefinitely. Every roster guard (afc_team exit, kick, disband, staff
+        moves, afc_team.transfers) and the public OPEN/CLOSED flag call this one method."""
         day = on or timezone.now().date()
-        return self.transfer_window_open <= day <= self.transfer_window_close
+        return self.transfer_window_open <= day <= self.transfer_window_close or day > self.end_date
+
+    def next_window_opens(self, on=None):
+        """The day roster moves next become allowed under the seasons on record, or None while they
+        are allowed already. The ONE answer to "when does the window reopen" (inbox #150): the
+        current-season API (serializers.season), the refusal messages (afc_team.views
+        _transfer_window_reopen_hint), the website banner and join warning (frontend
+        lib/useTransferLock.ts) and the help bot's account facts all read it.
+
+        This season's window if it is still ahead; otherwise the day after this season's last day,
+        unless the next season on record (by start date, even one overlapping this one) begins by
+        then: auto_rollover_seasons hands it the lock on its first day, so the answer is the later of
+        its first day and its window's first day."""
+        day = on or timezone.now().date()
+        if self.is_transfer_window_open(day):
+            return None
+        if self.transfer_window_open > day:
+            return self.transfer_window_open
+        reopen = self.end_date + datetime.timedelta(days=1)
+        successor = (Season.objects.filter(start_date__gt=self.start_date)
+                     .exclude(pk=self.pk).order_by("start_date").first())
+        if successor and successor.start_date <= reopen:
+            return max(successor.start_date, successor.transfer_window_open)
+        return reopen
 
     class Meta:
         ordering = ["-year", "-quarter"]
