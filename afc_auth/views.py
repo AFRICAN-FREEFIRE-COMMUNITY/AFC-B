@@ -213,6 +213,22 @@ def is_deliverable_address(email) -> bool:
     return True
 
 
+def _uid_taken_body(holder, code):
+    """The refusal when a UID someone types is already on another account (inbox #152, owner
+    2026-10-05: "for users who want to input a uid into their accunt, let it also show the user using
+    their UID"). Names the holder and links their public player page, which already shows the UID, so
+    nothing private is revealed. Used by signup (code uid_taken) and edit_profile (code
+    uid_already_use_user); the frontend (lib/uidTaken.ts) turns the code into the sentence in the
+    reader's language and offers the link. The onboarding UID step posts to edit_profile."""
+    from afc_auth.site_paths import player_path
+    return {
+        "message": f"That UID is already used by {holder.username}.",
+        "code": code,
+        "taken_by": holder.username,
+        "taken_by_page": player_path(holder.username),
+    }
+
+
 def get_client_ip(request):
     # The visitor's address: one rule for the whole API (afc_auth/client_ip.py, inbox #141).
     # Kept as a name because sign-in, devices, recovery and the event views all import it.
@@ -1859,11 +1875,7 @@ def signup(request):
         if uid:
             uid_clash = User.objects.filter(uid=uid).first()
             if uid_clash and uid_clash.is_active:
-                return Response(
-                    {"message": "That UID is already in use. Please use a different one.",
-                     "code": "uid_taken"},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
+                return Response(_uid_taken_body(uid_clash, "uid_taken"), status=status.HTTP_400_BAD_REQUEST)
 
         # ── CROSS-COLUMN conflict (owner 2026-08-07) ──
         # The three checks above each compare a field against ITS OWN column, which is what the DB
@@ -3625,8 +3637,9 @@ def edit_profile(request):
     # never-set uid is None, and `filter(uid=None)` would match every other UID-less user
     # (hundreds of them) and wrongly report "already in use", blocking the save. Only a real
     # uid value needs the collision check.
-    if uid and User.objects.exclude(pk=user.pk).filter(uid=uid).exists():
-        return Response({"message": "UID is already in use by another user.", "code": "uid_already_use_user"}, status=status.HTTP_400_BAD_REQUEST)
+    uid_holder = User.objects.exclude(pk=user.pk).filter(uid=uid).first() if uid else None
+    if uid_holder:
+        return Response(_uid_taken_body(uid_holder, "uid_already_use_user"), status=status.HTTP_400_BAD_REQUEST)
 
     if User.objects.exclude(pk=user.pk).filter(email=email).exists():
         return Response({"message": "Email is already registered to another user.", "code": "email_already_registered_user"}, status=status.HTTP_400_BAD_REQUEST)
