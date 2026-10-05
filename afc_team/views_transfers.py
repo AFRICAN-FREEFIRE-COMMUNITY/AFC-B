@@ -33,6 +33,18 @@ MAX_QUERY_LENGTH = 50
 DIRECTIONS = ("joined", "left")
 
 
+def _published_tier_season():
+    """The latest season whose tiers are PUBLISHED, or None.
+
+    A team's tier is the one the Rankings page shows: TeamQuarterlyScore.tier_assigned in a season
+    with tiers_published (afc_rankings/views.py hides the tier until then). Team.team_tier is NOT
+    it: that column defaults to "3" and every one of the 923 teams on production held "3" on
+    5 Oct 2026, so a filter on it offered one option that matched everybody (found live, #161).
+    """
+    from afc_rankings.models import Season
+    return Season.objects.filter(tiers_published=True).order_by("-start_date", "-season_id").first()
+
+
 def _serialize_transfer(request, transfer):
     """One feed entry.
 
@@ -92,7 +104,9 @@ def get_transfer_feed(request):
                           owner 2026-10-05: "no pagination and also no search ... filters by
                           countries, or by tiers or by teams/players".
                 country   optional, the team's country, exact.
-                tier      optional, the team's tier ("1", "2", ...).
+                tier      optional, the team's tier ("1", "2", ...) in the latest season whose
+                          tiers are published (the Rankings page's tiers), see
+                          _published_tier_season.
                 direction optional, "joined" or "left".
                 limit     optional int, 1..50, default 20.
                 offset    optional int, >= 0, default 0.
@@ -157,11 +171,17 @@ def get_transfer_feed(request):
     if country:
         feed = feed.filter(team__country=country)
     tier = (request.GET.get("tier") or "").strip()
+    tier_season = _published_tier_season()
     if tier:
         if not tier.isdigit():
             return Response({"message": "tier must be a number.", "code": "tier_number"},
                             status=status.HTTP_400_BAD_REQUEST)
-        feed = feed.filter(team__team_tier=tier)
+        from afc_rankings.models import TeamQuarterlyScore
+        # No published season means no team has a tier anybody can see: nothing matches.
+        tiered = (TeamQuarterlyScore.objects
+                  .filter(season=tier_season, tier_assigned=int(tier), team__isnull=False)
+                  .values("team_id")) if tier_season else []
+        feed = feed.filter(team_id__in=tiered)
     direction = (request.GET.get("direction") or "").strip()
     if direction:
         if direction not in DIRECTIONS:
@@ -192,8 +212,14 @@ def get_transfer_feed(request):
                   .filter(has_competed_subquery("team_id")))
     countries = sorted({c for c in newsworthy.values_list("team__country", flat=True).distinct() if c},
                        key=str.casefold)
-    tiers = sorted({t for t in newsworthy.values_list("team__team_tier", flat=True).distinct()
-                    if t and str(t).isdigit()}, key=int)
+    tiers = []
+    if tier_season:
+        from afc_rankings.models import TeamQuarterlyScore
+        tiers = [str(t) for t in sorted(
+            TeamQuarterlyScore.objects
+            .filter(season=tier_season, tier_assigned__isnull=False,
+                    team_id__in=newsworthy.values("team_id"))
+            .values_list("tier_assigned", flat=True).distinct())]
 
     # ── §4 pagination ──────────────────────────────────────────────────────────────────────────
     try:

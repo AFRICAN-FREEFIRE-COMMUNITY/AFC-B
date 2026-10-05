@@ -12,6 +12,9 @@ tests_transfer_feed.py (a team that has competed, builders for teams, players an
 
 Run: ../backend/.venv/Scripts/python.exe manage.py test afc_team.tests_transfer_feed_filters --keepdb
 """
+import datetime
+
+from afc_rankings.models import Season, TeamQuarterlyScore
 from afc_team.models import Team, TeamMembers
 from afc_team.tests_transfer_feed import TransferFeedTestCase
 
@@ -30,8 +33,25 @@ class TransferFeedFilterTests(TransferFeedTestCase):
         TeamMembers.objects.filter(team=self.other, member=self.tunde).delete()
         # Set AFTER the roster moves: every move recomputes the team's country from its members
         # (afc_team/signals.py), and a queryset update skips that.
-        Team.objects.filter(pk=self.competed.pk).update(country="Ghana", team_tier="1")
-        Team.objects.filter(pk=self.other.pk).update(country="Nigeria", team_tier="2")
+        Team.objects.filter(pk=self.competed.pk).update(country="Ghana")
+        Team.objects.filter(pk=self.other.pk).update(country="Nigeria")
+        # Tiers are the RANKING tiers of the latest season with tiers published (not Team.team_tier,
+        # which is "3" for every team on production). An older published season says otherwise,
+        # and an unpublished newer one too: neither may be read.
+        old = self._tier_season("Old", datetime.date(2025, 1, 1), published=True)
+        current = self._tier_season("Current", datetime.date(2026, 1, 1), published=True)
+        draft = self._tier_season("Draft", datetime.date(2026, 4, 1), published=False)
+        TeamQuarterlyScore.objects.create(team=self.competed, season=old, tier_assigned=2)
+        TeamQuarterlyScore.objects.create(team=self.competed, season=current, tier_assigned=1)
+        TeamQuarterlyScore.objects.create(team=self.other, season=current, tier_assigned=2)
+        TeamQuarterlyScore.objects.create(team=self.other, season=draft, tier_assigned=1)
+
+    def _tier_season(self, name, start, published):
+        return Season.objects.create(
+            name=name, year=start.year, quarter=(start.month - 1) // 3 + 1, start_date=start,
+            end_date=start + datetime.timedelta(days=80), transfer_window_open=start,
+            transfer_window_close=start + datetime.timedelta(days=13), tiers_published=published,
+        )
 
     def _names(self, **params):
         return sorted((r["player_username"], r["direction"]) for r in self._feed(**params)["results"])
@@ -51,6 +71,8 @@ class TransferFeedFilterTests(TransferFeedTestCase):
     def test_country_tier_and_direction_filters(self):
         self.assertEqual(self._names(country="Ghana"), [("ama_sniper", "joined")])
         self.assertEqual(self._names(tier="2"), [("tunde_rush", "joined"), ("tunde_rush", "left")])
+        self.assertEqual(self._names(tier="1"), [("ama_sniper", "joined")])
+        self.assertEqual(self._names(tier="3"), [])
         self.assertEqual(self._names(direction="left"), [("tunde_rush", "left")])
         self.assertEqual(self._names(country="Nigeria", direction="joined"), [("tunde_rush", "joined")])
 
