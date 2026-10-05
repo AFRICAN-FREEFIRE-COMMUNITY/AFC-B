@@ -1,5 +1,8 @@
 from django.urls import path, include
 from .views import *
+# The public players directory lives in its own read-only module (the Players tab of Teams &
+# Players, inbox #161), imported explicitly like afc_team.views_transfers.
+from .views_directory import players_directory
 from django.conf import settings
 from django.conf.urls.static import static
 
@@ -13,4 +16,7 @@ urlpatterns = [
     path("admin/list-players/", admin_list_players, name="admin_list_players"),
     # PUBLIC player profile + stats (no auth), keyed by username/IGN - feature D.
     path("get-public-player-stats/", get_public_player_stats, name="get_public_player_stats"),
+    # PUBLIC players directory (no auth): paged, searchable, only players already public via a
+    # team or a played match. Feeds the Players tab on /teams (components/teams/PlayersDirectory.tsx).
+    path("directory/", players_directory, name="players_directory"),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

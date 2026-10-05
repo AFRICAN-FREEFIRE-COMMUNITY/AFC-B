@@ -1735,7 +1735,8 @@ WEB_SITE_PAGES = (
     # for, so "subject" alone left the reader on Tiers (seen live 5 Oct 2026).
     ("Player rankings (Rankings, Players)", "/rankings?tab=rankings&subject=players"),
     ("Tiers (a tab on Rankings)", "/rankings?tab=tiers"),
-    ("Teams", "/teams"),
+    ("Teams & Players", "/teams"),
+    ("Players (a tab on Teams & Players: find a player and open their profile)", "/teams?tab=players"),
     ("Create a team", "/teams/create"),
     ("Player Market", "/player-markets"),
     ("Teams Recruiting (a Player Market tab)", "/player-markets?tab=teams"),
@@ -1746,6 +1747,7 @@ WEB_SITE_PAGES = (
     ("My Team (a Player Market tab, signed in with a team)", "/player-markets?tab=my-team"),
     ("My Posts (a Player Market tab, signed in)", "/player-markets?tab=my-posts"),
     ("News", "/news"),
+    ("Transfers (players joining and leaving teams, a category on News)", "/news?category=transfers"),
     ("Awards", "/awards"),
     ("Polls", "/polls"),
     ("Fantasy (coming soon)", "/fantasy"),
