@@ -107,6 +107,13 @@ app.conf.beat_schedule = {
         'task': 'afc_bot.tasks.refresh_bot_knowledge',
         'schedule': crontab(minute=0, hour='*/3'),   # 00:00, 03:00, 06:00 ...
     },
+    # ── The website Help panel's chats are kept HELP_BOT_RETENTION_DAYS (inbox #109) ─────────
+    # Deletes conversations whose last message is older than that; a ticket keeps its own copy of
+    # the transcript. Default queue. See afc_helpbot/tasks.py.
+    'purge_old_help_chats_daily': {
+        'task': 'afc_helpbot.tasks.purge_old_help_chats',
+        'schedule': crontab(minute=20, hour=3),    # 03:20 every day
+    },
 }
 
 @app.task(bind=True)

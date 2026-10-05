@@ -248,11 +248,14 @@ def _touch(ticket, when=None):
     ticket.save(update_fields=["last_message_at", "updated_at"])
 
 
-def create_ticket_from_contact(name, email, body, files=None, request_user=None):
+def create_ticket_from_contact(name, email, body, files=None, request_user=None,
+                               source=SupportTicket.SOURCE_CONTACT_FORM, subject=None):
     """The one place a contact-form ticket is born.
 
-    Called by support_contact below AND by the legacy afc_auth.contact_us, so a post to either
-    address is stored the same way. Returns (ticket, message, rejected_files).
+    Called by support_contact below, by the legacy afc_auth.contact_us, and by the website Help
+    panel's "Talk to a person" (afc_helpbot.views.help_handoff, source=help_bot, with the person's
+    own question as the subject so the queue does not fill with identical subjects). So a post to
+    any of them is stored the same way. Returns (ticket, message, rejected_files).
 
     Matching an account: by EMAIL, case-insensitively, preferring the canonical profile's user. That
     is what lets the acknowledgement go out in their language and the Discord DM find them.
@@ -272,8 +275,8 @@ def create_ticket_from_contact(name, email, body, files=None, request_user=None)
         email=email,
         user=account,
         discord_id=discord_id,
-        subject=header_safe(body, limit=80),
-        source=SupportTicket.SOURCE_CONTACT_FORM,
+        subject=header_safe(subject if subject else body, limit=80),
+        source=source,
     )
     message = SupportMessage.objects.create(
         ticket=ticket,
@@ -286,6 +289,29 @@ def create_ticket_from_contact(name, email, body, files=None, request_user=None)
     _saved, rejected = _save_attachments(message, files or [])
     _touch(ticket, message.created_at)
     return ticket, message, rejected
+
+
+def acknowledge_new_ticket(ticket, message):
+    """Tell the person and the team that a new ticket exists. Never fails the caller.
+
+    The acknowledgement email (in the person's language when we matched an account), the Discord DM,
+    and the support inbox email. Both results are recorded as an automatic OUT message so the audit
+    shows what left the building. Called by support_contact and by afc_helpbot.views.help_handoff.
+    """
+    lang = (getattr(ticket.user, "language", "") or "en") if ticket.user_id else "en"
+    emailed = notify.email_ticket_received(ticket, lang=lang)
+    dmed = notify.dm_ticket_received(ticket)
+    # And the support inbox, where the team already looks.
+    notify.email_staff_new_ticket(ticket, message, attachment_count=message.attachments.count())
+    SupportMessage.objects.create(
+        ticket=ticket,
+        direction=SupportMessage.DIRECTION_OUT,
+        channel=SupportMessage.CHANNEL_AUTO,
+        author_name="AFC",
+        body=("Acknowledgement sent: "
+              f"email {'delivered' if emailed else 'not delivered'}, "
+              f"Discord DM {'delivered' if dmed else ('not delivered' if ticket.discord_id else 'no Discord on file')}."),
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
@@ -332,23 +358,7 @@ def support_contact(request):
     files = request.FILES.getlist("files")
     ticket, message, rejected = create_ticket_from_contact(
         name, email, body, files, request_user=_actor(request))
-
-    # Notify, never fail. Both results are recorded as an automatic OUT message so the audit shows
-    # what left the building.
-    lang = (getattr(ticket.user, "language", "") or "en") if ticket.user_id else "en"
-    emailed = notify.email_ticket_received(ticket, lang=lang)
-    dmed = notify.dm_ticket_received(ticket)
-    # And the support inbox, where the team already looks.
-    notify.email_staff_new_ticket(ticket, message, attachment_count=message.attachments.count())
-    SupportMessage.objects.create(
-        ticket=ticket,
-        direction=SupportMessage.DIRECTION_OUT,
-        channel=SupportMessage.CHANNEL_AUTO,
-        author_name="AFC",
-        body=("Acknowledgement sent: "
-              f"email {'delivered' if emailed else 'not delivered'}, "
-              f"Discord DM {'delivered' if dmed else ('not delivered' if ticket.discord_id else 'no Discord on file')}."),
-    )
+    acknowledge_new_ticket(ticket, message)
 
     return Response(
         {
