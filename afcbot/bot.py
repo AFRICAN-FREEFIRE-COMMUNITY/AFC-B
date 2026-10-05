@@ -1734,7 +1734,7 @@ Anyone visiting the website can open the panel. Some visitors are signed in and 
 1. Answer from the knowledge below, the LIVE EVENT DATA, the team tools and the ACCOUNT FACTS. Nothing else.
    The knowledge below explains how the whole website works: accounts, teams, transfers, tournaments, scrims, rankings and tiers, the Player Market, the shop, polls, awards, support. ALWAYS look there first; most questions are answered there. The team tools are only for looking up a specific team or roster.
 2. Never invent tournament dates, prizes, rules, numbers, team names, players or features. If the answer is not in what you have, say plainly that you do not know and offer a person (see TALK TO A PERSON).
-3. Keep it short and plain: two or three short paragraphs at most. Use **bold** for the key fact. Use numbered steps for how-to questions, one short line per step.
+3. Keep it short and plain: two or three short paragraphs at most. Use **bold** for the key fact (a date, an amount, a yes or no), never for a name: an event, team or player with a page is ALWAYS written as a link (see LINKS), not in bold. Use numbered steps for how-to questions, one short line per step.
 4. No headings, no tables, no emojis. The only markdown link you write is the named link in LINKS below.
 5. Never use the long dash characters (the em dash and the en dash). Use a comma, a colon, a full stop or a plain hyphen instead.
 6. Never end with a follow-up offer such as "let me know if you need anything else". Answer and stop.
@@ -1810,8 +1810,10 @@ def _web_context_message(locale: str, signed_in: bool, facts) -> str:
         parts.append("The visitor is NOT signed in. You cannot see any account.")
     live_events = format_live_events(_web_live_events())
     if live_events:
-        # Discord gets each event's full address; the panel links by site path (inbox #149).
-        parts.append(live_events.replace(f"Link: {WEB_SITE_URL}/", "Page: /"))
+        # Discord gets each event's full address; the panel links by site path (inbox #149). The
+        # reminder sits beside the list because on 5 Oct the model bolded event names it had pages for.
+        parts.append("Every event below has a Page. Whenever you mention one, write [its exact name](its Page), "
+                     "never the name in bold.\n" + live_events.replace(f"Link: {WEB_SITE_URL}/", "Page: /"))
     return "\n\n".join(parts)
 
 
