@@ -2555,6 +2555,42 @@ def _is_news_admin(user):
     return user.userroles.filter(role__role_name__in=["head_admin", "news_admin"]).exists()
 
 
+def _read_news_categories(request):
+    """The categories a create_news / edit_news call asks for (inbox #160, owner 2026-10-05: "an
+    article or post can be under several categories simultaneously").
+
+    Request: `categories` as a repeated multipart field (the admin News form,
+    app/(a)/a/news/create and [slug]/edit) or a JSON list; an older caller's single `category`
+    still works. Every key must be one of News.CATEGORY_CHOICES (read straight off the model, never
+    a copy here); duplicates are dropped and the admin's order kept, since the first key is the one
+    mirrored into News.category for the readers that know only one.
+
+    Returns (keys, None), (None, None) when the request names no category at all (edit_news then
+    leaves the post's own), or (None, a 400 Response with a code).
+    """
+    valid = {key for key, _label in News.CATEGORY_CHOICES}
+    if "categories" in request.data:
+        raw = (request.data.getlist("categories") if hasattr(request.data, "getlist")
+               else request.data.get("categories"))
+        if isinstance(raw, str):
+            raw = [raw]
+    elif "category" in request.data:
+        raw = [request.data.get("category")]
+    else:
+        return None, None
+    if not isinstance(raw, list) or not all(isinstance(key, str) for key in raw):
+        return None, Response({"message": "Invalid category.", "code": "invalid_category"},
+                              status=status.HTTP_400_BAD_REQUEST)
+    keys = list(dict.fromkeys(key.strip() for key in raw if key.strip()))
+    if not keys:
+        return None, Response({"message": "Pick at least one category.", "code": "categories_required"},
+                              status=status.HTTP_400_BAD_REQUEST)
+    if any(key not in valid for key in keys):
+        return None, Response({"message": "Invalid category.", "code": "invalid_category"},
+                              status=status.HTTP_400_BAD_REQUEST)
+    return keys, None
+
+
 def _serialize_related_news_events(news):
     """Serialize a News post's related_events M2M into the shape the API + frontend expect.
 
@@ -2701,16 +2737,17 @@ def create_news(request):
                                         "under 10 MB.", "code": bad_image},
                             status=status.HTTP_400_BAD_REQUEST)
 
-    # Validate required fields
-    if not news_title or not content or not category:
-        return Response({"message": "Title, content, and category are required.", "code": "title_content_category_required"}, status=status.HTTP_400_BAD_REQUEST)
+    # Categories (inbox #160): one or several, every key validated against News.CATEGORY_CHOICES by
+    # _read_news_categories. The legacy single `category` still works for older callers. The first
+    # key is stored in `category` too, for the readers that only know one.
+    categories, category_error = _read_news_categories(request)
+    if category_error:
+        return category_error
 
-    # Validate category choice. Read straight off News.CATEGORY_CHOICES (afc_auth/models.py) instead
-    # of a hardcoded copy, so adding a category to the model is enough for the admin News form to be
-    # able to save it - there is no second list here that can silently drift out of sync.
-    valid_categories = [key for key, _label in News.CATEGORY_CHOICES]
-    if category not in valid_categories:
-        return Response({"message": "Invalid category.", "code": "invalid_category"}, status=status.HTTP_400_BAD_REQUEST)
+    # Validate required fields
+    if not news_title or not content or not categories:
+        return Response({"message": "Title, content, and category are required.", "code": "title_content_category_required"}, status=status.HTTP_400_BAD_REQUEST)
+    category = categories[0]
 
     # Fetch related event if provided (LEGACY single field). The NEW multi-event link is
     # `related_events`, handled right after the row is created; when it is present it takes precedence
@@ -2749,6 +2786,7 @@ def create_news(request):
         news_title=news_title,
         content=content,
         category=category,
+        categories=categories,
         related_event=related_event,
         images=images,
         author=user,
@@ -2774,7 +2812,7 @@ def create_news(request):
     AdminHistory.objects.create(
         admin_user=user,
         action="created_news",
-        description=f"News '{news_title}' created in category '{category}'"
+        description=f"News '{news_title}' created in categories {', '.join(categories)}"
     )
 
     return Response({
@@ -2786,6 +2824,7 @@ def create_news(request):
         "news_id": news.news_id,
         "news_title": news.news_title,
         "category": news.category,
+        "categories": news.category_keys(),
         "is_published": news.is_published,
         "scheduled_publish_at": news.scheduled_publish_at,
         # Homepage pin state, so the admin form can confirm what it saved.
@@ -2842,14 +2881,13 @@ def edit_news(request):
     # Extract new values (if provided)
     news_title = request.data.get("news_title", news.news_title)
     content = request.data.get("content", news.content)
-    category = request.data.get("category", news.category)
     related_event_id = request.data.get("related_event", None)   # legacy single-event link (back-compat)
 
-    # Validate category if changed. Same single source of truth as create_news above:
-    # News.CATEGORY_CHOICES (afc_auth/models.py), never a hardcoded copy.
-    valid_categories = [key for key, _label in News.CATEGORY_CHOICES]
-    if category and category not in valid_categories:
-        return Response({"message": "Invalid category.", "code": "invalid_category"}, status=status.HTTP_400_BAD_REQUEST)
+    # Categories (inbox #160): same reader as create_news. None means the edit did not touch them,
+    # and the post keeps its own; a list replaces them, its first key mirrored into `category`.
+    categories, category_error = _read_news_categories(request)
+    if category_error:
+        return category_error
 
     # Update related event if changed (LEGACY single field). Superseded below when the new
     # `related_events` multi field is present (its first id is mirrored back into this FK).
@@ -2879,7 +2917,9 @@ def edit_news(request):
     # Apply updates
     news.news_title = news_title
     news.content = content
-    news.category = category
+    if categories is not None:
+        news.categories = categories
+        news.category = categories[0]
 
     # Scheduled publish (optional). Only act when the field is actually present in the request so an
     # edit that omits it leaves the publish state untouched. When present:
@@ -2935,6 +2975,7 @@ def edit_news(request):
         "news_id": news.news_id,
         "news_title": news.news_title,
         "category": news.category,
+        "categories": news.category_keys(),
         "is_published": news.is_published,
         "scheduled_publish_at": news.scheduled_publish_at,
         # Homepage pin state, so the admin form can confirm what it saved.
@@ -3152,7 +3193,10 @@ def get_all_news(request):
     for news in news_list:
         item = {
             "news_id": news.news_id,
+            # category = the FIRST category (older readers); categories = every one (inbox #160),
+            # which the /news filter and the category tags read.
             "category": news.category,
+            "categories": news.category_keys(),
             # related_event = LEGACY single-event name string (kept for back-compat). related_events =
             # the NEW multi-event list rendered as the public "Related events" block (News overhaul).
             "related_event": news.related_event.event_name if news.related_event else None,
@@ -3237,6 +3281,7 @@ def get_pinned_news(request):
             "news_id": news.news_id,
             "slug": news.slug,
             "category": news.category,
+            "categories": news.category_keys(),
             "images_url": request.build_absolute_uri(news.images.url) if news.images else None,
             "created_at": news.created_at,
             "pinned_until": news.pinned_until,
@@ -3274,6 +3319,7 @@ def get_news_detail(request):
     news_data = {
         "news_id": news.news_id,
         "category": news.category,
+        "categories": news.category_keys(),
         # related_event = LEGACY single-event name string (kept for back-compat). related_events = the
         # NEW multi-event list the public "Related events" block on app/(user)/news/[slug] renders.
         "related_event": news.related_event.event_name if news.related_event else None,
