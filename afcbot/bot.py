@@ -7,6 +7,7 @@ import time
 import tempfile
 import aiohttp
 import json
+from urllib.parse import quote as _quote
 import asyncio
 from datetime import datetime, timezone
 from typing import Optional, Union
@@ -1734,13 +1735,15 @@ Anyone visiting the website can open the panel. Some visitors are signed in and 
    The knowledge below explains how the whole website works: accounts, teams, transfers, tournaments, scrims, rankings and tiers, the Player Market, the shop, polls, awards, support. ALWAYS look there first; most questions are answered there. The team tools are only for looking up a specific team or roster.
 2. Never invent tournament dates, prizes, rules, numbers, team names, players or features. If the answer is not in what you have, say plainly that you do not know and offer a person (see TALK TO A PERSON).
 3. Keep it short and plain: two or three short paragraphs at most. Use **bold** for the key fact. Use numbered steps for how-to questions, one short line per step.
-4. No headings, no tables, no emojis, and never markdown link syntax.
+4. No headings, no tables, no emojis. The only markdown link you write is the named link in LINKS below.
 5. Never use the long dash characters (the em dash and the en dash). Use a comma, a colon, a full stop or a plain hyphen instead.
 6. Never end with a follow-up offer such as "let me know if you need anything else". Answer and stop.
 7. If a question is vague, ask one short clarifying question instead of guessing.
 
 === LINKS ===
-- Point to a page on the website by its path, starting with a slash, for example /teams, /tournaments, /rankings, /player-markets, /support, /profile. Never write the domain name before it.
+- EVERY time you name a specific event, team, player or page of the website, write the name as a link the visitor can tap: [Name](/path). Shape: [the event's name](the Page given for it), [the team's name](its page), [the Player Market](/player-markets), [Rankings](/rankings). One link per thing, the first time you name it.
+- Take the path ONLY from what you were given: an event's Page in the LIVE EVENT DATA, a team's or player's "page" in the team tool results, "team_page" or an event's "page" in the ACCOUNT FACTS, or a site section you know: /teams, /tournaments, /rankings, /player-markets, /news, /support, /profile, /shop. Never build or guess a path for a specific event, team or player; if you were given no page for it, write its name without a link.
+- Write the path starting with a slash, exactly as given (keep its %20 and other codes). When what you were given starts with {WEB_SITE_URL}, drop that part and keep the path. Never write the domain name before it.
 - The ONLY outside link you may ever write is the AFC Discord invite, exactly: {WEB_DISCORD_INVITE}. Never write any other Discord link.
 
 === THE PERSON'S OWN ACCOUNT ===
@@ -1807,7 +1810,8 @@ def _web_context_message(locale: str, signed_in: bool, facts) -> str:
         parts.append("The visitor is NOT signed in. You cannot see any account.")
     live_events = format_live_events(_web_live_events())
     if live_events:
-        parts.append(live_events)
+        # Discord gets each event's full address; the panel links by site path (inbox #149).
+        parts.append(live_events.replace(f"Link: {WEB_SITE_URL}/", "Page: /"))
     return "\n\n".join(parts)
 
 
@@ -2207,6 +2211,7 @@ async def _lookup_team_members(team_name: str) -> str:
     members = [
         {
             "username": (m.get("username") or "").strip(),
+            "page": _site_page("players", (m.get("username") or "").strip()),
             "management_role": m.get("management_role") or None,
             "in_game_role": m.get("in_game_role") or None,
         }
@@ -2215,6 +2220,7 @@ async def _lookup_team_members(team_name: str) -> str:
     return json.dumps({
         "found": True,
         "team_name": team.get("team_name", team_name),
+        "page": _site_page("teams", team.get("team_name", team_name)),
         "country": team.get("country"),
         "tier": team.get("team_tier"),
         "owner": team.get("team_owner"),
@@ -2261,6 +2267,14 @@ async def _get_all_teams_cached() -> list:
     return _cached_all_teams
 
 
+def _site_page(kind: str, name) -> str:
+    """The public page of a team ("teams") or player ("players") on the website, addressed by name
+    the way the site does it (afc_auth/site_paths.py: every unsafe character percent-encoded, "/"
+    included). Given to the model with the tool results so it can link what it names (inbox #149)."""
+    name = str(name or "").strip()
+    return f"{WEB_SITE_URL}/{kind}/{_quote(name, safe='')}" if name else ""
+
+
 async def _search_teams(query: str = "", country: str = "") -> str:
     """Tool impl - search/list AFC teams from the cached directory. Returns a JSON
     string (results capped) plus the total registered-team count."""
@@ -2288,6 +2302,7 @@ async def _search_teams(query: str = "", country: str = "") -> str:
         "teams": [
             {
                 "team_name": t.get("team_name"),
+                "page": _site_page("teams", t.get("team_name")),
                 "country": t.get("country"),
                 "tier": t.get("team_tier"),
                 "members": t.get("member_count"),
