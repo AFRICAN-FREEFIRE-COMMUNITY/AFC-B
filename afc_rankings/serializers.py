@@ -225,6 +225,7 @@ def annual(s):
 
 
 def season(s):
+    next_open = s.next_window_opens()
     return {
         "season_id": s.season_id, "name": s.name, "quarter": s.quarter, "year": s.year,
         "start_date": s.start_date.isoformat(), "end_date": s.end_date.isoformat(),
@@ -235,6 +236,9 @@ def season(s):
         # call (exit_team / kick_team_member / disband_team) - single source of truth for
         # the OPEN/CLOSED state shown publicly and enforced on roster moves.
         "transfer_window_is_open": s.is_transfer_window_open(),
+        # When roster moves next become allowed (None while they are allowed): Season.next_window_opens,
+        # the one answer the website banner, the join warning and the help bot all show (inbox #150).
+        "next_window_opens": next_open.isoformat() if next_open else None,
         "is_active": s.is_active, "tier_eval_run": s.tier_eval_run,
         # independent publish gates (rankings vs tiers).
         "rankings_published": s.rankings_published,
