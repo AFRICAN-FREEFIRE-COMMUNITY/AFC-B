@@ -493,6 +493,16 @@
       "reason": "the Discord bot, not an HTTP surface: it reads Discord's own typed objects."
     },
     {
+      "rule": "R69",
+      "path": "afc_team/views_transfers.py",
+      "reason": "public read-only feed (GET only, nothing written; the WRITES heuristic matches the word POST in a docstring). Every query value is parsed by hand with a coded 400: team_id digits (team_number), q at most 50 chars (query_too_long), tier digits (tier_number), direction joined|left (direction_unknown), limit/offset ints clamped (limit_offset_numbers). Read 2026-10-05, inbox #161."
+    },
+    {
+      "rule": "R69",
+      "path": "afc_player/views_directory.py",
+      "reason": "public read-only directory (GET only). q at most 50 chars (query_too_long), limit/offset ints clamped 1..50 (limit_offset_numbers), country folded through afc_auth.country_grouping and only ever used in an ORM __in filter. Read 2026-10-05, inbox #161."
+    },
+    {
       "rule": "R63",
       "path": "afc_shop/models.py",
       "reason": "the vendor payout bank account, the same recorded decision as the organizer one in afc_organizers/models.py: Paystack needs the number readable to create a transfer recipient, so it cannot be hashed and is not encrypted today. Revisit with a Fernet field if payouts ever stop needing the raw value (WEBSITE/CLAUDE.md, R63 row)."
