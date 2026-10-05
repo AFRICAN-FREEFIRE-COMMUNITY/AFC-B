@@ -214,13 +214,10 @@ def is_deliverable_address(email) -> bool:
 
 
 def get_client_ip(request):
-    x_forwarded_for = request.META.get("HTTP_X_FORWARDED_FOR")
-    if x_forwarded_for:
-        # X-Forwarded-For may contain multiple IPs
-        ip = x_forwarded_for.split(",")[0].strip()
-    else:
-        ip = request.META.get("REMOTE_ADDR")
-    return ip
+    # The visitor's address: one rule for the whole API (afc_auth/client_ip.py, inbox #141).
+    # Kept as a name because sign-in, devices, recovery and the event views all import it.
+    from afc_auth.client_ip import client_ip
+    return client_ip(request)
 
 
 def geo_for_ip(ip):
@@ -1979,7 +1976,7 @@ def signup(request):
             user,
             str(request.data.get("referral_code") or "")[:20],
             click_token=str(request.data.get("referral_click") or "")[:16],
-            ip=(request.META.get("HTTP_X_FORWARDED_FOR", "").split(",")[0].strip() or request.META.get("REMOTE_ADDR", "")),
+            ip=get_client_ip(request),
         )
 
         # Generate verification code
