@@ -15,4 +15,7 @@ urlpatterns = [
     path("status/", views.help_status, name="help_bot_status"),
     path("chat/", views.help_chat, name="help_bot_chat"),
     path("handoff/", views.help_handoff, name="help_bot_handoff"),
+    path("conversations/", views.help_conversations, name="help_bot_conversations"),
+    path("conversations/<str:token>/", views.help_conversation, name="help_bot_conversation"),
+    path("admin/log/", views.help_admin_log, name="help_bot_admin_log"),
 ]
