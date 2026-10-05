@@ -51,9 +51,9 @@ class NewsCategoryTests(_NewsBase):
     # ── 1. the choice set itself ───────────────────────────────────────────────
     def test_education_is_a_model_choice_and_old_ones_survive(self):
         """The new key exists, no pre-existing key was dropped, and the order is the one every
-        picker/filter renders (general, tournament, education, bans - "bans" stays last)."""
+        picker/filter renders: the informational group, then the two ban boards last (inbox #145)."""
         keys = [key for key, _label in News.CATEGORY_CHOICES]
-        self.assertEqual(keys, ["general", "tournament", "education", "bans"])
+        self.assertEqual(keys, ["general", "tournament", "education", "team_updates", "bans", "banned_teams"])
         labels = dict(News.CATEGORY_CHOICES)
         self.assertEqual(labels["education"], "Education Updates")
 
@@ -88,7 +88,7 @@ class NewsCategoryTests(_NewsBase):
 
     # ── 4. existing categories are untouched ───────────────────────────────────
     def test_existing_categories_still_create_and_read_back(self):
-        for category in ("general", "tournament", "bans"):
+        for category in ("general", "tournament", "bans", "team_updates", "banned_teams"):
             with self.subTest(category=category):
                 resp = self._create(category, title=f"Post about {category}")
                 self.assertEqual(resp.status_code, 201)

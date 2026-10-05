@@ -474,7 +474,14 @@ class News(models.Model):
         # read as a group, while "bans" is the enforcement notice board and reads best last. The
         # picker, both public filters and the admin filter all follow this same order.
         ("education", "Education Updates"),
-        ("bans", "Banned Players/Teams"),
+        # Owner, 2026-10-05 (inbox #145): "separate these, banned players should be separated from
+        # team updates", with "All three" picked: one category for news about teams, and the old
+        # bans board split into players and teams. "team_updates" joins the informational group;
+        # "bans" keeps its key (every existing ban post stays where it is) and now means banned
+        # PLAYERS; "banned_teams" follows it, so the enforcement notices still read last.
+        ("team_updates", "Team Updates"),
+        ("bans", "Banned Players"),
+        ("banned_teams", "Banned Teams"),
     ]
 
     news_id = models.AutoField(primary_key=True)
