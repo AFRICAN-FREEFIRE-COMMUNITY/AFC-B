@@ -213,6 +213,10 @@
       "status": 200,
       "reason": "public content, decided 2026-09-13"
     },
+    "GET player/directory/": {
+      "status": 200,
+      "reason": "the Players tab of Teams & Players: paged, searchable, lists only players already public via a team roster or a scored match, named fields only (no uid, email, role, status), AFC-B teams-players-transfers (inbox #161, 2026-10-05)"
+    },
     "GET polls/": {
       "status": 200,
       "reason": "public content, decided 2026-09-13"

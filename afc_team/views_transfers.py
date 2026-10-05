@@ -16,6 +16,7 @@
 #   - Route     : GET /team/transfers/ (afc_team/urls.py).
 #   - Consumed  : frontend components/news/TransferFeed.tsx, rendered as the "Transfers" category
 #                 on app/(user)/news/page.tsx.
+from django.db.models import Q
 from rest_framework import status
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
@@ -27,6 +28,9 @@ from .transfers import has_competed_subquery
 # more remain, and never loads everything into memory).
 DEFAULT_PAGE_SIZE = 20
 MAX_PAGE_SIZE = 50
+# A search longer than any team or player name is a mistake, never a name (inbox #161).
+MAX_QUERY_LENGTH = 50
+DIRECTIONS = ("joined", "left")
 
 
 def _serialize_transfer(request, transfer):
@@ -81,10 +85,17 @@ def get_transfer_feed(request):
 
     AUTH      : none. This is public information, the same as the team pages it links to.
 
-    QUERY     : team_id  optional int, narrows the feed to ONE team ("what happened to my team",
-                         which is the view people actually click).
-                limit    optional int, 1..50, default 20.
-                offset   optional int, >= 0, default 0.
+    QUERY     : team_id   optional int, narrows the feed to ONE team ("what happened to my team",
+                          which is the view people actually click).
+                q         optional, part of a player's or a team's name, the live name or the one
+                          recorded at the move (case-insensitive, at most 50 chars). Inbox #161,
+                          owner 2026-10-05: "no pagination and also no search ... filters by
+                          countries, or by tiers or by teams/players".
+                country   optional, the team's country, exact.
+                tier      optional, the team's tier ("1", "2", ...).
+                direction optional, "joined" or "left".
+                limit     optional int, 1..50, default 20.
+                offset    optional int, >= 0, default 0.
 
     RESPONSE  : {
                   "results":     [ {transfer_id, direction, player_username, player_exists,
@@ -92,6 +103,8 @@ def get_transfer_feed(request):
                                     occurred_at, in_transfer_window}, ... ],
                   "teams":       [ {team_id, team_name}, ... ]   # every team present in the feed,
                                                                  # for the frontend's team filter
+                  "countries":   [ "Ghana", ... ]                # the same, for the country filter
+                  "tiers":       [ "1", "2", ... ]               # the same, for the tier filter
                   "total_count": int,
                   "has_more":    bool,
                   "next_offset": int|null,
@@ -128,6 +141,34 @@ def get_transfer_feed(request):
                             status=status.HTTP_400_BAD_REQUEST)
         feed = feed.filter(team_id=int(team_id_raw))
 
+    # ── §2b search and the other filters (inbox #161) ─────────────────────────────────────────
+    # The live names AND the copies recorded at the move, so a renamed team or player is found
+    # under either name. Each value is checked before it narrows anything.
+    q = (request.GET.get("q") or "").strip()
+    if len(q) > MAX_QUERY_LENGTH:
+        return Response({"message": "That search is too long.", "code": "query_too_long"},
+                        status=status.HTTP_400_BAD_REQUEST)
+    if q:
+        feed = feed.filter(
+            Q(player__username__icontains=q) | Q(player_username_at_move__icontains=q)
+            | Q(team__team_name__icontains=q) | Q(team_name_at_move__icontains=q)
+        )
+    country = (request.GET.get("country") or "").strip()
+    if country:
+        feed = feed.filter(team__country=country)
+    tier = (request.GET.get("tier") or "").strip()
+    if tier:
+        if not tier.isdigit():
+            return Response({"message": "tier must be a number.", "code": "tier_number"},
+                            status=status.HTTP_400_BAD_REQUEST)
+        feed = feed.filter(team__team_tier=tier)
+    direction = (request.GET.get("direction") or "").strip()
+    if direction:
+        if direction not in DIRECTIONS:
+            return Response({"message": "direction must be joined or left.", "code": "direction_unknown"},
+                            status=status.HTTP_400_BAD_REQUEST)
+        feed = feed.filter(direction=direction)
+
     # ── §3 the team filter's options ───────────────────────────────────────────────────────────
     # Computed from the SAME queryset before the team narrowing would empty it out, so the dropdown
     # only ever offers teams that actually have entries. Built off the unpaginated set on purpose:
@@ -146,6 +187,13 @@ def get_transfer_feed(request):
     )
     teams = [{"team_id": row["team_id"], "team_name": row["team__team_name"]}
              for row in filter_options]
+    # The country and tier options, from the same whole feed for the same reason (inbox #161).
+    newsworthy = (TeamTransfer.objects.filter(team__isnull=False)
+                  .filter(has_competed_subquery("team_id")))
+    countries = sorted({c for c in newsworthy.values_list("team__country", flat=True).distinct() if c},
+                       key=str.casefold)
+    tiers = sorted({t for t in newsworthy.values_list("team__team_tier", flat=True).distinct()
+                    if t and str(t).isdigit()}, key=int)
 
     # ── §4 pagination ──────────────────────────────────────────────────────────────────────────
     try:
@@ -164,6 +212,8 @@ def get_transfer_feed(request):
     return Response({
         "results": [_serialize_transfer(request, t) for t in page],
         "teams": teams,
+        "countries": countries,
+        "tiers": tiers,
         "total_count": total_count,
         "has_more": has_more,
         "next_offset": offset + limit if has_more else None,
