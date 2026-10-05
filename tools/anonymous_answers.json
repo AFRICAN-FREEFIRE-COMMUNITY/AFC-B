@@ -177,6 +177,10 @@
       "status": 200,
       "reason": "public content, decided 2026-09-13"
     },
+    "GET help-bot/conversations/": {
+      "status": 200,
+      "reason": "the website Help panel's History: a signed-out caller with no browser id gets an empty list; with one, only that browser's own signed-out chats (the same ownership as continuing a chat), AFC-B help bot history (inbox #147, 2026-10-05)"
+    },
     "GET help-bot/status/": {
       "status": 200,
       "reason": "the website Help panel asks whether the assistant is on and how many questions are left today: answers {online, signed_in, limit, remaining, bot_check} and holds nothing private, opened by AFC-B feature/help-bot (inbox #109, 2026-10-04)"

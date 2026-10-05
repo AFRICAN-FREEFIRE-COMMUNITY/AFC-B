@@ -46,6 +46,7 @@ from datetime import timezone as dt_timezone
 from django.conf import settings
 from django.core.cache import cache
 from django.db import transaction
+from django.db.models import Count, OuterRef, Q, Subquery
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.decorators import api_view
@@ -61,7 +62,7 @@ from afc_support.views import acknowledge_new_ticket, create_ticket_from_contact
 
 from . import brain
 from .facts import account_facts
-from .models import HelpConversation, HelpMessage
+from .models import HelpConversation, HelpInputLog, HelpMessage
 
 log = logging.getLogger(__name__)
 
@@ -283,9 +284,8 @@ def help_status(request):
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
 # §6  POST help-bot/chat/
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
-@api_view(["POST"])
-def help_chat(request):
-    """POST help-bot/chat/
+def _help_chat(request):
+    """POST help-bot/chat/ (logged by the help_chat wrapper in §8)
 
     REQUEST   JSON {message, conversation?, visitor?, cf_turnstile_response?}
               message       the question, 1 to 1000 characters
@@ -399,9 +399,8 @@ def _transcript(conv, name_label, after=None):
     )
 
 
-@api_view(["POST"])
-def help_handoff(request):
-    """POST help-bot/handoff/ - "Talk to a person".
+def _help_handoff(request):
+    """POST help-bot/handoff/ - "Talk to a person" (logged by the help_handoff wrapper in §8).
 
     REQUEST   JSON {conversation?, visitor?, email?, message?, cf_turnstile_response?}
               conversation  the chat to attach (h_<24 hex)
@@ -497,3 +496,218 @@ def help_handoff(request):
     acknowledge_new_ticket(ticket, message)
     return Response({"ticket_number": ticket.ticket_number, "ticket_url": notify.ticket_url(ticket),
                      "existing": False})
+
+
+# ─────────────────────────────────────────────────────────────────────────────────────────────────
+# §8  The input log (inbox #156) and the two public doors that write it
+# ─────────────────────────────────────────────────────────────────────────────────────────────────
+LOG_TEXT_CHARS = 4000
+PAGE_RE = re.compile(r"^/[^\s]{0,299}$")
+
+
+def _log_input(request, kind, response):
+    """One HelpInputLog row for a chat or handoff request, AFTER its response is decided: who (the
+    account, or a signed-out visitor's salted hashes), when, the page they were on, what they typed
+    and what came back (the answer, the ticket number, or the refusal code). It never changes the
+    response, and a failure to write it is logged and swallowed, so the panel cannot break on it."""
+    try:
+        data = request.data if hasattr(request.data, "get") else {}
+        raw = data.get("message")
+        text = raw[:LOG_TEXT_CHARS] if isinstance(raw, str) else ""
+        user = _actor(request)
+        visitor = _validate_visitor(data.get("visitor"))
+        body = response.data if isinstance(getattr(response, "data", None), dict) else {}
+        answer, outcome, token = "", "", ""
+        if response.status_code == 200 and kind == HelpInputLog.KIND_QUESTION:
+            answer, outcome, token = str(body.get("reply") or ""), HelpInputLog.OUTCOME_ANSWERED, str(body.get("conversation") or "")
+        elif response.status_code == 200:
+            outcome = f"ticket:{body.get('ticket_number', '')}" + (" (added)" if body.get("existing") else "")
+        else:
+            outcome = str(body.get("code") or f"http_{response.status_code}")
+        if not token:
+            token = _validate_token(data.get("conversation")) or ""
+        page = data.get("page")
+        HelpInputLog.objects.create(
+            kind=kind, user=user, username=(user.username if user else ""),
+            visitor_hash=_hash("visitor", visitor) if (visitor and user is None) else "",
+            ip_hash=_hash("ip", _client_ip(request)) if user is None else "",
+            conversation_token=token[:32], text=text, answer=answer[:LOG_TEXT_CHARS], outcome=outcome[:60],
+            http_status=response.status_code, locale=_locale(request),
+            page=page if isinstance(page, str) and PAGE_RE.match(page) else "",
+        )
+    except Exception:
+        log.exception("help bot: could not write the input log")
+
+
+@api_view(["POST"])
+def help_chat(request):
+    """POST help-bot/chat/: see _help_chat for the contract. Every call is logged (§8)."""
+    response = _help_chat(request)
+    _log_input(request, HelpInputLog.KIND_QUESTION, response)
+    return response
+
+
+@api_view(["POST"])
+def help_handoff(request):
+    """POST help-bot/handoff/: see _help_handoff for the contract. Every call is logged (§8)."""
+    response = _help_handoff(request)
+    _log_input(request, HelpInputLog.KIND_HANDOFF, response)
+    return response
+
+
+# ─────────────────────────────────────────────────────────────────────────────────────────────────
+# §9  Your own conversations (inbox #147)
+# ─────────────────────────────────────────────────────────────────────────────────────────────────
+# Owner, 2026-10-05: "conversations should survive a sign out and sign in back, aso creating a new
+# conversation should not limit the last one." The chats were always stored (models.py); the panel
+# simply had no way to read them back, so signing out or the "new chat" button lost them on screen.
+LIST_LIMIT_DEFAULT = 20
+LIST_LIMIT_MAX = 50
+
+
+def _conversations_of(user, visitor_hash):
+    """The caller's conversations, the same ownership as _owned_conversation: an account's own, or,
+    signed out, this browser's that have no account."""
+    if user is not None:
+        return HelpConversation.objects.filter(user=user)
+    if visitor_hash:
+        return HelpConversation.objects.filter(user__isnull=True, visitor_hash=visitor_hash)
+    return HelpConversation.objects.none()
+
+
+def _int_param(request, name, default, lo, hi):
+    try:
+        return max(lo, min(hi, int(request.query_params.get(name, default))))
+    except (TypeError, ValueError):
+        return default
+
+
+@api_view(["GET"])
+def help_conversations(request):
+    """GET help-bot/conversations/?visitor=<browser id>&limit=20&offset=0
+
+    The caller's earlier conversations, newest first, for the panel's History view.
+    REQUEST   optional Bearer SessionToken; signed out, ?visitor= the panel's browser id.
+    RESPONSE  200 {results: [{conversation, started_at, last_message_at, preview, questions}],
+                   total_count, has_more, next_offset}
+              preview is the first question (up to 120 characters).
+    AUTH      none beyond ownership: an account sees its own, a browser its own signed-out chats.
+    CONSUMED  components/help/HelpBot.tsx (lib/api/helpBot.ts listHelpConversations).
+    """
+    user = _actor(request)
+    visitor = _validate_visitor(request.query_params.get("visitor"))
+    visitor_hash = _hash("visitor", visitor) if (visitor and user is None) else ""
+    limit = _int_param(request, "limit", LIST_LIMIT_DEFAULT, 1, LIST_LIMIT_MAX)
+    offset = _int_param(request, "offset", 0, 0, 100000)
+    first_question = (HelpMessage.objects.filter(conversation=OuterRef("pk"), role=HelpMessage.ROLE_USER)
+                      .order_by("created_at", "id").values("body")[:1])
+    qs = (_conversations_of(user, visitor_hash)
+          .annotate(preview=Subquery(first_question),
+                    questions=Count("messages", filter=Q(messages__role=HelpMessage.ROLE_USER)))
+          .filter(questions__gt=0)
+          .order_by("-last_message_at", "-id"))
+    total = qs.count()
+    rows = list(qs[offset:offset + limit])
+    more = offset + len(rows) < total
+    return Response({
+        "results": [{
+            "conversation": c.public_token,
+            "started_at": c.created_at.isoformat(),
+            "last_message_at": c.last_message_at.isoformat(),
+            "preview": (c.preview or "")[:120],
+            "questions": c.questions,
+        } for c in rows],
+        "total_count": total,
+        "has_more": more,
+        "next_offset": offset + len(rows) if more else None,
+    })
+
+
+@api_view(["GET"])
+def help_conversation(request, token):
+    """GET help-bot/conversations/<token>/?visitor=<browser id>
+
+    One of the caller's conversations with its messages, oldest first, to reopen it in the panel.
+    RESPONSE  200 {conversation, started_at, ticket_number, messages: [{role, text, used_account, at}]}
+              404 help_conversation_not_found   not theirs, or gone: the same answer for both (R88)
+    AUTH      ownership (_owned_conversation), exactly as continuing the chat.
+    CONSUMED  components/help/HelpBot.tsx (lib/api/helpBot.ts getHelpConversation).
+    """
+    user = _actor(request)
+    visitor = _validate_visitor(request.query_params.get("visitor"))
+    visitor_hash = _hash("visitor", visitor) if visitor else ""
+    conv = _owned_conversation(token, user, visitor_hash) if TOKEN_RE.match(token or "") else None
+    if conv is None:
+        return _refuse("That conversation was not found. Start a new one.", "help_conversation_not_found",
+                       status.HTTP_404_NOT_FOUND)
+    return Response({
+        "conversation": conv.public_token,
+        "started_at": conv.created_at.isoformat(),
+        "ticket_number": conv.ticket.ticket_number if conv.ticket_id else None,
+        "messages": [{
+            "role": m.role, "text": m.body, "used_account": m.used_account, "at": m.created_at.isoformat(),
+        } for m in conv.messages.order_by("created_at", "id")],
+    })
+
+
+# ─────────────────────────────────────────────────────────────────────────────────────────────────
+# §10  The staff Help log (inbox #156)
+# ─────────────────────────────────────────────────────────────────────────────────────────────────
+@api_view(["GET"])
+def help_admin_log(request):
+    """GET help-bot/admin/log/?q=&outcome=&kind=&who=&limit=50&offset=0
+
+    Every input to the Help panel, newest first, for support staff (support admins, head admins,
+    super admins: afc_support.views._require_staff, the same people who work the support desk).
+    FILTERS   q        words in what was typed or answered
+              outcome  "answered", "refused" (any refusal code), "ticket", or one exact code
+              kind     question | handoff
+              who      an account's in-game name (exact), or "visitors" for signed-out only
+    RESPONSE  200 {results: [{id, at, kind, who, signed_in, visitor, conversation, page, locale,
+                   text, answer, outcome, http_status}], total_count, has_more, next_offset}
+              `visitor` is the first 8 characters of the salted browser hash: enough to see that two
+              signed-out questions came from the same browser, never the browser id or an address.
+              401 auth_required, 403 support_forbidden
+    CONSUMED  frontend app/(a)/a/support/help-log/page.tsx.
+    """
+    from afc_support.views import _require_staff
+
+    _staff, refused = _require_staff(request)
+    if refused is not None:
+        return refused
+    qs = HelpInputLog.objects.all()
+    q = (request.query_params.get("q") or "").strip()[:100]
+    if q:
+        qs = qs.filter(Q(text__icontains=q) | Q(answer__icontains=q))
+    outcome = (request.query_params.get("outcome") or "").strip()[:60]
+    if outcome == "refused":
+        qs = qs.exclude(outcome=HelpInputLog.OUTCOME_ANSWERED).exclude(outcome__startswith="ticket:")
+    elif outcome == "ticket":
+        qs = qs.filter(outcome__startswith="ticket:")
+    elif outcome:
+        qs = qs.filter(outcome=outcome)
+    kind = request.query_params.get("kind")
+    if kind in (HelpInputLog.KIND_QUESTION, HelpInputLog.KIND_HANDOFF):
+        qs = qs.filter(kind=kind)
+    who = (request.query_params.get("who") or "").strip()[:150]
+    if who == "visitors":
+        qs = qs.filter(username="")
+    elif who:
+        qs = qs.filter(username__iexact=who)
+    limit = _int_param(request, "limit", 50, 1, 100)
+    offset = _int_param(request, "offset", 0, 0, 1000000)
+    total = qs.count()
+    rows = list(qs.order_by("-created_at", "-id")[offset:offset + limit])
+    more = offset + len(rows) < total
+    return Response({
+        "results": [{
+            "id": r.pk, "at": r.created_at.isoformat(), "kind": r.kind,
+            "who": r.username or None, "signed_in": bool(r.username),
+            "visitor": r.visitor_hash[:8] if r.visitor_hash else None,
+            "conversation": r.conversation_token or None, "page": r.page or None, "locale": r.locale,
+            "text": r.text, "answer": r.answer, "outcome": r.outcome, "http_status": r.http_status,
+        } for r in rows],
+        "total_count": total,
+        "has_more": more,
+        "next_offset": offset + len(rows) if more else None,
+    })

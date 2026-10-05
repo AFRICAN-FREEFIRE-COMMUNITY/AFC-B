@@ -146,6 +146,9 @@ HELP_BOT_DAILY_PER_NETWORK = int(os.getenv("HELP_BOT_DAILY_PER_NETWORK", "60"))
 HELP_BOT_BURST_PER_MINUTE = int(os.getenv("HELP_BOT_BURST_PER_MINUTE", "6"))
 HELP_BOT_MAX_INFLIGHT = int(os.getenv("HELP_BOT_MAX_INFLIGHT", "2"))
 HELP_BOT_RETENTION_DAYS = int(os.getenv("HELP_BOT_RETENTION_DAYS", "30"))
+# Every input to the panel, answered or refused, is kept this long for staff (inbox #156,
+# afc_helpbot.models.HelpInputLog), longer than the chats themselves so a review can look back.
+HELP_BOT_LOG_RETENTION_DAYS = int(os.getenv("HELP_BOT_LOG_RETENTION_DAYS", "90"))
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 # Which Gemini model the OCR teacher calls. Flash is ~2x faster than Pro (≈12s vs ≈26s on a FF

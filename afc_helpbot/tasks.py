@@ -14,7 +14,7 @@ from celery import shared_task
 from django.conf import settings
 from django.utils import timezone
 
-from .models import HelpConversation
+from .models import HelpConversation, HelpInputLog
 
 logger = logging.getLogger(__name__)
 
@@ -27,4 +27,8 @@ def purge_old_help_chats():
     deleted, _per_model = HelpConversation.objects.filter(last_message_at__lt=cutoff).delete()
     count = _per_model.get("afc_helpbot.HelpConversation", 0)
     logger.info("help bot: purged %s conversations older than %s days (%s rows)", count, days, deleted)
+    # The staff input log (inbox #156) keeps its own, longer window.
+    log_days = int(getattr(settings, "HELP_BOT_LOG_RETENTION_DAYS", 90))
+    logs, _ = HelpInputLog.objects.filter(created_at__lt=timezone.now() - timedelta(days=log_days)).delete()
+    logger.info("help bot: purged %s input log rows older than %s days", logs, log_days)
     return count

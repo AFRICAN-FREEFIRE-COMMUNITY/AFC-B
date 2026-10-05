@@ -75,3 +75,47 @@ class HelpMessage(models.Model):
 
     def __str__(self):
         return f"{self.conversation.public_token} {self.role} {self.created_at:%Y-%m-%d %H:%M}"
+
+
+class HelpInputLog(models.Model):
+    """Every input to the Help panel, answered or not (inbox #156, owner 2026-10-05: "Please log all
+    inputs to tthe help centre please and from what user, date, time, waht was inpoutted etc.").
+
+    HelpMessage only holds questions that got an answer (a failed question must not count against
+    the allowance), so it cannot answer "what did people type". This table records EVERY question
+    and every "Talk to a person" request, with what came back: the answer, a refusal code (the daily
+    limit, busy, the bot check) or the ticket number. One row per request, written by
+    afc_helpbot.views._logged after the response is decided, so it never changes what the visitor gets.
+
+    Who: the account (and its name at the time, so the row still reads after the account is renamed
+    or deleted), or for a signed-out visitor the salted browser and network hashes (never a raw IP).
+    Read by staff on the admin Help log (afc_helpbot.views.help_admin_log, frontend
+    app/(a)/a/support/help-log). Deleted after HELP_BOT_LOG_RETENTION_DAYS (90 by default) by
+    afc_helpbot.tasks.purge_old_help_chats."""
+    KIND_QUESTION = "question"
+    KIND_HANDOFF = "handoff"
+    KIND_CHOICES = [(KIND_QUESTION, "Question"), (KIND_HANDOFF, "Talk to a person")]
+    OUTCOME_ANSWERED = "answered"
+
+    kind = models.CharField(max_length=10, choices=KIND_CHOICES)
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+                             related_name="help_inputs")
+    username = models.CharField(max_length=150, blank=True, default="")
+    visitor_hash = models.CharField(max_length=64, blank=True, default="", db_index=True)
+    ip_hash = models.CharField(max_length=64, blank=True, default="")
+    # The conversation's token is copied so the row still names it after the 30-day chat purge.
+    conversation_token = models.CharField(max_length=32, blank=True, default="", db_index=True)
+    text = models.TextField(blank=True, default="")
+    answer = models.TextField(blank=True, default="")
+    # "answered", "ticket:<number>", or the refusal code the panel was given.
+    outcome = models.CharField(max_length=60, db_index=True)
+    http_status = models.PositiveSmallIntegerField(default=200)
+    locale = models.CharField(max_length=8, blank=True, default="")
+    page = models.CharField(max_length=300, blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+
+    def __str__(self):
+        return f"{self.created_at:%Y-%m-%d %H:%M} {self.username or 'visitor'} {self.kind} {self.outcome}"
