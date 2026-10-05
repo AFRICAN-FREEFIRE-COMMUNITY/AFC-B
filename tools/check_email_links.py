@@ -16,6 +16,10 @@ WHAT IT READS
     Frontend (--frontend <tree>): app/**/page.tsx and route.ts give the pages ((group) folders
     dropped, [param] matches one segment, [...rest] the rest), and public/ gives the files.
     A {placeholder} in a backend link counts as one segment; ?query and #fragment are ignored.
+    The help bot (inbox #159, 5 Oct 2026): afcbot/bot.py WEB_SITE_PAGES, the pages the website's Help
+    panel may link, read as the module's own literal (ast), never by regex. Each path must open a
+    page, and a ?tab= / ?subject= value must appear as a string literal in that page's folder (the
+    page reads it from the address), so a renamed tab is caught too.
 
 WHAT IS NOT A LINK
     NOT_LINKS names the site URLs that are identifiers, each with its reason. Add one only with a reason.
@@ -29,6 +33,7 @@ Consumed by the frontend's scripts/check-all.mjs (step "email-links"), which run
 tree sits beside the frontend, the same way as endpoint_callers.py and check_parity.py.
 """
 import argparse
+import ast
 import json
 import os
 import re
@@ -73,6 +78,55 @@ def backend_links(root):
     return found
 
 
+def bot_pages(root):
+    """{path as written, ?query included: [file:line]} from afcbot/bot.py WEB_SITE_PAGES."""
+    path = os.path.join(root, "afcbot", "bot.py")
+    if not os.path.isfile(path):
+        return {}
+    with open(path, encoding="utf-8") as fh:
+        tree = ast.parse(fh.read())
+    found = {}
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and any(getattr(t, "id", "") == "WEB_SITE_PAGES" for t in node.targets):
+            for item in node.value.elts:
+                _name, page = ast.literal_eval(item)
+                found.setdefault(page, []).append(f"afcbot/bot.py:{item.lineno}")
+    return found
+
+
+def page_folder(tree, clean):
+    """The app/ folder whose page answers this path (static segments only), or None."""
+    app = os.path.join(tree, "app")
+    want = [s for s in clean.split("/") if s]
+    for dirpath, dirs, files in os.walk(app):
+        dirs[:] = [d for d in dirs if d != "node_modules"]
+        if not {"page.tsx", "page.ts", "page.jsx"} & set(files):
+            continue
+        rel = os.path.relpath(dirpath, app).replace("\\", "/")
+        segs = [p for p in rel.split("/") if p not in (".", "") and not (p.startswith("(") and p.endswith(")"))]
+        if segs == want:
+            return dirpath
+    return None
+
+
+def query_values_read(tree, page):
+    """True when every ?key=value of a bot page is a string literal in the page's folder."""
+    if "?" not in page:
+        return True
+    clean, query = page.split("?", 1)
+    folder = page_folder(tree, clean or "/")
+    if not folder:
+        return False
+    text = ""
+    for dirpath, _dirs, files in os.walk(folder):
+        for name in files:
+            if name.endswith((".tsx", ".ts")):
+                with open(os.path.join(dirpath, name), encoding="utf-8", errors="replace") as fh:
+                    text += fh.read()
+    return all(f'"{value}"' in text and f'"{key}"' in text
+               for key, _eq, value in (pair.partition("=") for pair in query.split("&")))
+
+
 def frontend_pages(tree):
     """(route segment lists, public file paths) of the frontend tree."""
     routes, public = [], set()
@@ -110,6 +164,10 @@ def check(backend, frontend):
     links = backend_links(backend)
     routes, public = frontend_pages(frontend)
     dead = {p: w for p, w in links.items() if p not in NOT_LINKS and not opens(p, routes, public)}
+    for page, where in bot_pages(backend).items():
+        links.setdefault(page, []).extend(where)
+        if not opens(page.split("?")[0] or "/", routes, public) or not query_values_read(frontend, page):
+            dead[page] = where
     return links, dead
 
 
@@ -120,7 +178,8 @@ def self_test():
         for d in ("app/(user)/contact", "app/(user)/teams/[id]/applications", "public"):
             os.makedirs(os.path.join(fe, d))
         for d in ("app/(user)/contact", "app/(user)/teams/[id]/applications"):
-            open(os.path.join(fe, d, "page.tsx"), "w").write("export default function P(){return null}")
+            open(os.path.join(fe, d, "page.tsx"), "w").write(
+                'export default function P(){const t = useAddressTab("tab", ["faq"], "faq"); return null}')
         open(os.path.join(fe, "public", "logo.png"), "wb").write(b"x")
         os.makedirs(os.path.join(be, "app"))
         open(os.path.join(be, "app", "emails.py"), "w").write(
@@ -130,10 +189,19 @@ def self_test():
             'd = "https://africanfreefirecommunity.com/logo.png"\n'
             'e = "https://africanfreefirecommunity.com/secevent/player-disconnected"\n'
             'f = "https://africanfreefirecommunity.com/team/trials"\n')
+        os.makedirs(os.path.join(be, "afcbot"))
+        open(os.path.join(be, "afcbot", "bot.py"), "w").write(
+            'WEB_SITE_PAGES = (\n'
+            '    ("Contact", "/contact"),\n'
+            '    ("FAQ", "/contact?tab=faq"),\n'
+            '    ("Gone", "/gone"),\n'
+            '    ("Renamed tab", "/contact?tab=old"),\n'
+            ')\n')
         links, dead = check(be, fe)
-    want_dead = {"/support", "/team/trials"}
-    ok = set(dead) == want_dead and len(links) == 6
-    print("self-test ok: 2 dead caught, 4 good passed" if ok else f"self-test FAIL: dead {sorted(dead)}, links {sorted(links)}")
+    want_dead = {"/support", "/team/trials", "/gone", "/contact?tab=old"}
+    ok = set(dead) == want_dead and len(links) == 9
+    print("self-test ok: 4 dead caught (2 email, 2 help bot), 5 good passed" if ok
+          else f"self-test FAIL: dead {sorted(dead)}, links {sorted(links)}")
     return 0 if ok else 1
 
 
