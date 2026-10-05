@@ -1731,7 +1731,9 @@ WEB_SITE_PAGES = (
     ("Organizers (a tab on Tournaments)", "/tournaments?tab=organizers"),
     ("Leaderboards", "/leaderboards"),
     ("Rankings", "/rankings"),
-    ("Player rankings (Rankings, Players)", "/rankings?subject=players"),
+    # Names the tab too: a link followed from the Tiers tab changes only what the address asks
+    # for, so "subject" alone left the reader on Tiers (seen live 5 Oct 2026).
+    ("Player rankings (Rankings, Players)", "/rankings?tab=rankings&subject=players"),
     ("Tiers (a tab on Rankings)", "/rankings?tab=tiers"),
     ("Teams", "/teams"),
     ("Create a team", "/teams/create"),
