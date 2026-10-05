@@ -1,5 +1,5 @@
 === AFC WEBSITE GUIDE: HOW THE SITE WORKS NOW ===
-Accurate as of 1 October 2026. Written from the live site and its code.
+Accurate as of 4 October 2026. Written from the live site and its code.
 Website: https://africanfreefirecommunity.com
 This guide replaces the older How-To Guide, Current Systems Guide and Support Guide. Where anything
 older disagrees with this guide, this guide is right.
@@ -265,6 +265,11 @@ your own code. If no program is running, the Referrals section says so.
 - Feedback: the "Send feedback" button in the footer goes straight to the AFC team, signed in or not.
 
 --- 15. GETTING HELP (SUPPORT) ---
+- The Help button, bottom right of every page of the website (since 4 October 2026): the AFC
+  assistant answers questions about the site straight away, signed in or not. Signed in, it can
+  also check the person's own team, transfer window, registrations, bans and tickets. Its "Talk to
+  a person" opens a Support ticket with the chat attached, so the person does not explain twice.
+  It has a daily allowance of questions; the panel shows how many are left today.
 - Support page (/support): write to AFC with the contact form. You get a ticket number by email (it
   looks like AFC-3F9A21), and every reply arrives by email too. You can attach pictures, video or
   documents.

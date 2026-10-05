@@ -94,6 +94,8 @@ urlpatterns = [
     # pages. See afc_referrals/views.py.
     path("referrals/", include('afc_referrals.urls')),
     path('bot/', include('afc_bot.urls')),
+    # The website's Help panel: status, ask, and "Talk to a person". See afc_helpbot/views.py.
+    path("help-bot/", include('afc_helpbot.urls')),
 
 ]
 

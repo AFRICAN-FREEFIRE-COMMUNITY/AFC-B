@@ -177,6 +177,10 @@
       "status": 200,
       "reason": "public content, decided 2026-09-13"
     },
+    "GET help-bot/status/": {
+      "status": 200,
+      "reason": "the website Help panel asks whether the assistant is on and how many questions are left today: answers {online, signed_in, limit, remaining, bot_check} and holds nothing private, opened by AFC-B feature/help-bot (inbox #109, 2026-10-04)"
+    },
     "GET organizers/events/<int:event_id>/rating/": {
       "status": 200,
       "reason": "public content, decided 2026-09-13"

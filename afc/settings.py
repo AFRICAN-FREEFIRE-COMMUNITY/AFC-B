@@ -118,6 +118,9 @@ INSTALLED_APPS = [
     # proxy to the Discord bot's own control API, which runs in a separate process and repo
     # (AFC/AFCBot). See afc_bot/views.py for why the browser must not call that API directly.
     'afc_bot',
+    # The website's Help panel (inbox #109, owner approved 2026-10-04): the gate in front of the
+    # Discord bot's brain, its conversations and the "Talk to a person" ticket. See afc_helpbot/views.py.
+    'afc_helpbot',
 ]
 
 # ── Discord bot control API (backlog item 31) ─────────────────────────────────────────────────
@@ -130,6 +133,19 @@ INSTALLED_APPS = [
 # and BOT_CONTROL_TOKEN must be the SAME value the bot has.
 BOT_CONTROL_URL = os.getenv("BOT_CONTROL_URL", "")
 BOT_CONTROL_TOKEN = os.getenv("BOT_CONTROL_TOKEN", "")
+
+# ── The website Help panel (afc_helpbot, inbox #109) ──────────────────────────────────────────
+# It asks the same bot process through BOT_CONTROL_URL above, so with those blank the panel shows
+# "offline" and still opens tickets. HELP_BOT_ENABLED=False turns the assistant off without a deploy.
+# The allowances are questions per day (UTC), checked before the model is called (owner rule R75);
+# HELP_BOT_MAX_INFLIGHT caps the questions with the model at once across all gunicorn workers.
+HELP_BOT_ENABLED = os.getenv("HELP_BOT_ENABLED", "True").strip().lower() == "true"
+HELP_BOT_DAILY_SIGNED_IN = int(os.getenv("HELP_BOT_DAILY_SIGNED_IN", "30"))
+HELP_BOT_DAILY_SIGNED_OUT = int(os.getenv("HELP_BOT_DAILY_SIGNED_OUT", "10"))
+HELP_BOT_DAILY_PER_NETWORK = int(os.getenv("HELP_BOT_DAILY_PER_NETWORK", "60"))
+HELP_BOT_BURST_PER_MINUTE = int(os.getenv("HELP_BOT_BURST_PER_MINUTE", "6"))
+HELP_BOT_MAX_INFLIGHT = int(os.getenv("HELP_BOT_MAX_INFLIGHT", "2"))
+HELP_BOT_RETENTION_DAYS = int(os.getenv("HELP_BOT_RETENTION_DAYS", "30"))
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 # Which Gemini model the OCR teacher calls. Flash is ~2x faster than Pro (≈12s vs ≈26s on a FF

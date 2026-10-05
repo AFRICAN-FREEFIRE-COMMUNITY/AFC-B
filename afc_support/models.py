@@ -82,9 +82,12 @@ class SupportTicket(models.Model):
 
     SOURCE_CONTACT_FORM = "contact_form"
     SOURCE_STAFF = "staff"
+    # "Talk to a person" in the website's Help panel (inbox #109): the ticket carries the chat.
+    SOURCE_HELP_BOT = "help_bot"
     SOURCE_CHOICES = [
         (SOURCE_CONTACT_FORM, "Contact form"),
         (SOURCE_STAFF, "Opened by staff"),
+        (SOURCE_HELP_BOT, "Help bot"),
     ]
 
     ticket_number = models.CharField(max_length=16, unique=True, db_index=True,
