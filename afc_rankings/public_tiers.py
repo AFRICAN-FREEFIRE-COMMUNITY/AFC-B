@@ -125,3 +125,104 @@ def published_team_tier_codes(season=None):
         .filter(season=season, team__isnull=False, tier_assigned__isnull=False)
         .values_list("tier_assigned", flat=True)
     ))
+
+
+# ── Setting a team's tier by hand (inbox #173, owner 2026-10-08: "admins should still be able to
+# manually change the tier") ───────────────────────────────────────────────────────────────────────
+# The hand-set Team.team_tier is gone as a separate fact, so a manual tier is written where every
+# reader looks: the team's row in the PUBLISHED tier season, pinned (tier_overridden=True), the same
+# sticky flag the Rankings > Overrides page sets. recalc honours it, and since 8 Oct 2026 it also
+# keeps a pinned row of a team with no activity instead of deleting it (recalc_team_quarterly), so a
+# pin on a team that was unranked survives the next recalculation. "Automatic" removes the pin.
+# Called by afc_team/views.py admin_team_tier (the admin team page).
+
+
+class TierPinRefused(Exception):
+    def __init__(self, code, message):
+        super().__init__(message)
+        self.code = code
+        self.message = message
+
+
+def configured_tier_codes(season=None):
+    """The tier codes the scoring config defines for `season` (0 = "Tier 1"), ascending. Tiers are
+    extensible (owner 2026-10-01), so this is read from the config, never a fixed 0-3."""
+    from .aggregation import resolve_tables
+
+    tables = resolve_tables(season=season)
+    # The threshold rows name every tier above the floor; the floor ("everyone else") is the
+    # config's default tier, which has no row of its own.
+    codes = {int(code) for _count, code in tables.tier_counts} | {int(tables.tier_default)}
+    return sorted(codes)
+
+
+def team_tier_state(team):
+    """What the admin team page shows: {ranking_tier, pinned, reason, season, options}."""
+    season = published_tier_season()
+    row = (TeamQuarterlyScore.objects.filter(team=team, season=season).first()
+           if season else None)
+    return {
+        "ranking_tier": row.tier_assigned if row else None,
+        "pinned": bool(row and row.tier_overridden),
+        "reason": (row.tier_override_reason if row and row.tier_overridden else ""),
+        "season": season.name if season else None,
+        "options": configured_tier_codes(season) if season else [],
+    }
+
+
+def set_team_tier(team, code, actor, reason=""):
+    """Pin `team` to tier `code` in the published tier season, or remove the pin when `code` is
+    None. Returns team_tier_state(team). Raises TierPinRefused with a code on a refusal.
+
+    Removing a pin from a row the pin itself created (a team with no activity that season) deletes
+    that row, so the team reads Unranked again rather than keeping a tier nobody set. A row with
+    real scores keeps them and is re-projected by the next recalculation.
+    """
+    from django.db import transaction
+    from django.utils import timezone
+
+    from .admin_views import _audit
+
+    season = published_tier_season()
+    if not season:
+        raise TierPinRefused("no_published_tier_season",
+                             "No season has published tiers yet, so there is no tier to set.")
+    reason = (reason or "").strip()[:255] or "Set by hand on the admin team page."
+    with transaction.atomic():
+        row = TeamQuarterlyScore.objects.select_for_update().filter(team=team, season=season).first()
+        before = ({"tier_assigned": row.tier_assigned, "tier_overridden": row.tier_overridden}
+                  if row else {"tier_assigned": None, "tier_overridden": False})
+        if code is None:
+            if not row or not row.tier_overridden:
+                return team_tier_state(team)
+            no_activity = (not row.total_score and not row.participated_in_tournaments
+                           and not row.scrim_pts and not row.tournament_pts)
+            if no_activity:
+                row.delete()
+                after = {"tier_assigned": None, "tier_overridden": False}
+            else:
+                row.tier_overridden = False
+                row.tier_override_reason = ""
+                row.save(update_fields=["tier_overridden", "tier_override_reason"])
+                after = {"tier_assigned": row.tier_assigned, "tier_overridden": False}
+                from . import recalc, tasks
+                transaction.on_commit(lambda: tasks.enqueue_team(team.team_id, recalc.current_month(),
+                                                                 season.season_id))
+            action = "clear"
+        else:
+            code = int(code)
+            if code not in configured_tier_codes(season):
+                raise TierPinRefused("tier_unknown", "That tier does not exist in the rankings settings.")
+            if row is None:
+                row = TeamQuarterlyScore(team=team, season=season)
+            row.tier_assigned = code
+            row.tier_overridden = True
+            row.tier_override_reason = reason
+            row.tier_assigned_at = timezone.now()
+            row.save()
+            after = {"tier_assigned": code, "tier_overridden": True}
+            action = "override"
+        _audit(actor, "tier_override", action, reason,
+               object_ref=f"team:{team.team_id}:season:{season.season_id}",
+               before=before, after=after, season=season)
+    return team_tier_state(team)

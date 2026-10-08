@@ -43,6 +43,9 @@ urlpatterns = [
     path('admin-remove-member/', admin_remove_member, name='admin_remove_member'),
     path('admin-add-member/', admin_add_member, name='admin_add_member'),
     path('admin-get-team-event-history/', admin_get_team_event_history, name='admin_get_team_event_history'),
+    # See or set a team's tier by hand: pins the published ranking tier (inbox #173). Replaces
+    # admin-change-team-tier/, which wrote the hand-set Team.team_tier nothing reads any more.
+    path('admin-team-tier/', admin_team_tier, name='admin_team_tier'),
     path('admin-transfer-team-ownership/', admin_transfer_team_ownership, name='admin_transfer_team_ownership'),
     # Team typeahead for <TeamSearchSelect/> (Standalone Leaderboards wizard). Mirrors
     # auth/search-users/. Any logged-in user; q>=2; returns {results:[{team_id,team_name,team_tag,country}], total_count}.

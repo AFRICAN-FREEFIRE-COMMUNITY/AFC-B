@@ -132,7 +132,71 @@ class PublicTiersTests(TestCase):
         self.assertEqual(by_tier["rows"], [["Tier 3", 1], ["Tier 4", 1], ["Unranked", 1]])
         self.assertIn("SEASON 2 2026", by_tier["note"])
 
-    # ── the manual control is gone ───────────────────────────────────────────────────────────
-    def test_the_manual_tier_endpoint_is_gone(self):
+    # ── the old hand-set control is gone; the admin page pins the ranking tier (inbox #173) ────
+    def test_the_old_manual_tier_endpoint_is_gone(self):
         with self.assertRaises(NoReverseMatch):
             reverse("admin_change_team_tier")
+
+    def _admin_headers(self):
+        from afc_auth.models import SessionToken
+
+        admin = User.objects.create(username="tier_admin", email="ta@example.com", password="x", role="admin")
+        token = SessionToken.objects.create(user=admin, token="tok-tier-admin").token
+        return {"HTTP_AUTHORIZATION": f"Bearer {token}"}
+
+    def test_an_admin_pins_an_unranked_team_and_a_recalc_keeps_it(self):
+        from afc_rankings.recalc import recalc_team_quarterly
+
+        h = self._admin_headers()
+        r = self.client.post(reverse("admin_team_tier"), {"team_id": self.unranked.team_id, "tier": 1},
+                             content_type="application/json", **h)
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual(r.json()["ranking_tier"], 1)
+        self.assertTrue(r.json()["pinned"])
+        self.assertEqual(published_team_tier(self.unranked), 1)
+        # The team has no activity, which used to delete its season row on the next recalc.
+        recalc_team_quarterly(self.unranked.team_id, self.published.season_id)
+        self.assertEqual(published_team_tier(self.unranked), 1)
+        # Every reader sees it.
+        rows = {t["team_name"]: t for t in self.client.get(reverse("get_all_teams")).json()["teams"]}
+        self.assertEqual(rows["Brand New"]["ranking_tier"], 1)
+        # The owner is told, by label.
+        from afc_auth.models import Notifications
+        self.assertTrue(Notifications.objects.filter(user=self.owner, message__contains="Tier 2").exists())
+
+    def test_automatic_removes_a_pin_the_pin_created(self):
+        h = self._admin_headers()
+        url = reverse("admin_team_tier")
+        self.client.post(url, {"team_id": self.unranked.team_id, "tier": 0}, content_type="application/json", **h)
+        r = self.client.post(url, {"team_id": self.unranked.team_id, "tier": None}, content_type="application/json", **h)
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertIsNone(r.json()["ranking_tier"])
+        self.assertFalse(r.json()["pinned"])
+        self.assertIsNone(published_team_tier(self.unranked))
+
+    def test_a_ranked_team_moves_and_the_state_reads_back(self):
+        h = self._admin_headers()
+        url = reverse("admin_team_tier")
+        r = self.client.post(url, {"team_id": self.vent.team_id, "tier": 0, "reason": "Won the national final"},
+                             content_type="application/json", **h)
+        self.assertEqual(r.json()["ranking_tier"], 0)
+        g = self.client.get(url, {"team_id": self.vent.team_id}, **h).json()
+        self.assertEqual(g["ranking_tier"], 0)
+        self.assertTrue(g["pinned"])
+        self.assertEqual(g["reason"], "Won the national final")
+        self.assertEqual(g["season"], "SEASON 2 2026")
+        self.assertIn(3, g["options"])
+
+    def test_refusals_carry_codes(self):
+        h = self._admin_headers()
+        url = reverse("admin_team_tier")
+        self.assertEqual(self.client.post(url, {"team_id": self.vent.team_id, "tier": 42},
+                                          content_type="application/json", **h).json()["code"], "tier_unknown")
+        self.assertEqual(self.client.post(url, {"team_id": self.vent.team_id, "tier": "Tier 1"},
+                                          content_type="application/json", **h).json()["code"], "tier_number")
+        self.assertEqual(self.client.get(url, {"team_id": 999999}, **h).status_code, 404)
+        self.assertEqual(self.client.get(url, {"team_id": self.vent.team_id}).status_code, 401)
+        Season.objects.update(tiers_published=False)
+        self.assertEqual(self.client.post(url, {"team_id": self.vent.team_id, "tier": 1},
+                                          content_type="application/json", **h).json()["code"],
+                         "no_published_tier_season")

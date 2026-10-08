@@ -3503,13 +3503,59 @@ def admin_get_team_event_history(request):
     )
 
 
-# admin_change_team_tier (POST team/admin-change-team-tier/) was REMOVED on 8 Oct 2026 (inbox #165).
-# It set the hand-set Team.team_tier, which no screen, audience or rule reads any more: every tier
-# on the site is the published ranking tier (afc_rankings/public_tiers.py). An admin who needs to
-# move a team's tier uses the rankings override, which pins it on the season's own row:
-# PATCH rankings/seasons/<season_id>/team-tier/<team_id>/ (afc_rankings/admin_overrides.py), from
-# the admin Rankings > Overrides page. The column itself is left in place (no migration), so
-# nothing that was stored is lost.
+@api_view(["GET", "POST"])
+def admin_team_tier(request):
+    """GET / POST team/admin-team-tier/ - see or set a team's tier by hand (admin team page).
+
+    Owner 2026-10-08 (inbox #173): "admins should still be able to manually change the tier".
+    It replaces admin_change_team_tier (removed the same day, inbox #165), which wrote the hand-set
+    Team.team_tier that nothing reads any more. This writes the tier EVERY page shows: the team's
+    row in the latest season with published tiers, pinned, through
+    afc_rankings.public_tiers.set_team_tier (audited in the rankings audit log; recalc keeps a pin).
+
+    AUTH     : Bearer; admin / moderator / support (_require_team_admin, the old control's gate).
+    GET      : ?team_id=<id> -> 200 {ranking_tier, pinned, reason, season, options: [codes]}
+    POST     : {team_id, tier: <code> | null ("automatic", removes the pin), reason?}
+               -> 200 the same shape; 400 {code}: team_required, tier_number, tier_unknown,
+               no_published_tier_season; 404 team_not_found.
+    CONSUMED : frontend app/(a)/a/teams/_components/TeamDetailsClient.tsx ("Team tier" in Admin
+               Actions). Codes are labelled there with useTierLabel (0 = "Tier 1").
+    """
+    from afc_rankings.public_tiers import TierPinRefused, set_team_tier, team_tier_state, tier_label
+
+    user, err = _require_team_admin(request)
+    if err:
+        return err
+    team_id = request.query_params.get("team_id") if request.method == "GET" else request.data.get("team_id")
+    if not str(team_id or "").isdigit():
+        return Response({"message": "team_id is required.", "code": "team_required"}, status=400)
+    team = Team.objects.filter(team_id=int(team_id)).first()
+    if not team:
+        return Response({"message": "Team not found.", "code": "team_not_found"}, status=404)
+    if request.method == "GET":
+        return Response(team_tier_state(team), status=200)
+
+    raw = request.data.get("tier")
+    if raw is None or raw == "":
+        code = None
+    elif str(raw).isdigit():
+        code = int(raw)
+    else:
+        return Response({"message": "tier must be a tier number or empty.", "code": "tier_number"}, status=400)
+    before = team_tier_state(team)
+    try:
+        state = set_team_tier(team, code, user, request.data.get("reason") or "")
+    except TierPinRefused as exc:
+        return Response({"message": exc.message, "code": exc.code}, status=400)
+    if state["ranking_tier"] != before["ranking_tier"]:
+        Notifications.objects.create(
+            user=team.team_owner,
+            message=(f"Your team '{team.team_name}' is now {tier_label(state['ranking_tier'])}, "
+                     f"set by an AFC admin."),
+            notification_type="team_update",
+        )
+    return Response(state, status=200)
+
 
 
 @api_view(["POST"])
