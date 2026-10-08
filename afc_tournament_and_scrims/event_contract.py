@@ -560,10 +560,25 @@ class WriteRefused(Exception):
     than a generic message nobody can act on.
     """
 
-    def __init__(self, field, message):
+    def __init__(self, field, message, code=None, limit=None):
         super().__init__(message)
         self.field = field
         self.message = message
+        # A specific refusal code when there is one (e.g. "event_name_too_long"), so the screen can
+        # say which field and why; None keeps the endpoint's own generic code.
+        self.code = code
+        self.limit = limit
+
+
+def _column_limit(attr):
+    """The max_length of the Event column behind `attr`, or None for a non-text or computed field."""
+    from .models import Event
+
+    try:
+        model_field = Event._meta.get_field(attr)
+    except Exception:
+        return None
+    return getattr(model_field, "max_length", None)
 
 
 def apply_event_writes(event, data, *, actor=None, role=None, table=None):
@@ -619,6 +634,20 @@ def apply_event_writes(event, data, *, actor=None, role=None, table=None):
                 raise WriteRefused(f.name, str(exc))
         else:
             value = raw
+        # A text value longer than its column is refused HERE, with the field and the limit, before
+        # anything is written. Without it MySQL raised "Data too long for column 'event_name'" from
+        # inside save(), the endpoint answered a 500 page, and the admin read "Server error:
+        # unexpected response format" with no idea which field (inbox #171, 8 Oct 2026). Every text
+        # field in this contract is covered, not only the name.
+        limit = _column_limit(f.attr)
+        if limit and isinstance(value, str) and len(value) > limit:
+            raise WriteRefused(
+                f.name,
+                f"{f.name.replace('_', ' ').capitalize()} can be at most {limit} characters "
+                f"(this one is {len(value)}).",
+                code=f"{f.name}_too_long",
+                limit=limit,
+            )
         pending.append((f, value))
 
     # Pass 2: assign.

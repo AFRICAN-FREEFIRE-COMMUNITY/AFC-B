@@ -72,7 +72,10 @@ def sync_slug(instance, source_field: str = "name", update_fields=None):
     # Keep the current slug when it already derives from this name (a save that did not rename).
     if current and _derived_from(current, wanted_base):
         return update_fields
-    new_slug = unique_slug(model, wanted_base, exclude_pk=instance.pk)
+    # Never longer than the model's own slug column (Event.slug is 80, the default here is 90): a
+    # longer one is a database error on save, not a slug.
+    max_length = getattr(model._meta.get_field("slug"), "max_length", None) or 90
+    new_slug = unique_slug(model, wanted_base, exclude_pk=instance.pk, max_length=max_length)
     if new_slug == current:
         return update_fields
     if current and instance.pk is not None:
