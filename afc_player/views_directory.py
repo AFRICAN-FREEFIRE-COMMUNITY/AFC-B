@@ -25,7 +25,7 @@
 #                 (get_public_player_stats in views.py).
 from functools import lru_cache
 
-from django.db.models import Case, Exists, IntegerField, OuterRef, Value, When
+from django.db.models import Case, Exists, IntegerField, OuterRef, Q, Value, When
 from django.db.models.functions import Coalesce, Lower, NullIf, Trim
 from rest_framework import status
 from rest_framework.decorators import api_view
@@ -41,6 +41,10 @@ DEFAULT_PAGE_SIZE = 24
 MAX_PAGE_SIZE = 50
 # A search longer than any username is a mistake or an attack, never a name.
 MAX_QUERY_LENGTH = 50
+# A search of this many digits or more ALSO finds the player whose Free Fire UID is exactly that
+# (inbox #166, owner 2026-10-08: "should be able to find players by also searching for UID").
+# Real Free Fire UIDs run 8 to 12 digits; below 6 a run of digits is a name like "000", not a UID.
+UID_SEARCH_MIN_DIGITS = 6
 
 # ONE COUNTRY, ONE OPTION. The country columns hold the same country under several spellings
 # ('NG' 1,817 and 'Nigeria' 2,892 on production, written by different writers over the years), so
@@ -121,6 +125,10 @@ def players_directory(request):
                 the module header for the rule and why.
 
     QUERY     : q        optional, part of an in-game name (case-insensitive), at most 50 chars.
+                         Six or more digits ALSO match a Free Fire UID, EXACTLY (inbox #166). Never
+                         a part of one: the UID is not shown on any public page (rows carry none,
+                         R71), and a prefix search would let anybody rebuild a player's UID one
+                         digit at a time from which rows come back.
                 country  optional, a `value` from `countries` (any spelling of the country
                          also works: it is folded the same way).
                 limit    optional int, 1..50, default 24.
@@ -170,7 +178,12 @@ def players_directory(request):
 
     found = listed
     if q:
-        found = found.filter(username__icontains=q)
+        matches = Q(username__icontains=q)
+        # ASCII digits only (str.isdigit() is True for superscripts too), the same rule a UID is
+        # stored by (afc_auth/identifiers.py uid_format_error).
+        if len(q) >= UID_SEARCH_MIN_DIGITS and all("0" <= ch <= "9" for ch in q):
+            matches |= Q(uid=q)
+        found = found.filter(matches)
     if country:
         found = found.filter(shown_country__in=expand_country_keys([country], raw_values))
     found = found.annotate(

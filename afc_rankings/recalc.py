@@ -169,6 +169,14 @@ def recalc_team_quarterly(team_id, season_id):
         # team scored on the monthly ladder and was still deleted off the SEASON ladder - which is
         # the table tiers are assigned from, so it was never given a tier at all. Only a team with
         # neither tournament nor scrim activity is removed now.
+        #
+        # Unless an admin PINNED its tier (inbox #173, 8 Oct 2026): a manual tier is set on this
+        # row (afc_rankings/public_tiers.py set_team_tier), and deleting the row would silently undo
+        # an admin's decision, the same reason the ban guard above freezes a zeroed row. A pinned row
+        # with no activity is kept as it is; only the ranks are refreshed.
+        if existing and existing.tier_overridden:
+            rerank_team_quarter(season)
+            return
         TeamQuarterlyScore.objects.filter(team=team, season=season).delete()
         rerank_team_quarter(season)
         return

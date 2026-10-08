@@ -20,6 +20,7 @@ from django.db.models import Q, Sum
 
 from afc_auth.models import BannedPlayer, LoginHistory, Notifications
 from afc_auth.api_errors import internal_error
+from afc_rankings.public_tiers import published_team_tier, published_team_tiers
 from afc_team.models import Team, TeamMembers
 from .models import Country, DirectTrialInvite, PlayerReport, RecruitmentApplication, RecruitmentPost, RecruitmentPostImage, TrialChat, TrialChatMessage, TrialInvite
 from afc_auth.views import send_email, validate_token
@@ -2328,7 +2329,9 @@ def view_application_details(request):
             "tag": app.team.team_tag,
             # Absolute URL (API host) so the logo loads; bare .url is relative and 404s off the frontend origin.
             "logo": request.build_absolute_uri(app.team.team_logo.url) if app.team.team_logo else None,
-            "tier": app.team.team_tier,
+            # The published RANKING tier code, or None when unranked (inbox #162; code 0 is shown as
+            # "Tier 1"). Was the hand-set Team.team_tier, "3" for every team.
+            "tier": published_team_tier(app.team),
             "country": app.team.country,
         },
 
@@ -2831,6 +2834,8 @@ def view_all_trials_and_applications(request):
     )
 
     data = []
+    # Every listed team's published ranking tier in ONE query (inbox #162), not one per row.
+    team_tiers = published_team_tiers({app.team_id for app in applications})
     for app in applications:
         chat_id = None
         try:
@@ -2861,7 +2866,7 @@ def view_all_trials_and_applications(request):
                 "id": app.team.team_id,
                 "name": app.team.team_name,
                 "tag": app.team.team_tag,
-                "tier": app.team.team_tier,
+                "tier": team_tiers.get(app.team_id),   # published ranking tier code, None = unranked
             },
 
             "post": {

@@ -117,3 +117,25 @@ class PlayersDirectoryTests(TestCase):
     def test_bad_values_are_refused_with_codes(self):
         self.assertEqual(self.client.get(URL, {"q": "x" * 51}).json()["code"], "query_too_long")
         self.assertEqual(self.client.get(URL, {"limit": "many"}).json()["code"], "limit_offset_numbers")
+
+    # ── inbox #166: find a player by Free Fire UID ─────────────────────────────────────────────
+    def test_a_full_uid_finds_the_player(self):
+        User.objects.filter(username="kofi_sniper").update(uid="123456789")
+        data = self._get(q="123456789")
+        self.assertEqual([r["username"] for r in data["results"]], ["kofi_sniper"])
+        # The row still carries no UID: finding a player by it is not publishing it.
+        self.assertNotIn("123456789", str(data["results"]))
+
+    def test_part_of_a_uid_finds_nobody(self):
+        """A prefix search would let anybody rebuild a player's UID one digit at a time."""
+        User.objects.filter(username="kofi_sniper").update(uid="123456789")
+        self.assertEqual(self._get(q="1234567")["results"], [])
+        self.assertEqual(self._get(q="56789")["results"], [])
+
+    def test_an_unlisted_player_stays_unlisted_by_uid(self):
+        User.objects.filter(username="quiet_account").update(uid="987654321")
+        self.assertEqual(self._get(q="987654321")["results"], [])
+
+    def test_short_digits_still_search_names_only(self):
+        User.objects.filter(username="kofi_sniper").update(uid="12345")
+        self.assertEqual(self._get(q="12345")["results"], [])

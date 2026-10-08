@@ -43,6 +43,9 @@ afc_auth.middleware.AuditLogMiddleware and lands on the sitewide History page, w
 import mimetypes
 import os
 
+from urllib.parse import quote
+
+from django.core import signing
 from django.db.models import Count, Max, Q
 from django.utils import timezone
 from rest_framework import status
@@ -137,14 +140,48 @@ def _require_staff(request):
 # §2  Shapes (one serializer per shape, R24: the dashboard, the public thread and the audit all
 #     read the SAME dicts, so a field added here appears everywhere the same day)
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
-def _attachment_dict(att):
+# ── Signed links for staff (inbox #168, owner 2026-10-08: "support admins and any admin cant view
+# attachments sent to them via the support section") ──────────────────────────────────────────────
+# The desk showed each file as a plain link to support/attachments/<id>/. A browser following a link
+# sends NO Authorization header (the session token lives in JavaScript), so support_attachment saw a
+# stranger and answered 404 for every staff click (production: every staff request since the desk
+# shipped was a 404; only the requester's links, which carry ?t=<ticket token>, ever worked).
+#
+# So a STAFF reader of a ticket gets each file's url with a short-lived signature: `?s=` is
+# django.core.signing over "the attachment id", salted for this purpose and valid for a working
+# shift. It names one file, carries no identity and no session token, and stops working by itself,
+# which is why it may sit in a URL where the session token may not. The same link works as an <a>,
+# in a new tab and as an <img> preview.
+ATTACHMENT_LINK_SALT = "afc_support.attachment-link"
+ATTACHMENT_LINK_MAX_AGE = 6 * 60 * 60   # seconds; a desk left open longer is reloaded
+
+
+def _signed_attachment_url(att):
+    signature = signing.TimestampSigner(salt=ATTACHMENT_LINK_SALT).sign(str(att.id))
+    return f"/support/attachments/{att.id}/?s={quote(signature, safe='')}"
+
+
+def _signature_opens(att, signature):
+    """True when `signature` was made by _signed_attachment_url for THIS attachment and is fresh."""
+    if not signature:
+        return False
+    try:
+        value = signing.TimestampSigner(salt=ATTACHMENT_LINK_SALT).unsign(
+            signature, max_age=ATTACHMENT_LINK_MAX_AGE)
+    except signing.BadSignature:   # covers SignatureExpired too
+        return False
+    return value == str(att.id)
+
+
+def _attachment_dict(att, for_staff=False):
     return {
         "id": att.id,
         "name": att.original_name,
         "content_type": att.content_type,
         "size_bytes": att.size_bytes,
-        # Always through the view, never the raw media path: these files are private.
-        "url": f"/support/attachments/{att.id}/",
+        # Always through the view, never the raw media path: these files are private. Staff get a
+        # signed link (above); the requester's page appends its own ?t=<ticket token>.
+        "url": _signed_attachment_url(att) if for_staff else f"/support/attachments/{att.id}/",
     }
 
 
@@ -156,7 +193,7 @@ def _message_dict(msg, for_staff=False):
         "body": msg.body,
         "author_name": msg.author_name or ("AFC Support" if msg.direction == "out" else ""),
         "created_at": msg.created_at.isoformat(),
-        "attachments": [_attachment_dict(a) for a in msg.attachments.all()],
+        "attachments": [_attachment_dict(a, for_staff=for_staff) for a in msg.attachments.all()],
     }
     if for_staff:
         # Who on the team wrote it. Never sent to the requester: they see "AFC Support".
@@ -671,8 +708,10 @@ def support_ticket_status(request, number):
 def support_attachment(request, attachment_id):
     """GET support/attachments/<id>/ - stream one file.
 
-    Two ways in, and no third: a support-role session, or the ticket's own opaque token passed as
-    ?t=<token> (the requester's thread page appends it). Everything else is a 404, not a 403: a
+    Three ways in: a support-role session (an API call with the Authorization header), a staff
+    signed link ?s=<signature> made by _signed_attachment_url (what the desk's links carry, because a
+    browser following a link sends no header: inbox #168), or the ticket's own opaque token passed
+    as ?t=<token> (the requester's thread page appends it). Everything else is a 404, not a 403: a
     stranger should not even learn that the id exists.
     """
     att = SupportAttachment.objects.filter(id=attachment_id).select_related(
@@ -682,7 +721,9 @@ def support_attachment(request, attachment_id):
 
     ticket = att.message.ticket
     token = (request.GET.get("t") or "").strip()
-    if not (_is_support_staff(_actor(request)) or (token and token == ticket.public_token)):
+    if not (_signature_opens(att, (request.GET.get("s") or "").strip())
+            or (token and token == ticket.public_token)
+            or _is_support_staff(_actor(request))):
         raise Http404
 
     try:
@@ -768,7 +809,8 @@ def support_audit(request):
             "channel": m.channel,
             "author_username": m.author.username if m.author_id else "",
             "body": m.body,
-            "attachments": [_attachment_dict(a) for a in m.attachments.all()],
+            # Head admins only (the audit gate above), so these are staff links too (inbox #168).
+            "attachments": [_attachment_dict(a, for_staff=True) for a in m.attachments.all()],
             "created_at": m.created_at.isoformat(),
         })
     return Response(

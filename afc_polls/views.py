@@ -991,6 +991,21 @@ def _save_eligibility(poll, raw):
     if raw is None:
         return
     spec = parse_audience_spec(raw if isinstance(raw, dict) else {})
+    # ONE tier rule on a poll (inbox #165). `tiers` (team scope) and `season_tiers` read the same
+    # published ranking tier now, and anything afc_rankings computes is frozen at poll open (spec
+    # 2.4), so a team-tier pick is stored as a team-scope season tier, which is frozen. The poll
+    # builder no longer offers the separate team-tier chips; this keeps an old tab or a direct API
+    # call from saving a tier rule that would never freeze. Both present: they stay as sent and
+    # intersect, which is what the panel already explains.
+    if spec.get("tiers") and not spec.get("season_tiers"):
+        spec["season_tiers"] = {
+            "scope": "team",
+            "values": sorted({int(code) for code in spec["tiers"]}),
+            "frozen_at": None,
+            "frozen_team_ids": [],
+            "frozen_user_ids": [],
+        }
+        spec["tiers"] = []
     rule, _ = PollEligibilityRule.objects.get_or_create(poll=poll)
     if poll.is_open() and (spec.get("rank_range") or spec.get("season_tiers")):
         spec = freeze_ranking_filters(spec)

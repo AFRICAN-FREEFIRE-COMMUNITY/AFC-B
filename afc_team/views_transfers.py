@@ -21,6 +21,8 @@ from rest_framework import status
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 
+from afc_rankings.public_tiers import published_tier_season, team_ids_in_tiers
+
 from .models import TeamTransfer
 from .transfers import has_competed_subquery
 
@@ -31,18 +33,6 @@ MAX_PAGE_SIZE = 50
 # A search longer than any team or player name is a mistake, never a name (inbox #161).
 MAX_QUERY_LENGTH = 50
 DIRECTIONS = ("joined", "left")
-
-
-def _published_tier_season():
-    """The latest season whose tiers are PUBLISHED, or None.
-
-    A team's tier is the one the Rankings page shows: TeamQuarterlyScore.tier_assigned in a season
-    with tiers_published (afc_rankings/views.py hides the tier until then). Team.team_tier is NOT
-    it: that column defaults to "3" and every one of the 923 teams on production held "3" on
-    5 Oct 2026, so a filter on it offered one option that matched everybody (found live, #161).
-    """
-    from afc_rankings.models import Season
-    return Season.objects.filter(tiers_published=True).order_by("-start_date", "-season_id").first()
 
 
 def _serialize_transfer(request, transfer):
@@ -104,9 +94,10 @@ def get_transfer_feed(request):
                           owner 2026-10-05: "no pagination and also no search ... filters by
                           countries, or by tiers or by teams/players".
                 country   optional, the team's country, exact.
-                tier      optional, the team's tier ("1", "2", ...) in the latest season whose
-                          tiers are published (the Rankings page's tiers), see
-                          _published_tier_season.
+                tier      optional, the team's ranking tier CODE ("0", "3", ...; code 0 is shown
+                          as "Tier 1") in the latest season whose tiers are published, see
+                          afc_rankings/public_tiers.py (found live 5 Oct: the hand-set
+                          Team.team_tier was "3" for every team).
                 direction optional, "joined" or "left".
                 limit     optional int, 1..50, default 20.
                 offset    optional int, >= 0, default 0.
@@ -171,17 +162,13 @@ def get_transfer_feed(request):
     if country:
         feed = feed.filter(team__country=country)
     tier = (request.GET.get("tier") or "").strip()
-    tier_season = _published_tier_season()
+    tier_season = published_tier_season()
     if tier:
         if not tier.isdigit():
             return Response({"message": "tier must be a number.", "code": "tier_number"},
                             status=status.HTTP_400_BAD_REQUEST)
-        from afc_rankings.models import TeamQuarterlyScore
         # No published season means no team has a tier anybody can see: nothing matches.
-        tiered = (TeamQuarterlyScore.objects
-                  .filter(season=tier_season, tier_assigned=int(tier), team__isnull=False)
-                  .values("team_id")) if tier_season else []
-        feed = feed.filter(team_id__in=tiered)
+        feed = feed.filter(team_id__in=team_ids_in_tiers([int(tier)], season=tier_season))
     direction = (request.GET.get("direction") or "").strip()
     if direction:
         if direction not in DIRECTIONS:

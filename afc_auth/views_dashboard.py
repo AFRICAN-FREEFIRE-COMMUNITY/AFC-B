@@ -349,6 +349,33 @@ def _detail_members(_request):
     }
 
 
+def _team_tier_rows(qs):
+    """[[label, teams], ...] by PUBLISHED ranking tier, best first, then "Unranked".
+
+    The same tier every page shows (afc_rankings/public_tiers.py, inbox #165). It used to group by
+    the hand-set Team.team_tier, which put all 926 teams in one "3" row. Labelled the way TierBadge
+    labels a code (0 -> "Tier 1"); the season is named in the section note."""
+    from afc_rankings.public_tiers import published_team_tiers, tier_label
+
+    tiers = published_team_tiers(list(qs.values_list("team_id", flat=True)))
+    by_code = {}
+    for code in tiers.values():
+        by_code[code] = by_code.get(code, 0) + 1
+    rows = [[tier_label(code), by_code[code]] for code in sorted(by_code)]
+    unranked = qs.count() - len(tiers)
+    if unranked:
+        rows.append([tier_label(None), unranked])
+    return rows
+
+
+def _tier_note():
+    from afc_rankings.public_tiers import published_tier_season
+
+    season = published_tier_season()
+    return (f"Ranking tiers from {season.name}, the latest season with published tiers."
+            if season else "No season has published tiers yet, so every team is unranked.")
+
+
 def _detail_teams(_request):
     qs = Team.objects.all()
     return {
@@ -358,7 +385,7 @@ def _detail_teams(_request):
         "sections": [
             _section("by_month", "Created per month", ["Month", "New teams"],
                      _monthly(qs, "creation_date")),
-            _section("by_tier", "By tier", ["Tier", "Teams"], _counts(qs, "team_tier")),
+            _section("by_tier", "By tier", ["Tier", "Teams"], _team_tier_rows(qs), _tier_note()),
             _section("by_country", "By country", ["Country", "Teams"], _country_rows(qs)),
         ],
     }
