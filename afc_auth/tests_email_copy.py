@@ -267,7 +267,8 @@ CALLER_PLACEHOLDERS = {
         "disclaimer": set(),
     },
     "support_reply": {
-        "heading": set(), "intro": {"ticket"}, "thread": set(), "cta": set(), "disclaimer": set(),
+        "heading": set(), "intro": {"ticket"}, "thread": set(), "also": {"tickets"}, "cta": set(),
+        "disclaimer": set(),
     },
     # Account deletion and restore (afc_auth.account_deletion, 2026-09-17). The deleted mail names
     # nobody (the address it goes to is the released one); the restore mail greets by name.

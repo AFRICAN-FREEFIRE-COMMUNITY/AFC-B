@@ -93,8 +93,12 @@ def email_ticket_received(ticket, lang="en") -> bool:
     )
 
 
-def email_ticket_reply(ticket, message, lang="en") -> bool:
-    """"AFC replied." Sent when a human answers, with the reply quoted under the heading."""
+def email_ticket_reply(ticket, message, lang="en", also=()) -> bool:
+    """"AFC replied." Sent when a human answers, with the reply quoted under the heading.
+
+    `also`: the OTHER ticket numbers the same reply was recorded on (the desk's "reply to all open
+    requests", inbox #174), named in one sentence so one email covers them all instead of the
+    person getting the same answer several times."""
     c = copy_for("support_reply", lang)
     number = f'<span style="color:#e8efe9;font-weight:600;">{ticket.ticket_number}</span>'
     # The reply itself, escaped by the caller's serializer path? No: escape HERE, because this is
@@ -107,6 +111,8 @@ def email_ticket_reply(ticket, message, lang="en") -> bool:
         f'<div style="margin-top:14px;color:#cfd8d2;">{quoted}</div>',
         c["thread"],
     ]
+    if also:
+        paragraphs.append(c["also"].format(tickets=", ".join(html_escape(n) for n in also)))
     html = _email_shell(
         _shell_rows(c["heading"], paragraphs, ticket_url(ticket), c["cta"], c["disclaimer"]),
         "green",
@@ -211,13 +217,14 @@ def dm_ticket_received(ticket) -> bool:
     )
 
 
-def dm_ticket_reply(ticket, message) -> bool:
-    """The Discord version of "AFC replied"."""
+def dm_ticket_reply(ticket, message, also=()) -> bool:
+    """The Discord version of "AFC replied". `also` as in email_ticket_reply."""
     if not ticket.discord_id:
         return False
+    numbers = ", ".join([ticket.ticket_number, *also])
     return send_discord_dm(
         ticket.discord_id,
-        f"AFC support replied to your message ({ticket.ticket_number}).\n\n"
+        f"AFC support replied to your message ({numbers}).\n\n"
         f"{message.body[:1200]}\n\n"
         f"Answer here: {ticket_url(ticket)}",
     )
