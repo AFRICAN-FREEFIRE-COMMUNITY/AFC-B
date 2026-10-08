@@ -24,6 +24,10 @@ class Team(models.Model):
     team_creator = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='created_teams')
     team_owner = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='owned_teams')
     is_banned = models.BooleanField(default=False)
+    # NOT READ BY ANYTHING since 8 Oct 2026 (inbox #162 / #165). This was a hand-set tier ("3" for
+    # all 926 teams). Every tier on the site is now the published RANKING tier, read through
+    # afc_rankings/public_tiers.py, and its admin control is gone. Left in place (no migration) so
+    # nothing stored is lost; drop it in a later release once nobody misses it.
     team_tier = models.CharField(max_length=1, default="3")
     team_description = models.CharField(max_length=200, default="We Love Playing Free Fire")
     # Auto-derived from the LOCATION of the team's PLAYING members (owner 2026-06-20): the most-common

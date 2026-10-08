@@ -255,7 +255,7 @@ OAUTH2_PROVIDER = {
         # These strings are the PROMISE shown to the player on the consent screen, so each one
         # has to match what afc_sso/claims.py actually releases. History carries event name and
         # slug only (no placement), and ranking carries points, rank and month (tier is a TEAM
-        # attribute, team_tier, so it is not in a player claim). Change a resolver, change these.
+        # attribute, the team's ranking tier, so it is not in a player claim). Change a resolver, change these.
         "afc.history": _("Tournaments you have played"),
         "afc.stats": _("Your match statistics"),
         "afc.ranking": _("Your AFC rank and ranking points"),

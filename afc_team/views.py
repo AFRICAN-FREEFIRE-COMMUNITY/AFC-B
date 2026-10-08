@@ -11,6 +11,7 @@ from rest_framework.response import Response
 from rest_framework import status
 from afc_auth.views import validate_token, is_stats_admin
 from afc_auth.api_errors import internal_error
+from afc_rankings.public_tiers import published_team_tier, published_team_tiers
 from afc_tournament_and_scrims.models import TournamentTeam, TournamentTeamMatchStats, EventPrizePayout
 from .models import Team, TeamMembers, Invite, Report, JoinRequest, TeamSocialMediaLinks
 # Team role permissions (owner 2026-08-08): the team OWNER decides which management roles may
@@ -1198,6 +1199,8 @@ def get_all_teams(request):
         row["team"]: row["c"]
         for row in TeamMembers.objects.values("team").annotate(c=Count("pk"))
     }
+    # Every team's published ranking tier in ONE query (inbox #162), never one per team.
+    ranking_tiers = published_team_tiers([team.team_id for team in teams])
 
     # ── ACTIVITY, for the "Most active" tab on /teams (owner 2026-08-24) ──────────────────────────
     # PLAYED, not REGISTERED. This reuses the ruling already applied on the team profile (owner
@@ -1238,7 +1241,11 @@ def get_all_teams(request):
             "team_creator": team.team_creator.username,
             "team_owner": team.team_owner.username,
             "is_banned": team.is_banned,
-            "team_tier": team.team_tier,
+            # The RANKING tier code (TeamQuarterlyScore.tier_assigned in the latest season whose tiers
+            # are published), or None when the team is unranked. Code 0 is shown as "Tier 1"
+            # (components/rankings/TierBadge.tsx). Replaces the hand-set team_tier, which was "3" for
+            # every team (inbox #162, owner 2026-10-05: "yes"). One source: afc_rankings/public_tiers.py.
+            "ranking_tier": ranking_tiers.get(team.team_id),
             "team_description": team.team_description,
             "country": team.country,
             "member_count": member_counts.get(team.team_id, 0),
@@ -2154,7 +2161,11 @@ def get_team_details(request):
         "team_captain": team.team_captain.username if team.team_captain else None,
         "is_banned": team.is_banned,
         "ban_info": ban_info,
-        "team_tier": team.team_tier,
+        # The RANKING tier code (TeamQuarterlyScore.tier_assigned in the latest season whose tiers
+        # are published), or None when the team is unranked. Code 0 is shown as "Tier 1"
+        # (components/rankings/TierBadge.tsx). Replaces the hand-set team_tier, which was "3" for
+        # every team (inbox #162, owner 2026-10-05: "yes"). One source: afc_rankings/public_tiers.py.
+        "ranking_tier": published_team_tier(team),
         "team_description": team.team_description,
         "country": team.country,
         "total_earnings": str(live_total_earnings),
@@ -2256,7 +2267,11 @@ def get_user_current_team(request):
             "team_creator": team.team_creator.username,
             "team_owner": team.team_owner.username,
             "is_banned": team.is_banned,
-            "team_tier": team.team_tier,
+            # The RANKING tier code (TeamQuarterlyScore.tier_assigned in the latest season whose tiers
+            # are published), or None when the team is unranked. Code 0 is shown as "Tier 1"
+            # (components/rankings/TierBadge.tsx). Replaces the hand-set team_tier, which was "3" for
+            # every team (inbox #162, owner 2026-10-05: "yes"). One source: afc_rankings/public_tiers.py.
+            "ranking_tier": published_team_tier(team),
             "team_description": team.team_description,
             "country": team.country,
             "user_role_in_team": team_member.management_role,
@@ -2593,7 +2608,11 @@ def get_team_details_based_on_invite(request, invite_id):
         "team_creator": team.team_creator.username,
         "team_owner": team.team_owner.username,
         "is_banned": team.is_banned,
-        "team_tier": team.team_tier,
+        # The RANKING tier code (TeamQuarterlyScore.tier_assigned in the latest season whose tiers
+        # are published), or None when the team is unranked. Code 0 is shown as "Tier 1"
+        # (components/rankings/TierBadge.tsx). Replaces the hand-set team_tier, which was "3" for
+        # every team (inbox #162, owner 2026-10-05: "yes"). One source: afc_rankings/public_tiers.py.
+        "ranking_tier": published_team_tier(team),
         "team_description": team.team_description,
         "country": team.country,
         "inviter": invite.inviter.username,
@@ -3484,40 +3503,13 @@ def admin_get_team_event_history(request):
     )
 
 
-@api_view(["POST"])
-def admin_change_team_tier(request):
-    user, err = _require_team_admin(request)
-    if err:
-        return err
-
-    team_id = request.data.get("team_id")
-    tier = str(request.data.get("tier", "")).strip()
-
-    if not team_id:
-        return Response({"message": "team_id is required.", "code": "team_required"}, status=400)
-    if tier not in ["1", "2", "3"]:
-        return Response({"message": "tier must be 1, 2, or 3.", "code": "admin_change_team_tier_tier"}, status=400)
-
-    team = get_object_or_404(Team, team_id=team_id)
-    old_tier = team.team_tier
-    team.team_tier = tier
-    team.save(update_fields=["team_tier"])
-
-    AdminHistory.objects.create(
-        admin_user=user,
-        action="change_team_tier",
-        description=f"Changed tier of '{team.team_name}' (ID: {team.team_id}) from {old_tier} to {tier}.",
-    )
-    Notifications.objects.create(
-        user=team.team_owner,
-        message=f"Your team '{team.team_name}' has been moved to Tier {tier} by an admin.",
-        notification_type="team_update",
-    )
-
-    return Response(
-        {"message": f"Team tier updated from {old_tier} to {tier}.", "new_tier": tier},
-        status=200,
-    )
+# admin_change_team_tier (POST team/admin-change-team-tier/) was REMOVED on 8 Oct 2026 (inbox #165).
+# It set the hand-set Team.team_tier, which no screen, audience or rule reads any more: every tier
+# on the site is the published ranking tier (afc_rankings/public_tiers.py). An admin who needs to
+# move a team's tier uses the rankings override, which pins it on the season's own row:
+# PATCH rankings/seasons/<season_id>/team-tier/<team_id>/ (afc_rankings/admin_overrides.py), from
+# the admin Rankings > Overrides page. The column itself is left in place (no migration), so
+# nothing that was stored is lost.
 
 
 @api_view(["POST"])

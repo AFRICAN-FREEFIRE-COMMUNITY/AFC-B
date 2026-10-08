@@ -16790,53 +16790,7 @@
                   }
                 }
               ]
-            },
-            {
-              "name": "POST /team/admin-change-team-tier/ - admin_change_team_tier",
-              "request": {
-                "method": "POST",
-                "header": [
-                  {
-                    "key": "Authorization",
-                    "value": "Bearer {{token}}"
-                  },
-                  {
-                    "key": "Content-Type",
-                    "value": "application/json"
-                  }
-                ],
-                "url": {
-                  "raw": "{{base_url}}/team/admin-change-team-tier/",
-                  "host": [
-                    "{{base_url}}"
-                  ],
-                  "path": [
-                    "team",
-                    "admin-change-team-tier"
-                  ]
-                },
-                "body": {
-                  "mode": "raw",
-                  "raw": "{}",
-                  "options": {
-                    "raw": {
-                      "language": "json"
-                    }
-                  }
-                }
-              },
-              "event": [
-                {
-                  "listen": "test",
-                  "script": {
-                    "type": "text/javascript",
-                    "exec": [
-                      "pm.test('reachable (status < 500)', () => pm.expect(pm.response.code).to.be.below(500));"
-                    ]
-                  }
-                }
-              ]
-            },
+            },
             {
               "name": "POST /team/admin-transfer-team-ownership/ - admin_transfer_team_ownership",
               "request": {

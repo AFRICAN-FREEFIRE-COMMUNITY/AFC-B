@@ -68,6 +68,7 @@ from rest_framework import status
 
 from afc.api_utils import authenticate as _authenticate
 
+from afc_rankings.public_tiers import published_team_tier_codes, published_tier_season, team_ids_in_tiers
 from afc_team.models import Team, TeamMembers
 
 from .audience import (
@@ -192,7 +193,8 @@ def broadcast_audience_options(request):
         total_users,                         # the eligible population - what "everyone" means
         countries: [{value, count}],         # ordered by count desc, paginated
         countries_total_count, countries_has_more,
-        tiers:     [{value, count}],         # afc_team.Team.team_tier, players on such a team
+        tiers:     [{value, count}],         # published RANKING tier codes ("0" = Tier 1), players
+                                             # on a team holding that tier (afc_rankings/public_tiers.py)
         roles:     [{value, count}],         # afc_auth.User.role
         languages: [{value, count}],         # afc_auth.User.language ("" reported as "en")
         email_limits: {per_minute, daily_cap, comfortable_max} }
@@ -240,16 +242,22 @@ def broadcast_audience_options(request):
     countries_total = len(countries)
     countries_page = countries[offset:offset + limit]
 
-    # ── tiers: a TEAM attribute, so the count is "players on a team of this tier" ──
-    # Counted through TeamMembers with distinct members so a player on two Tier 1 teams counts
+    # ── tiers: the TEAM's published ranking tier, so the count is "players on a team of this tier" ──
+    # Inbox #165 (owner 2026-10-08: "broadcasts and polls should use the tiering everything else
+    # uses"): the codes are the ones the Rankings Tiers tab shows, read through
+    # afc_rankings/public_tiers.py, never the hand-set Team.team_tier ("3" for every team). The
+    # value is the CODE as a string; the composer labels it the way TierBadge does (code + 1).
+    # Counted through TeamMembers with distinct members so a player on two teams of one tier counts
     # once. This is the same relation _category_q filters on, so the number the admin sees here
     # is the number the preview will produce (owners aside, who are folded in at resolve time).
+    # One COUNT per tier, and there are only a handful of tiers.
+    tier_season = published_tier_season()
+    tier_codes = published_team_tier_codes(season=tier_season)
     tiers = [
-        {"value": row["team__team_tier"], "count": row["count"]}
-        for row in TeamMembers.objects.exclude(team__team_tier="")
-        .values("team__team_tier")
-        .annotate(count=Count("member_id", distinct=True))
-        .order_by("team__team_tier")
+        {"value": str(code),
+         "count": TeamMembers.objects.filter(team_id__in=team_ids_in_tiers([code], season=tier_season))
+         .values("member_id").distinct().count()}
+        for code in tier_codes
     ]
 
     roles = [

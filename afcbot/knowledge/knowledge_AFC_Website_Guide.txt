@@ -107,8 +107,14 @@ Your profile (/profile) shows your details and stats, and holds these sections:
   that first.
 
 --- 5. TEAMS ---
-Browse teams at /teams. Each team page shows the overview, members, achievements and social links,
-plus "I'm a fan" and "I'm a hater" buttons and a QR code.
+Browse teams and players at /teams ("Teams & Players"). The Teams tab lists teams; the Players
+tab (/teams?tab=players) lists players who are on a team or have played a match on record, and
+finds a player by in-game name or by Free Fire UID. Each team page shows the overview, members,
+achievements and social links, plus "I'm a fan" and "I'm a hater" buttons and a QR code.
+
+A team's tier, wherever the site shows it (team cards, team pages, invites, the Player Market), is
+its tier on the Rankings Tiers tab for the latest season AFC has published (section 9). A team with
+no published tier shows "Unranked". Tiers cannot be set by hand from the team page.
 
 Creating a team (/teams/create): team name, an optional tag (a short prefix like "AFC"), a logo,
 and join settings:

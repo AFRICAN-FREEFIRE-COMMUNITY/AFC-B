@@ -2306,7 +2306,7 @@ async def _lookup_team_members(team_name: str) -> str:
         "team_name": team.get("team_name", team_name),
         "page": _site_page("teams", team.get("team_name", team_name)),
         "country": team.get("country"),
-        "tier": team.get("team_tier"),
+        "tier": _tier_name(team.get("ranking_tier")),
         "owner": team.get("team_owner"),
         "total_members": team.get("total_members", len(members)),
         "is_banned": bool(team.get("is_banned")),
@@ -2351,6 +2351,22 @@ async def _get_all_teams_cached() -> list:
     return _cached_all_teams
 
 
+def _tier_name(code) -> str:
+    """The tier a person reads for a team's `ranking_tier` code: 0 -> "Tier 1", none -> "Unranked".
+
+    The team API hands out the published RANKING tier code (afc_rankings/public_tiers.py, inbox
+    #162), and code 0 is shown as "Tier 1" everywhere on the site. Passing the raw code to the model
+    would have it tell people the wrong tier, which is exactly the mistake made on 5 Oct 2026. The
+    bot runs as its own process and reads the API, so it names the tier here rather than importing
+    Django (same rule as afc_rankings.public_tiers.tier_label)."""
+    if code is None or code == "":
+        return "Unranked"
+    try:
+        return f"Tier {int(code) + 1}"
+    except (TypeError, ValueError):
+        return "Unranked"
+
+
 def _site_page(kind: str, name) -> str:
     """The public page of a team ("teams") or player ("players") on the website, addressed by name
     the way the site does it (afc_auth/site_paths.py: every unsafe character percent-encoded, "/"
@@ -2388,7 +2404,7 @@ async def _search_teams(query: str = "", country: str = "") -> str:
                 "team_name": t.get("team_name"),
                 "page": _site_page("teams", t.get("team_name")),
                 "country": t.get("country"),
-                "tier": t.get("team_tier"),
+                "tier": _tier_name(t.get("ranking_tier")),
                 "members": t.get("member_count"),
                 "is_banned": bool(t.get("is_banned")),
             }

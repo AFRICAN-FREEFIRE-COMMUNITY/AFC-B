@@ -22,7 +22,8 @@
 #     "everyone":   bool,          # send to the whole site - overrides everything else
 #     "user_ids":   [int],         # explicitly picked players
 #     "team_ids":   [int],         # explicitly picked teams (their members AND their owner)
-#     "tiers":      ["1","2","3"], # category: players on a team of this tier (afc_team.Team.team_tier)
+#     "tiers":      ["2","3"],     # category: players on a team holding this published RANKING
+#                                  # tier code (0 = "Tier 1"), afc_rankings/public_tiers.py
 #     "countries":  ["Nigeria"],   # category: the player's country
 #     "roles":      ["player"],    # category: afc_auth.User.role
 #     "languages":  ["fr"],        # category: afc_auth.User.language (who reads French, etc.)
@@ -58,8 +59,15 @@
 #   - The send endpoint hands the resolved recipients to afc_auth.views.deliver_broadcast, so
 #     these audiences produce exactly the same Notifications rows, branded emails and
 #     SentBroadcast history as every other broadcast on the site.
-#   - Reads afc_auth.User (role/country/ip_country/language/status) and afc_team.Team /
-#     TeamMembers (team_tier + membership). It writes nothing.
+#   - Reads afc_auth.User (role/country/ip_country/language/status), afc_team.Team /
+#     TeamMembers (membership) and afc_rankings (the published ranking tier, through
+#     afc_rankings/public_tiers.py). It writes nothing.
+#
+# ONE TIER (inbox #165, 8 Oct 2026). Owner: "broadcasts and polls should use the tiering everything
+# else uses." Both tier filters, `tiers` (team scope, live) and the poll-only `season_tiers` (team
+# or player scope, frozen at poll open), read the PUBLISHED ranking tier, the same answer the team
+# cards, team pages and Rankings Tiers tab give. They used to read two other things: the hand-set
+# Team.team_tier ("3" for all 926 teams) and the ACTIVE season's unpublished draft tiers.
 #   - Frontend consumer: the admin Settings > Notifications tab audience builder
 #     (frontend/app/(a)/a/settings/_components/AudienceBuilder.tsx).
 # ──────────────────────────────────────────────────────────────────────────────
@@ -67,6 +75,11 @@ import math
 
 from django.db.models import Q
 
+from afc_rankings.public_tiers import (
+    player_ids_in_tiers,
+    published_tier_season,
+    team_ids_in_tiers,
+)
 from afc_team.models import Team, TeamMembers
 
 from .country_grouping import expand_country_keys
@@ -80,6 +93,10 @@ from .models import User
 EMAIL_PER_MINUTE = 30                  # roughly what M365 accepts per minute
 EMAIL_DAILY_CAP = 1000                 # per-day ceiling to recipients who never got AFC mail
 EMAIL_COMFORTABLE_MAX = 200            # above this we warn; below it a blast is unremarkable
+
+# How many tier codes one filter may name. Tiers are extensible (owner 2026-10-01), so this is a
+# sanity bound on the request, not the number of tiers that exist.
+MAX_TIER_CODES = 20
 
 
 def email_volume_assessment(email_recipient_count):
@@ -295,20 +312,19 @@ def _season_tiers(raw):
 
     Shape: {"scope": "team"|"player", "values": [0, 1], "frozen_at": iso, "frozen_*_ids": [...]}
 
-    SEASON tier is afc_rankings.TeamQuarterlyScore / PlayerQuarterlyScore `tier_assigned`, computed
-    each quarter by the scoring engine. It is NOT the same fact as `tiers` above, which is the
-    hand-set afc_team.Team.team_tier that broadcasts have always meant. Both are offered, labelled
-    separately, and they INTERSECT when both are set (polls spec decision 1).
+    The tier is afc_rankings.TeamQuarterlyScore / PlayerQuarterlyScore `tier_assigned` in the latest
+    season whose tiers are PUBLISHED (afc_rankings/public_tiers.py), the same tier `tiers` reads
+    (inbox #165). What this block adds is the PLAYER scope and the freeze at poll open.
 
-    Watch the numbering: season tier 0 (Elite) is the BEST and 3 (Entry) the worst, the opposite
-    way round from hand-set tier 1. Neither filter may ever display the raw integer, which is why
-    the values are validated here but named only in the UI."""
+    Watch the numbering: code 0 is "Tier 1", the best. No screen may display the raw integer, which
+    is why the values are validated here but named only in the UI. Any non-negative code is
+    accepted: tiers are extensible in the scoring config (owner 2026-10-01)."""
     if not isinstance(raw, dict):
         return None
     scope = str(raw.get("scope") or "team").strip().lower()
     if scope not in ("team", "player"):
         scope = "team"
-    values = [v for v in _int_list(raw.get("values"), cap=4) if 0 <= v <= 3]
+    values = [v for v in _int_list(raw.get("values"), cap=MAX_TIER_CODES) if v >= 0]
     if not values:
         return None
     return {
@@ -334,7 +350,9 @@ def parse_audience_spec(data):
         "everyone": bool(spec.get("everyone")),
         "user_ids": _int_list(spec.get("user_ids")),
         "team_ids": _int_list(spec.get("team_ids")),
-        "tiers": _str_list(spec.get("tiers")),
+        # Published ranking tier CODES as strings ("0" is "Tier 1"); anything that is not a code
+        # (the old hand-set "1".."3" would pass, and means code 1..3 now) is dropped, never guessed.
+        "tiers": [t for t in _str_list(spec.get("tiers"), cap=MAX_TIER_CODES) if t.isdigit()],
         "countries": _str_list(spec.get("countries")),
         "roles": _str_list(spec.get("roles")),
         "languages": _str_list(spec.get("languages")),
@@ -404,12 +422,13 @@ def eligible_users(include_suspended=False):
 
 
 def _quarterly_season():
-    """The season whose quarterly scores the rank and season-tier filters read.
+    """The season whose quarterly scores the RANK filter reads.
 
-    Quarterly, not monthly, and the same season for BOTH filters on purpose: season tier only
-    exists quarterly, so reading rank from the monthly table would let the two filters disagree
-    about which period they describe, and an admin combining them would get an intersection of two
-    different quarters without being told.
+    Quarterly, not monthly: the rank window used to share this season with the season-tier filter,
+    so both described one quarter. Since 8 Oct 2026 (inbox #165) the tier filters read the
+    PUBLISHED tier season instead (afc_rankings/public_tiers.py), because a tier is what the site
+    shows and the active quarter's tiers are a draft until published. The rank window still reads
+    the live quarter; the eligibility panel names each one's season.
 
     Reuses afc_rankings.recalc.current_season, which is the canonical getter everywhere else and
     already runs the calendar-driven rollover, so an audience previewed the morning a new quarter
@@ -443,23 +462,22 @@ def _rank_window_ids(block):
 
 
 def _season_tier_ids(block):
-    """LIVE resolution of a season-tier filter: the entity ids currently holding those tiers."""
-    from afc_rankings.models import PlayerQuarterlyScore, TeamQuarterlyScore
+    """LIVE resolution of a season-tier filter: the entity ids currently holding those tiers.
 
-    season = _quarterly_season()
+    Reads the PUBLISHED tier season (afc_rankings/public_tiers.py), not _quarterly_season(): the
+    active quarter's tiers are a draft until an admin publishes them, and a poll gated on a tier
+    nobody can see on the site is a poll nobody can understand (inbox #165). This means a rank
+    window and a season tier on one poll can describe different quarters when the active quarter's
+    tiers are unpublished; the eligibility panel names the season beside each, so the voter can
+    see which is which."""
+    season = published_tier_season()
     if not season:
         return []
     if block["scope"] == "player":
-        return list(
-            PlayerQuarterlyScore.objects.filter(
-                player__isnull=False, season=season, tier_assigned__in=block["values"]
-            ).values_list("player_id", flat=True)
-        )
-    return list(
-        TeamQuarterlyScore.objects.filter(
-            team__isnull=False, season=season, tier_assigned__in=block["values"]
-        ).values_list("team_id", flat=True)
-    )
+        return list(player_ids_in_tiers(block["values"], season=season)
+                    .values_list("player_id", flat=True))
+    return list(team_ids_in_tiers(block["values"], season=season)
+                .values_list("team_id", flat=True))
 
 
 def _ranked_q(block, live_resolver):
@@ -509,11 +527,11 @@ def _category_q(spec):
     """The Q for the CATEGORY block (tier / country / role / language), or None when no category
     filter is set. Filters INTERSECT here - see the module header.
 
-    Tier lives on the TEAM (afc_team.Team.team_tier), not on the user, so "Tier 1" resolves to
-    "users who are on a Tier 1 team", counting both roster members and the team owner (an owner is
-    not always in TeamMembers). Both id sets are passed as SUBQUERIES: .values("member_id") stays
-    a queryset, so this becomes a single SQL statement with an IN (SELECT ...) and nothing is
-    pulled into Python.
+    Tier is the TEAM's published ranking tier (afc_rankings/public_tiers.py, inbox #165), not a
+    user field, so "Tier 4" (code 3) resolves to "users who are on a team holding Tier 4",
+    counting both roster members and the team owner (an owner is not always in TeamMembers). All
+    id sets are passed as SUBQUERIES: .values("member_id") stays a queryset, so this becomes a
+    single SQL statement with an IN (SELECT ...) and nothing is pulled into Python.
 
     Country matches EITHER the profile country the user typed or the IP-derived one we record on
     login (afc_auth.User.ip_country), because the profile field is blank for a large share of
@@ -521,11 +539,12 @@ def _category_q(spec):
     clauses = []
 
     if spec["tiers"]:
+        tiered_team_ids = team_ids_in_tiers(spec["tiers"])
         tier_member_ids = TeamMembers.objects.filter(
-            team__team_tier__in=spec["tiers"]
+            team_id__in=tiered_team_ids
         ).values("member_id")
         tier_owner_ids = Team.objects.filter(
-            team_tier__in=spec["tiers"]
+            team_id__in=tiered_team_ids
         ).values("team_owner_id")
         clauses.append(Q(user_id__in=tier_member_ids) | Q(user_id__in=tier_owner_ids))
 
