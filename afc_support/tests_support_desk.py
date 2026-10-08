@@ -262,6 +262,48 @@ class SupportDeskTests(TestCase):
         self.assertEqual(self.client.get(
             f"/support/attachments/{att.id}/?t={ticket.public_token}").status_code, 200)
 
+    # ── inbox #168: staff open files from the desk ───────────────────────────────────────────
+    # The test above proved staff could download WITH an Authorization header. The desk shows a
+    # file as a LINK, and a browser following a link sends no header, so every staff click was a
+    # 404 on production while that test stayed green. These follow the link the desk is given,
+    # exactly as a browser would: no header.
+    def _staff_link(self, user):
+        ticket = SupportTicket.objects.first()
+        r = self.client.get(f"/support/tickets/{ticket.ticket_number}/", **self._auth(user))
+        self.assertEqual(r.status_code, 200, r.content)
+        files = [a for m in r.json()["messages"] for a in m["attachments"]]
+        self.assertEqual(len(files), 1)
+        return files[0]["url"]
+
+    def test_staff_open_a_file_from_the_link_the_desk_shows(self):
+        self._contact(files=[SimpleUploadedFile("id card.png", _real_png(), content_type="image/png")])
+        url = self._staff_link(self.staff)
+        self.assertIn("?s=", url)
+        r = self.client.get(url)                     # no Authorization header, like a browser
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r["Content-Type"], "image/png")
+
+    def test_a_signed_link_opens_only_its_own_file_and_only_while_fresh(self):
+        self._contact(files=[SimpleUploadedFile("id card.png", _real_png(), content_type="image/png")])
+        url = self._staff_link(self.staff)
+        att = SupportAttachment.objects.get()
+        signature = url.split("?s=", 1)[1]
+        other = SupportAttachment.objects.create(message=att.message, file=att.file,
+                                                 original_name="other.png", content_type="image/png",
+                                                 size_bytes=att.size_bytes)
+        self.assertEqual(self.client.get(f"/support/attachments/{other.id}/?s={signature}").status_code, 404)
+        self.assertEqual(self.client.get(f"/support/attachments/{att.id}/?s=forged:abc:def").status_code, 404)
+        with patch("afc_support.views.ATTACHMENT_LINK_MAX_AGE", -1):
+            self.assertEqual(self.client.get(url).status_code, 404)
+
+    def test_the_requester_never_receives_a_signed_link(self):
+        self._contact(files=[SimpleUploadedFile("id card.png", _real_png(), content_type="image/png")])
+        ticket = SupportTicket.objects.first()
+        r = self.client.get(f"/support/t/{ticket.public_token}/")
+        self.assertEqual(r.status_code, 200, r.content)
+        body = str(r.json())
+        self.assertNotIn("?s=", body)
+
     # ── the audit ────────────────────────────────────────────────────────────────────────────
     def test_only_head_admins_open_the_audit(self):
         self._contact()
