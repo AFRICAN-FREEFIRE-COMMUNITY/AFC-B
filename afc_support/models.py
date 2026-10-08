@@ -84,10 +84,14 @@ class SupportTicket(models.Model):
     SOURCE_STAFF = "staff"
     # "Talk to a person" in the website's Help panel (inbox #109): the ticket carries the chat.
     SOURCE_HELP_BOT = "help_bot"
+    # "Ask the organizer" on an organizer's event page or organization page (inbox #167 / #175):
+    # the ticket is addressed to that organization (see `organization` below).
+    SOURCE_ORGANIZER = "organizer"
     SOURCE_CHOICES = [
         (SOURCE_CONTACT_FORM, "Contact form"),
         (SOURCE_STAFF, "Opened by staff"),
         (SOURCE_HELP_BOT, "Help bot"),
+        (SOURCE_ORGANIZER, "Ask the organizer"),
     ]
 
     ticket_number = models.CharField(max_length=16, unique=True, db_index=True,
@@ -109,6 +113,18 @@ class SupportTicket(models.Model):
     source = models.CharField(max_length=16, choices=SOURCE_CHOICES, default=SOURCE_CONTACT_FORM)
     assigned_to = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True,
                                     related_name="support_tickets_assigned")
+
+    # ── addressed to an ORGANIZER (inbox #167 / #175, owner 2026-10-08) ──
+    # Null = a question to AFC (every ticket before this). Set = a question a player asked an
+    # organization ("Ask the organizer"); that organization's members with the Answer support
+    # permission work it on their own desk, and on the AFC side ONLY head admins and super admins
+    # see it ("Only head admin and super admins can see stuff of organizer"): it never appears on
+    # the ordinary AFC support desk. Gate: afc_support.org_scope.can_answer_org_support.
+    organization = models.ForeignKey("afc_organizers.Organization", on_delete=models.SET_NULL,
+                                     null=True, blank=True, related_name="support_tickets")
+    # Which of the organization's events the question is about, when the player picked one.
+    event = models.ForeignKey("afc_tournament_and_scrims.Event", on_delete=models.SET_NULL,
+                              null=True, blank=True, related_name="support_tickets")
 
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
     updated_at = models.DateTimeField(auto_now=True)

@@ -270,6 +270,15 @@ CALLER_PLACEHOLDERS = {
         "heading": set(), "intro": {"ticket"}, "thread": set(), "also": {"tickets"}, "cta": set(),
         "disclaimer": set(),
     },
+    # Questions asked of an organizer (inbox #175): the organization's name where it reads.
+    "support_org_reply": {
+        "heading": {"org"}, "intro": {"org", "ticket"}, "note": set(), "thread": set(),
+        "also": {"tickets"}, "cta": set(), "disclaimer": set(),
+    },
+    "support_org_question": {
+        "heading": {"org"}, "intro": {"name", "org", "ticket"}, "about": {"event"}, "cta": set(),
+        "disclaimer": {"org"},
+    },
     # Account deletion and restore (afc_auth.account_deletion, 2026-09-17). The deleted mail names
     # nobody (the address it goes to is the released one); the restore mail greets by name.
     "account_deleted": dict.fromkeys(("heading", "intro", "restore", "reuse", "cta", "disclaimer"), set()),
@@ -332,6 +341,8 @@ CALLER_SUBJECT_PLACEHOLDERS = {
     "event_team_invitation": {"event"},
     "support_received": {"ticket"},
     "support_reply": {"ticket"},
+    "support_org_reply": {"org", "ticket"},
+    "support_org_question": {"org", "ticket"},
     "account_deleted": set(),
     "account_restored": set(),
 }

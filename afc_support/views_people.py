@@ -16,7 +16,7 @@ WHO IS ONE PERSON
     or "e:<email>", so neither an email address nor a database id ever sits in a URL (owner rules
     R22 / R54). The key is resolved by recomputing it, never stored.
 
-ENDPOINTS (staff only, the same gate as the ticket queue: views._require_staff)
+ENDPOINTS (the gate is _desk below: AFC support staff, or an organization's answerers)
     GET  support/people/                 the people, filtered and paged
     GET  support/people/<key>/           one person: who they are and every ticket with messages
     POST support/people/<key>/reply/     one reply recorded on several of their tickets, one email
@@ -30,8 +30,10 @@ HOW IT CONNECTS
     sitewide History page records it through afc_auth.middleware.AuditLogMiddleware.
     Consumed by frontend app/(a)/a/support/page.tsx through lib/api/support.ts.
 
-Today every ticket is an AFC ticket. The organizer desk (inbox #175) adds tickets addressed to an
-organization, which this desk must then leave out for ordinary support staff.
+TWO DESKS, ONE CODE (inbox #175). Every endpoint takes an optional `organization` (a slug, in the
+query or the body). Without it the caller works the AFC desk: AFC support staff only, and only
+tickets addressed to nobody. With it the caller works that organization's desk: its answerers and
+AFC head / super admins only (afc_support/org_scope.py), and only that organization's tickets.
 """
 import hashlib
 from datetime import datetime
@@ -47,7 +49,8 @@ from rest_framework.response import Response
 from afc_auth.country_grouping import canonical_country, country_label
 from afc_support import notify
 from afc_support.models import SupportMessage, SupportTicket
-from afc_support.views import _require_staff, _save_attachments, _ticket_dict, _touch
+from afc_support.org_scope import desk_access
+from afc_support.views import _actor, _is_support_staff, _save_attachments, _ticket_dict, _touch
 
 DEFAULT_PAGE_SIZE = 30
 MAX_PAGE_SIZE = 100
@@ -81,9 +84,24 @@ def _person_country(ticket):
     return (key or "", country_label(key, {raw}) if key else "")
 
 
-def _tickets_of(key):
-    """Every ticket belonging to the person `key`, newest activity first."""
-    rows = SupportTicket.objects.select_related("user", "assigned_to").order_by("-last_message_at", "-created_at")
+def _scoped(org):
+    """The tickets of one desk: an organization's, or AFC's own (addressed to nobody)."""
+    qs = SupportTicket.objects.select_related("user", "assigned_to", "organization", "event")
+    return qs.filter(organization=org) if org is not None else qs.filter(organization__isnull=True)
+
+
+def _desk(request):
+    """(user, organization | None, error) for the desk the request is working."""
+    user = _actor(request)
+    slug = request.GET.get("organization") or (
+        request.data.get("organization") if request.method != "GET" else "") or ""
+    org, err = desk_access(request, user, _is_support_staff, slug=str(slug))
+    return user, org, err
+
+
+def _tickets_of(key, org):
+    """Every ticket of the person `key` on this desk, newest activity first."""
+    rows = _scoped(org).order_by("-last_message_at", "-created_at")
     return [t for t in rows if person_key(t) == key]
 
 
@@ -104,9 +122,9 @@ def _parse_moment(raw):
     return value
 
 
-def _filtered_tickets(request, user):
+def _filtered_tickets(request, user, org):
     """The tickets the filters keep, or (None, Response) on a bad value."""
-    qs = SupportTicket.objects.all().select_related("user", "assigned_to")
+    qs = _scoped(org)
     q = (request.GET.get("q") or "").strip()
     if len(q) > MAX_QUERY_LENGTH:
         return None, Response({"message": "That search is too long.", "code": "query_too_long"},
@@ -199,12 +217,14 @@ def support_people(request):
              countries: [{value, label}], status_counts: {open, waiting, resolved, closed}}
              Newest activity first. A person is kept when at least one of their tickets passes
              the filters; their counts describe ALL their tickets.
-    Auth   : support staff (views._require_staff). Consumed by app/(a)/a/support/page.tsx.
+    Auth   : _desk (AFC support staff, or with ?organization=<slug> that organization's answerers
+             and AFC head / super admins). Consumed by app/(a)/a/support/page.tsx and the
+             organizer desk app/(organizer)/organizer/support/page.tsx.
     """
-    user, err = _require_staff(request)
+    user, org, err = _desk(request)
     if err:
         return err
-    kept, err = _filtered_tickets(request, user)
+    kept, err = _filtered_tickets(request, user, org)
     if err:
         return err
     country = (request.GET.get("country") or "").strip()
@@ -217,7 +237,7 @@ def support_people(request):
 
     # Every ticket of every person, so a row's counts are the whole person, not the filtered part.
     everyone = {}
-    for t in SupportTicket.objects.select_related("user", "assigned_to").order_by("-last_message_at", "-created_at"):
+    for t in _scoped(org).order_by("-last_message_at", "-created_at"):
         everyone.setdefault(person_key(t), []).append(t)
     keys_kept = []
     seen = set()
@@ -236,7 +256,7 @@ def support_people(request):
 
     page = keys_kept[offset:offset + limit]
     status_counts = {s: 0 for s in STATUS_ORDER}
-    for t in SupportTicket.objects.values_list("status", flat=True):
+    for t in _scoped(org).values_list("status", flat=True):
         status_counts[t] = status_counts.get(t, 0) + 1
     return Response({
         "results": [_person_row(k, everyone[k]) for k in page],
@@ -259,23 +279,23 @@ def support_person(request, key):
     heads-up link to a TICKET, and the page opens that ticket's person.
     Auth: support staff. 404 {code: person_not_found}.
     """
-    user, err = _require_staff(request)
+    user, org, err = _desk(request)
     if err:
         return err
     if key == "by-ticket":
-        ticket = SupportTicket.objects.filter(ticket_number=(request.GET.get("ticket") or "").strip()).first()
+        ticket = _scoped(org).filter(ticket_number=(request.GET.get("ticket") or "").strip()).first()
         if not ticket:
             return Response({"message": "We could not find that ticket.", "code": "ticket_not_found"},
                             status=status.HTTP_404_NOT_FOUND)
         key = person_key(ticket)
-    tickets = _tickets_of(key)
+    tickets = _tickets_of(key, org)
     if not tickets:
         return Response({"message": "We could not find that person.", "code": "person_not_found"},
                         status=status.HTTP_404_NOT_FOUND)
     return Response(_person_detail(key, tickets), status=status.HTTP_200_OK)
 
 
-def _reply_to(tickets, author, body, files, resolve):
+def _reply_to(tickets, author, body, files, resolve, org=None):
     """Record `body` on each ticket in `tickets` and tell the person ONCE.
 
     Each ticket gets its own message row, so every ticket page shows the answer and the audit has
@@ -286,7 +306,8 @@ def _reply_to(tickets, author, body, files, resolve):
     for i, ticket in enumerate(tickets):
         message = SupportMessage.objects.create(
             ticket=ticket, direction=SupportMessage.DIRECTION_OUT, channel=SupportMessage.CHANNEL_WEB,
-            author=author, author_name="AFC Support", body=body,
+            # On an organizer desk the reply is signed by the organization (inbox #175).
+            author=author, author_name=(org.name if org is not None else "AFC Support"), body=body,
         )
         if i == 0:
             first_message = message
@@ -319,12 +340,12 @@ def support_person_reply(request, key):
     Answer : 200 {message, emailed, discord_dm, rejected_files, answered: [numbers], ...person}
              400 reply_empty / no_open_requests / ticket_not_theirs; 404 person_not_found.
     The person gets ONE email (on the newest request, naming the others) and one Discord DM.
-    Auth   : support staff.
+    Auth   : _desk (see support_people).
     """
-    user, err = _require_staff(request)
+    user, org, err = _desk(request)
     if err:
         return err
-    tickets = _tickets_of(key)
+    tickets = _tickets_of(key, org)
     if not tickets:
         return Response({"message": "We could not find that person.", "code": "person_not_found"},
                         status=status.HTTP_404_NOT_FOUND)
@@ -349,8 +370,8 @@ def support_person_reply(request, key):
                          "code": "no_open_requests"}, status=status.HTTP_400_BAD_REQUEST)
     targets.sort(key=lambda t: (t.last_message_at or t.created_at), reverse=True)
     rejected, emailed, dmed = _reply_to(targets, user, body, request.FILES.getlist("files"),
-                                        _truthy(request.data.get("resolve")))
-    data = _person_detail(key, _tickets_of(key))
+                                        _truthy(request.data.get("resolve")), org)
+    data = _person_detail(key, _tickets_of(key, org))
     data.update({"message": "Reply sent.", "emailed": emailed, "discord_dm": dmed,
                  "rejected_files": rejected, "answered": [t.ticket_number for t in targets]})
     return Response(data, status=status.HTTP_200_OK)
@@ -365,9 +386,9 @@ def support_bulk_reply(request):
              sees who else got it. People with nothing open are skipped and counted.
     Answer : 200 {message, people_sent, requests_answered, skipped}
              400 reply_empty / no_people / too_many_people.
-    Auth   : support staff.
+    Auth   : _desk (see support_people).
     """
-    user, err = _require_staff(request)
+    user, org, err = _desk(request)
     if err:
         return err
     body = (request.data.get("message") or "").strip()
@@ -384,11 +405,11 @@ def support_bulk_reply(request):
     resolve = _truthy(request.data.get("resolve"))
     people_sent = requests_answered = skipped = 0
     for key in dict.fromkeys(keys):
-        targets = [t for t in _tickets_of(key) if t.status in ANSWERABLE]
+        targets = [t for t in _tickets_of(key, org) if t.status in ANSWERABLE]
         if not targets:
             skipped += 1
             continue
-        _reply_to(targets, user, body, [], resolve)
+        _reply_to(targets, user, body, [], resolve, org)
         people_sent += 1
         requests_answered += len(targets)
     return Response({"message": "Sent.", "people_sent": people_sent,

@@ -108,6 +108,9 @@ PERMISSION_FIELDS = (
     "can_view_metrics",
     "can_view_reviews",
     "can_manage_members",
+    # Answer the questions players send this organization (inbox #175): the organizer's Support
+    # desk. Owners have it implicitly (permissions.org_can rule 2).
+    "can_answer_support",
 )
 
 
@@ -138,6 +141,7 @@ class OrganizationMember(models.Model):
     can_view_metrics = models.BooleanField(default=False)
     can_view_reviews = models.BooleanField(default=False)          # ratings + organizer-only comments
     can_manage_members = models.BooleanField(default=False)        # add/remove subs, toggle perms
+    can_answer_support = models.BooleanField(default=False)        # the organizer Support desk (inbox #175)
 
     joined_at = models.DateTimeField(auto_now_add=True)
 
@@ -837,6 +841,9 @@ class EventCoOrganizer(models.Model):
     can_view_metrics = models.BooleanField(default=True)   # a co-owner can at least see metrics
     can_view_reviews = models.BooleanField(default=False)
     can_manage_members = models.BooleanField(default=False)
+    # In PERMISSION_FIELDS, so a co-organizer grant carries it too; questions about an event still
+    # go to the event's own organization only (afc_support.views_org).
+    can_answer_support = models.BooleanField(default=False)
 
     # Reserved for the organizer payout-split effort (separate project). Each accepted co-owner's
     # share of the event's net registration revenue; the primary org keeps the remainder.

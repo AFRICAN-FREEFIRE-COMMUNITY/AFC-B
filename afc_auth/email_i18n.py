@@ -348,6 +348,17 @@ SUBJECTS = {
         "fr": "AFC a répondu à votre message ({ticket})",
         "pt": "A AFC respondeu à sua mensagem ({ticket})",
     },
+    # -- afc_support: questions asked of an ORGANIZER (inbox #175) --
+    "support_org_reply": {
+        "en": "{org} replied to your question ({ticket})",
+        "fr": "{org} a répondu à votre question ({ticket})",
+        "pt": "{org} respondeu à sua pergunta ({ticket})",
+    },
+    "support_org_question": {
+        "en": "New question for {org} ({ticket})",
+        "fr": "Nouvelle question pour {org} ({ticket})",
+        "pt": "Nova pergunta para {org} ({ticket})",
+    },
     # -- afc_auth.account_deletion (inbox #20) --
     "account_deleted": {
         "en": "Your AFC account has been deleted",
@@ -1637,7 +1648,7 @@ COPY = {
             "disclaimer": "Replying to this email will not reach us. Use the ticket page so your answer lands with the person handling it.",
         },
         "fr": {
-            "heading": "AFC a repondu",
+            "heading": "AFC a répondu",
             "intro": "Quelqu'un de l'équipe AFC a répondu à votre message ({ticket}).",
             "thread": "Lisez la réponse complète et répondez sur la page de votre ticket. Tout ce que vous y ajoutez arrive aux mêmes personnes.",
             "also": "Cette réponse concerne aussi vos autres messages ouverts : {tickets}.",
@@ -1651,6 +1662,66 @@ COPY = {
             "also": "Esta resposta também se aplica às suas outras mensagens em aberto: {tickets}.",
             "cta": "Abrir o meu ticket",
             "disclaimer": "Responder a este e-mail não chega até nós. Use a página do ticket para que a sua resposta chegue à pessoa que está a tratar do assunto.",
+        },
+    },
+
+    # -- afc_support: an ORGANIZER answered a player's question (inbox #175) --
+    # Sent by notify.email_ticket_reply when the ticket is addressed to an organization. `note`
+    # says plainly that the answer is the organizer's, so a player does not read it as AFC's word.
+    "support_org_reply": {
+        "en": {
+            "heading": "{org} replied",
+            "intro": "{org} has answered the question you asked them ({ticket}).",
+            "note": "This answer comes from the organizer, not from the AFC team.",
+            "thread": "Read the full reply and answer back on your ticket page. Anything you add there reaches the organizer.",
+            "also": "This also answers your other open questions to them: {tickets}.",
+            "cta": "Open my question",
+            "disclaimer": "Replying to this email will not reach the organizer. Use the ticket page so your answer lands with them.",
+        },
+        "fr": {
+            "heading": "{org} a répondu",
+            "intro": "{org} a répondu à la question que vous lui avez posée ({ticket}).",
+            "note": "Cette réponse vient de l'organisateur, pas de l'équipe AFC.",
+            "thread": "Lisez la réponse complète et répondez sur la page de votre ticket. Tout ce que vous y ajoutez arrive à l'organisateur.",
+            "also": "Cette réponse concerne aussi vos autres questions ouvertes à cet organisateur : {tickets}.",
+            "cta": "Ouvrir ma question",
+            "disclaimer": "Répondre à cet e-mail ne parviendra pas à l'organisateur. Utilisez la page du ticket pour que votre réponse lui arrive.",
+        },
+        "pt": {
+            "heading": "{org} respondeu",
+            "intro": "{org} respondeu à pergunta que lhe fez ({ticket}).",
+            "note": "Esta resposta vem do organizador, não da equipa da AFC.",
+            "thread": "Leia a resposta completa e responda na página do seu ticket. Tudo o que acrescentar aí chega ao organizador.",
+            "also": "Esta resposta também se aplica às suas outras perguntas em aberto a este organizador: {tickets}.",
+            "cta": "Abrir a minha pergunta",
+            "disclaimer": "Responder a este e-mail não chega ao organizador. Use a página do ticket para que a sua resposta lhe chegue.",
+        },
+    },
+
+    # -- afc_support: a player asked an ORGANIZER something (inbox #175) --
+    # Sent by notify.email_org_new_question to each member who may answer (owner or Answer support),
+    # in their own language. The question itself is quoted under the intro by the builder.
+    "support_org_question": {
+        "en": {
+            "heading": "A player asked {org} a question",
+            "intro": "{name} asked {org} a question ({ticket}).",
+            "about": "It is about {event}.",
+            "cta": "Answer on the Support page",
+            "disclaimer": "You get this email because you can answer support questions for {org}. Replying to this email will not reach the player: answer on the Support page of your organizer portal.",
+        },
+        "fr": {
+            "heading": "Un joueur a posé une question à {org}",
+            "intro": "{name} a posé une question à {org} ({ticket}).",
+            "about": "Elle concerne {event}.",
+            "cta": "Répondre sur la page Support",
+            "disclaimer": "Vous recevez cet e-mail parce que vous pouvez répondre aux questions d'assistance de {org}. Répondre à cet e-mail ne parviendra pas au joueur : répondez sur la page Support de votre espace organisateur.",
+        },
+        "pt": {
+            "heading": "Um jogador fez uma pergunta a {org}",
+            "intro": "{name} fez uma pergunta a {org} ({ticket}).",
+            "about": "É sobre {event}.",
+            "cta": "Responder na página de Suporte",
+            "disclaimer": "Recebe este e-mail porque pode responder às perguntas de suporte de {org}. Responder a este e-mail não chega ao jogador: responda na página de Suporte do seu portal de organizador.",
         },
     },
 }

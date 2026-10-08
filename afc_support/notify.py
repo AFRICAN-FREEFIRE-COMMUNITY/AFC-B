@@ -98,32 +98,75 @@ def email_ticket_reply(ticket, message, lang="en", also=()) -> bool:
 
     `also`: the OTHER ticket numbers the same reply was recorded on (the desk's "reply to all open
     requests", inbox #174), named in one sentence so one email covers them all instead of the
-    person getting the same answer several times."""
-    c = copy_for("support_reply", lang)
-    number = f'<span style="color:#e8efe9;font-weight:600;">{ticket.ticket_number}</span>'
+    person getting the same answer several times.
+
+    A ticket addressed to an ORGANIZER (inbox #175) uses the "support_org_reply" copy: the
+    organization's name in the subject and heading, and a line saying the answer is the
+    organizer's, not AFC's."""
     # The reply itself, escaped by the caller's serializer path? No: escape HERE, because this is
     # staff-typed text going into an HTML email and the shell does not escape anything.
     from django.utils.html import escape as html_escape
 
+    number = f'<span style="color:#e8efe9;font-weight:600;">{ticket.ticket_number}</span>'
     quoted = html_escape(message.body).replace("\n", "<br>")
-    paragraphs = [
-        c["intro"].format(ticket=number),
-        f'<div style="margin-top:14px;color:#cfd8d2;">{quoted}</div>',
-        c["thread"],
-    ]
+    if ticket.organization_id:
+        template = "support_org_reply"
+        org = html_escape(ticket.organization.name)
+        c = copy_for(template, lang)
+        heading = c["heading"].format(org=org)
+        paragraphs = [c["intro"].format(org=org, ticket=number), c["note"]]
+        subject = subject_for(template, lang, org=ticket.organization.name, ticket=ticket.ticket_number)
+    else:
+        c = copy_for("support_reply", lang)
+        heading = c["heading"]
+        paragraphs = [c["intro"].format(ticket=number)]
+        subject = subject_for("support_reply", lang, ticket=ticket.ticket_number)
+    paragraphs += [f'<div style="margin-top:14px;color:#cfd8d2;">{quoted}</div>', c["thread"]]
     if also:
         paragraphs.append(c["also"].format(tickets=", ".join(html_escape(n) for n in also)))
     html = _email_shell(
-        _shell_rows(c["heading"], paragraphs, ticket_url(ticket), c["cta"], c["disclaimer"]),
+        _shell_rows(heading, paragraphs, ticket_url(ticket), c["cta"], c["disclaimer"]),
         "green",
     )
-    return send_email(
-        ticket.email,
-        subject_for("support_reply", lang, ticket=ticket.ticket_number),
-        html,
-        language=lang,
-        prelocalized=True,
+    return send_email(ticket.email, subject, html, language=lang, prelocalized=True)
+
+
+def org_desk_url(ticket) -> str:
+    """Where an organizer answers this question: their portal's Support page, opened on it."""
+    return f"{SITE_URL}/organizer/support?ticket={ticket.ticket_number}"
+
+
+def email_org_new_question(ticket, message, recipient) -> bool:
+    """Tell one member who may answer for the organization that a player asked it something
+    (inbox #175). Sent by afc_support.views_org.ask_organizer to each of org_scope.answerers(),
+    in the recipient's own language, with the question quoted. Never fails the caller."""
+    from django.utils.html import escape as html_escape
+
+    lang = getattr(recipient, "language", "") or "en"
+    c = copy_for("support_org_question", lang)
+    org = html_escape(ticket.organization.name)
+    number = f'<span style="color:#e8efe9;font-weight:600;">{ticket.ticket_number}</span>'
+    paragraphs = [c["intro"].format(name=html_escape(ticket.name), org=org, ticket=number)]
+    if ticket.event_id:
+        paragraphs.append(c["about"].format(event=html_escape(ticket.event.event_name)))
+    quoted = html_escape(message.body[:2000]).replace("\n", "<br>")
+    paragraphs.append(f'<div style="margin-top:14px;color:#cfd8d2;">{quoted}</div>')
+    html = _email_shell(
+        _shell_rows(c["heading"].format(org=org), paragraphs, org_desk_url(ticket), c["cta"],
+                    c["disclaimer"].format(org=org)),
+        "green",
     )
+    try:
+        return send_email(
+            recipient.email,
+            subject_for("support_org_question", lang, org=ticket.organization.name,
+                        ticket=ticket.ticket_number),
+            html,
+            language=lang,
+            prelocalized=True,
+        )
+    except Exception:
+        return False
 
 
 def email_staff_new_ticket(ticket, message, attachment_count=0) -> bool:
@@ -222,9 +265,10 @@ def dm_ticket_reply(ticket, message, also=()) -> bool:
     if not ticket.discord_id:
         return False
     numbers = ", ".join([ticket.ticket_number, *also])
+    who = ticket.organization.name if ticket.organization_id else "AFC support"
     return send_discord_dm(
         ticket.discord_id,
-        f"AFC support replied to your message ({numbers}).\n\n"
+        f"{who} replied to your message ({numbers}).\n\n"
         f"{message.body[:1200]}\n\n"
         f"Answer here: {ticket_url(ticket)}",
     )
