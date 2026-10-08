@@ -262,6 +262,29 @@ class OrganizerSupportTests(TestCase):
         self.assertEqual(self.afc_ticket.messages.filter(direction="out").last().author_name, "AFC Support")
         self.assertIn("AFC replied to your message", self.sent_email[-1][1])
 
+    def test_afc_oversight_reads_but_never_answers(self):
+        ticket = self._asked()
+        h = self._auth(self.head)
+        self.assertEqual(self.client.get("/support/people/", {"organization": "acme"}, **h).status_code, 200)
+        self.assertEqual(self.client.get(f"/support/tickets/{ticket.ticket_number}/", **h).status_code, 200)
+        attempts = [
+            self.client.post(f"/support/people/{person_key(ticket)}/reply/", {"message": "x", "organization": "acme"}, **h),
+            self.client.post("/support/people/bulk-reply/", {"keys": [person_key(ticket)], "message": "x",
+                                                             "organization": "acme"}, **h),
+            self.client.post(f"/support/tickets/{ticket.ticket_number}/reply/", {"message": "x"}, **h),
+            self.client.post(f"/support/tickets/{ticket.ticket_number}/status/", {"status": "resolved"}, **h),
+        ]
+        for r in attempts:
+            self.assertEqual((r.status_code, r.json()["code"]), (403, "org_support_read_only"))
+        self.assertFalse(ticket.messages.filter(direction="out").exists())
+        ticket.refresh_from_db()
+        self.assertEqual(ticket.status, SupportTicket.STATUS_OPEN)
+        # And the access answer says so, so the desk does not draw a reply box.
+        desks = self.client.get("/support/access/", **h).json()["organizer_desks"]
+        self.assertEqual([(d["slug"], d["can_reply"]) for d in desks], [("acme", False)])
+        owner_desks = self.client.get("/support/access/", **self._auth(self.owner)).json()["organizer_desks"]
+        self.assertEqual([(d["slug"], d["can_reply"]) for d in owner_desks], [("acme", True)])
+
     def test_organizers_are_not_shown_the_players_email(self):
         ticket = self._asked()
         key = person_key(ticket)
@@ -283,7 +306,7 @@ class OrganizerSupportTests(TestCase):
         self._asked()
         def desks(user):
             return self.client.get("/support/access/", **self._auth(user)).json()["organizer_desks"]
-        self.assertEqual(desks(self.owner), [{"name": "Acme Esports", "slug": "acme", "open_count": 1}])
+        self.assertEqual(desks(self.owner), [{"name": "Acme Esports", "slug": "acme", "open_count": 1, "can_reply": True}])
         self.assertEqual([d["slug"] for d in desks(self.helper)], ["acme"])
         self.assertEqual(desks(self.sub), [])
         self.assertEqual(desks(self.support), [])

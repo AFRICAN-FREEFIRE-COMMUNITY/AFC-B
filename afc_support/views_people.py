@@ -49,7 +49,7 @@ from rest_framework.response import Response
 from afc_auth.country_grouping import canonical_country, country_label
 from afc_support import notify
 from afc_support.models import SupportMessage, SupportTicket
-from afc_support.org_scope import desk_access, is_head_or_super
+from afc_support.org_scope import desk_access, is_head_or_super, reply_refusal
 from afc_support.views import _actor, _is_support_staff, _save_attachments, _ticket_dict, _touch
 
 DEFAULT_PAGE_SIZE = 30
@@ -354,6 +354,9 @@ def support_person_reply(request, key):
     user, org, err = _desk(request)
     if err:
         return err
+    err = reply_refusal(user, org)
+    if err:
+        return err
     tickets = _tickets_of(key, org)
     if not tickets:
         return Response({"message": "We could not find that person.", "code": "person_not_found"},
@@ -398,6 +401,9 @@ def support_bulk_reply(request):
     Auth   : _desk (see support_people).
     """
     user, org, err = _desk(request)
+    if err:
+        return err
+    err = reply_refusal(user, org)
     if err:
         return err
     body = (request.data.get("message") or "").strip()

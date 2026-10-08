@@ -7,10 +7,13 @@ attachments." Then, on who else sees them: "Only head admin and super admins can
 organizer", and on who may ask: "Signed-in players only".
 
 THE RULE, in one place (every desk endpoint asks it through desk_access below):
-    A ticket with `organization` set is the organization's conversation. It may be read and
-    answered by:
-      - an ACTIVE member of that organization who is its owner or holds can_answer_support, and
-      - on the AFC side, ONLY head admins and super admins (and Django superusers).
+    A ticket with `organization` set is the organization's conversation.
+      - READ AND ANSWER: an ACTIVE member of that (active) organization who is its owner or holds
+        can_answer_support. Only they answer, because a reply is signed with the organization's
+        name and the player is told it comes from the organizer, not from AFC.
+      - READ ONLY: on the AFC side, ONLY head admins and super admins (and Django superusers).
+        They see everything, and the server refuses their replies and status changes with
+        code org_support_read_only (reply_refusal below), so AFC never speaks as an organizer.
     Ordinary AFC support staff (support_admin, moderators, the coarse "admin" role) never see it,
     and the AFC desk never lists it. That is deliberately STRICTER than
     afc_organizers.permissions.org_can, whose oversight bypass also passes organizer_admin.
@@ -42,18 +45,31 @@ def is_head_or_super(user) -> bool:
         return False
 
 
-def can_answer_org_support(user, organization) -> bool:
-    """May `user` read and answer the support conversations addressed to `organization`?"""
+def can_reply_org_support(user, organization) -> bool:
+    """May `user` ANSWER the questions addressed to `organization`? Its own team only."""
     if not user or organization is None:
         return False
-    if is_head_or_super(user):
-        return True
-    # A suspended or deleted organization has no desk for its members ("no actions"); AFC
-    # oversight still reads what it was sent.
+    # A suspended or deleted organization has no desk for its members ("no actions").
     if organization.status != "active":
         return False
     member = OrganizationMember.objects.filter(organization=organization, user=user, status="active").first()
     return bool(member and (member.role == "owner" or member.can_answer_support))
+
+
+def can_read_org_support(user, organization) -> bool:
+    """May `user` READ the questions addressed to `organization`? Its team, and AFC oversight."""
+    if not user or organization is None:
+        return False
+    return is_head_or_super(user) or can_reply_org_support(user, organization)
+
+
+def reply_refusal(user, organization):
+    """None when `user` may change things on this desk (always, on AFC's own desk), else the 403
+    an AFC head / super admin gets for answering or re-labelling an organizer's question."""
+    if organization is None or can_reply_org_support(user, organization):
+        return None
+    return Response({"message": "AFC can read an organizer's questions, but only the organizer's team answers them.",
+                     "code": "org_support_read_only"}, status=status.HTTP_403_FORBIDDEN)
 
 
 def works_any_desk(user, is_support_staff) -> bool:
@@ -89,7 +105,7 @@ def desk_access(request, actor, is_support_staff, slug=None):
     slug = (slug or "").strip()
     if slug:
         org = Organization.objects.filter(slug=slug).first()
-        if not org or not can_answer_org_support(actor, org):
+        if not org or not can_read_org_support(actor, org):
             # 403, and the same answer for an organization that does not exist, so the desk does
             # not confirm which slugs are real to somebody who cannot open them.
             return None, Response({"message": "You do not have access to this organization's support desk.",
@@ -108,7 +124,7 @@ def ticket_access(actor, ticket, is_support_staff):
         return Response({"message": "Please sign in to continue.", "code": "auth_required"},
                         status=status.HTTP_401_UNAUTHORIZED)
     if ticket.organization_id:
-        if can_answer_org_support(actor, ticket.organization):
+        if can_read_org_support(actor, ticket.organization):
             return None
     elif is_support_staff(actor):
         return None
@@ -118,7 +134,8 @@ def ticket_access(actor, ticket, is_support_staff):
 
 
 def organizer_desks(user):
-    """The organizer desks `user` may open, as [{name, slug, open_count}], for support/access/.
+    """The organizer desks `user` may open, as [{name, slug, open_count, can_reply}], for
+    support/access/. `can_reply` is false on a desk the caller only oversees (AFC head / super).
 
     Head / super admins: every organization that has been asked anything. Everybody else: the
     active organizations where they are owner or hold can_answer_support. `open_count` is how many
@@ -136,4 +153,5 @@ def organizer_desks(user):
         orgs = Organization.objects.filter(pk__in=list(mine))
     orgs = orgs.annotate(open_count=Count("support_tickets", filter=Q(support_tickets__status="open"),
                                           distinct=True)).order_by("name")
-    return [{"name": o.name, "slug": o.slug, "open_count": o.open_count} for o in orgs]
+    return [{"name": o.name, "slug": o.slug, "open_count": o.open_count,
+             "can_reply": can_reply_org_support(user, o)} for o in orgs]

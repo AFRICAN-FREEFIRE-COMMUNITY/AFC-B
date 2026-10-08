@@ -162,6 +162,14 @@ def _desk_ticket(ticket, user, with_messages=False):
     return data
 
 
+def _change_refusal(user, ticket):
+    """AFC head / super admins read an organizer's questions but never answer or re-label them
+    (inbox #175); org_scope.reply_refusal says so with a code. None on AFC's own tickets."""
+    from afc_support.org_scope import reply_refusal
+
+    return reply_refusal(user, ticket.organization if ticket.organization_id else None)
+
+
 def _require_staff(request):
     """(user, None) when they may work the desk, else (None, Response)."""
     user = _actor(request)
@@ -694,6 +702,9 @@ def support_ticket_reply(request, number):
     user, ticket, err = _ticket_for(request, number)
     if err:
         return err
+    err = _change_refusal(user, ticket)
+    if err:
+        return err
 
     body = (request.data.get("message") or "").strip()
     if not body:
@@ -733,8 +744,11 @@ def support_ticket_reply(request, number):
 @api_view(["POST"])
 def support_ticket_status(request, number):
     """POST support/tickets/<ticket_number>/status/ - { status?, assign_to_me? }. Same gate as
-    the detail (_ticket_for)."""
+    the detail (_ticket_for). AFC oversight of an organizer's question may not change it."""
     user, ticket, err = _ticket_for(request, number)
+    if err:
+        return err
+    err = _change_refusal(user, ticket)
     if err:
         return err
 

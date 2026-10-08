@@ -119,7 +119,8 @@ class SupportTicket(models.Model):
     # organization ("Ask the organizer"); that organization's members with the Answer support
     # permission work it on their own desk, and on the AFC side ONLY head admins and super admins
     # see it ("Only head admin and super admins can see stuff of organizer"): it never appears on
-    # the ordinary AFC support desk. Gate: afc_support.org_scope.can_answer_org_support.
+    # the ordinary AFC support desk; they read, only the organization answers.
+    # Gate: afc_support.org_scope (can_read_org_support / can_reply_org_support).
     organization = models.ForeignKey("afc_organizers.Organization", on_delete=models.SET_NULL,
                                      null=True, blank=True, related_name="support_tickets")
     # Which of the organization's events the question is about, when the player picked one.
