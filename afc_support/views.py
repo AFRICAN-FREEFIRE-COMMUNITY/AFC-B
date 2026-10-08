@@ -151,6 +151,17 @@ def _ticket_for(request, number):
     return user, ticket, None
 
 
+def _desk_ticket(ticket, user, with_messages=False):
+    """The staff shape of one ticket for `user`. An organization's own members are not shown the
+    player's email address (inbox #175, R71); AFC staff and head / super admins are."""
+    from afc_support.org_scope import is_head_or_super
+
+    data = _ticket_dict(ticket, for_staff=True, with_messages=with_messages)
+    if ticket.organization_id and not is_head_or_super(user):
+        data["email"] = ""
+    return data
+
+
 def _require_staff(request):
     """(user, None) when they may work the desk, else (None, Response)."""
     user = _actor(request)
@@ -663,7 +674,7 @@ def support_ticket_detail(request, number):
     user, ticket, err = _ticket_for(request, number)
     if err:
         return err
-    data = _ticket_dict(ticket, for_staff=True, with_messages=True)
+    data = _desk_ticket(ticket, user, with_messages=True)
     data["ticket_url"] = notify.ticket_url(ticket)
     return Response(data, status=status.HTTP_200_OK)
 
@@ -715,7 +726,7 @@ def support_ticket_reply(request, number):
                      "emailed": bool(emailed),
                      "discord_dm": bool(dmed),
                      "rejected_files": rejected,
-                     "ticket": _ticket_dict(ticket, for_staff=True, with_messages=True)},
+                     "ticket": _desk_ticket(ticket, user, with_messages=True)},
                     status=status.HTTP_200_OK)
 
 
@@ -743,7 +754,7 @@ def support_ticket_status(request, number):
                         status=status.HTTP_400_BAD_REQUEST)
     ticket.save(update_fields=changed + ["updated_at"])
     return Response({"message": "Ticket updated.",
-                     "ticket": _ticket_dict(ticket, for_staff=True)},
+                     "ticket": _desk_ticket(ticket, user)},
                     status=status.HTTP_200_OK)
 
 

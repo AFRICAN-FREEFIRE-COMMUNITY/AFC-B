@@ -49,7 +49,7 @@ from rest_framework.response import Response
 from afc_auth.country_grouping import canonical_country, country_label
 from afc_support import notify
 from afc_support.models import SupportMessage, SupportTicket
-from afc_support.org_scope import desk_access
+from afc_support.org_scope import desk_access, is_head_or_super
 from afc_support.views import _actor, _is_support_staff, _save_attachments, _ticket_dict, _touch
 
 DEFAULT_PAGE_SIZE = 30
@@ -167,7 +167,15 @@ def _filtered_tickets(request, user, org):
 
 
 # ── shapes ─────────────────────────────────────────────────────────────────────────────────────
-def _person_row(key, tickets):
+def _private(user, org):
+    """True on an organizer's desk worked by the organization's own members: they are not shown
+    the player's email address (inbox #175, data minimisation, R71). The conversation happens on
+    the desk and replies go out through AFC, so an organizer never needs it. AFC head / super
+    admins looking at the same desk still see it."""
+    return org is not None and not is_head_or_super(user)
+
+
+def _person_row(key, tickets, private=False):
     """One row of the people list, from that person's tickets (newest activity first)."""
     newest = tickets[0]
     country_key, country_name = _person_country(newest)
@@ -182,7 +190,7 @@ def _person_row(key, tickets):
         "key": key,
         "name": newest.name,
         "username": newest.user.username if newest.user_id else "",
-        "email": newest.email,
+        "email": "" if private else newest.email,
         "country": country_key,
         "country_name": country_name,
         "has_discord": any(t.discord_id for t in tickets),
@@ -197,11 +205,12 @@ def _person_row(key, tickets):
     }
 
 
-def _person_detail(key, tickets):
-    return {
-        "person": _person_row(key, tickets),
-        "tickets": [_ticket_dict(t, for_staff=True, with_messages=True) for t in tickets],
-    }
+def _person_detail(key, tickets, private=False):
+    rows = [_ticket_dict(t, for_staff=True, with_messages=True) for t in tickets]
+    if private:
+        for row in rows:
+            row["email"] = ""
+    return {"person": _person_row(key, tickets, private), "tickets": rows}
 
 
 # ── endpoints ──────────────────────────────────────────────────────────────────────────────────
@@ -259,7 +268,7 @@ def support_people(request):
     for t in _scoped(org).values_list("status", flat=True):
         status_counts[t] = status_counts.get(t, 0) + 1
     return Response({
-        "results": [_person_row(k, everyone[k]) for k in page],
+        "results": [_person_row(k, everyone[k], _private(user, org)) for k in page],
         "total_count": len(keys_kept),
         "has_more": offset + len(page) < len(keys_kept),
         "next_offset": offset + len(page),
@@ -277,7 +286,7 @@ def support_person(request, key):
 
     Also accepts ?ticket=<number> in place of a key's ticket list check: the staff email and Discord
     heads-up link to a TICKET, and the page opens that ticket's person.
-    Auth: support staff. 404 {code: person_not_found}.
+    Auth: _desk (see support_people). 404 {code: person_not_found}.
     """
     user, org, err = _desk(request)
     if err:
@@ -292,7 +301,7 @@ def support_person(request, key):
     if not tickets:
         return Response({"message": "We could not find that person.", "code": "person_not_found"},
                         status=status.HTTP_404_NOT_FOUND)
-    return Response(_person_detail(key, tickets), status=status.HTTP_200_OK)
+    return Response(_person_detail(key, tickets, _private(user, org)), status=status.HTTP_200_OK)
 
 
 def _reply_to(tickets, author, body, files, resolve, org=None):
@@ -371,7 +380,7 @@ def support_person_reply(request, key):
     targets.sort(key=lambda t: (t.last_message_at or t.created_at), reverse=True)
     rejected, emailed, dmed = _reply_to(targets, user, body, request.FILES.getlist("files"),
                                         _truthy(request.data.get("resolve")), org)
-    data = _person_detail(key, _tickets_of(key, org))
+    data = _person_detail(key, _tickets_of(key, org), _private(user, org))
     data.update({"message": "Reply sent.", "emailed": emailed, "discord_dm": dmed,
                  "rejected_files": rejected, "answered": [t.ticket_number for t in targets]})
     return Response(data, status=status.HTTP_200_OK)

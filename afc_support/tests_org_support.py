@@ -262,6 +262,22 @@ class OrganizerSupportTests(TestCase):
         self.assertEqual(self.afc_ticket.messages.filter(direction="out").last().author_name, "AFC Support")
         self.assertIn("AFC replied to your message", self.sent_email[-1][1])
 
+    def test_organizers_are_not_shown_the_players_email(self):
+        ticket = self._asked()
+        key = person_key(ticket)
+        h = self._auth(self.owner)
+        row = self.client.get("/support/people/", {"organization": "acme"}, **h).json()["results"][0]
+        self.assertEqual(row["email"], "")
+        detail = self.client.get(f"/support/people/{key}/", {"organization": "acme"}, **h).json()
+        self.assertEqual(detail["person"]["email"], "")
+        self.assertEqual({t["email"] for t in detail["tickets"]}, {""})
+        self.assertEqual(self.client.get(f"/support/tickets/{ticket.ticket_number}/", **h).json()["email"], "")
+        self.assertNotIn(b"tunde@player.test", self.client.post(
+            f"/support/tickets/{ticket.ticket_number}/status/", {"status": "waiting"}, **h).content)
+        # AFC oversight still sees it.
+        head = self.client.get(f"/support/people/{key}/", {"organization": "acme"}, **self._auth(self.head)).json()
+        self.assertEqual(head["person"]["email"], "tunde@player.test")
+
     # ── access and lists ─────────────────────────────────────────────────────────────────────
     def test_access_lists_the_desks_each_person_may_open(self):
         self._asked()
