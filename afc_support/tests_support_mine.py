@@ -74,7 +74,8 @@ class SupportMineTests(TestCase):
 
     def test_row_carries_only_what_the_list_shows(self):
         row = self._get(self.me).json()["results"][0]
-        self.assertEqual(set(row), {"ticket_number", "token", "subject", "status", "created_at", "last_message_at"})
+        self.assertEqual(set(row), {"ticket_number", "token", "organization_name", "subject", "status", "created_at",
+                                    "last_message_at"})
         self.assertEqual(row["token"], self.linked.public_token)
 
     def test_subject_falls_back_to_the_first_line_of_the_first_message(self):

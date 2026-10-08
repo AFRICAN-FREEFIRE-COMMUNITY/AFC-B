@@ -16,6 +16,7 @@
     }
   },
   "cases": [
+    {"name": "B may ask an organizer a question, and only ever files B's own ticket (support/organizations/<slug>/ask/, inbox #175). Open to any signed-in player by design; the probe sends no message, so it is refused with question_empty and creates nothing", "route": "support/organizations/<slug:slug>/ask/", "attempt": {"as": "b", "method": "POST", "path": "/support/organizations/afc/ask/", "expect": [400, 404]}, "r88": {"skip": ["existence", "neighbours"], "reason": "the organization slug is public and asking is open to every signed-in player; the handler writes only the caller's own ticket"}},
     {
       "name": "B cannot read the Discord reminder settings of an event whose organization B is not part of (events/<id>/discord-reminders/, reopen_event's gate)",
       "attempt": {

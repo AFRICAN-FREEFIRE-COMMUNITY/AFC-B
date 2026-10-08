@@ -289,6 +289,31 @@
     },
     {
       "rule": "R70",
+      "path": "afc_support/views_org.py",
+      "reason": "Ask the organizer (inbox #175): the files go through create_ticket_from_contact -> views._save_attachments, the same door as the contact form above (upload_safety.sniff_upload reads the bytes, 6 files, 20 MB each, opaque name, a rejected-files answer). This file never touches the bytes itself."
+    },
+    {
+      "rule": "R70",
+      "path": "afc_support/views_people.py",
+      "reason": "a desk reply's files (inbox #174 / #175) go through views._save_attachments, the same sniffed, capped, opaquely named door as every other support attachment. This file never touches the bytes itself."
+    },
+    {
+      "rule": "R58",
+      "path": "afc_support/views_org.py",
+      "reason": "Ask the organizer (inbox #175, owner: signed-in players only): any signed-in player may ask any ACTIVE organization, by its public slug. The handler only CREATES the caller's own ticket (user = the session user) and reads no one else's record; an event named in the body must belong to that organization or the ask is refused with event_not_found. Reading and answering the question is gated in org_scope.py."
+    },
+    {
+      "rule": "R69",
+      "path": "afc_support/views_org.py",
+      "reason": "read 2026-10-09: message is required and capped at MAX_QUESTION_LENGTH with codes question_empty / question_too_long, the organization and event are resolved by lookup (organization_not_found / event_not_found), files go through _save_attachments. The house per-handler idiom (validation.note)."
+    },
+    {
+      "rule": "R69",
+      "path": "afc_support/views_people.py",
+      "reason": "read 2026-10-09: the only request.GET read the rule points at is the desk's organization slug, which org_scope.desk_access resolves by lookup and refuses with org_support_forbidden; every filter value below it is parsed with a coded 400 (limit_offset_numbers, bad dates). The house per-handler idiom (validation.note)."
+    },
+    {
+      "rule": "R70",
       "path": "afc_results_import/views.py",
       "reason": "a results CSV / XLSX, not an image: _read_upload caps the size and the parser refuses anything it cannot read as a table, naming the row. Stored only long enough to parse."
     },

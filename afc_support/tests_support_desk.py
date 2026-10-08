@@ -346,11 +346,11 @@ class SupportDeskTests(TestCase):
     # ── what the frontend asks before drawing anything ───────────────────────────────────────
     def test_access_tells_the_frontend_what_to_draw(self):
         anon = self.client.get("/support/access/").json()
-        self.assertEqual(anon, {"can_work_tickets": False, "can_read_audit": False})
+        self.assertEqual(anon, {"can_work_tickets": False, "can_read_audit": False, "organizer_desks": []})
         desk = self.client.get("/support/access/", **self._auth(self.staff)).json()
-        self.assertEqual(desk, {"can_work_tickets": True, "can_read_audit": False})
+        self.assertEqual(desk, {"can_work_tickets": True, "can_read_audit": False, "organizer_desks": []})
         boss = self.client.get("/support/access/", **self._auth(self.boss)).json()
-        self.assertEqual(boss, {"can_work_tickets": True, "can_read_audit": True})
+        self.assertEqual(boss, {"can_work_tickets": True, "can_read_audit": True, "organizer_desks": []})
 
     # ── the legacy endpoint still stores ─────────────────────────────────────────────────────
     def test_the_old_contact_endpoint_opens_a_ticket_too(self):

@@ -4,6 +4,7 @@ afc_support/urls.py - the support desk's addresses, mounted at "support/" in afc
 Public (no token):        contact/, t/<token>/, t/<token>/reply/
 Staff (support role):     tickets/, tickets/<number>/, tickets/<number>/reply/, tickets/<number>/status/
 Head admin only:          audit/
+Signed in:                organizations/<slug>/ask/   (Ask the organizer, inbox #175: views_org.py)
 Either:                   attachments/<id>/   (staff session, or ?t=<ticket token>)
 
 Every view is documented in afc_support/views.py, including which frontend surface calls it.
@@ -23,6 +24,7 @@ from afc_support.views import (
     support_ticket_status,
     support_tickets,
 )
+from afc_support.views_org import ask_organizer
 from afc_support.views_people import (
     support_bulk_reply,
     support_people,
@@ -53,4 +55,7 @@ urlpatterns = [
     path("people/bulk-reply/", support_bulk_reply, name="support_bulk_reply"),
     path("people/<str:key>/", support_person, name="support_person"),
     path("people/<str:key>/reply/", support_person_reply, name="support_person_reply"),
+    # "Ask the organizer" (inbox #175): a signed-in player's question to an organization. The
+    # organizer works it on the same people desk with ?organization=<slug> (org_scope.py).
+    path("organizations/<slug:slug>/ask/", ask_organizer, name="support_ask_organizer"),
 ]
