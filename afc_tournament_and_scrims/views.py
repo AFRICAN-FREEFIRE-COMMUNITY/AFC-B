@@ -308,7 +308,6 @@ def apply_event_tier(event, user, data):
 
 from celery import shared_task
 from django.utils import timezone
-from django.utils.text import slugify  # event re-slug on rename (edit_event, owner 2026-06-29)
 
 
 def _event_zone(event):
@@ -2352,7 +2351,8 @@ def create_event(request):
             try:
                 apply_event_writes(event, request.data, role=ADMIN)
             except WriteRefused as exc:
-                return Response({"message": exc.message, "field": exc.field, "code": "create_event_refused"}, status=400)
+                return Response({"message": exc.message, "field": exc.field, "limit": exc.limit,
+                                 "code": exc.code or "create_event_refused"}, status=400)
 
             # ── pre-validated values, which OVERRIDE the contract ──
             # Organizer events are ALWAYS internal: off-platform "external" registration is an
@@ -2771,9 +2771,10 @@ def duplicate_event(request, event_id):
         # See test_duplicate_event_fields.py, which pins both halves.
         new_event = Event.objects.create(
             **duplicate_field_values(source),
-            # " (Copy)" makes the clone obvious in the events list; trimmed to the field's 40-char
-            # max so a long source name cannot overflow event_name.
-            event_name=(f"{source.event_name} (Copy)")[:40],
+            # " (Copy)" makes the clone obvious in the events list. A long source name is shortened,
+            # never the suffix: cutting the whole string at the column's length is what produced
+            # "THE DEVELOPMENT LEAGUE (NG) DAY 17 (Copy" with no closing bracket (inbox #171).
+            event_name=_copy_name(source.event_name),
             # ── DATES ARE SHIFTED, NOT COPIED (owner backlog item 27) ──
             # Copying them verbatim is the root of "I duplicated an event, gave it a future start
             # date, published it, and it still says Event completed". A clone of a finished event
@@ -3571,11 +3572,6 @@ def edit_event(request):
     event = Event.objects.filter(event_id=event_id).first()
     if not event:
         return Response({"message": "Event not found.", "code": "event_not_found"}, status=404)
-    # Remember the name BEFORE the update loop applies any rename, so we can re-slug the event
-    # when the name changes (owner 2026-06-29: a duplicated event was stuck with its "...-copy"
-    # slug after being renamed, because Event.save() only auto-slugs when the slug is blank).
-    _old_event_name = event.event_name
-
     # AFC admins may edit any event; an org member needs can_edit_events on the event's
     # owning org. org_can_event treats native (org=None) events as admin-only, so org
     # members can never edit AFC events. Bug D: the event's own CREATOR may also edit it
@@ -3638,7 +3634,8 @@ def edit_event(request):
     try:
         apply_event_writes(event, request.data, role=ADMIN)
     except WriteRefused as exc:
-        return Response({"message": exc.message, "field": exc.field, "code": "as_list_refused"}, status=400)
+        return Response({"message": exc.message, "field": exc.field, "limit": exc.limit,
+                         "code": exc.code or "as_list_refused"}, status=400)
 
     if event.registration_open_date and event.registration_end_date:
         if event.registration_open_date > event.registration_end_date:
@@ -3828,18 +3825,11 @@ def edit_event(request):
         if advancement_rules_error:
             return Response({"message": advancement_rules_error, "code": "as_list_refused"}, status=400)
 
-    # Re-slug when the name actually changed, so the URL follows the rename (owner 2026-06-29).
-    # Mirrors Event.save()'s generator (slugify + a -2/-3 uniqueness suffix), but runs on rename
-    # too - save() alone only fires when the slug is blank, which is why a renamed "...-copy" event
-    # kept the stale slug. We only re-slug on a real change (not every save) to avoid needlessly
-    # churning a live event's URL; uniqueness excludes THIS event so a no-op name keeps its slug.
-    if event.event_name and event.event_name != _old_event_name:
-        base = slugify(event.event_name)[:70] or "event"
-        new_slug, i = base, 2
-        while Event.objects.filter(slug=new_slug).exclude(pk=event.pk).exists():
-            new_slug = f"{base}-{i}"
-            i += 1
-        event.slug = new_slug
+    # The URL follows a rename (owner 2026-06-29), and since 8 Oct 2026 Event.save does it through
+    # afc_auth.slugs.sync_slug, which ALSO records the retired slug in SlugHistory so the old address
+    # keeps opening the event (inbox #171). The re-slug that lived here did not record it: an admin
+    # who renamed a duplicated event was shown "No Event matches the given query." by their own
+    # edit page. The response below carries the new slug so the page can move to it.
 
     with transaction.atomic():
         event.save()
@@ -4218,7 +4208,10 @@ def edit_event(request):
 
     return Response({
         "message": "Event updated successfully.",
-        "event_id": event.event_id
+        "event_id": event.event_id,
+        # The CURRENT address. A rename changes it (Event.save -> sync_slug), and the edit pages
+        # move to it so their next read uses the new address (inbox #171).
+        "slug": event.slug,
     }, status=200)
 
 
@@ -4961,6 +4954,36 @@ def resolve_event(request):
     return Response({"event_id": event.event_id, "slug": event.slug, "event_name": event.event_name}, status=200)
 
 
+COPY_SUFFIX = " (Copy)"
+
+
+def _copy_name(name):
+    """`name` + " (Copy)", shortening the NAME (not the suffix) to fit Event.event_name."""
+    limit = Event._meta.get_field("event_name").max_length
+    return f"{(name or '')[: limit - len(COPY_SUFFIX)].rstrip()}{COPY_SUFFIX}"
+
+
+def _event_at(address):
+    """The event at a page address, or None.
+
+    The address is the event's current slug, a slug it had BEFORE a rename (afc_auth SlugHistory,
+    written by Event.save through sync_slug), or a legacy numeric id. Owner rule R22: every address
+    a thing has ever had keeps working.
+
+    Why (inbox #171, 8 Oct 2026): renaming a duplicated event changed its slug, the admin edit page
+    then re-read the event by the address it was opened on, and get_object_or_404(slug=...) answered
+    "No Event matches the given query." to an admin looking at the event they had just saved.
+    Used by get_event_details, get_event_details_not_logged_in and get_event_details_for_admin.
+    """
+    from afc_auth.slugs import resolve_or_redirect
+    event, _moved_to = resolve_or_redirect(Event, address)
+    return event
+
+
+def _event_not_found():
+    return Response({"message": "Event not found.", "code": "event_not_found"}, status=404)
+
+
 @api_view(["POST"])
 def get_event_details(request):
     user = None
@@ -4981,11 +5004,10 @@ def get_event_details(request):
     if not slug:
         return Response({"message": "slug is required.", "code": "slug_required"}, status=400)
 
-    # select_related("organization") avoids an extra query when we echo the owning
-    # org's id/name/slug below (used by the organizer edit page's ownership guard).
-    event = get_object_or_404(
-        Event.objects.select_related("organization"), slug=slug
-    )
+    # A retired slug (the event was renamed) still finds it: see _event_at (inbox #171).
+    event = _event_at(slug)
+    if event is None:
+        return _event_not_found()
 
     # Owner rule 2026-06-11: a suspended/deleted organization's events must not show publicly. Hide them
     # here (404) for everyone except an AFC admin (who manages via the admin surface and may still need
@@ -5996,7 +6018,10 @@ def get_event_details_not_logged_in(request):
     if not slug:
         return Response({"message": "slug is required.", "code": "slug_required"}, status=400)
 
-    event = get_object_or_404(Event.objects.select_related("organization"), slug=slug)
+    # A retired slug (the event was renamed) still finds it: see _event_at (inbox #171).
+    event = _event_at(slug)
+    if event is None:
+        return _event_not_found()
 
     # Owner rule 2026-06-11: a suspended/deleted org's events must not show publicly. This is the
     # logged-out public detail endpoint, so a hidden org always 404s here. AFC-native events unaffected.
@@ -10754,7 +10779,10 @@ def get_event_details_for_admin(request):
     if not slug:
         return Response({"message": "slug is required.", "code": "slug_required"}, status=400)
 
-    event = get_object_or_404(Event, slug=slug)
+    # A retired slug (the event was renamed) still finds it: see _event_at (inbox #171).
+    event = _event_at(slug)
+    if event is None:
+        return _event_not_found()
 
     # ── access gate (organizer parity, owner 2026-07-02) ──
     # Platform admins keep the exact pre-existing rule (role == "admin"); organizers need

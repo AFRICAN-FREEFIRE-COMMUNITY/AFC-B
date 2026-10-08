@@ -4,7 +4,8 @@ from django.db import models
 from afc_team.models import Team, TeamMembers
 from django.conf import settings
 from django.utils import timezone
-from django.utils.text import slugify
+
+from afc_auth.slugs import sync_slug
 
 
 # ── live overlay / capture-client token generator (owner 2026-07-01) ──────────────────────────────
@@ -71,7 +72,12 @@ class Event(models.Model):
     participant_type = models.CharField(max_length=10, choices=PARTICIPANT_TYPE_CHOICES)
     event_type = models.CharField(max_length=10, choices=EVENT_TYPE_CHOICES)
     max_teams_or_players = models.PositiveIntegerField()
-    event_name = models.CharField(max_length=40)
+    # 100, was 40 until 8 Oct 2026 (inbox #171): "THE DEVELOPMENT LEAGUE (NG) DAY 17 10PM" is
+    # already 39, an admin renaming a duplicated event past 40 got a database error back as
+    # "Server error: unexpected response format", and duplicating cut " (Copy)" in half. Every
+    # writer refuses an over-long value with a coded 400 first (event_contract.apply_event_writes
+    # checks each text field against its column), and the forms stop typing at the same number.
+    event_name = models.CharField(max_length=100)
     event_mode = models.CharField(max_length=20, choices=EVENT_MODE_CHOICES)
     start_date = models.DateField()
     end_date = models.DateField()
@@ -500,14 +506,14 @@ class Event(models.Model):
 
 
     def save(self, *args, **kwargs):
-        if not self.slug:
-            base = slugify(self.event_name)[:70] or "event"
-            slug = base
-            i = 2
-            while Event.objects.filter(slug=slug).exclude(pk=self.pk).exists():
-                slug = f"{base}-{i}"
-                i += 1
-            self.slug = slug
+        # The slug follows the name, and every slug the event ever had keeps working (owner rule
+        # R22): afc_auth.slugs.sync_slug computes the address from event_name when it is empty or
+        # the name changed, records the retired one in SlugHistory, and adds "slug" to a narrowed
+        # update_fields. The event readers resolve a retired slug through that history
+        # (views._event_at). Until 8 Oct 2026 events had their own generator here and in
+        # edit_event that recorded nothing, so a renamed event's old address died the moment it
+        # was renamed, including the address the admin's own edit page was open on (inbox #171).
+        kwargs["update_fields"] = sync_slug(self, "event_name", kwargs.get("update_fields"))
         super().save(*args, **kwargs)
 
     @property
