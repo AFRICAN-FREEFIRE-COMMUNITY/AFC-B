@@ -25,13 +25,30 @@ from django.db.models import Q
 from afc_tournament_and_scrims.models import Event
 
 
-def partner_visible_events(partner):
-    """Return the distinct, published Events this partner is scoped to read."""
-    # Union of the grant paths. Event-level + org-level grants always apply; the
-    # native-AFC path is opt-in per partner (least privilege).
+def _grants(partner):
+    """The union of the grant paths, as one Q. Event-level + org-level grants always apply;
+    the native-AFC path is opt-in per partner (least privilege)."""
     grants = Q(partner_grants=partner) | Q(organization__partner_grants=partner)
     if partner.allow_all_native_afc:
         grants |= Q(organization__isnull=True)
+    return grants
+
+
+def partner_visible_events(partner):
+    """Return the distinct, published Events this partner is scoped to read."""
     # Publish gate first, THEN the grants. .distinct() collapses duplicates from the
     # M2M joins (an event reachable via more than one grant path).
-    return Event.objects.filter(partner_published=True).filter(grants).distinct()
+    return Event.objects.filter(partner_published=True).filter(_grants(partner)).distinct()
+
+
+def partner_reachable_events(partner):
+    """The events this partner's GRANTS reach, published or not (drafts excluded).
+
+    ADMIN ONLY, never a read path: it deliberately skips the publish gate, so it must never
+    feed views_partner.py. It exists for the partner page's "Publish to partner API" card
+    (views_admin.partner_events / publish_finished_events, inbox #201, 2026-10-09), which has
+    to show an admin every event a grant covers, including the ones granted through a whole
+    organization or the native-AFC switch. The card used to list only events ticked one by one,
+    so an organization's events could not be published from the partner page at all.
+    """
+    return Event.objects.filter(is_draft=False).filter(_grants(partner)).distinct()

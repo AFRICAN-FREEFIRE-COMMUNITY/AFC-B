@@ -648,6 +648,145 @@ def delete_key(request, key_id):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# 9) partner_events  (GET partners/admin/<slug>/events/)
+# ──────────────────────────────────────────────────────────────────────────────
+def _effective_status(event):
+    """The status the whole site shows for an event (afc_tournament_and_scrims.views
+    effective_event_status): a past-end event reads "completed" even when its stored status was
+    never stamped. Imported locally for the same reason publish_event imports Event locally."""
+    from afc_tournament_and_scrims.views import effective_event_status
+    return effective_event_status(event)
+
+
+def _is_finished(event):
+    """Finished = completed by the site's own reading. A cancelled event never ran, so it is
+    not "past" data a partner wants, and is never bulk-published."""
+    return event.event_status != "cancelled" and _effective_status(event) == "completed"
+
+
+@api_view(["GET"])
+def partner_events(request, slug):
+    """Every event this partner's grants reach, published or not, newest first.
+
+    PURPOSE (owner 2026-10-09, inbox #201/#202): the partner page's "Publish to partner API"
+    card. It used to list only the events ticked one by one under Allowed events, so an event a
+    partner reached through a whole organization or the native-AFC switch could not be published
+    from there, and an admin who ticked an event and pressed Publish without saving the scope
+    published it for nobody. This reads the SAVED grants, so the list is exactly what the partner
+    would see once each row is published.
+
+    REQUEST: ?limit (default 25, max 100) & ?offset.
+    RESPONSE 200: {"results": [{event_id, slug, event_name, status, start_date, end_date,
+                   partner_published, via: ["event"|"organization"|"native", ...]}],
+                   "total_count", "has_more",
+                   "summary": {"reachable", "published", "finished_unpublished"}}
+             401/403 from the shared gate, 404 unknown partner.
+    AUTH: Bearer session, head_admin or partner_admin.
+    CONSUMED BY: frontend app/(a)/a/partners/[slug]/page.tsx (Scope tab, publish card) through
+        partnersApi.partnerEvents in lib/partners.ts.
+    """
+    user, err = _require_partner_admin(request)
+    if err:
+        return err
+    partner, err = _partner_or_404(slug)
+    if err:
+        return err
+
+    from .scope import partner_reachable_events
+
+    reachable = partner_reachable_events(partner).order_by("-start_date", "-event_id")
+    event_ids = set(partner.allowed_events.values_list("pk", flat=True))
+    org_ids = set(partner.allowed_organizations.values_list("pk", flat=True))
+
+    def via(event):
+        out = []
+        if event.pk in event_ids:
+            out.append("event")
+        if event.organization_id is not None and event.organization_id in org_ids:
+            out.append("organization")
+        if event.organization_id is None and partner.allow_all_native_afc:
+            out.append("native")
+        return out
+
+    # The summary walks every reachable event once: the finished test needs the effective
+    # status, which is computed in Python. A partner reaches at most the site's few hundred
+    # events, and the page asks for this once per load.
+    everything = list(reachable)
+    summary = {
+        "reachable": len(everything),
+        "published": sum(1 for e in everything if e.partner_published),
+        "finished_unpublished": sum(
+            1 for e in everything if not e.partner_published and _is_finished(e)),
+    }
+
+    page, total_count, has_more = _paginate(request, reachable)
+    results = [
+        {
+            "event_id": e.event_id,
+            "slug": e.slug,
+            "event_name": e.event_name,
+            "status": _effective_status(e),
+            "start_date": e.start_date.isoformat() if e.start_date else None,
+            "end_date": e.end_date.isoformat() if e.end_date else None,
+            "partner_published": e.partner_published,
+            "via": via(e),
+        }
+        for e in page
+    ]
+    return Response(
+        {"results": results, "total_count": total_count, "has_more": has_more,
+         "summary": summary},
+        status=status.HTTP_200_OK,
+    )
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 10) publish_finished_events  (POST partners/admin/<slug>/publish-finished/)
+# ──────────────────────────────────────────────────────────────────────────────
+@api_view(["POST"])
+def publish_finished_events(request, slug):
+    """Publish, in one press, every FINISHED event this partner's grants reach that is not
+    published yet. The "past events" half of inbox #201 (owner 2026-10-09): events that ended
+    before automatic publishing existed, or were withdrawn, are brought in without one click each.
+
+    WHAT IT TOUCHES: only events that are reachable by this partner's saved grants, not drafts,
+    not cancelled, completed by the site's own reading, and unpublished. partner_published is a
+    flag on the EVENT, so another partner granted the same event sees it too; that is what
+    publishing has always meant, and grants still decide who.
+
+    REQUEST: no body.
+    RESPONSE 200: {"message", "published_count", "published": [slug, ...]}. Safe to press twice:
+        the second press finds nothing and answers 0.
+             401/403 from the shared gate, 404 unknown partner.
+    AUTH: Bearer session, head_admin or partner_admin.
+    CONSUMED BY: frontend app/(a)/a/partners/[slug]/page.tsx, the publish card's
+        "Publish all finished events" button, through partnersApi.publishFinishedEvents.
+    """
+    user, err = _require_partner_admin(request)
+    if err:
+        return err
+    partner, err = _partner_or_404(slug)
+    if err:
+        return err
+
+    from afc_tournament_and_scrims.models import Event
+    from .scope import partner_reachable_events
+
+    targets = [e for e in partner_reachable_events(partner).filter(partner_published=False)
+               if _is_finished(e)]
+    Event.objects.filter(pk__in=[e.pk for e in targets]).update(partner_published=True)
+    count = len(targets)
+    return Response(
+        {
+            "message": f"Published {count} finished event{'s' if count != 1 else ''}.",
+            "published_count": count,
+            "published": [e.slug for e in targets],
+        },
+        status=status.HTTP_200_OK,
+    )
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # 8) publish_event  (POST partners/admin/events/<event_slug>/publish/)
 # ──────────────────────────────────────────────────────────────────────────────
 # Flip Event.partner_published - the gate the read API's scope predicate applies

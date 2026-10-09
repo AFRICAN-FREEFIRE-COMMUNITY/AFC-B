@@ -2003,3 +2003,244 @@ class PartnerKeyLifecycleAuditTests(TestCase):
             content_type="application/json", **self._auth())
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(self.partner.allowed_events.count(), 0)
+
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Solo standings (inbox #202, 2026-10-09)
+# ──────────────────────────────────────────────────────────────────────────────
+# Every solo event's standings answered 500: _BOOYAH reads is_aggregate / booyah_count, which
+# only TournamentTeamMatchStats has. Nothing tested a solo event here, which is how it shipped.
+# A partner's hourly sync ended on a solo event every hour, and its HTTP client treats a 500 as
+# a failed run, so the partner saw no data at all.
+def _bare_event(**kw):
+    from afc_tournament_and_scrims.models import Event
+
+    fields = dict(
+        event_name="AFC Solo Cup", competition_type="tournament", participant_type="squad",
+        event_type="internal", max_teams_or_players=48, event_mode="virtual",
+        start_date="2026-01-01", end_date="2026-01-02",
+        registration_open_date="2025-12-01", registration_end_date="2025-12-20",
+        prizepool="0", event_rules="-", event_status="completed",
+        registration_link="https://x", tournament_tier="tier_3", number_of_stages=1,
+        # is_draft defaults to TRUE on the model; a real, live event is not a draft.
+        organization=None, is_draft=False)
+    fields.update(kw)
+    return Event.objects.create(**fields)
+
+
+class SoloStandingsTests(TestCase):
+    def setUp(self):
+        from django.core.cache import cache
+
+        from afc_auth.models import User
+        from afc_tournament_and_scrims.models import (
+            Leaderboard, Match, RegisteredCompetitors, SoloPlayerMatchStats, StageGroups, Stages,
+        )
+
+        cache.clear()
+        self.partner = Partner.objects.create(
+            name="Solo Reader", slug="solo-reader", can_read_events=True,
+            can_read_standings=True, include_placements=True, include_kills=True)
+        self.event = _bare_event(participant_type="solo", partner_published=True)
+        self.partner.allowed_events.add(self.event)
+
+        stage = Stages.objects.create(
+            event=self.event, stage_name="Final", start_date="2026-01-02", end_date="2026-01-02",
+            number_of_groups=1, stage_format="br - normal", teams_qualifying_from_stage=1,
+            stage_status="completed")
+        group = StageGroups.objects.create(
+            stage=stage, group_name="Group A", playing_date="2026-01-02", playing_time="18:00",
+            teams_qualifying=1, match_count=2, match_maps=["bermuda"])
+        staff = User.objects.create_user(
+            username="solostaff", email="solostaff@x.com", password="x", full_name="Staff",
+            role="admin")
+        board = Leaderboard.objects.create(
+            leaderboard_name="Final LB", event=self.event, stage=stage, group=group,
+            creator=staff, placement_points={"1": 12, "2": 9}, kill_point=1.0,
+            leaderboard_method="manual")
+        m1 = Match.objects.create(leaderboard=board, group=group, match_number=1,
+                                  match_map="bermuda", result_inputted=True)
+        m2 = Match.objects.create(leaderboard=board, group=group, match_number=2,
+                                  match_map="bermuda", result_inputted=True)
+
+        def player(name, uid):
+            user = User.objects.create_user(
+                username=name, email=f"{name}@x.com", password="x", full_name=f"Real {name}",
+                uid=uid, role="player")
+            return RegisteredCompetitors.objects.create(event=self.event, user=user,
+                                                        status="registered")
+
+        winner, runner = player("SoloKing", "5550001"), player("SoloTwo", "5550002")
+        # SoloKing: a booyah and a second place, 21 + 9 kill points. SoloTwo: the reverse
+        # placements but fewer kills, so the winner is decided by points, not by order of rows.
+        SoloPlayerMatchStats.objects.create(match=m1, competitor=winner, placement=1, kills=6,
+                                            placement_points=12, kill_points=6, total_points=18)
+        SoloPlayerMatchStats.objects.create(match=m2, competitor=winner, placement=2, kills=3,
+                                            placement_points=9, kill_points=3, total_points=12)
+        SoloPlayerMatchStats.objects.create(match=m1, competitor=runner, placement=2, kills=1,
+                                            placement_points=9, kill_points=1, total_points=10)
+        SoloPlayerMatchStats.objects.create(match=m2, competitor=runner, placement=1, kills=2,
+                                            placement_points=12, kill_points=2, total_points=14)
+
+        full, prefix, h = auth.generate_key()
+        PartnerApiKey.objects.create(partner=self.partner, key_prefix=prefix, key_hash=h)
+        self.api_key = full
+
+    def test_solo_standings_answer_200_ranked(self):
+        resp = self.client.get(f"/api/v1/partner/events/{self.event.slug}/standings/",
+                               HTTP_X_API_KEY=self.api_key)
+
+        self.assertEqual(resp.status_code, 200, resp.content)
+        rows = resp.json()["results"]
+        self.assertEqual([r["username"] for r in rows], ["SoloKing", "SoloTwo"])
+        self.assertEqual([r["rank"] for r in rows], [1, 2])
+        self.assertEqual(rows[0]["in_game_id"], "5550001")
+        self.assertEqual(rows[0]["kills"], 9)
+        self.assertEqual(rows[0]["placement"], 1)
+        # The firewall still holds on the solo path: no real name, no email.
+        import json
+        self.assertNotIn("Real SoloKing", json.dumps(rows))
+        self.assertNotIn("@x.com", json.dumps(rows))
+
+    def test_every_read_of_a_solo_event_answers(self):
+        """The whole sync a partner runs, on a solo event: nothing may answer 500."""
+        for toggle in ("can_read_stages", "can_read_matches", "can_read_teams",
+                       "can_read_players", "can_read_designs"):
+            setattr(self.partner, toggle, True)
+        self.partner.save()
+        for path in ("/", "/stages/", "/matches/", "/standings/", "/teams/", "/players/",
+                     "/designs/"):
+            resp = self.client.get(f"/api/v1/partner/events/{self.event.slug}{path}",
+                                   HTTP_X_API_KEY=self.api_key)
+            self.assertEqual(resp.status_code, 200, (path, resp.content[:200]))
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Reachable events + publish the finished ones (inbox #201, 2026-10-09)
+# ──────────────────────────────────────────────────────────────────────────────
+class PartnerEventsAdminTests(TestCase):
+    """The partner page's publish card reads every event the partner's SAVED grants reach,
+    through an event, a whole organization, or the native-AFC switch, and can publish all the
+    finished ones in one press."""
+
+    def setUp(self):
+        import datetime
+
+        from afc_auth.models import Roles, SessionToken, User, UserRoles
+        from afc_organizers.models import Organization
+
+        role, _ = Roles.objects.get_or_create(role_name="partner_admin")
+        self.admin = User.objects.create_user(
+            username="pubadmin", email="pubadmin@x.com", password="x", full_name="Pub Admin",
+            role="admin")
+        UserRoles.objects.create(user=self.admin, role=role)
+        expiry = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=1)
+        self.token = SessionToken.objects.create(
+            user=self.admin, token="pub-admin-token-1234567890", expires_at=expiry).token
+        outsider = User.objects.create_user(
+            username="puboutsider", email="puboutsider@x.com", password="x", full_name="Out",
+            role="player")
+        self.outsider_token = SessionToken.objects.create(
+            user=outsider, token="pub-outsider-token-12345678", expires_at=expiry).token
+
+        self.org = Organization.objects.create(name="Nova League", slug="nova-league")
+        other_org = Organization.objects.create(name="Elsewhere", slug="elsewhere")
+        self.partner = Partner.objects.create(name="Game Evo", slug="game-evo",
+                                              allow_all_native_afc=True)
+        self.partner.allowed_organizations.add(self.org)
+
+        # Reached three ways, finished, unpublished: these are what the bulk press publishes.
+        self.by_event = _bare_event(event_name="Granted Org Cup", organization=other_org,
+                                    start_date="2026-03-01", end_date="2026-03-02")
+        self.partner.allowed_events.add(self.by_event)
+        self.by_org = _bare_event(event_name="Nova Finals", organization=self.org,
+                                  start_date="2026-02-01", end_date="2026-02-02")
+        self.native = _bare_event(event_name="AFC Native Open",
+                                  start_date="2026-01-01", end_date="2026-01-02")
+        # Reached but not to be bulk-published: already published, upcoming, cancelled.
+        self.already = _bare_event(event_name="Nova Already", organization=self.org,
+                                   partner_published=True)
+        self.upcoming = _bare_event(event_name="Nova Next", organization=self.org,
+                                    event_status="upcoming", start_date="2099-01-01",
+                                    end_date="2099-01-02", registration_open_date="2098-12-01",
+                                    registration_end_date="2098-12-20")
+        self.cancelled = _bare_event(event_name="Nova Called Off", organization=self.org,
+                                     event_status="cancelled")
+        # Never reached: a draft, and another organization's event with no grant.
+        self.draft = _bare_event(event_name="Nova Draft", organization=self.org, is_draft=True)
+        self.stranger = _bare_event(event_name="Elsewhere Cup", organization=other_org)
+
+    def _get(self, token=None, slug="game-evo", query=""):
+        return self.client.get(f"/partners/admin/{slug}/events/{query}",
+                               HTTP_AUTHORIZATION=f"Bearer {token or self.token}")
+
+    def _publish(self, token=None, slug="game-evo"):
+        return self.client.post(f"/partners/admin/{slug}/publish-finished/",
+                                HTTP_AUTHORIZATION=f"Bearer {token or self.token}")
+
+    def test_lists_every_reachable_event_with_how_it_is_reached(self):
+        resp = self._get(query="?limit=100")
+
+        self.assertEqual(resp.status_code, 200, resp.content)
+        body = resp.json()
+        rows = {r["slug"]: r for r in body["results"]}
+        self.assertEqual(set(rows), {
+            self.by_event.slug, self.by_org.slug, self.native.slug, self.already.slug,
+            self.upcoming.slug, self.cancelled.slug,
+        })
+        self.assertEqual(rows[self.by_event.slug]["via"], ["event"])
+        self.assertEqual(rows[self.by_org.slug]["via"], ["organization"])
+        self.assertEqual(rows[self.native.slug]["via"], ["native"])
+        self.assertTrue(rows[self.already.slug]["partner_published"])
+        self.assertEqual(rows[self.upcoming.slug]["status"], "upcoming")
+        self.assertEqual(body["summary"], {"reachable": 6, "published": 1,
+                                           "finished_unpublished": 3})
+        # Newest first.
+        self.assertEqual(body["results"][0]["slug"], self.upcoming.slug)
+
+    def test_publish_finished_publishes_only_finished_unpublished_reachable_events(self):
+        resp = self._publish()
+
+        self.assertEqual(resp.status_code, 200, resp.content)
+        body = resp.json()
+        self.assertEqual(body["published_count"], 3)
+        self.assertEqual(set(body["published"]),
+                         {self.by_event.slug, self.by_org.slug, self.native.slug})
+        for ev, expected in ((self.by_event, True), (self.by_org, True), (self.native, True),
+                             (self.upcoming, False), (self.cancelled, False),
+                             (self.draft, False), (self.stranger, False)):
+            ev.refresh_from_db()
+            self.assertEqual(ev.partner_published, expected, ev.event_name)
+
+        # Safe to press twice.
+        again = self._publish().json()
+        self.assertEqual(again["published_count"], 0)
+
+        # And the partner can now read them: the read API's own scope agrees.
+        from afc_partner_api.scope import partner_visible_events
+        self.assertEqual(
+            set(partner_visible_events(self.partner).values_list("slug", flat=True)),
+            {self.by_event.slug, self.by_org.slug, self.native.slug, self.already.slug})
+
+    def test_a_past_event_stamped_upcoming_counts_as_finished(self):
+        """The site reads a past-end event as completed even when its stored status was never
+        stamped (effective_event_status). Bulk publish uses the same reading."""
+        stale = _bare_event(event_name="Nova Stale", organization=self.org,
+                            event_status="upcoming")
+        self._publish()
+        stale.refresh_from_db()
+        self.assertTrue(stale.partner_published)
+
+    def test_admin_only(self):
+        self.assertEqual(self._get(token=self.outsider_token).status_code, 403)
+        self.assertEqual(self._publish(token=self.outsider_token).status_code, 403)
+        self.assertEqual(self.client.get("/partners/admin/game-evo/events/").status_code, 401)
+        self.assertEqual(self.client.post("/partners/admin/game-evo/publish-finished/").status_code,
+                         401)
+        self.native.refresh_from_db()
+        self.assertFalse(self.native.partner_published)
+
+    def test_unknown_partner_404(self):
+        self.assertEqual(self._get(slug="ghost").status_code, 404)
+        self.assertEqual(self._publish(slug="ghost").status_code, 404)

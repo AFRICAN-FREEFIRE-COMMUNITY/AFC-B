@@ -19,8 +19,9 @@ goes to the partner.
 ## 1. What the API gives you
 
 The tournament data AFC has published to partners, for the events your organisation has been
-granted. An AFC admin publishes an event explicitly, normally once its results are final, so
-in practice what you read is settled data rather than a match in progress.
+granted. An event is published to partners automatically when it finishes, and an AFC admin
+can also publish or withdraw one by hand, so in practice what you read is settled data rather
+than a match in progress.
 
 | Resource | What it is |
 |---|---|
@@ -158,8 +159,9 @@ slug is wrong.
 
 Your access has three layers, all set by AFC and all closed by default.
 
-**The publish gate** comes first. An AFC admin publishes an event to partners explicitly.
-Until they do, no partner can read it however broadly scoped, and it returns `404`.
+**The publish gate** comes first. Events are published to partners automatically when they
+finish, and an AFC admin can publish or withdraw one by hand. Until an event is published, no
+partner can read it however broadly scoped, and it returns `404`.
 
 **Resource toggles** decide which endpoints answer at all. If one is off, that endpoint
 returns `403 resource_not_enabled` and the rest keep working.
@@ -428,6 +430,9 @@ because a new event changes every position.
 ---
 
 ## 10. Getting help
+
+No key yet? Apply at `https://africanfreefirecommunity.com/partners/apply` and choose
+**The AFC Data API**.
 
 Contact your AFC partner manager for a new or rotated key, to change which events or resources
 you can read, or to report anything the API returns that looks wrong. Include the endpoint, the
