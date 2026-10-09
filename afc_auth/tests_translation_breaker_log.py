@@ -38,3 +38,24 @@ class BreakerLogTests(TestCase):
                 self.assertEqual(translation.translate("Hello", "fr"), "Hello")
         self.assertEqual(len(logs.records), 1)
         self.assertIsNotNone(logs.records[0].exc_info)
+
+
+class TestRunnerReachesNoDeepLTests(TestCase):
+    """Inbox #210 (2026-10-09): a local run on 2026-10-08 logged "DeepL translate failed with HTTP 456:
+    Quota exceeded", so a test had reached the live API with the real key from .env. afc/settings.py
+    now blanks DEEPL_API_KEY under the test runner, the way it already holds outbound mail. These tests
+    have no override_settings on purpose: they read what every other test gets. On a machine whose .env
+    carries a key, both fail without that guard (proven 2026-10-09)."""
+
+    def setUp(self):
+        cache.clear()
+
+    def test_the_test_runner_holds_no_deepl_key(self):
+        from django.conf import settings
+
+        self.assertEqual(settings.DEEPL_API_KEY, "")
+
+    def test_a_translation_under_test_never_calls_out(self):
+        with patch("afc_auth.translation.requests.post") as post:
+            self.assertEqual(translation.translate("Hello from the tests", "fr"), "Hello from the tests")
+        post.assert_not_called()

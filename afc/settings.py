@@ -755,6 +755,12 @@ OUTBOUND_DELIVERY = os.getenv("OUTBOUND_DELIVERY", "live").strip().lower()
 OUTBOUND_OUTBOX_FILE = os.getenv("OUTBOUND_OUTBOX_FILE", "")
 if len(sys.argv) > 1 and sys.argv[1] == "test":
     OUTBOUND_DELIVERY = "outbox"
+    # The test runner never holds a DeepL key either (inbox #210, 2026-10-09). On 2026-10-08 a local
+    # run logged "DeepL translate failed with HTTP 456: Quota exceeded": a test had reached the live
+    # API with the real key from .env and spent the free quota the site lives on. Without a key,
+    # afc_auth.translation falls back to the English text and makes no call. A test of the engine
+    # sets its own fake key and stubs the call (afc_auth/tests_translation_breaker_log.py).
+    DEEPL_API_KEY = ""
 
 # ── The room template ─────────────────────────────────────────────────────────────────────────
 # WHATSAPP_ROOM_TEMPLATE -> the room id and password message, and the ONLY thing AFC sends a player
