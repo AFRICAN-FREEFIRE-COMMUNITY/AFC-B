@@ -4972,11 +4972,17 @@ def _copy_name(name):
 
 
 def _event_at(address):
-    """The event at a page address, or None.
+    """(event, moved_to) for a page address, or (None, None).
 
     The address is the event's current slug, a slug it had BEFORE a rename (afc_auth SlugHistory,
     written by Event.save through sync_slug), or a legacy numeric id. Owner rule R22: every address
     a thing has ever had keeps working.
+
+    `moved_to` is None for the current slug, else the event's current PUBLIC path
+    (/tournaments/<slug>). The three readers put it on the envelope, as the shop and order readers
+    do; the public page answers it with a permanent redirect and the admin / organizer pages
+    rewrite their own address to the same slug (inbox #209, 9 Oct 2026: before this an old link
+    opened the right event but kept the retired slug in the address bar).
 
     Why (inbox #171, 8 Oct 2026): renaming a duplicated event changed its slug, the admin edit page
     then re-read the event by the address it was opened on, and get_object_or_404(slug=...) answered
@@ -4984,8 +4990,16 @@ def _event_at(address):
     Used by get_event_details, get_event_details_not_logged_in and get_event_details_for_admin.
     """
     from afc_auth.slugs import resolve_or_redirect
-    event, _moved_to = resolve_or_redirect(Event, address)
-    return event
+    from afc_auth.site_paths import segment
+    event, moved_to_slug = resolve_or_redirect(Event, address)
+    return event, (f"/tournaments/{segment(moved_to_slug)}" if moved_to_slug else None)
+
+
+def _with_move(body, moved_to):
+    """`body` plus `moved_to` when the event was reached by an old address (see _event_at)."""
+    if moved_to:
+        body["moved_to"] = moved_to
+    return body
 
 
 def _event_not_found():
@@ -5013,7 +5027,7 @@ def get_event_details(request):
         return Response({"message": "slug is required.", "code": "slug_required"}, status=400)
 
     # A retired slug (the event was renamed) still finds it: see _event_at (inbox #171).
-    event = _event_at(slug)
+    event, moved_to = _event_at(slug)
     if event is None:
         return _event_not_found()
 
@@ -5726,7 +5740,7 @@ def get_event_details(request):
     # -------- PAGE VIEW TRACKING (hardened: bots, staff, org members + refreshes excluded) --------
     _record_event_view(request, event, user)
 
-    return Response({"event_details": event_data}, status=200)
+    return Response(_with_move({"event_details": event_data}, moved_to), status=200)
 
 
 # @api_view(["POST"])
@@ -6027,7 +6041,7 @@ def get_event_details_not_logged_in(request):
         return Response({"message": "slug is required.", "code": "slug_required"}, status=400)
 
     # A retired slug (the event was renamed) still finds it: see _event_at (inbox #171).
-    event = _event_at(slug)
+    event, moved_to = _event_at(slug)
     if event is None:
         return _event_not_found()
 
@@ -6384,7 +6398,7 @@ def get_event_details_not_logged_in(request):
     #     ip_address=get_client_ip(request),
     #     viewed_at=timezone.now()
     # )
-    return Response({"event_details": event_data}, status=200)
+    return Response(_with_move({"event_details": event_data}, moved_to), status=200)
 
 
 import json
@@ -10788,7 +10802,7 @@ def get_event_details_for_admin(request):
         return Response({"message": "slug is required.", "code": "slug_required"}, status=400)
 
     # A retired slug (the event was renamed) still finds it: see _event_at (inbox #171).
-    event = _event_at(slug)
+    event, moved_to = _event_at(slug)
     if event is None:
         return _event_not_found()
 
@@ -11001,7 +11015,7 @@ def get_event_details_for_admin(request):
 
     sponsors = SponsorEvent.objects.filter(event=event).select_related("sponsor")
 
-    return Response({
+    return Response(_with_move({
         # ── EVENT FIELDS COME FROM THE CONTRACT (owner 2026-08-26) ─────────────────────────────
         # This endpoint is a registration METRICS view, not a third copy of the event field list.
         # The 25 event fields it re-lists now come from event_contract.py; every metric below is
@@ -11063,7 +11077,7 @@ def get_event_details_for_admin(request):
             "social_shares": social_shares,
             "stream_links": streams,
         }
-    }
+    }, moved_to)
     , status=200)
 
 
