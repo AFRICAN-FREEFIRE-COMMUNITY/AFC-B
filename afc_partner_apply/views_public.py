@@ -331,10 +331,13 @@ def submit_application(request):
         contact_role       optional
         contact_whatsapp   optional, stored in E.164, refused if it cannot be normalised
         display_name       optional, what a player would see on the consent screen
-        country            optional
-        wants_sso          bool, wants_data_api bool. AT LEAST ONE must be true.
+        country            required, picked from the shared list
+        wants_sso          bool, wants_data_api bool. AT LEAST ONE must be true (400
+                           choose_product otherwise). The form asks again since 2026-10-09.
         redirect_uris      required when wants_sso. String (newline separated) or list.
         post_logout_redirect_uris, deletion_webhook_url   optional
+                           All three Sign in with AFC values are read ONLY when wants_sso. A Data
+                           API only application stores them blank, whatever was posted.
         use_case           required prose, what they are building
         data_needed        required prose, what they need from AFC and why
         locale             optional, the language the form was filled in ("en"/"fr"/"pt")
@@ -429,42 +432,52 @@ def submit_application(request):
         return Response({"message": "Your website address is required.", "code": "website_address_required"},
                         status=status.HTTP_400_BAD_REQUEST)
 
-    # ── The product, which is no longer a question (owner 2026-08-05) ──
-    # The form used to ask "Sign in with AFC, the Data API, or both". The Data API option was
-    # removed, so every application that arrives here is a Sign in with AFC application and
-    # wants_sso is forced true rather than read from the body. wants_data_api stays on the model
-    # and stays FALSE here: existing rows still carry it, and an admin can still grant Data API
-    # access at approval time on the review screen, which is now the only way it is granted.
+    # ── The product: Sign in with AFC, the Data API, or both (owner 2026-10-09, inbox #199) ──
+    # The form stopped asking on 2026-08-05 and every application was stamped Sign in with AFC.
+    # That left no way for an application to end in a Data API key: decide_application provisions
+    # a data Partner only `if application.wants_data_api`, and nothing set it any more. The owner
+    # asked for the choice back, so both flags are read from the body again.
     #
-    # Not read from request.data at all, deliberately. Trusting the body would let a caller post
-    # wants_sso=false and skip the redirect URI rules below, which are the whole reason this app
-    # validates at submission rather than at approval.
-    wants_sso = True
-    wants_data_api = False
+    # WHY READING wants_sso FROM THE BODY IS SAFE NOW. It was stopped because the redirect URI
+    # rules ran only `if wants_sso`, so a caller could post wants_sso=false and keep a row that
+    # skipped them. The answer is that such a row now carries NO Sign in with AFC values at all:
+    # below, the three are not read unless wants_sso, and are stored blank otherwise. And
+    # decide_application creates an SSO app only `if application.wants_sso`. So there is nothing
+    # unvalidated on the row, and nothing that could carry it into an SSO app.
+    wants_sso = _bool(request.data.get("wants_sso"))
+    wants_data_api = _bool(request.data.get("wants_data_api"))
+    if not (wants_sso or wants_data_api):
+        return Response(
+            {"message": "Choose at least one product: Sign in with AFC, the Data API, or both.",
+             "code": "choose_product"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
 
     # ── The redirect URIs, validated NOW against the real policy ──
     # This is the single biggest reason this app exists. Under the old flow a wildcard or a query
     # string in a redirect URI was discovered by the owner days later, or worse, at the partner's
     # first failed sign-in. afc_sso/redirect_policy.py runs here, with the applicant still on the
     # page, and its message already names the offending URI and the rule it broke.
-    # Unconditional now that every application is a Sign in with AFC application. It used to sit
-    # behind `if wants_sso`, which was correct while the Data API was an option on the form.
-    redirect_uris, err = _clean_redirect_uris(request.data.get("redirect_uris"))
-    if err:
-        return Response({"message": err, "code": "submit_application_refused"}, status=status.HTTP_400_BAD_REQUEST)
-    post_logout_redirect_uris, err = _clean_redirect_uris(
-        request.data.get("post_logout_redirect_uris"),
-        required=False, label="post-logout redirect URI")
-    if err:
-        return Response({"message": err, "code": "submit_application_refused"}, status=status.HTTP_400_BAD_REQUEST)
+    # Only for Sign in with AFC. A Data API only application has no sign-in to send anybody back
+    # to, so the three values start blank and stay blank (see the product block above).
+    redirect_uris = post_logout_redirect_uris = deletion_webhook_url = ""
+    if wants_sso:
+        redirect_uris, err = _clean_redirect_uris(request.data.get("redirect_uris"))
+        if err:
+            return Response({"message": err, "code": "submit_application_refused"}, status=status.HTTP_400_BAD_REQUEST)
+        post_logout_redirect_uris, err = _clean_redirect_uris(
+            request.data.get("post_logout_redirect_uris"),
+            required=False, label="post-logout redirect URI")
+        if err:
+            return Response({"message": err, "code": "submit_application_refused"}, status=status.HTTP_400_BAD_REQUEST)
 
-    # _clean_outbound_url, NOT _clean_url. This form is public and unauthenticated, and this is
-    # the one field on it that AFC's own server later fetches from inside AFC's network, so it
-    # must resolve to a public address. Every other URL here is followed by a browser.
-    deletion_webhook_url, err = _clean_outbound_url(
-        request.data.get("deletion_webhook_url"), "Disconnection webhook URL")
-    if err:
-        return Response({"message": err, "code": "submit_application_refused"}, status=status.HTTP_400_BAD_REQUEST)
+        # _clean_outbound_url, NOT _clean_url. This form is public and unauthenticated, and this
+        # is the one field on it that AFC's own server later fetches from inside AFC's network, so
+        # it must resolve to a public address. Every other URL here is followed by a browser.
+        deletion_webhook_url, err = _clean_outbound_url(
+            request.data.get("deletion_webhook_url"), "Disconnection webhook URL")
+        if err:
+            return Response({"message": err, "code": "submit_application_refused"}, status=status.HTTP_400_BAD_REQUEST)
 
     use_case, err = _clean_prose(request.data.get("use_case"), "What you are building")
     if err:
@@ -632,16 +645,21 @@ def application_status(request, reference):
         application.homepage_url = cleaned
         updated.append("homepage_url")
 
-    if "redirect_uris" in data:
-        # Required only when they want SSO at all; the policy itself is unchanged.
+    # The three Sign in with AFC values are edited ONLY on a Sign in with AFC application, the
+    # same rule submission applies (2026-10-09): a Data API only row keeps them blank, so a PATCH
+    # cannot add values that were never asked for and that no approval would ever use.
+    sso_edit = application.wants_sso
+
+    if sso_edit and "redirect_uris" in data:
+        # The policy itself is unchanged.
         cleaned, err_msg = _clean_redirect_uris(
-            data.get("redirect_uris"), required=application.wants_sso)
+            data.get("redirect_uris"), required=True)
         if err_msg:
             return Response({"message": err_msg, "code": "application_status_refused"}, status=status.HTTP_400_BAD_REQUEST)
         application.redirect_uris = cleaned
         updated.append("redirect_uris")
 
-    if "post_logout_redirect_uris" in data:
+    if sso_edit and "post_logout_redirect_uris" in data:
         cleaned, err_msg = _clean_redirect_uris(
             data.get("post_logout_redirect_uris"), required=False,
             label="post-logout redirect URI")
@@ -650,7 +668,7 @@ def application_status(request, reference):
         application.post_logout_redirect_uris = cleaned
         updated.append("post_logout_redirect_uris")
 
-    if "deletion_webhook_url" in data:
+    if sso_edit and "deletion_webhook_url" in data:
         # Same stricter cleaner the create path uses, for the same reason: an applicant editing
         # their draft must not be able to reach an address the create path refused.
         cleaned, err_msg = _clean_outbound_url(
