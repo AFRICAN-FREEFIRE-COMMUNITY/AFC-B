@@ -82,6 +82,29 @@ class EventRenameAndLongNameTests(TestCase):
                              data=json.dumps({"slug": self.old_slug}), content_type="application/json")
         self.assertNotEqual(resp.status_code, 404, resp.content[:200])
 
+    # ── inbox #209: an old address answers where the event lives now ────────────────────────
+    def _read_all(self, address):
+        """The three readers for one address: {path: response}."""
+        out = {path: self._post(path, {"slug": address})
+               for path in ("/events/get-event-details-for-admin/", "/events/get-event-details/")}
+        out["/events/get-event-details-not-logged-in/"] = Client().post(
+            "/events/get-event-details-not-logged-in/", data=json.dumps({"slug": address}),
+            content_type="application/json")
+        return out
+
+    def test_a_retired_address_answers_moved_to_the_current_one(self):
+        resp = self._edit(event_name="THE DEVELOPMENT LEAGUE (NG) DAY 17 10PM")
+        new_slug = resp.json()["slug"]
+        for address in (self.old_slug, str(self.event.event_id)):
+            for path, resp in self._read_all(address).items():
+                self.assertEqual(resp.status_code, 200, f"{path} {address}: {resp.content[:200]}")
+                self.assertEqual(resp.json().get("moved_to"), f"/tournaments/{new_slug}", f"{path} {address}")
+
+    def test_the_current_address_answers_no_move(self):
+        for path, resp in self._read_all(self.old_slug).items():
+            self.assertEqual(resp.status_code, 200, f"{path}: {resp.content[:200]}")
+            self.assertNotIn("moved_to", resp.json(), path)
+
     def test_an_unknown_address_is_a_coded_404(self):
         resp = self._post("/events/get-event-details/", {"slug": "no-such-event-anywhere"})
         self.assertEqual(resp.status_code, 404)

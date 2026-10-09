@@ -5737,39 +5737,74 @@ def get_total_number_of_users(request):
 
 @api_view(["GET"])
 def connect_discord(request):
-    session_token = request.GET.get("session_token")
-    tournament_id = request.GET.get("tournament_id")
-    invite_token = request.GET.get("invite_token")
+    """Begin linking Discord from TOURNAMENT REGISTRATION (the event page's "Connect Discord" step).
 
-    if not session_token or not tournament_id:
-        return Response({"message": "session_token and tournament_id required", "code": "session_token_tournament_required"}, status=400)
+    CHANGED 2026-10-09 (inbox #211). Found by the frontend's fe-browser-api-link catcher on its first
+    run. This endpoint still took the SESSION TOKEN in the query string and put it, as
+    "<token>|<return url>", into the OAuth `state` sent to discord.com: the exact defect
+    connect_discord_account was rid of on 2026-08-26, when this tournament copy was left behind.
+    Worse, discord_callback has only accepted an opaque nonce since that day, so every press of the
+    button since 26 Aug landed the player on /profile/connected-apps?discord=failed. The production
+    API log (from 11 Sep, the move to the VPS) shows no call to it, so nobody is known to have hit it;
+    the defect was real all the same.
 
-    client_id = settings.DISCORD_CLIENT_ID
-    redirect_uri = settings.DISCORD_REDIRECT_URI
+    Now it works like start_connection: a Bearer header, an opaque single-use nonce
+    (afc_auth/connections/state.py) carrying the validated return address, and the consent URL
+    answered as JSON, because a browser navigation cannot carry the header. The callback is still
+    discord_callback (DISCORD_REDIRECT_URI), which is the one that also adds the player to the AFC
+    server (guilds.join) before linking, which registration needs and the generic connection flow
+    does not do.
 
-    scope = "identify guilds.join"
-
-    # Encode the custom redirect URL
+    AUTH     Bearer SessionToken
+    REQUEST  ?tournament_id=<event slug>&invite_token=<optional private-event invite>
+    RESPONSE 200 {"authorize_url": "https://discord.com/..."}; 401 without a session; 400 without
+             tournament_id; 404 when Discord is not configured
+    CONSUMED BY frontend app/(user)/tournaments/[slug]/_components/EventDetailsWrapper.tsx
+             handleDiscordConnect, which navigates to authorize_url. Discord returns the player to
+             /tournaments/<slug>[?invite_token=...]?discord=connected|already_linked|failed, which
+             the same page reads to resume registration at the Discord step.
+    """
     from urllib.parse import quote
+
+    from afc_auth.connections import oauth as conn_oauth
+    from afc_auth.connections import state as conn_state
+    from afc_auth.connections.redirects import safe_return_to
+    from afc_auth.connections.registry import get_provider
+
+    header = request.headers.get("Authorization")
+    if not header or not header.startswith("Bearer "):
+        return Response({"message": "Please sign in to continue.", "code": "authorization_header_required"}, status=401)
+    user = validate_token(header.split(" ")[1])
+    if not user:
+        return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"},
+                        status=status.HTTP_401_UNAUTHORIZED)
+
+    tournament_id = (request.GET.get("tournament_id") or "").strip()
+    if not tournament_id:
+        return Response({"message": "tournament_id is required.", "code": "tournament_id_required"}, status=400)
+
+    provider = get_provider("discord")
+    if not provider or not provider.enabled():
+        return Response({"message": "Discord is not configured.", "code": "discord_not_configured"}, status=404)
+
+    # Back to the same event page; the slug and the invite are quoted whole, so neither can turn the
+    # address into another page or another site (safe_return_to checks the origin as well).
+    return_to = f"/tournaments/{quote(tournament_id, safe='')}"
+    invite_token = (request.GET.get("invite_token") or "").strip()
     if invite_token:
-        return_url = quote(f"{settings.FRONTEND_URL}/tournaments/{tournament_id}?invite_token={invite_token}")
-    else:
-        return_url = quote(f"{settings.FRONTEND_URL}/tournaments/{tournament_id}")
+        return_to += f"?invite_token={quote(invite_token, safe='')}"
 
-    # state = session_token + return_url
-    state = f"{session_token}|{return_url}"
-
-    # Build OAuth URL
-    discord_oauth_url = (
-        f"https://discord.com/api/oauth2/authorize"
-        f"?client_id={client_id}"
-        f"&redirect_uri={redirect_uri}"
-        f"&response_type=code"
-        f"&scope={scope}"
-        f"&state={state}"
+    verifier = conn_oauth.make_code_verifier()
+    nonce = conn_state.mint(
+        user_id=user.user_id,
+        provider="discord",
+        return_to=safe_return_to(return_to),
+        code_verifier=verifier,
     )
-
-    return redirect(discord_oauth_url)
+    return Response({"authorize_url": conn_oauth.authorize_url(
+        provider, nonce=nonce, code_verifier=verifier,
+        redirect_uri=settings.DISCORD_REDIRECT_URI,
+    )}, status=status.HTTP_200_OK)
 
 
 from django.conf import settings
