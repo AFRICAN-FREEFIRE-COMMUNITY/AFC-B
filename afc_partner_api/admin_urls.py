@@ -39,6 +39,11 @@ urlpatterns = [
 
     # ── per-partner detail / edit / suspend / issue-key (slug-addressed) ──
     path("admin/<slug:slug>/keys/", views_admin.issue_key, name="partner_admin_issue_key"),
+    # Every event the partner's grants reach, and publish the finished ones in one press
+    # (owner 2026-10-09, inbox #201). Both sit before the bare <slug> detail route.
+    path("admin/<slug:slug>/events/", views_admin.partner_events, name="partner_admin_events"),
+    path("admin/<slug:slug>/publish-finished/", views_admin.publish_finished_events,
+         name="partner_admin_publish_finished"),
     path("admin/<slug:slug>/suspend/", views_admin.suspend_partner, name="partner_admin_suspend"),
     # GET detail + PATCH edit share one path (the @api_view method list routes by verb).
     path("admin/<slug:slug>/", views_admin.partner_detail, name="partner_admin_detail"),

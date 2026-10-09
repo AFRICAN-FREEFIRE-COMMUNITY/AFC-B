@@ -285,27 +285,15 @@ class SubmitApplicationTests(PartnerApplyTestCase):
         resp = self._submit(redirect_uris="http://localhost:3000/cb")
         self.assertEqual(resp.status_code, 201, resp.content)
 
-    def test_every_application_is_a_sign_in_with_afc_application(self):
-        """The Data API option was removed from the form (owner 2026-08-05), so there is nothing
-        left to choose and the row is stamped accordingly rather than read from the body."""
+    def test_the_product_chosen_on_the_form_is_stored(self):
+        """The form asks again (owner 2026-10-09, inbox #199): Sign in with AFC, the Data API, or
+        both. The shared body chooses Sign in with AFC only."""
         resp = self._submit()
 
         self.assertEqual(resp.status_code, 201, resp.content)
         application = PartnerApplication.objects.get()
         self.assertTrue(application.wants_sso)
         self.assertFalse(application.wants_data_api)
-
-    def test_a_caller_cannot_post_its_way_out_of_the_redirect_uri_rules(self):
-        """THE REASON wants_sso IS NOT READ FROM THE BODY. It used to be, and the redirect URI
-        policy ran only `if wants_sso`. This endpoint is public and unauthenticated, so a caller
-        posting wants_sso=false with no redirect URIs would have created a row that skipped the
-        single most important validation in this app. Both flags are now server-decided.
-        """
-        resp = self._submit(wants_sso=False, wants_data_api=True, redirect_uris="")
-
-        self.assertEqual(resp.status_code, 400, resp.content)
-        self.assertIn("redirect uri", resp.json()["message"].lower())
-        self.assertFalse(PartnerApplication.objects.exists())
 
     def test_the_country_is_required(self):
         """Optional free text until 2026-08-05. It is how User.country ended up holding the same
@@ -361,6 +349,178 @@ class SubmitApplicationTests(PartnerApplyTestCase):
 
         self.assertEqual(resp.status_code, 201, resp.content)
         self.assertEqual(PartnerApplication.objects.get().status, PartnerApplication.PENDING)
+
+
+# ──────────────────────────────────────────────────────────────────────────────────────────────
+# 1b) The product choice: Sign in with AFC, the Data API, or both (owner 2026-10-09, inbox #199)
+# ──────────────────────────────────────────────────────────────────────────────────────────────
+class DataApiChoiceTests(PartnerApplyTestCase):
+    """The Data API choice came back on the form on 2026-10-09. Without it, nothing set
+    wants_data_api and no approval could ever issue a data key.
+
+    What these pin, beyond "it is accepted": the reason it was taken away in August was that
+    reading wants_sso from the body let a caller skip the redirect URI rules. The answer is that a
+    Data API only application carries NO Sign in with AFC values at all, on the create path and the
+    edit path, so there is nothing unvalidated on the row for an approval to pick up.
+    """
+
+    def _data_only(self, **overrides):
+        body = {"wants_sso": False, "wants_data_api": True, "redirect_uris": ""}
+        body.update(overrides)
+        return self._submit(**body)
+
+    def test_data_only_needs_no_redirect_uri(self):
+        resp = self._data_only()
+
+        self.assertEqual(resp.status_code, 201, resp.content)
+        application = PartnerApplication.objects.get()
+        self.assertFalse(application.wants_sso)
+        self.assertTrue(application.wants_data_api)
+
+    def test_neither_product_refused(self):
+        resp = self._submit(wants_sso=False, wants_data_api=False)
+
+        self.assertEqual(resp.status_code, 400, resp.content)
+        self.assertEqual(resp.json()["code"], "choose_product")
+        self.assertFalse(PartnerApplication.objects.exists())
+
+        # Multipart sends the flags as strings; "false" must read as false there too, or a form
+        # with a logo attached would slip past this check.
+        cache.clear()
+        resp = self.client.post(SUBMIT_URL, data=self._body(wants_sso="false", wants_data_api="false"))
+        self.assertEqual(resp.status_code, 400, resp.content)
+        self.assertEqual(resp.json()["code"], "choose_product")
+
+    def test_data_only_ignores_sso_fields(self):
+        """Values that would be REFUSED on a Sign in with AFC application are not refused here
+        and not stored either: they are never read. A wildcard redirect URI, a garbage logout URI
+        and a webhook pointing inside AFC's own network all come back blank."""
+        resp = self._data_only(
+            redirect_uris="https://*.kite.example/cb",
+            post_logout_redirect_uris="not a url",
+            deletion_webhook_url="http://127.0.0.1/hook",
+        )
+
+        self.assertEqual(resp.status_code, 201, resp.content)
+        application = PartnerApplication.objects.get()
+        self.assertEqual(application.redirect_uris, "")
+        self.assertEqual(application.post_logout_redirect_uris, "")
+        self.assertEqual(application.deletion_webhook_url, "")
+
+    def test_patch_on_data_only_ignores_sso_fields(self):
+        """The edit path keeps the same rule, or the create path's rule is one PATCH away from
+        not existing."""
+        with patch("afc_partner_apply.emails.send_received") as send:
+            reference = self._data_only().json()["reference"]
+        token = send.call_args.args[1]
+        application = PartnerApplication.objects.get(reference=reference)
+        application.status = PartnerApplication.CHANGES_REQUESTED
+        application.save(update_fields=["status"])
+        url = f"/partner-apply/applications/{reference}/?token={token}"
+
+        # Only Sign in with AFC values: nothing an applicant may change on this row.
+        only_sso = self.client.patch(
+            url, data=json.dumps({"redirect_uris": "https://kite.example/cb"}),
+            content_type="application/json")
+        self.assertEqual(only_sso.status_code, 400, only_sso.content)
+        self.assertEqual(only_sso.json()["code"], "nothing_changed")
+
+        # Mixed with a real fix: the fix lands, the SSO value does not.
+        mixed = self.client.patch(
+            url,
+            data=json.dumps({
+                "redirect_uris": "https://kite.example/cb",
+                "deletion_webhook_url": "https://kite.example/hook",
+                "use_case": "We publish Free Fire tournament results on our own news site.",
+            }),
+            content_type="application/json")
+        self.assertEqual(mixed.status_code, 200, mixed.content)
+        application.refresh_from_db()
+        self.assertEqual(application.redirect_uris, "")
+        self.assertEqual(application.deletion_webhook_url, "")
+        self.assertIn("news site", application.use_case)
+        self.assertEqual(application.status, PartnerApplication.PENDING)
+
+    def test_sso_still_needs_valid_redirect(self):
+        missing = self._submit(redirect_uris="")
+        self.assertEqual(missing.status_code, 400, missing.content)
+        self.assertIn("redirect uri", missing.json()["message"].lower())
+
+        cache.clear()
+        wildcard = self._submit(redirect_uris="https://*.kite.example/cb")
+        self.assertEqual(wildcard.status_code, 400, wildcard.content)
+        self.assertIn("Wildcards", wildcard.json()["message"])
+
+        # Choosing both does not relax it either.
+        cache.clear()
+        both = self._submit(wants_data_api=True, redirect_uris="")
+        self.assertEqual(both.status_code, 400, both.content)
+        self.assertFalse(PartnerApplication.objects.exists())
+
+    def test_approve_and_claim_data_only(self):
+        """The whole point of the ask: an application ends in a data key."""
+        application = PartnerApplication.objects.get(reference=self._data_only().json()["reference"])
+
+        with patch("afc_partner_apply.emails.send_approved") as send:
+            resp = self._approve(application, can_read_events=True, can_read_standings=True)
+        self.assertEqual(resp.status_code, 200, resp.content)
+        application.refresh_from_db()
+        self.assertIsNone(application.sso_application)
+        self.assertIsNotNone(application.data_partner)
+        self.assertTrue(application.data_partner.can_read_events)
+        self.assertTrue(application.data_partner.can_read_standings)
+
+        claim_token = send.call_args.args[2]
+        claim = self.client.post(
+            f"/partner-apply/applications/{application.reference}/claim/?token={claim_token}")
+        self.assertEqual(claim.status_code, 200, claim.content)
+        body = claim.json()
+        self.assertTrue(body["api_key"].startswith("afcp_"))
+        self.assertFalse(body.get("client_secret"))
+        self.assertTrue(PartnerApiKey.objects.filter(partner=application.data_partner).exists())
+
+    def test_received_email_per_product(self):
+        """The confirmation explains what they applied for, and links that product's guide."""
+        from afc_partner_apply import emails
+
+        def keys_for(**flags):
+            cache.clear()
+            PartnerApplication.objects.all().delete()
+            resp = self._submit(**flags)
+            self.assertEqual(resp.status_code, 201, resp.content)
+            return emails._send.call_args.kwargs
+
+        sso = keys_for()
+        self.assertEqual(
+            sso["body_keys"], ("intro", "next_steps", "what_it_is", "guide", "keep_link"))
+
+        data = keys_for(wants_sso=False, wants_data_api=True, redirect_uris="")
+        self.assertEqual(
+            data["body_keys"],
+            ("intro", "next_steps", "what_it_is_data_api", "guide_data_api", "keep_link"))
+        self.assertIn("/partners/api", data["api_guide"])
+
+        both = keys_for(wants_data_api=True)
+        self.assertEqual(
+            both["body_keys"],
+            ("intro", "next_steps", "what_it_is", "guide", "what_it_is_data_api",
+             "guide_data_api", "keep_link"))
+
+        # Every body key exists in all three languages, with the placeholders filled.
+        from afc_auth.email_i18n import copy_for
+        for lang in ("en", "fr", "pt"):
+            copy = copy_for("partner_apply_received", lang)
+            for key in both["body_keys"]:
+                self.assertTrue(copy.get(key), (lang, key))
+            rendered = copy["guide_data_api"].format(**both)
+            self.assertIn("/partners/api", rendered)
+
+        # AFC's own notice names the products, so the reviewer knows a data key is wanted.
+        application = PartnerApplication.objects.get()
+        self.assertEqual(
+            emails._products_in_words(application), "Sign in with AFC and the Data API")
+        application.wants_sso = False
+        self.assertEqual(emails._products_in_words(application), "the Data API")
 
 
 # ──────────────────────────────────────────────────────────────────────────────────────────────
@@ -1160,8 +1320,8 @@ class DecisionReachesTheApplicant(PartnerApplyTestCase):
         self.assertNotIn("api/v1/partner", body)   # no Data API was provisioned
 
     def _data_api_only(self):
-        """Every submission is a Sign in with AFC application (views_public forces wants_sso);
-        a Data API row is set on the model, exactly as DecisionTests does above."""
+        """A Data API only row, set on the model exactly as DecisionTests does above. (The form
+        offers this choice again since 2026-10-09; DataApiChoiceTests covers the submit path.)"""
         application = self._submitted()
         application.wants_sso = False
         application.wants_data_api = True

@@ -437,6 +437,20 @@ _BOOYAH = Sum(
     )
 )
 
+# The SOLO twin of _BOOYAH (inbox #202, 2026-10-09). _BOOYAH reads `is_aggregate` and
+# `booyah_count`, which exist only on TournamentTeamMatchStats; a solo row has neither, so using
+# it on SoloPlayerMatchStats raised FieldError and every solo event's standings answered 500.
+# Found because a partner's hourly sync ended on detty-december-solos/standings/ every hour, and
+# its HTTP client treats a 500 as a failed run. A solo row is always one real match, so a booyah
+# is simply a first place.
+_SOLO_BOOYAH = Sum(
+    Case(
+        When(placement=1, then=Value(1)),
+        default=Value(0),
+        output_field=IntegerField(),
+    )
+)
+
 # Recomputed-on-read rank metric, identical to the admin view's `effective_total`
 # (placement + kill + bonus - penalty). We never order by the stored total_points,
 # which can be stale.
@@ -487,7 +501,8 @@ def _solo_standings(event, partner):
         .values("competitor__user__username", "competitor__user__uid")
         .annotate(
             effective_total=_EFFECTIVE_TOTAL,
-            total_booyah=_BOOYAH,
+            # _SOLO_BOOYAH, never _BOOYAH: see the note above it.
+            total_booyah=_SOLO_BOOYAH,
             total_points=Sum("total_points"),
             kills=Sum("kills"),
             best_placement=Min("placement"),

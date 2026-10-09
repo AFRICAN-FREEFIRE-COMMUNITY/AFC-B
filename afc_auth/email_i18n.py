@@ -1389,6 +1389,8 @@ COPY = {
             "next_steps": "An AFC admin will read it and decide, and we aim to get back to you within a few working days. We will email you either way, and if anything needs correcting we will tell you exactly what.",
             "what_it_is": "You have applied for Sign in with AFC. It lets an AFC player sign in to your site with their AFC account, using standard OpenID Connect, so you never handle their password. Once you are approved you receive a client id and a client secret, and you choose which player details you need; AFC grants the smallest set that does the job.",
             "guide": "You do not have to wait to start reading. The full integration guide is here: {guide}. It covers the endpoints, the scopes, the claims each one returns, the error responses and a complete worked example.",
+            "what_it_is_data_api": "You have applied for the AFC Data API. It lets your server read the tournament data AFC publishes to partners: results, standings, rosters and player stats for the events you are granted. Once you are approved you receive an API key, which belongs on your server and never in a browser or an app.",
+            "guide_data_api": "The Data API reference is here: {api_guide}. It covers authentication, every endpoint, what each one returns and what to do when a call fails.",
             "keep_link": "You can check the status at any time here: {link}. Keep this email, the link is how you reach your application.",
         },
         "fr": {
@@ -1397,6 +1399,8 @@ COPY = {
             "next_steps": "Un administrateur AFC va la lire et se prononcer, et nous visons une réponse sous quelques jours ouvrés. Nous vous écrirons dans les deux cas, et si quelque chose doit être corrigé, nous vous dirons précisément quoi.",
             "what_it_is": "Vous avez demandé Sign in with AFC. Cela permet à un joueur AFC de se connecter à votre site avec son compte AFC, via OpenID Connect standard, sans que vous ayez jamais à manipuler son mot de passe. Une fois approuvé, vous recevez un identifiant client et un secret client, et vous choisissez les informations dont vous avez besoin ; l'AFC accorde le strict nécessaire.",
             "guide": "Vous pouvez commencer à lire dès maintenant. Le guide d'intégration complet est ici : {guide}. Il couvre les points de terminaison, les portées, les données renvoyées par chacune, les réponses d'erreur et un exemple complet.",
+            "what_it_is_data_api": "Vous avez demandé l'API de données AFC. Elle permet à votre serveur de lire les données de tournoi que l'AFC publie pour ses partenaires : résultats, classements, compositions d'équipes et statistiques des joueurs, pour les événements qui vous sont accordés. Une fois approuvé, vous recevez une clé d'API, qui doit rester sur votre serveur et jamais dans un navigateur ou une application.",
+            "guide_data_api": "La documentation de l'API de données est ici : {api_guide}. Elle couvre l'authentification, chaque point de terminaison, ce que chacun renvoie et que faire quand un appel échoue.",
             "keep_link": "Vous pouvez suivre l'état de votre demande à tout moment ici : {link}. Conservez cet e-mail, ce lien est votre accès à votre demande.",
         },
         "pt": {
@@ -1405,6 +1409,8 @@ COPY = {
             "next_steps": "Um administrador da AFC vai lê-la e decidir, e procuramos responder dentro de alguns dias úteis. Enviaremos um e-mail em qualquer dos casos e, se algo precisar de ser corrigido, diremos exatamente o quê.",
             "what_it_is": "Candidatou-se ao Sign in with AFC. Permite que um jogador da AFC inicie sessão no seu site com a conta AFC, através de OpenID Connect padrão, sem que alguma vez tenha de lidar com a palavra-passe dele. Depois de aprovado, recebe um id de cliente e um segredo de cliente, e escolhe que dados de jogador precisa; a AFC concede o mínimo necessário.",
             "guide": "Não precisa de esperar para começar a ler. O guia de integração completo está aqui: {guide}. Cobre os endpoints, os scopes, os dados que cada um devolve, as respostas de erro e um exemplo completo.",
+            "what_it_is_data_api": "Candidatou-se à API de dados da AFC. Permite que o seu servidor leia os dados de torneios que a AFC publica para os parceiros: resultados, classificações, plantéis e estatísticas de jogadores, dos eventos a que lhe for dado acesso. Depois de aprovado, recebe uma chave de API, que deve ficar no seu servidor e nunca num navegador ou numa aplicação.",
+            "guide_data_api": "A documentação da API de dados está aqui: {api_guide}. Cobre a autenticação, todos os endpoints, o que cada um devolve e o que fazer quando uma chamada falha.",
             "keep_link": "Pode consultar o estado a qualquer momento aqui: {link}. Guarde este e-mail, esta ligação é a sua forma de aceder à candidatura.",
         },
     },

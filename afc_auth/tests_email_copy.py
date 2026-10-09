@@ -226,8 +226,9 @@ CALLER_PLACEHOLDERS = {
     # allowance here is per template rather than per sentence. "heading" is rendered unformatted
     # but is covered by the same bag, which is harmless.
     "partner_apply_received": dict.fromkeys(
-        ("heading", "intro", "next_steps", "what_it_is", "guide", "keep_link"),
-        {"organisation", "reference", "link", "guide"},
+        ("heading", "intro", "next_steps", "what_it_is", "guide", "what_it_is_data_api",
+         "guide_data_api", "keep_link"),
+        {"organisation", "reference", "link", "guide", "api_guide"},
     ),
     "partner_apply_changes": dict.fromkeys(
         ("heading", "intro", "note", "how_to_fix"),

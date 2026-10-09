@@ -3834,6 +3834,14 @@ def edit_event(request):
     with transaction.atomic():
         event.save()
 
+        # Completed from the edit form: the edit writes event_status through the contract and
+        # never reaches complete_event_core, so the partner publish that the core does is done
+        # here too, and only on the CHANGE to completed (owner 2026-10-09, inbox #201).
+        if (old_snapshot["event"]["event_status"] != "completed"
+                and event.event_status == "completed"):
+            from .partner_publish import publish_on_completion
+            publish_on_completion(event)
+
         # Re-apply the tournament tier after the edit saved the event's prize/teams/format:
         # a head/super admin's explicit pick overrides + pins it, otherwise it is re-classified
         # from the Tournament Tiers rules (owner 2026-06-30). Skipped-effect when pinned.
@@ -25316,6 +25324,13 @@ def complete_event_core(event, by_user, *, source="manual"):
         return False
     event.event_status = "completed"
     event.save(update_fields=["event_status"])
+    # Published to partners the moment it finishes (owner 2026-10-09, inbox #201). Grants still
+    # decide which partner sees it. Best effort like every side effect below.
+    try:
+        from .partner_publish import publish_on_completion
+        publish_on_completion(event)
+    except Exception:
+        pass
     # Fire any still-active qualification links (top-N of each linked stage flow to target events).
     try:
         from .event_links import fire_links_for_event

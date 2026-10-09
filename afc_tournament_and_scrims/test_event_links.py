@@ -292,13 +292,17 @@ class FireAndPromoteTests(EventLinkBase):
         # Rosters copied from the source event's finishing roster where it existed.
         tt_alpha = TournamentTeam.objects.get(event=self.target, team=self.teams["Alpha"])
         self.assertEqual(TournamentTeamMember.objects.filter(tournament_team=tt_alpha).count(), 1)
-        # Stranger cannot merge.
+        # Stranger cannot merge. 404, not 403, since the R88 hardening (72f9894d, 2026-09-30):
+        # ownership is checked before anything else, and a stranger is told nothing about an
+        # event they cannot manage, the same answer as for one that does not exist. Nothing is
+        # written either way.
         denied = self.client.post(
             f"/events/{self.target.event_id}/import-competitors/",
             data=json.dumps({"source_event_ids": [self.source.event_id]}),
             content_type="application/json", **bearer(self.stranger_tok),
         )
-        self.assertEqual(denied.status_code, 403)
+        self.assertEqual(denied.status_code, 404)
+        self.assertEqual(RegisteredCompetitors.objects.filter(event=self.target).count(), 4)
 
     def test_standings_edit_diff_and_creator_notification(self):
         link_id = self._create_link().json()["link"]["id"]
