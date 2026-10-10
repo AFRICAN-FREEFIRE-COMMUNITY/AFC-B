@@ -2293,6 +2293,26 @@ class SoloStandingsTests(TestCase):
                           rows[0]["matches_played"]), (21, 9, 1, 2))
         self.assertNotIn("damage", rows[0])
 
+    def test_solo_standings_carry_the_esport_photo_behind_images_and_files(self):
+        # inbox #224: a solo table names players, so with Images and files on each row carries the
+        # player's esport photo (canonical profile), null when none was uploaded.
+        from afc_auth.models import User, UserProfile
+
+        king = User.objects.get(username="SoloKing")
+        profile = UserProfile.objects.create(user=king)
+        profile.esports_pic.name = "esports_pictures/king.png"
+        profile.save(update_fields=["esports_pic"])
+        url = f"/api/v1/partner/events/{self.event.slug}/standings/"
+
+        rows = self.client.get(url, HTTP_X_API_KEY=self.api_key).json()["results"]
+        self.assertNotIn("esports_image_url", rows[0])
+        self.partner.include_media = True
+        self.partner.save()
+        rows = self.client.get(url, HTTP_X_API_KEY=self.api_key).json()["results"]
+        images = {r["username"]: r["esports_image_url"] for r in rows}
+        self.assertTrue(images["SoloKing"].endswith("/media/esports_pictures/king.png"))
+        self.assertIsNone(images["SoloTwo"])
+
     def test_every_read_of_a_solo_event_answers(self):
         """The whole sync a partner runs, on a solo event: nothing may answer 500."""
         for toggle in ("can_read_stages", "can_read_matches", "can_read_teams",
@@ -2714,3 +2734,42 @@ class EventStructureTests(TestCase):
                          [("CRUSHERS", "Group Stage", False), ("ALPHA", "Group Stage", False),
                           ("BRAVO", "Group Stage", False)])
         self.assertEqual(self._get("/results/")["event"]["final_stage_has_results"], False)
+
+    def test_tables_carry_team_logos_behind_images_and_files(self):
+        # inbox #224. The logo was only on /teams/; now every table row and bracket side has it,
+        # so a leaderboard can be drawn from one response. A name, not a file: only .url is read.
+        from afc_tournament_and_scrims.models import HeadToHeadMatch, StageGroups, Stages
+
+        alpha = self.tt["ALPHA"].team
+        alpha.team_logo.name = "teams_logos/alpha.png"
+        alpha.save(update_fields=["team_logo"])
+        cs = Stages.objects.create(
+            event=self.event, stage_name="Showmatch", start_date="2026-01-02",
+            end_date="2026-01-02", number_of_groups=1, stage_format="cs",
+            teams_qualifying_from_stage=1, stage_status="completed", stage_order=3)
+        bracket = StageGroups.objects.create(
+            stage=cs, group_name="Bracket A", playing_date="2026-01-02", playing_time="20:00",
+            teams_qualifying=1, match_count=1, match_maps=[], bracket_format="single_elim")
+        HeadToHeadMatch.objects.create(
+            stage=cs, group=bracket, round_number=1, bracket="winners", position=0,
+            team_a=self.tt["ALPHA"], team_b=self.tt["BRAVO"], score_a=4, score_b=2,
+            winner=self.tt["ALPHA"], status="completed")
+
+        # Off: no logo key anywhere.
+        doc = self._get("/results/")
+        self.assertNotIn('"logo_url"', __import__("json").dumps(doc))
+
+        self.partner.include_media = True
+        self.partner.save()
+        doc = self._get("/results/")
+        logo = lambda rows: {r["team"]: r["logo_url"] for r in rows}  # noqa: E731
+        self.assertTrue(logo(doc["final_standings"])["ALPHA"].endswith("/media/teams_logos/alpha.png"))
+        self.assertIsNone(logo(doc["final_standings"])["BRAVO"])  # no logo uploaded: present, null
+        self.assertIn("ALPHA", logo(doc["stages"][0]["standings"]))
+        self.assertTrue(logo(doc["stages"][1]["groups"][0]["standings"])["ALPHA"])
+        side = doc["stages"][2]["groups"][0]["matches"][0]["team_a"]
+        self.assertTrue(side["logo_url"].endswith("/media/teams_logos/alpha.png"))
+        self.assertTrue(logo(doc["stages"][2]["groups"][0]["standings"])["ALPHA"])
+        self.assertTrue(logo(self._get("/standings/")["results"])["ALPHA"])
+        # Map result rows stay lean.
+        self.assertNotIn("logo_url", doc["stages"][0]["groups"][0]["matches"][0]["results"][0])

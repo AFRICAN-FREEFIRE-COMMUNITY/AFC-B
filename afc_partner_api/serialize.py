@@ -113,6 +113,35 @@ def _player_country(user):
     return _country_fields(user.ip_country or user.country)
 
 
+# ── images on table rows ───────────────────────────────────────────────────────
+# Owner, inbox #224 (2026-10-10): "does the data send out team logos and player esport images?"
+# They always went out on /teams/ (logo_url) and /players/ + rosters (esports_image_url), behind
+# include_media. The standings and the /results/ tree now carry them too, on every TABLE row and
+# bracket side, so a partner can draw a leaderboard from one response. Map result rows stay lean.
+def _team_logos(tournament_team_ids):
+    """{tournament_team_id: absolute logo url or None}, one query. An imported (ghost) team has
+    no AFC account and so no logo."""
+    from afc_tournament_and_scrims.models import TournamentTeam
+
+    return {tt.pk: (None if tt.is_ghost else _media_url(tt.team.team_logo))
+            for tt in TournamentTeam.objects.filter(pk__in=list(tournament_team_ids))
+            .select_related("team")}
+
+
+def _player_image(user):
+    """The player's esport (roster) photo, absolute, or None.
+
+    It lives on UserProfile, NOT on User (bug found 2026-07-02: consumers read user.esports_pic,
+    which does not exist, so images never showed), so it is resolved through canonical_profile,
+    the SAME lowest-profile_id row the writers (upload_esport_image) and every other reader use.
+    Duplicate UserProfile rows exist in prod, so any other row can miss an uploaded image. A
+    PUBLIC promo headshot, not PII: no real name, email or discord ever crosses."""
+    from afc_auth.models import canonical_profile
+
+    profile = canonical_profile(user)
+    return _media_url(profile.esports_pic) if profile else None
+
+
 # ── point system ───────────────────────────────────────────────────────────────
 def _number(value, default=0):
     """A stored scoring number as JSON: 1.0 -> 1, 0.5 stays 0.5, junk -> the default."""
@@ -507,10 +536,7 @@ def serialize_player(user, partner, tournament_team=None):
     # prod, so resolving any other row can miss an image that was really uploaded.
     # This is a PUBLIC promo headshot, not PII: no real name, email or discord ever crosses.
     if partner.include_media:
-        from afc_auth.models import canonical_profile
-
-        profile = canonical_profile(user)
-        out["esports_image_url"] = _media_url(profile.esports_pic) if profile else None
+        out["esports_image_url"] = _player_image(user)
 
     # Only touch the stat tables if at least one stat toggle is on (avoids a needless query).
     if partner.include_kills or partner.include_damage or partner.include_assists:
@@ -581,11 +607,14 @@ def _team_extras(stats):
     }
 
 
-def _team_row(rank, row, extras, partner):
-    """One public standings row from a shared-aggregator row (+ its carry-over, if folded)."""
+def _team_row(rank, row, extras, partner, logos):
+    """One public standings row from a shared-aggregator row (+ its carry-over, if folded).
+    `logos` is _team_logos over the table's teams (read only when include_media is on)."""
     more = extras.get(row["tournament_team_id"], {})
     entry = {"rank": rank, "team": row["team_name"]}
     entry.update(_country_fields(row.get("team_country")))
+    if partner.include_media:
+        entry["logo_url"] = logos.get(row["tournament_team_id"])
     _apply_standings_fields(entry, partner, {
         # effective_total already holds any carry-over the official builders folded in.
         "points": row["effective_total"],
@@ -610,6 +639,8 @@ def _final_team_standings(event, partner):
     from afc_tournament_and_scrims.models import Stages, TournamentTeam
 
     ordered, _rank_by_tt, _reached, _final = event_final_standings(event)
+    logos = (_team_logos(item["tournament_team_id"] for item in ordered)
+             if partner.include_media else {})
     tables = {}  # stage_id -> ({tournament_team_id: official row}, extras)
     out = []
     for item in ordered:
@@ -630,14 +661,14 @@ def _final_team_standings(event, partner):
                    "team_country": tt.competitor.country if tt and tt.competitor else None,
                    "effective_total": 0, "placement_sum": 0, "kill_sum": 0, "bonus_sum": 0,
                    "penalty_sum": 0, "total_booyah": 0, "games_played": 0, "total_kills": 0}
-        entry = _team_row(item["rank"], row, extras, partner)
+        entry = _team_row(item["rank"], row, extras, partner, logos)
         # Where this place was decided, and whether the team made the event's final stage.
         # Inserted right after the identity so a row reads top to bottom.
-        entry = {**{k: entry[k] for k in ("rank", "team", "country", "country_code")},
+        identity = ("rank", "team", "country", "country_code", "logo_url")
+        entry = {**{k: entry[k] for k in identity if k in entry},
                  "decided_in": item["stage_name"],
                  "reached_final_stage": bool(item["reached_final_stage"]),
-                 **{k: v for k, v in entry.items()
-                    if k not in ("rank", "team", "country", "country_code")}}
+                 **{k: v for k, v in entry.items() if k not in identity}}
         out.append(entry)
     return out
 
@@ -692,6 +723,13 @@ def _solo_table(stats, partner, carry_over=None):
         r["points"] += r["carry_over_points"]
     rows.sort(key=lambda r: (-r["points"], -r["booyahs"], -r["kills"],
                              r["competitor__user__username"] or ""))
+    images = {}
+    if partner.include_media:
+        from afc_tournament_and_scrims.models import RegisteredCompetitors
+
+        images = {rc.pk: (_player_image(rc.user) if rc.user else None)
+                  for rc in RegisteredCompetitors.objects.filter(
+                      pk__in=[r["competitor_id"] for r in rows]).select_related("user")}
     out = []
     for i, r in enumerate(rows, start=1):
         entry = {
@@ -700,6 +738,8 @@ def _solo_table(stats, partner, carry_over=None):
             "in_game_id": r["competitor__user__uid"],
         }
         entry.update(_country_fields(r["competitor__user__ip_country"] or r["competitor__user__country"]))
+        if partner.include_media:
+            entry["esports_image_url"] = images.get(r["competitor_id"])
         _apply_standings_fields(entry, partner, {
             "points": r["points"],
             "carry_over_points": r["carry_over_points"],
@@ -979,7 +1019,8 @@ def _stage_table(stage, partner, solo):
 
     rows = official_stage_standings(stage)
     extras = _team_extras(TournamentTeamMatchStats.objects.filter(match__group__stage=stage))
-    return [_team_row(i, r, extras, partner) for i, r in enumerate(rows, start=1)]
+    logos = _team_logos(r["tournament_team_id"] for r in rows) if partner.include_media else {}
+    return [_team_row(i, r, extras, partner, logos) for i, r in enumerate(rows, start=1)]
 
 
 def _results_lobby(group, partner, solo, solo_carry):
@@ -1013,13 +1054,16 @@ def _results_lobby(group, partner, solo, solo_carry):
             user = sc.player.user if sc.player else None
             if user and user.username not in present:
                 out["standings"].append(_zero_row(len(out["standings"]) + 1, partner, {
-                    "username": user.username, "in_game_id": user.uid, **_player_country(user)}))
+                    "username": user.username, "in_game_id": user.uid, **_player_country(user),
+                    **({"esports_image_url": _player_image(user)} if partner.include_media else {})}))
     else:
         from afc_tournament_and_scrims.final_standings import official_group_standings
 
         rows = official_group_standings(group)
         extras = _team_extras(TournamentTeamMatchStats.objects.filter(match__group=group))
-        out["standings"] = [_team_row(i, r, extras, partner) for i, r in enumerate(rows, start=1)]
+        logos = _team_logos(r["tournament_team_id"] for r in rows) if partner.include_media else {}
+        out["standings"] = [_team_row(i, r, extras, partner, logos)
+                            for i, r in enumerate(rows, start=1)]
         # Champion-Point: the team the rule crowned in this lobby, by name; None when the stage
         # does not use it or nobody has triggered it yet.
         if group.stage.champion_point_enabled:
@@ -1034,7 +1078,9 @@ def _results_lobby(group, partner, solo, solo_carry):
                 present.add(tt.pk)
                 out["standings"].append(_zero_row(len(out["standings"]) + 1, partner, {
                     "team": tt.display_name,
-                    **_country_fields(tt.competitor.country if tt.competitor else None)}))
+                    **_country_fields(tt.competitor.country if tt.competitor else None),
+                    **({"logo_url": None if tt.is_ghost else _media_url(tt.team.team_logo)}
+                       if partner.include_media else {})}))
 
     out["matches"] = [_results_map(m, partner, solo) for m in matches]
     return out
@@ -1130,21 +1176,24 @@ def _results_bracket(stage, group, partner):
         .select_related("team_a__team", "team_a__ghost_team", "team_b__team", "team_b__ghost_team",
                         "winner__team", "winner__ghost_team"),
         key=lambda m: (side_order.get(m.bracket, 3), m.round_number, m.position))
-    country_by_tt = {}
+    teams = {}  # tournament_team_id -> its public identity (name, country, logo)
     for m in matches:
         for tt in (m.team_a, m.team_b):
-            if tt is not None:
-                country_by_tt[tt.pk] = tt.competitor.country if tt.competitor else None
+            if tt is not None and tt.pk not in teams:
+                teams[tt.pk] = {"team": tt.display_name,
+                                **_country_fields(tt.competitor.country if tt.competitor else None)}
+                if partner.include_media:
+                    teams[tt.pk]["logo_url"] = None if tt.is_ghost else _media_url(tt.team.team_logo)
 
     def side(tt):
         if tt is None:
             return None  # an empty slot: waiting on an earlier match, or a bye
-        return {"team": tt.display_name, **_country_fields(country_by_tt.get(tt.pk))}
+        return dict(teams[tt.pk])
 
     table = []
     for r in head_to_head.standings(stage, group_id):
-        entry = {"rank": r["placement"], "team": r["team_name"],
-                 **_country_fields(country_by_tt.get(r["tournament_team_id"])),
+        entry = {"rank": r["placement"],
+                 **teams.get(r["tournament_team_id"], {"team": r["team_name"]}),
                  "wins": r["wins"], "draws": r["draws"], "losses": r["losses"],
                  "rounds_won": r["rounds_won"], "rounds_lost": r["rounds_lost"]}
         if league:
