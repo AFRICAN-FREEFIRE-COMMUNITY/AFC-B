@@ -117,6 +117,54 @@ def official_stage_standings(stage):
     return rows
 
 
+def official_group_standings(group):
+    """The ordered team table for ONE group (lobby), with the same overlays official_stage_standings
+    applies to a whole stage (inbox #222, 2026-10-10).
+
+    Base = group_standings(group): the group's maps only, configured tie-breakers for this group.
+    Then (1) the Point-Rush carry-over banked for the group's stage, re-sorted on the same chain, and
+    (2) the Champion-Point pin: the team the rule crowns in this lobby goes first and its row carries
+    `is_champion` True. Every row carries `carry_over_points` (0 when none).
+
+    CALLERS: afc_partner_api.serialize (the per-group table in GET /events/<slug>/results/). Kept
+    here, beside official_stage_standings, so a group's table and a stage's table are built by the
+    same rules in the same module.
+    """
+    from .round_robin import group_standings, apply_tie_breakers
+    from .views import _carry_over_for_stage
+
+    rows = group_standings(group)
+    if not rows:
+        return rows
+    stage = group.stage
+    event = stage.event
+    carry = _carry_over_for_stage(stage, event.participant_type)
+    changed = False
+    for r in rows:
+        bonus = carry.get(r["tournament_team_id"], 0)
+        r["carry_over_points"] = bonus
+        r["is_champion"] = False
+        if bonus:
+            r["effective_total"] = int(r.get("effective_total", 0)) + bonus
+            changed = True
+    if changed:
+        rows.sort(key=lambda r: (
+            -int(r.get("effective_total", 0)),
+            -int(r.get("total_booyah", 0)),
+            -int(r.get("total_kills", 0)),
+            int(r.get("last_match_placement", 999)),
+            r.get("team_name") or "",
+        ))
+        rows = apply_tie_breakers(rows, event, stage, group)
+    if stage.champion_point_enabled and stage.champion_point_threshold:
+        champ = _champion_id_for_group(group, int(stage.champion_point_threshold), carry)
+        if champ is not None:
+            rows.sort(key=lambda r: 0 if r["tournament_team_id"] == champ else 1)
+            for r in rows:
+                r["is_champion"] = r["tournament_team_id"] == champ
+    return rows
+
+
 def event_final_standings(event):
     """Tiered final standings for an event: rank by LAST STAGE PLAYED, deeper stages first.
 

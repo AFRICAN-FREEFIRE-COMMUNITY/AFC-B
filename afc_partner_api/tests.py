@@ -2434,3 +2434,283 @@ class PartnerEventsAdminTests(TestCase):
     def test_unknown_partner_404(self):
         self.assertEqual(self._get(slug="ghost").status_code, 404)
         self.assertEqual(self._publish(slug="ghost").status_code, 404)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Final standings + the structured event (inbox #220 + #222, 2026-10-10)
+# ──────────────────────────────────────────────────────────────────────────────
+# A two-stage event built so that summing every map and AFC's official rule disagree:
+#   Group Stage: CRUSHERS 50 (booyah), ALPHA 10, BRAVO 5
+#   Grand Final: ALPHA 20 (booyah), BRAVO 15         (CRUSHERS did not reach it)
+# Summed, CRUSHERS lead with 50. Officially (owner rule 2026-07-14, final_standings) a team is
+# placed by the LAST stage it played, so ALPHA and BRAVO, the finalists, outrank CRUSHERS.
+# This is the shape of the four production events whose winner the partner feed had wrong.
+class EventStructureTests(TestCase):
+    def setUp(self):
+        from django.core.cache import cache
+
+        from afc_auth.models import User
+        from afc_team.models import Team
+        from afc_tournament_and_scrims.models import (
+            Match, StageGroups, Stages, TournamentTeam, TournamentTeamMatchStats,
+        )
+
+        cache.clear()
+        self.partner = Partner.objects.create(
+            name="Tree Reader", slug="tree-reader", can_read_events=True, can_read_stages=True,
+            can_read_matches=True, can_read_standings=True, include_placements=True,
+            include_kills=True)
+        self.event = _bare_event(event_name="Structure Cup", partner_published=True)
+        self.partner.allowed_events.add(self.event)
+        full, prefix, h = auth.generate_key()
+        PartnerApiKey.objects.create(partner=self.partner, key_prefix=prefix, key_hash=h)
+        self.api_key = full
+
+        owner = User.objects.create_user(username="treeowner", email="treeowner@x.com",
+                                         password="x", full_name="Owner", role="player")
+        self.tt = {}
+        for name, country in (("ALPHA", "NG"), ("BRAVO", "Ghana"), ("CRUSHERS", "Kenya")):
+            team = Team.objects.create(team_name=name, team_tag=name[:3], join_settings="open",
+                                       team_creator=owner, team_owner=owner, country=country)
+            self.tt[name] = TournamentTeam.objects.create(event=self.event, team=team, status="active")
+
+        def stage(name, order, fmt="br", **kw):
+            return Stages.objects.create(
+                event=self.event, stage_name=name, start_date="2026-01-01", end_date="2026-01-01",
+                number_of_groups=1, stage_format=fmt, teams_qualifying_from_stage=2,
+                stage_status="completed", stage_order=order, **kw)
+
+        def group(st, name, **kw):
+            return StageGroups.objects.create(
+                stage=st, group_name=name, playing_date="2026-01-01", playing_time="18:00",
+                teams_qualifying=2, match_count=1, match_maps=["bermuda"], **kw)
+
+        def result(match, team, placement, points, kills=0):
+            TournamentTeamMatchStats.objects.create(
+                match=match, tournament_team=self.tt[team], placement=placement, kills=kills,
+                placement_points=points - kills, kill_points=kills, total_points=points)
+
+        # Created in REVERSE of running order, so stage_id order and running order disagree.
+        self.final = stage("Grand Final", 2, is_finals_stage=True)
+        self.groups = stage("Group Stage", 1)
+        self.final_lobby = group(self.final, "Final Lobby")
+        self.lobby = group(self.groups, "Group A")
+        m1 = Match.objects.create(group=self.lobby, match_number=1, match_map="bermuda",
+                                  result_inputted=True)
+        m2 = Match.objects.create(group=self.final_lobby, match_number=1, match_map="purgatory",
+                                  result_inputted=True,
+                                  scoring_settings={"kill_point": 2, "placement_points": {"1": 15}})
+        result(m1, "CRUSHERS", 1, 50, kills=8)
+        result(m1, "ALPHA", 2, 10, kills=2)
+        result(m1, "BRAVO", 3, 5)
+        result(m2, "ALPHA", 1, 20, kills=4)
+        result(m2, "BRAVO", 2, 15, kills=3)
+
+    def _get(self, path):
+        resp = self.client.get(f"/api/v1/partner/events/{self.event.slug}{path}",
+                               HTTP_X_API_KEY=self.api_key)
+        self.assertEqual(resp.status_code, 200, resp.content[:300])
+        return resp.json()
+
+    def test_final_standings_follow_the_last_stage_played(self):
+        rows = self._get("/standings/")["results"]
+        self.assertEqual([r["team"] for r in rows], ["ALPHA", "BRAVO", "CRUSHERS"])
+        self.assertEqual([r["decided_in"] for r in rows], ["Grand Final", "Grand Final", "Group Stage"])
+        self.assertEqual([r["reached_final_stage"] for r in rows], [True, True, False])
+        # Every number on a row is from the stage that decided it.
+        self.assertEqual([r["points"] for r in rows], [20, 15, 50])
+        self.assertEqual([r["country_code"] for r in rows], ["NG", "GH", "KE"])
+
+    def test_the_results_tree_reads_like_the_tournament_page(self):
+        import json
+
+        doc = self._get("/results/")
+        self.assertEqual(doc["event"]["name"], "Structure Cup")
+        self.assertIs(doc["event"]["point_system_varies"], True)  # the final scores kills at 2
+        self.assertEqual([r["team"] for r in doc["final_standings"]], ["ALPHA", "BRAVO", "CRUSHERS"])
+
+        # Stages in RUNNING order, not creation order, each saying what it is.
+        stages = doc["stages"]
+        self.assertEqual([(s["order"], s["stage_name"]) for s in stages],
+                         [(1, "Group Stage"), (2, "Grand Final")])
+        self.assertEqual({(s["game"], s["structure"]) for s in stages}, {("battle_royale", "lobbies")})
+        self.assertEqual([s["is_final_stage"] for s in stages], [False, True])
+
+        group_stage = stages[0]
+        self.assertEqual([r["team"] for r in group_stage["standings"]], ["CRUSHERS", "ALPHA", "BRAVO"])
+        lobby = group_stage["groups"][0]
+        self.assertEqual((lobby["group_name"], lobby["type"]), ("Group A", "lobby"))
+        self.assertEqual([(r["rank"], r["team"], r["points"]) for r in lobby["standings"]],
+                         [(1, "CRUSHERS", 50), (2, "ALPHA", 10), (3, "BRAVO", 5)])
+        game = lobby["matches"][0]
+        self.assertEqual(game["match_number"], 1)
+        self.assertEqual(game["point_system"]["points_per_kill"], 1)
+        self.assertEqual([(r["placement"], r["team"], r["points"]) for r in game["results"]],
+                         [(1, "CRUSHERS", 50), (2, "ALPHA", 10), (3, "BRAVO", 5)])
+
+        final_map = stages[1]["groups"][0]["matches"][0]
+        self.assertEqual(final_map["point_system"],
+                         {"placement_points": {"1": 15}, "points_per_kill": 2,
+                          "points_per_assist": 0, "points_per_1000_damage": 0})
+
+        text = json.dumps(doc)
+        for key in SerializeTests.FORBIDDEN_KEYS:
+            self.assertNotIn(f'"{key}"', text)
+
+    def test_results_needs_the_standings_toggle(self):
+        self.partner.can_read_standings = False
+        self.partner.save()
+        resp = self.client.get(f"/api/v1/partner/events/{self.event.slug}/results/",
+                               HTTP_X_API_KEY=self.api_key)
+        self.assertEqual(resp.status_code, 403)
+
+    def test_a_clash_squad_bracket_stage_is_sent_as_a_bracket(self):
+        from afc_tournament_and_scrims.models import HeadToHeadMatch, StageGroups, Stages
+
+        cs = Stages.objects.create(
+            event=self.event, stage_name="Showmatch", start_date="2026-01-02",
+            end_date="2026-01-02", number_of_groups=1, stage_format="cs",
+            teams_qualifying_from_stage=1, stage_status="completed", stage_order=3)
+        bracket = StageGroups.objects.create(
+            stage=cs, group_name="Bracket A", playing_date="2026-01-02", playing_time="20:00",
+            teams_qualifying=1, match_count=1, match_maps=[], bracket_format="single_elim")
+        HeadToHeadMatch.objects.create(
+            stage=cs, group=bracket, round_number=1, bracket="winners", position=0,
+            team_a=self.tt["ALPHA"], team_b=self.tt["BRAVO"], score_a=4, score_b=2,
+            winner=self.tt["ALPHA"], status="completed")
+
+        stage = self._get("/results/")["stages"][2]
+        self.assertEqual((stage["game"], stage["structure"]), ("clash_squad", "brackets"))
+        b = stage["groups"][0]
+        self.assertEqual((b["group_name"], b["type"], b["bracket_format"]),
+                         ("Bracket A", "bracket", "knockout"))
+        self.assertEqual([(r["rank"], r["team"], r["wins"], r["rounds_won"]) for r in b["standings"]],
+                         [(1, "ALPHA", 1, 4), (2, "BRAVO", 0, 2)])
+        self.assertNotIn("points", b["standings"][0])  # a knockout has no points table
+        m = b["matches"][0]
+        self.assertEqual((m["team_a"]["team"], m["team_b"]["team"], m["score_a"], m["score_b"],
+                          m["winner"], m["result"]), ("ALPHA", "BRAVO", 4, 2, "ALPHA", "played"))
+        self.assertEqual(m["team_a"]["country_code"], "NG")
+
+    def test_champion_point_crowns_the_lobby_winner_by_the_rule(self):
+        # Threshold 10. Map 1: BRAVO booyahs on 0 (does not win), ALPHA takes 12. Map 2: ALPHA
+        # booyahs while already on 12, so ALPHA is champion with fewer points than BRAVO.
+        from afc_tournament_and_scrims.models import Match, StageGroups, Stages, TournamentTeamMatchStats
+
+        cp = Stages.objects.create(
+            event=self.event, stage_name="Champion Rush", start_date="2026-01-03",
+            end_date="2026-01-03", number_of_groups=1, stage_format="br",
+            teams_qualifying_from_stage=1, stage_status="completed", stage_order=4,
+            champion_point_enabled=True, champion_point_threshold=10)
+        lobby = StageGroups.objects.create(
+            stage=cp, group_name="Rush Lobby", playing_date="2026-01-03", playing_time="18:00",
+            teams_qualifying=1, match_count=2, match_maps=["bermuda"])
+        for number, rows in ((1, (("BRAVO", 1, 30), ("ALPHA", 2, 12))),
+                             (2, (("ALPHA", 1, 5), ("BRAVO", 2, 20)))):
+            m = Match.objects.create(group=lobby, match_number=number, match_map="bermuda",
+                                     result_inputted=True)
+            for team, place, pts in rows:
+                TournamentTeamMatchStats.objects.create(
+                    match=m, tournament_team=self.tt[team], placement=place, total_points=pts,
+                    placement_points=pts)
+
+        stage = self._get("/results/")["stages"][2]
+        self.assertEqual(stage["champion_point"], {"threshold": 10})
+        group = stage["groups"][0]
+        self.assertEqual(group["champion"], "ALPHA")
+        self.assertEqual([(r["team"], r["points"]) for r in group["standings"]],
+                         [("ALPHA", 17), ("BRAVO", 50)])
+
+    def test_a_round_robin_stage_names_its_base_groups(self):
+        from afc_tournament_and_scrims.models import RoundRobinGroup, StageGroups, Stages
+
+        rr = Stages.objects.create(
+            event=self.event, stage_name="League Phase", start_date="2026-01-04",
+            end_date="2026-01-04", number_of_groups=1, stage_format="br - round robin",
+            teams_qualifying_from_stage=2, stage_status="upcoming", stage_order=5)
+        base = RoundRobinGroup.objects.create(stage=rr, label="A", order=0)
+        base.teams.add(self.tt["BRAVO"], self.tt["ALPHA"])
+        StageGroups.objects.create(
+            stage=rr, group_name="Day 1 Lobby", playing_date="2026-01-04", playing_time="18:00",
+            teams_qualifying=2, match_count=1, match_maps=["bermuda"], game_day=1)
+
+        stage = self._get("/results/")["stages"][2]
+        self.assertEqual(stage["structure"], "round_robin")
+        self.assertEqual(stage["round_robin_groups"], [{"label": "A", "teams": ["ALPHA", "BRAVO"]}])
+        self.assertEqual(stage["groups"][0]["game_day"], 1)
+
+    def test_seeded_teams_appear_at_zero_before_they_play(self):
+        from afc_tournament_and_scrims.models import StageGroupCompetitor
+
+        StageGroupCompetitor.objects.create(stage_group=self.final_lobby,
+                                            tournament_team=self.tt["CRUSHERS"])
+        lobby = self._get("/results/")["stages"][1]["groups"][0]
+        self.assertEqual([(r["rank"], r["team"], r["points"]) for r in lobby["standings"]],
+                         [(1, "ALPHA", 20), (2, "BRAVO", 15), (3, "CRUSHERS", 0)])
+
+    def test_stages_and_matches_are_in_running_order_with_their_place(self):
+        stages = self._get("/stages/")["results"]
+        self.assertEqual([(s["order"], s["stage_name"]) for s in stages],
+                         [(1, "Group Stage"), (2, "Grand Final")])
+        matches = self._get("/matches/")["results"]
+        self.assertEqual([(m["stage_name"], m["stage_order"], m["group_name"]) for m in matches],
+                         [("Group Stage", 1, "Group A"), ("Grand Final", 2, "Final Lobby")])
+
+    def test_an_admin_adjustment_is_flagged_and_every_row_adds_up(self):
+        # inbox #223. An admin docks BRAVO 6 points on the final map as a punishment (stored the
+        # way the results editor stores it: in penalty_points and out of the map total), and the
+        # final's ALPHA total carries 3 assist/damage points beyond placement and kills.
+        from afc_tournament_and_scrims.models import TournamentTeamMatchStats
+
+        final_rows = TournamentTeamMatchStats.objects.filter(match__group=self.final_lobby)
+        bravo = final_rows.get(tournament_team=self.tt["BRAVO"])
+        bravo.penalty_points = 6
+        bravo.total_points = 15 - 6
+        bravo.save()
+        alpha = final_rows.get(tournament_team=self.tt["ALPHA"])
+        alpha.total_points = 20 + 3
+        alpha.save()
+
+        doc = self._get("/results/")
+        final = {r["team"]: r for r in doc["final_standings"]}
+        self.assertEqual((final["BRAVO"]["points"], final["BRAVO"]["penalty_points"],
+                          final["BRAVO"]["adjusted"]), (9, 6, True))
+        self.assertIs(final["ALPHA"]["adjusted"], False)
+        self.assertEqual(final["ALPHA"]["other_points"], 3)
+
+        def adds_up(r):
+            return (r["placement_points"] + r["kill_points"] + r["other_points"]
+                    + r["bonus_points"] - r["penalty_points"] + r.get("carry_over_points", 0))
+
+        tables = [doc["final_standings"]]
+        for stage in doc["stages"]:
+            tables.append(stage["standings"])
+            for group in stage["groups"]:
+                tables.append(group["standings"])
+                tables.extend(m["results"] for m in group["matches"])
+        for table in tables:
+            for r in table:
+                self.assertEqual(adds_up(r), r["points"], r)
+
+        # The map the penalty was put on says so.
+        final_map = doc["stages"][1]["groups"][0]["matches"][0]["results"]
+        bravo_map = [r for r in final_map if r["team"] == "BRAVO"][0]
+        self.assertEqual((bravo_map["penalty_points"], bravo_map["adjusted"]), (6, True))
+
+    def test_a_final_with_no_results_is_said_plainly(self):
+        # Production 2026-10-10: events reach partners whose final was never entered. The final
+        # table then ranks the last stage WITH results, and the event card must say the final
+        # has none, or a partner takes that stage's leader for the champion.
+        from afc_tournament_and_scrims.models import TournamentTeamMatchStats
+
+        event = self._get("/")
+        self.assertEqual((event["final_stage"], event["final_stage_has_results"]), ("Grand Final", True))
+
+        TournamentTeamMatchStats.objects.filter(match__group=self.final_lobby).delete()
+        event = self._get("/")
+        self.assertEqual((event["final_stage"], event["final_stage_has_results"]), ("Grand Final", False))
+        rows = self._get("/standings/")["results"]
+        self.assertEqual([(r["team"], r["decided_in"], r["reached_final_stage"]) for r in rows],
+                         [("CRUSHERS", "Group Stage", False), ("ALPHA", "Group Stage", False),
+                          ("BRAVO", "Group Stage", False)])
+        self.assertEqual(self._get("/results/")["event"]["final_stage_has_results"], False)
