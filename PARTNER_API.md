@@ -27,9 +27,10 @@ than a match in progress.
 |---|---|
 | Events | The event card: name, slug, dates, tier, status, prize pool |
 | Stages and groups | The structure of an event, with each stage's groups |
-| Matches | Per-match rows: match number, map, MVP, whether the result is in |
-| Standings | The final ranked table for an event |
-| Teams | Every registered team, with event-wide aggregated stats and rosters |
+| Matches | Per-map rows: the stage and group, match number, map, MVP, the point system, whether the result is in |
+| Standings | AFC's official final placement for an event, with every team's points |
+| Results | The whole event in one document, the way the tournament page shows it: every stage, group, bracket and map, each table with its points |
+| Teams | Every registered team, with its country, event-wide aggregated stats and rosters |
 | Players | Everyone who recorded stats, with their per-event stats |
 | Designs | Branded leaderboard templates: background art, logos, brand colours |
 
@@ -97,7 +98,8 @@ Page through by following `next_offset` until `has_more` is `false` (at which po
 or `offset` falls back to the default rather than erroring, and an `offset` past the end
 returns an empty `results` array rather than an error.
 
-The event **detail** endpoint returns a single object and is not paginated.
+The event **detail** and **results** endpoints each return a single object and are not
+paginated.
 
 ---
 
@@ -173,14 +175,19 @@ that is switched off is **absent from the JSON**, not present-and-null.
 
 | Toggle | Adds |
 |---|---|
-| Placements | `placement` on teams and standings |
-| Kills / Damage / Assists | the matching stat on teams, players and standings |
+| Placements | `placement` on teams, standings and map results; `placement_points` and `booyahs` |
+| Kills / Damage / Assists | the matching stat on teams, players, standings and map results; `kill_points` with Kills |
 | Rosters | `roster` (the player list) on each team |
 | Maps played | `maps` on groups, `map` on matches |
 | Prize pool | `prize_pool` on events |
 | MVP | `mvp` on matches |
-| Images and files | `banner_url`, `rules_file_url`, `logo_url`, `esports_image_url`, and design art |
+| Images and files | `banner_url`, `rules_file_url`, `logo_url`, `esports_image_url`, and design art; `logo_url` (and `esports_image_url` for players) on every standings row and bracket side too |
 | Descriptions and rules text | `rules_text` on events, `description` on teams |
+
+**Always sent, whatever is switched on:** each team's and player's `country` and
+`country_code`, every table's `points` with `bonus_points`, `penalty_points`, `adjusted` and
+`carry_over_points`, and the point system. AFC shows all of these to anyone on its public pages.
+`other_points` needs both Placements and Kills, because on its own it would give them away.
 
 A key that is **present and null** means the opposite of an absent one: the field is enabled
 for you and the underlying value is genuinely empty, for example a team that never uploaded a
@@ -210,7 +217,97 @@ than re-download, a conditional request with `If-None-Match` gets you a cheap `3
 
 ---
 
-## 8. Endpoints
+## 8. Reading the numbers
+
+### Countries
+
+Every team and player carries two fields:
+
+```json
+{ "country": "Nigeria", "country_code": "NG" }
+```
+
+`country_code` is the ISO 3166-1 alpha-2 code: store it, sort by it, draw the flag from it.
+`country` is one English name per code. A team's country is the one AFC shows beside its name
+(worked out from where its players are); a player's is where they play from, falling back to
+the country on their profile. Both are `null` when AFC does not know, which is never an error.
+
+### Points, and how they add up
+
+Every row of every table, and every team's result on every map, carries `points`: the score
+it is ranked by. The parts always add up to it exactly:
+
+```
+points = placement_points + kill_points + other_points
+       + bonus_points - penalty_points + carry_over_points
+```
+
+| Field | What it is |
+|---|---|
+| `placement_points` | Points for where the team finished on each map |
+| `kill_points` | Points for kills |
+| `other_points` | Points for assists and damage, when the point system awards them; for results AFC imported from another platform, whatever that platform's total held beyond placement and kills |
+| `bonus_points` | Points an AFC admin or the organiser **added** by hand |
+| `penalty_points` | Points an AFC admin or the organiser **took away** by hand |
+| `carry_over_points` | A Point Rush head start, earned in an earlier stage (see the point system below) |
+
+### When AFC changes a result by hand
+
+An AFC admin or the event's organiser can add points to a team's result on a map, or take
+points away, for example as a **penalty for breaking a rule**. When that happens the table no
+longer follows placements and kills alone, and AFC says so rather than leaving you to find the
+difference:
+
+- `bonus_points` and `penalty_points` carry the amounts, on the table row and on the map the
+  change was made on (`GET /events/{event_slug}/results/` shows every map);
+- `adjusted` is `true` on every row that includes such a change.
+
+`points` always already includes the change. AFC does not record a written reason for an
+adjustment, so none is sent. If a result is corrected after you have read it, your next sync
+returns the corrected numbers, so keep polling a recent event for a while after it ends.
+
+### Why a table may not look like a simple sum
+
+- **Adjustments**, above.
+- **Point Rush.** A stage can hand out bonus points by finishing place, carried into a later
+  stage (`point_rush` on the stage). They arrive as `carry_over_points`.
+- **Champion Point.** In a stage that uses it (`champion_point` on the stage), the first team to
+  win a map while already at the threshold is champion, and is listed first even with fewer
+  points. Its group carries `"champion"`.
+- **Tie-breakers.** Teams level on points are separated by booyahs, then kills, then the place
+  in the last map played, unless the organiser set a different order.
+- **The final standings rank by the deciding stage.** See `/standings/` below.
+
+### The point system
+
+How an event's maps are scored. Each map carries its own, because an organiser can change
+one map; the event carries it too when every map agrees:
+
+```json
+{
+  "placement_points": { "1": 12, "2": 9, "3": 8, "4": 7, "5": 6, "6": 5, "7": 4, "8": 3, "9": 2, "10": 1 },
+  "points_per_kill": 1,
+  "points_per_assist": 0,
+  "points_per_1000_damage": 0
+}
+```
+
+`placement_points` is keyed by finishing place; a place not listed scores 0. On the event,
+`point_system` is `null` with `point_system_varies: true` when maps differ, in which case read
+each match's own. A stage also says whether it uses Champion Point (`champion_point`, with its
+`threshold`) or Point Rush (`point_rush`, with its `reward` table and the `target_stage` the
+bonus is carried into); each is `null` when the stage does not.
+
+### Is the result complete?
+
+Every event carries `final_stage` (the stage that decides it) and `final_stage_has_results`.
+When that is `false`, the final has not been entered on AFC: the final standings then rank the
+last stage that does have results, and the team at the top is that stage's leader, **not the
+champion**. Some events, scrims especially, have no results on AFC at all.
+
+---
+
+## 9. Endpoints
 
 All are `GET`. Responses below are real, trimmed for length.
 
@@ -230,7 +327,12 @@ The events you can read, newest first. Paginated.
       "status": "completed",
       "start_date": "2026-06-08",
       "end_date": "2026-06-28",
-      "is_native_afc": false
+      "is_native_afc": false,
+      "point_system": { "placement_points": { "1": 12, "2": 9, "3": 8 }, "points_per_kill": 1,
+                        "points_per_assist": 0, "points_per_1000_damage": 0 },
+      "point_system_varies": false,
+      "final_stage": "FINALS",
+      "final_stage_has_results": false
     }
   ],
   "has_more": false,
@@ -259,8 +361,8 @@ One event, same shape as a row above. `404` if it is not yours to read.
 
 ### `GET /events/{event_slug}/stages/`
 
-Stages in running order, each with its groups nested. `order` is a 1-based sequence number,
-not a database ID.
+Stages in running order (the order the tournament page shows them), each with its groups
+nested in the same order. `order` is a 1-based sequence number, not a database ID.
 
 ```json
 {
@@ -270,33 +372,88 @@ not a database ID.
   "status": "completed",
   "start_date": "2026-06-28",
   "end_date": "2026-06-28",
+  "champion_point": null,
+  "point_rush": null,
   "groups": [
     { "group_name": "Group A", "playing_date": "2026-06-28", "maps": ["bermuda"] }
   ]
 }
 ```
 
-### `GET /events/{event_slug}/matches/`
+A stage with Point Rush (DYNASTY CUP GRAND FINALS SSA):
 
 ```json
-{ "match_number": 1, "result_inputted": true, "map": "bermuda", "mvp": "ASN REAPER" }
+{
+  "stage_name": "RUSH POINT",
+  "order": 2,
+  "point_rush": {
+    "reward": { "1": 10, "2": 7, "3": 6, "4": 3, "5": 2, "6": 1 },
+    "target_stage": "GRAND FINALS"
+  }
+}
 ```
 
-`mvp` is the in-game handle, or `null` when none was recorded.
+### `GET /events/{event_slug}/matches/`
+
+Every Battle Royale map of the event, in running order, each saying where it was played:
+
+```json
+{
+  "stage_name": "SEMI FINALS",
+  "stage_order": 1,
+  "group_name": "Day 1: A+B",
+  "match_number": 1,
+  "result_inputted": true,
+  "point_system": { "placement_points": { "1": 12, "2": 9, "3": 8 }, "points_per_kill": 1,
+                    "points_per_assist": 0, "points_per_1000_damage": 0 },
+  "map": "Bermuda",
+  "mvp": null
+}
+```
+
+`mvp` is the in-game handle, or `null` when none was recorded. Clash Squad bracket matches are
+not maps and are not listed here; they are in `/results/`.
 
 ### `GET /events/{event_slug}/standings/`
 
-The event's final ranked table, `rank` ascending. Squad and duo events are ranked by team;
-solo events by player (each row carries `username` and `in_game_id` instead of `team`).
+AFC's **official final placement**, `rank` ascending: the same placement AFC shows on a team's
+page and pays prizes on. Squad and duo events rank teams; solo events rank players (each row
+carries `username` and `in_game_id` instead of `team`).
 
 ```json
-{ "rank": 1, "team": "NO PRESSURE", "placement": 1, "kills": 88 }
+{
+  "rank": 1,
+  "team": "NEM JOGOU",
+  "country": "Mozambique",
+  "country_code": "MZ",
+  "logo_url": "https://api.africanfreefirecommunity.com/media/teams_logos/LOGO_DA_NJ_BB_1.jpg",
+  "decided_in": "GRAND FINALS",
+  "reached_final_stage": true,
+  "points": 118,
+  "bonus_points": 0,
+  "penalty_points": 0,
+  "adjusted": false,
+  "carry_over_points": 0,
+  "placement_points": 34,
+  "kill_points": 84,
+  "other_points": 0,
+  "matches_played": 5,
+  "placement": 1,
+  "booyahs": 2,
+  "kills": 84
+}
 ```
 
-Ranking uses the same metric as AFC's official standings: placement points plus kill points
-plus bonus points minus penalty points, with 1st-place finishes and then total kills breaking
-ties. `placement` is the team's **best** finish across the event. Solo events do not record
-damage or assists, so those two fields appear on team standings only.
+**How the order is decided.** A team is placed by the **last stage it played**: every team that
+reached the grand final ranks above every team knocked out earlier, and inside a stage teams
+follow that stage's own table. `decided_in` names that stage, and **every number on the row is
+from it**, so a team knocked out in the group stage shows its group-stage points. In a
+single-stage event this is simply that stage's table. If `final_stage_has_results` on the event
+is `false`, read the note under "Is the result complete?" above.
+
+`placement` is the team's best finish on a map in that stage. Solo events do not record damage
+or assists, so those fields appear on team rows only, and a solo table covers every map of the
+event.
 
 ### `GET /events/{event_slug}/teams/`
 
@@ -307,6 +464,8 @@ the full registration list, not the list of competitors: read `status` to tell t
 {
   "team": "ALLSTARS NG",
   "team_tag": "ASN",
+  "country": "Nigeria",
+  "country_code": "NG",
   "status": "played",
   "logo_url": "https://api.africanfreefirecommunity.com/media/teams_logos/IMG-0061.jpg",
   "description": "We grind every night.",
@@ -315,7 +474,8 @@ the full registration list, not the list of competitors: read `status` to tell t
   "damage": 0,
   "assists": 0,
   "roster": [
-    { "username": "ASN GABBY", "in_game_id": "3098864559", "kills": 3 }
+    { "username": "ASN GABBY", "in_game_id": "3098864559", "country": "Nigeria",
+      "country_code": "NG", "kills": 3 }
   ]
 }
 ```
@@ -366,6 +526,8 @@ Everyone who recorded stats, with stats scoped to **this event** rather than car
 {
   "username": "ASN REAPER",
   "in_game_id": "1848789033",
+  "country": "Nigeria",
+  "country_code": "NG",
   "esports_image_url": "https://api.africanfreefirecommunity.com/media/esports_pictures/a4b4.jpg",
   "kills": 7
 }
@@ -374,6 +536,129 @@ Everyone who recorded stats, with stats scoped to **this event** rather than car
 `esports_image_url` is the player's posed roster photo, for lower-thirds and versus cards. It
 is `null` for players who have not uploaded one. Only the public in-game handle (`username`)
 and in-game id (`in_game_id`) are ever returned, never a real name, email, or Discord id.
+
+### `GET /events/{event_slug}/results/`
+
+**The whole event in one document**, laid out the way the tournament page shows it. Use it to
+show an event properly, especially one that mixes structures: a round robin, a Point Rush stage
+and a grand final, or a Battle Royale group stage followed by a Clash Squad bracket. Requires
+the Standings resource toggle; everything inside follows your field toggles. It is one event,
+so it is not paginated.
+
+Every level says what it is, so you never have to work it out:
+
+```
+event              the event card (same as GET /events/{event_slug}/)
+final_standings    the official final placement (same rows as /standings/)
+stages[]           in running order
+  game             battle_royale | clash_squad
+  structure        lobbies | round_robin | brackets
+  standings        the stage's own table: the one that decides who goes through
+  groups[]
+    type: lobby    a Battle Royale group: its table, then matches[]: every map, with its
+                   point system and every team's result on it
+    type: bracket  a Clash Squad bracket: its table, then matches[]: team_a against team_b
+```
+
+From DYNASTY CUP GRAND FINALS SSA, trimmed to one row of each list:
+
+```json
+{
+  "event": {
+    "slug": "dynasty-cup-grand-finals-ssa",
+    "name": "DYNASTY CUP GRAND FINALS SSA",
+    "status": "completed",
+    "point_system": null,
+    "point_system_varies": true,
+    "final_stage": "GRAND FINALS",
+    "final_stage_has_results": true
+  },
+  "final_standings": [
+    { "rank": 1, "team": "NEM JOGOU", "country_code": "MZ", "decided_in": "GRAND FINALS",
+      "reached_final_stage": true, "points": 118 }
+  ],
+  "stages": [
+    {
+      "order": 1,
+      "stage_name": "SEMI FINALS",
+      "game": "battle_royale",
+      "structure": "round_robin",
+      "format": "br - round robin",
+      "status": "completed",
+      "start_date": "2026-07-03",
+      "end_date": "2026-07-05",
+      "is_final_stage": false,
+      "teams_qualifying": 12,
+      "champion_point": null,
+      "point_rush": null,
+      "standings": [
+        { "rank": 1, "team": "PARADOX GAMING", "country": "South Africa", "country_code": "ZA",
+          "points": 307, "bonus_points": 0, "penalty_points": 0, "adjusted": false,
+          "carry_over_points": 0, "placement_points": 90, "kill_points": 217, "other_points": 0,
+          "matches_played": 10, "placement": 1, "booyahs": 5, "kills": 217 }
+      ],
+      "round_robin_groups": [
+        { "label": "A", "teams": ["Alpha Wolves", "FORSE ESP"] }
+      ],
+      "groups": [
+        {
+          "group_name": "Day 1: A+B",
+          "type": "lobby",
+          "playing_date": "2026-07-03",
+          "game_day": 1,
+          "point_system": { "placement_points": { "1": 12, "2": 9, "3": 8 }, "points_per_kill": 1,
+                            "points_per_assist": 0, "points_per_1000_damage": 0 },
+          "point_system_varies": false,
+          "maps": ["Bermuda", "Kalahari", "Purgatory", "Nexterra", "Solara"],
+          "standings": [
+            { "rank": 1, "team": "UNDERGROUND", "country_code": "CV", "points": 119 }
+          ],
+          "matches": [
+            {
+              "match_number": 1,
+              "result_inputted": true,
+              "map": "Bermuda",
+              "results": [
+                { "team": "UNDERGROUND", "country": "Cabo Verde", "country_code": "CV",
+                  "played": true, "points": 28, "bonus_points": 0, "penalty_points": 0,
+                  "adjusted": false, "placement_points": 12, "kill_points": 16, "other_points": 0,
+                  "placement": 1, "kills": 16 }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
+```
+
+**Battle Royale stages.** `structure` is `lobbies` for ordinary groups, each scored on placement
+and kills, and `round_robin` when teams in base groups (`round_robin_groups`) meet across
+game-day lobbies (`game_day` on each lobby); in a round robin the stage's own `standings` is the
+table that counts. Map results list the best finish first; a team that sat a map out has
+`"played": false`. A team drawn into a group that has not played yet is listed at the bottom
+with 0 points and `matches_played: 0`, so an upcoming group still shows who is in it. On a lobby
+whose stage uses Champion Point, `champion` names the team the rule crowned (`null` until it
+fires); it is listed first even with fewer points.
+
+**Clash Squad stages** (`game: clash_squad`, `structure: brackets`). Each group is a bracket
+played head to head. Its scores are **rounds won** in the set (4-2), never kills.
+
+| Field | Meaning |
+|---|---|
+| `bracket_format` | `knockout`, `double_elimination`, `league` or `round_robin` |
+| `standings[]` | `rank`, the team (`team`, `country`, `country_code`), `wins`, `draws`, `losses`, `rounds_won`, `rounds_lost`; a league or round-robin table also has `points` (3 a win, 1 a draw). A knockout ranks by how far a team went, so it has no points. `rank` is `null` for a team still alive in an unfinished bracket |
+| `matches[].bracket` | `winners`, `losers` (double elimination), `third` (the bronze match) or `league` |
+| `matches[].round`, `position` | the round, and the match's place in it from the top |
+| `matches[].team_a`, `team_b` | each side's `team`, `country`, `country_code`; `null` is a slot waiting on an earlier match, or a bye |
+| `matches[].score_a`, `score_b`, `winner` | rounds won by each side, and the winner's name |
+| `matches[].status` | `pending`, `live` or `completed` |
+| `matches[].result` | `played`, `forfeit`, `walkover` or `disqualification` |
+| `matches[].scheduled_date` | the date, when the organiser set one |
+
+With Images and files on, every table row and bracket side also carries `logo_url` (and solo
+rows `esports_image_url`), so you can draw a leaderboard from this one response.
 
 ### `GET /events/{event_slug}/designs/`
 
@@ -410,7 +695,7 @@ organiser-run event, or AFC's own library for a native AFC event.
 
 ---
 
-## 9. Working with the API
+## 10. Working with the API
 
 **Poll, do not hammer.** Data only changes when AFC publishes or corrects a result. Once a day
 during a season, or once an hour around a final, is plenty. There are no webhooks.
@@ -429,7 +714,7 @@ because a new event changes every position.
 
 ---
 
-## 10. Getting help
+## 11. Getting help
 
 No key yet? Apply at `https://africanfreefirecommunity.com/partners/apply` and choose
 **The AFC Data API**.
