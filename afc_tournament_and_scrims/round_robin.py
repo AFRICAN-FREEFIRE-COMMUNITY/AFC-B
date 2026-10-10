@@ -20,7 +20,7 @@ Spec: WEBSITE/tasks/round-robin-design.md.
 """
 from itertools import combinations
 
-from django.db.models import Case, Count, F, IntegerField, OuterRef, Subquery, Sum, Value, When
+from django.db.models import Case, F, IntegerField, OuterRef, Subquery, Sum, Value, When
 from django.db.models.functions import Coalesce
 
 from .models import TournamentTeamMatchStats
@@ -224,12 +224,19 @@ def _aggregate_team_standings(stats_qs, event=None, stage=None, group=None):
             competitor_ghost_id=F("tournament_team__ghost_team_id"),
         )
         .annotate(
-            # games_played = matches this team has stats in within the fed-in slice.
-            games_played=Count("match_id"),
+            # games_played = matches this team has stats in within the fed-in slice. Summed from
+            # matches_counted rather than counting rows: an IMPORTED aggregate row (is_aggregate,
+            # owner 2026-08-20 external results import) stands for a whole group and carries its real
+            # span there. Every ordinary row holds the default 1, so for them this is the row count it
+            # always was. Same reading as views_overlays and the partner API (inbox #220, 2026-10-10).
+            games_played=Coalesce(Sum("matches_counted"), 0),
             total_kills=Coalesce(Sum("kills"), 0),
-            # Booyahs = matches finished 1st; Case/When mirrors the leaderboard view.
+            # Booyahs = matches finished 1st; Case/When mirrors the leaderboard view. An aggregate row
+            # stores placement NULL, so its wins live in booyah_count; ordinary rows hold 0 there and
+            # are counted by placement exactly as before.
             total_booyah=Coalesce(Sum(
                 Case(
+                    When(is_aggregate=True, then="booyah_count"),
                     When(placement=1, then=Value(1)),
                     default=Value(0),
                     output_field=IntegerField(),

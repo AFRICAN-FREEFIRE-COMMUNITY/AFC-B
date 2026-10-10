@@ -419,28 +419,178 @@ class SerializeTests(TestCase):
         for r in rows:
             self._assert_no_forbidden(r)
 
-    def test_standings_rank_by_effective_total_not_stale_total_points(self):
-        # Regression guard for the ranking-metric mismatch: standings MUST rank by the
-        # recomputed effective_total (placement+kill+bonus-penalty), the SAME metric the
-        # admin standings view uses, NOT the stored total_points column (which can be
-        # stale). We make the two diverge: give the team with the LOWER stored
-        # total_points a bonus that flips the true (effective) ranking. If standings still
-        # ranked by total_points, Team Alpha would lead; with effective_total, Team Bravo
-        # must lead.
-        #
-        #   Team Alpha (tts1): total_points=22, no bonus/penalty -> effective=12+10=22
-        #   Team Bravo (tts2): stored total_points=15 (STALE) but a +20 bonus banked later
-        #                      -> effective = 9 + 6 + 20 = 35  (beats Alpha's 22)
-        self.tts2.bonus_points = 20
-        self.tts2.save(update_fields=["bonus_points"])
+    # ── standings: the site's ranking, with points (inbox #220, 2026-10-10) ──
+    # This replaces a test that pinned the partner's OWN re-derived score
+    # (placement + kill + bonus - penalty). The site ranks by the stored per-map total, which
+    # also holds ASSIST and DAMAGE points, so the partner table disagreed with the site's on 7
+    # of 72 production events. The partner now reads the site's shared aggregator.
+    def test_standings_rank_and_score_like_the_sites_combined_table(self):
+        # Bravo's map was scored with assist and damage points (scoring.compute_team_points):
+        # 9 placement + 6 kill + 2 x 2 assist + 1.8 x 5 damage = 28 stored, beating Alpha's 22.
+        # The old re-derived score said 9 + 6 = 15 and put Alpha first.
+        self.tts2.total_points = 28
+        self.tts2.save(update_fields=["total_points"])
 
         from afc_partner_api.serialize import serialize_standings
+        from afc_tournament_and_scrims import round_robin
+        from afc_tournament_and_scrims.models import TournamentTeamMatchStats
 
         rows = serialize_standings(self.event, self.partner)
-        # Bravo's higher effective_total wins despite its lower stored total_points.
-        self.assertEqual(rows[0]["team"], "Team Bravo")
-        self.assertEqual(rows[0]["rank"], 1)
-        self.assertEqual(rows[1]["team"], "Team Alpha")
+        site = round_robin._aggregate_team_standings(
+            TournamentTeamMatchStats.objects.filter(match__group__stage__event=self.event),
+            event=self.event)
+        self.assertEqual([r["team"] for r in rows], ["Team Bravo", "Team Alpha"])
+        self.assertEqual([r["team"] for r in rows], [r["team_name"] for r in site])
+        self.assertEqual([r["points"] for r in rows], [r["effective_total"] for r in site])
+        self.assertEqual(rows[0]["points"], 28)
+
+    def test_standings_carry_points_ungated_and_the_breakdown_behind_its_stat(self):
+        from afc_partner_api.serialize import serialize_standings
+
+        self.tts1.bonus_points = 3
+        self.tts1.penalty_points = 1
+        self.tts1.total_points = 24
+        self.tts1.save(update_fields=["bonus_points", "penalty_points", "total_points"])
+
+        # Every field toggle off: the score is still there, the stats are not.
+        alpha = serialize_standings(self.event, self.partner)[0]
+        self.assertEqual(alpha["team"], "Team Alpha")
+        self.assertEqual((alpha["points"], alpha["bonus_points"], alpha["penalty_points"],
+                          alpha["matches_played"]), (24, 3, 1, 1))
+        for gated in ("placement", "placement_points", "booyahs", "kills", "kill_points",
+                      "damage", "assists"):
+            self.assertNotIn(gated, alpha)
+
+        # Placements and kills on: their halves of the breakdown appear.
+        self.partner.include_placements = True
+        self.partner.include_kills = True
+        self.partner.save()
+        alpha = serialize_standings(self.event, self.partner)[0]
+        self.assertEqual((alpha["placement"], alpha["placement_points"], alpha["booyahs"]), (1, 12, 1))
+        self.assertEqual((alpha["kills"], alpha["kill_points"]), (10, 10))
+        self._assert_no_forbidden(alpha)
+
+    def test_standings_and_teams_carry_the_team_country(self):
+        from afc_partner_api.serialize import serialize_standings, serialize_team
+
+        rows = serialize_standings(self.event, self.partner)
+        self.assertEqual({r["team"]: (r["country"], r["country_code"]) for r in rows},
+                         {"Team Alpha": ("Nigeria", "NG"), "Team Bravo": ("Ghana", "GH")})
+        # The column holds codes and names (both are in production): one answer for both.
+        self.team1.country = "NG"
+        self.team1.save(update_fields=["country"])
+        out = serialize_team(self.tteam, self.partner)
+        self.assertEqual((out["country"], out["country_code"]), ("Nigeria", "NG"))
+        # A spelling pycountry misses, with the curly apostrophe production holds.
+        self.team1.country = "Côte D’Ivoire"
+        self.team1.save(update_fields=["country"])
+        out = serialize_team(self.tteam, self.partner)
+        self.assertEqual(out["country_code"], "CI")
+        # Not set, or not a country: present and null.
+        for raw in ("", "Unknown"):
+            self.team1.country = raw
+            self.team1.save(update_fields=["country"])
+            out = serialize_team(self.tteam, self.partner)
+            self.assertEqual((out["country"], out["country_code"]), (None, None))
+
+    def test_imported_teams_keep_their_own_rows_and_countries(self):
+        # Two ghost teams (external results import) used to fold into ONE row named null,
+        # because the old fold grouped on tournament_team__team__team_name.
+        from afc_rankings.models import GhostTeam
+        from afc_tournament_and_scrims.models import TournamentTeam, TournamentTeamMatchStats
+        from afc_partner_api.serialize import serialize_standings
+
+        for name, country, pts in (("Phantoms", "NG", 8), ("Spectres", "Kenya", 5)):
+            ghost = GhostTeam.objects.create(team_name=name, country=country, created_by=self.admin)
+            tt = TournamentTeam.objects.create(event=self.event, ghost_team=ghost, status="active")
+            TournamentTeamMatchStats.objects.create(
+                match=self.match, tournament_team=tt, placement=3, kills=1, total_points=pts)
+
+        rows = serialize_standings(self.event, self.partner)
+        self.assertEqual([r["team"] for r in rows],
+                         ["Team Alpha", "Team Bravo", "Phantoms", "Spectres"])
+        self.assertEqual([r["country_code"] for r in rows[2:]], ["NG", "KE"])
+
+    def test_imported_aggregate_rows_count_their_booyahs_and_maps(self):
+        # An aggregate row (one row for a whole imported group) stores placement NULL; its wins
+        # and maps live in booyah_count and matches_counted. The shared aggregator now reads them,
+        # so the partner keeps the numbers its own fold used to give, and the site gains them.
+        from afc_partner_api.serialize import serialize_standings
+
+        self.tts2.is_aggregate = True
+        self.tts2.placement = None
+        self.tts2.booyah_count = 3
+        self.tts2.matches_counted = 6
+        self.tts2.save()
+        self.partner.include_placements = True
+        self.partner.save()
+        bravo = [r for r in serialize_standings(self.event, self.partner) if r["team"] == "Team Bravo"][0]
+        self.assertEqual((bravo["booyahs"], bravo["matches_played"]), (3, 6))
+
+    def test_best_placement_skips_a_map_the_team_sat_out(self):
+        # A map a team did not play is stored with placement 0, which made "best" 0.
+        from afc_tournament_and_scrims.models import Match, TournamentTeamMatchStats
+        from afc_partner_api.serialize import serialize_standings, serialize_team
+
+        m2 = Match.objects.create(leaderboard=self.leaderboard, group=self.group, match_number=2,
+                                  match_map="bermuda", result_inputted=True)
+        TournamentTeamMatchStats.objects.create(match=m2, tournament_team=self.tteam2,
+                                                placement=0, played=False)
+        self.partner.include_placements = True
+        self.partner.save()
+        self.assertEqual(serialize_team(self.tteam2, self.partner)["placement"], 2)
+        bravo = [r for r in serialize_standings(self.event, self.partner) if r["team"] == "Team Bravo"][0]
+        self.assertEqual(bravo["placement"], 2)
+
+    # ── point system (inbox #221, 2026-10-10) ──
+    def test_point_system_on_the_event_and_each_match(self):
+        from afc_tournament_and_scrims.models import Match
+        from afc_partner_api.serialize import serialize_event, serialize_match
+
+        system = {"kill_point": 1.0, "points_per_assist": 0.5, "points_per_1000_damage": 2,
+                  "placement_points": {"2": 9, "1": 12, "10": 1}, "internal_note": "never sent"}
+        self.match.scoring_settings = system
+        self.match.save(update_fields=["scoring_settings"])
+        expected = {"placement_points": {"1": 12, "2": 9, "10": 1}, "points_per_kill": 1,
+                    "points_per_assist": 0.5, "points_per_1000_damage": 2}
+
+        event = serialize_event(self.event, self.partner)
+        self.assertEqual(event["point_system"], expected)
+        self.assertIs(event["point_system_varies"], False)
+        self.assertEqual(serialize_match(self.match, self.partner)["point_system"], expected)
+        self.assertNotIn("internal_note", str(event))
+        self._assert_no_forbidden(event)
+
+        # A second map scored differently: the event says so, each match carries its own.
+        m2 = Match.objects.create(leaderboard=self.leaderboard, group=self.group, match_number=2,
+                                  match_map="bermuda", scoring_settings={"kill_point": 2})
+        event = serialize_event(self.event, self.partner)
+        self.assertIsNone(event["point_system"])
+        self.assertIs(event["point_system_varies"], True)
+        self.assertEqual(serialize_match(m2, self.partner)["point_system"]["points_per_kill"], 2)
+
+    def test_point_system_scoring_modes_on_the_stage(self):
+        from afc_tournament_and_scrims.models import Stages
+        from afc_partner_api.serialize import serialize_stage
+
+        out = serialize_stage(self.stage, self.partner)
+        self.assertIsNone(out["champion_point"])
+        self.assertIsNone(out["point_rush"])
+
+        final = Stages.objects.create(
+            event=self.event, stage_name="Last Chance", start_date="2026-01-03",
+            end_date="2026-01-03", number_of_groups=1, stage_format="br - normal",
+            teams_qualifying_from_stage=1, stage_status="completed")
+        self.stage.champion_point_enabled = True
+        self.stage.champion_point_threshold = 80
+        self.stage.point_rush_enabled = True
+        self.stage.point_rush_reward = {"2": 5, "1": 10}
+        self.stage.point_rush_target_stage = final
+        self.stage.save()
+        out = serialize_stage(self.stage, self.partner)
+        self.assertEqual(out["champion_point"], {"threshold": 80})
+        self.assertEqual(out["point_rush"], {"reward": {"1": 10, "2": 5}, "target_stage": "Last Chance"})
+        self._assert_no_forbidden(out)
 
     # ── player ──
     def test_player_serialization_public_handle_only(self):
@@ -458,6 +608,28 @@ class SerializeTests(TestCase):
         self.assertNotIn("Real Name One", json.dumps(out, default=str))  # PII name never leaks
         self.assertNotIn("discord-1", json.dumps(out, default=str))      # discord id never leaks
         self._assert_no_forbidden(out)
+
+    def test_player_carries_the_country_the_site_flags(self):
+        # inbox #220. The site's player flag is ip_country (where the player is), falling back to
+        # the profile country; the partner gets the same, as one name plus the ISO code.
+        from afc_partner_api.serialize import serialize_player, serialize_team
+
+        self.player1.country = "Nigeria"
+        self.player1.ip_country = "GH"
+        self.player1.save(update_fields=["country", "ip_country"])
+        out = serialize_player(self.player1, self.partner, tournament_team=self.tteam)
+        self.assertEqual((out["country"], out["country_code"]), ("Ghana", "GH"))
+
+        self.player1.ip_country = ""
+        self.player1.save(update_fields=["ip_country"])
+        out = serialize_player(self.player1, self.partner, tournament_team=self.tteam)
+        self.assertEqual((out["country"], out["country_code"]), ("Nigeria", "NG"))
+
+        # And inside a team's roster, which is built by the same serializer.
+        self.partner.include_rosters = True
+        self.partner.save()
+        roster = serialize_team(self.tteam, self.partner)["roster"]
+        self.assertEqual([(p["username"], p["country_code"]) for p in roster], [("ProGamer", "NG")])
 
     def test_player_stats_scoped_to_event_not_lifetime(self):
         # Regression guard for the cross-event leak: serialize_player MUST fold only the
@@ -699,8 +871,9 @@ class TeamParticipationStatusTests(TestCase):
     def test_status_is_ungated_and_nothing_else_changed(self):
         # status rides with the public handles, not behind a toggle: a partner already integrated
         # would otherwise stay exactly as unable to tell a competitor from a no-show. Every OTHER
-        # key must still be toggle-gated, so a default (all-off) partner sees these three and
-        # nothing more.
+        # key must still be toggle-gated, so a default (all-off) partner sees these and nothing
+        # more. country + country_code joined the ungated identity on 2026-10-10 (inbox #220):
+        # the team's flag, which the site shows to anyone.
         from afc_partner_api.serialize import serialize_team
 
         tteam = self._team(status="active")
@@ -708,7 +881,7 @@ class TeamParticipationStatusTests(TestCase):
 
         out = serialize_team(tteam, self.partner)
 
-        self.assertEqual(set(out), {"team", "team_tag", "status"})
+        self.assertEqual(set(out), {"team", "team_tag", "status", "country", "country_code"})
         self.assertEqual(out["team"], "Team 1")
         self.assertEqual(out["status"], "played")
 
@@ -2102,6 +2275,23 @@ class SoloStandingsTests(TestCase):
         import json
         self.assertNotIn("Real SoloKing", json.dumps(rows))
         self.assertNotIn("@x.com", json.dumps(rows))
+
+    def test_solo_standings_carry_points_and_country(self):
+        # inbox #220: the score each row is ranked by, and the player's country.
+        from afc_auth.models import User
+
+        User.objects.filter(username="SoloKing").update(country="NG", ip_country="")
+        User.objects.filter(username="SoloTwo").update(country="Ghana", ip_country="ZA")
+        resp = self.client.get(f"/api/v1/partner/events/{self.event.slug}/standings/",
+                               HTTP_X_API_KEY=self.api_key)
+        rows = resp.json()["results"]
+        # SoloKing: 12 + 6 + 9 + 3 = 30. SoloTwo: 9 + 1 + 12 + 2 = 24.
+        self.assertEqual([(r["username"], r["points"]) for r in rows], [("SoloKing", 30), ("SoloTwo", 24)])
+        self.assertEqual([(r["country"], r["country_code"]) for r in rows],
+                         [("Nigeria", "NG"), ("South Africa", "ZA")])
+        self.assertEqual((rows[0]["placement_points"], rows[0]["kill_points"], rows[0]["booyahs"],
+                          rows[0]["matches_played"]), (21, 9, 1, 2))
+        self.assertNotIn("damage", rows[0])
 
     def test_every_read_of_a_solo_event_answers(self):
         """The whole sync a partner runs, on a solo event: nothing may answer 500."""

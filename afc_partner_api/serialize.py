@@ -26,10 +26,23 @@
 #   • room credentials      - room_id, room_password, room_name
 #   • PII / contact         - contact_email, email, full_name/real names, discord_id,
 #                             discord_role_id (stage/group/waitlist discord role ids)
-#   • internal config/flags - scoring_settings, rankings_verified, is_draft, creator,
-#                             partner_published
+#   • internal config/flags - the raw scoring_settings JSON, rankings_verified, is_draft,
+#                             creator, partner_published
 # `is_native_afc` is derived as `organization_id is None` (a boolean), so partners
 # learn an event is a native AFC event WITHOUT ever receiving the raw org PK.
+#
+# Added UNGATED on 2026-10-10 (owner, inbox #220 + #221), each because the public site
+# already shows it to a signed-out visitor, so a partner learns nothing a spectator cannot:
+#   • country + country_code on every team and player (the flag beside a name on the site;
+#     _country_fields below);
+#   • points on every standings row (the score the row is RANKED by: a table of ranks
+#     without the score that produced them is not a leaderboard);
+#   • the point system (point_system on events and matches, champion_point / point_rush on
+#     stages): the rules shown on the event's Structure tab. It is built field by field from
+#     Match.scoring_settings (_point_system), never passed through raw.
+# The parts of a points breakdown that would reveal a GATED stat stay behind that stat's
+# toggle: placement_points and booyahs behind include_placements, kill_points behind
+# include_kills.
 #
 # Aggregation note: match/team/standings/player stats are folded from the
 # ALREADY-FINALIZED stat rows (TournamentTeamMatchStats for squad/duo events,
@@ -75,6 +88,92 @@ def _media_url(filefield):
     return f"{settings.AFC_API_BASE_URL.rstrip('/')}{path}"
 
 
+# ── country ────────────────────────────────────────────────────────────────────
+def _country_fields(raw):
+    """{"country": "Nigeria", "country_code": "NG"} for a stored country value, both None when
+    it is blank or not a country (inbox #220).
+
+    AFC's country columns hold a mix of ISO codes and names ('NG' and 'Nigeria' are both in
+    production), so the partner gets the ISO 3166-1 alpha-2 code as the key and ONE name per
+    code, whatever spelling the row holds. The resolver is afc_auth.country_grouping, which
+    mirrors the frontend's flag table so the API and the site agree on every value.
+
+    WHICH column is the caller's job, and each caller uses the rule the site's own flag uses:
+      team   -> Team.country (derived from the roster), or a ghost's GhostTeam.country;
+      player -> User.ip_country or User.country (where the player is, profile as fallback).
+    """
+    from afc_auth.country_grouping import country_code, country_display_name
+
+    code = country_code(raw)
+    return {"country": country_display_name(code), "country_code": code}
+
+
+def _player_country(user):
+    """The player-flag rule, the same one afc_player.aggregation and the team roster read."""
+    return _country_fields(user.ip_country or user.country)
+
+
+# ── point system ───────────────────────────────────────────────────────────────
+def _number(value, default=0):
+    """A stored scoring number as JSON: 1.0 -> 1, 0.5 stays 0.5, junk -> the default."""
+    try:
+        n = float(value)
+    except (TypeError, ValueError):
+        return default
+    return int(n) if n.is_integer() else n
+
+
+def _point_system(scoring_settings):
+    """One map's point system, built FIELD BY FIELD from Match.scoring_settings (inbox #221).
+
+    These four values are exactly what scores a map: afc_tournament_and_scrims.result_writes.
+    scoring_context reads them off the match and scoring.compute_team_points applies them, so a
+    partner can recompute any row it is sent. The raw JSON is never passed through: anything
+    else somebody stores in it stays inside.
+
+        {"placement_points": {"1": 12, "2": 9, ...}, "points_per_kill": 1,
+         "points_per_assist": 0, "points_per_1000_damage": 0}
+
+    placement_points is keyed by finishing place as a string (JSON object keys are strings), in
+    place order; a place missing from it scores 0.
+    """
+    s = scoring_settings if isinstance(scoring_settings, dict) else {}
+    table = {}
+    raw_table = s.get("placement_points") if isinstance(s.get("placement_points"), dict) else {}
+    for place, pts in raw_table.items():
+        try:
+            table[int(place)] = _number(pts)
+        except (TypeError, ValueError):
+            continue
+    return {
+        "placement_points": {str(place): table[place] for place in sorted(table)},
+        "points_per_kill": _number(s.get("kill_point", 1), 1),
+        "points_per_assist": _number(s.get("points_per_assist", 0)),
+        "points_per_1000_damage": _number(s.get("points_per_1000_damage", 0)),
+    }
+
+
+def _event_point_system(ev):
+    """(point_system, varies) for a whole event.
+
+    Every map carries its own point system, and an organizer can change one map's. Measured on
+    production 2026-10-10: 70 of the 72 events a partner reads use one point system on every
+    map, 2 do not. So the event carries that point system when every map agrees, and None with
+    varies=True when they do not (each match then carries its own, see serialize_match). An
+    event with no maps yet has None and varies=False.
+    """
+    from afc_tournament_and_scrims.models import Match
+
+    systems = []
+    for raw in Match.objects.filter(group__stage__event=ev).values_list("scoring_settings", flat=True):
+        system = _point_system(raw)
+        if system not in systems:
+            systems.append(system)
+    if len(systems) == 1:
+        return systems[0], False
+    return None, len(systems) > 1
+
+
 # ── event ──────────────────────────────────────────────────────────────────────
 def serialize_event(ev, partner):
     """Public event card: slug + display fields + dates + status. No PKs, no flags.
@@ -93,6 +192,9 @@ def serialize_event(ev, partner):
         "end_date": ev.end_date,
         "is_native_afc": ev.organization_id is None,
     }
+    # The point system the event's maps are scored with (inbox #221), ungated: it is the rules
+    # block on the event's public Structure tab. None + varies=True when maps differ.
+    out["point_system"], out["point_system_varies"] = _event_point_system(ev)
     # Prize pool is a detail field, gated on include_prize.
     if partner.include_prize:
         out["prize_pool"] = ev.prizepool
@@ -126,6 +228,29 @@ def serialize_stage(stage, partner):
         "start_date": stage.start_date,
         "end_date": stage.end_date,
     }
+    # The stage's scoring MODES (inbox #221), part of the point system, ungated like it. Each is
+    # None when the stage does not use it.
+    #   champion_point: a team that reaches `threshold` points then wins a map is champion
+    #                   (afc_tournament_and_scrims.scoring.champion_for_group).
+    #   point_rush:     the lobby's finishing places earn `reward` bonus points, carried into the
+    #                   stage named `target_stage` (scoring.rewards_from_standings). The target
+    #                   is named, never its stage_id.
+    out["champion_point"] = (
+        {"threshold": stage.champion_point_threshold} if stage.champion_point_enabled else None)
+    if stage.point_rush_enabled:
+        reward = {}
+        for place, pts in (stage.point_rush_reward or {}).items():
+            try:
+                reward[int(place)] = _number(pts)
+            except (TypeError, ValueError):
+                continue
+        target = stage.point_rush_target_stage
+        out["point_rush"] = {
+            "reward": {str(place): reward[place] for place in sorted(reward)},
+            "target_stage": target.stage_name if target else None,
+        }
+    else:
+        out["point_rush"] = None
     return out
 
 
@@ -156,6 +281,9 @@ def serialize_match(match, partner):
     out = {
         "match_number": match.match_number,
         "result_inputted": match.result_inputted,
+        # This map's own point system (inbox #221), built field by field (_point_system), never
+        # the raw scoring_settings JSON. Ungated, like the event's.
+        "point_system": _point_system(match.scoring_settings),
     }
     if partner.include_maps:
         out["map"] = match.match_map
@@ -273,6 +401,9 @@ def serialize_team(tt, partner):
     # the only honest field. tt.team is None on a ghost row, so team_tag/logo_url/description
     # fall back to the honest empty value instead of crashing on tt.team.team_tag etc.
     out = {"team": tt.display_name, "team_tag": (None if tt.is_ghost else tt.team.team_tag)}
+    # The team's country (inbox #220): competitor.country is Team.country, or GhostTeam.country
+    # for an imported team, the same value the site draws the team's flag from. Ungated identity.
+    out.update(_country_fields(tt.competitor.country if tt.competitor else None))
 
     # Team BRAND art: the logo a broadcaster puts next to the team's name. Absolute url,
     # None when the team never uploaded one (or the competitor is a ghost).
@@ -290,7 +421,9 @@ def serialize_team(tt, partner):
         TournamentTeamMatchStats.objects
         .filter(tournament_team=tt)
         .aggregate(
-            best_placement=Min("placement"),
+            # Over the maps it PLAYED: a map a team sat out is stored with placement 0
+            # (result_writes), which made "best" 0 for any team that missed one (fixed 2026-10-10).
+            best_placement=Min("placement", filter=Q(placement__gt=0)),
             kills=Sum("kills"),
             damage=Sum("damage"),
             assists=Sum("assists"),
@@ -351,6 +484,8 @@ def serialize_player(user, partner, tournament_team=None):
     truly-global player view; every current caller passes the team.)
     """
     out = {"username": user.username, "in_game_id": user.uid}
+    # The player's country (inbox #220), by the site's player-flag rule. Ungated identity.
+    out.update(_player_country(user))
 
     # Player ESPORT IMAGE: the posed roster photo broadcasters use in lower-thirds and
     # versus cards. It lives on UserProfile, NOT on User (bug found 2026-07-02: consumers
@@ -383,66 +518,44 @@ def serialize_player(user, partner, tournament_team=None):
 
 # ── standings ──────────────────────────────────────────────────────────────────
 #
-# Ranking metric - why `effective_total`, not the stored `total_points` column:
-# the official admin standings view (afc_tournament_and_scrims.views.
-# get_all_leaderboard_details_for_event) does NOT trust the persisted total_points
-# column - it RECOMPUTES the rank metric on read as
-#       effective_total = placement_points + kill_points + bonus_points - penalty_points
-# precisely because total_points can be STALE (e.g. a bonus/penalty edited after the
-# row was first saved). To keep partner rankings aligned with official AFC standings we
-# compute the SAME effective_total here and order by it, with the admin view's leading
-# tiebreakers that are well-defined over an event-wide fold:
-#       -effective_total, -total_booyah (1st-place finishes), -total_kills.
+# ONE RANKING, THE SITE'S (inbox #220, 2026-10-10). Squad and duo standings are built by
+# afc_tournament_and_scrims.round_robin._aggregate_team_standings over every map of the
+# event: the shared core behind the event page's Combined tab (whole event), the broadcast
+# overlay feed and advancement seeding. A partner's table is therefore the table a visitor
+# sees on the Combined tab, row for row.
 #
-# Honest scope note (so this comment can't drift false like the old one): the admin view
-# is computed PER LOBBY/GROUP and carries two extra steps we deliberately do NOT
-# replicate in this event-wide partner aggregate - (a) its final `last_match_placement`
-# tiebreaker (a per-group "placement in the latest match" subquery) and (b) the
-# scoring-mode carry-over overlay. Those are lobby-local; the partner standings are a
-# single event-wide ranking. We match the admin's PRIMARY ordering exactly; the residual
-# last-match tiebreaker only ever matters when effective_total, booyah, AND kills all tie.
+# This module used to fold the rows itself, and the copy had drifted from the site in three
+# ways. Measured on production 2026-10-10 over the 72 events a partner reads: 7 ranked
+# differently from the site, and 1 merged every imported team into a single nameless row.
+#   1. The score. The site ranks by the STORED per-map total_points (placement + kill +
+#      ASSIST + DAMAGE + bonus - penalty, written by scoring.compute_team_points). The copy
+#      re-derived placement + kill + bonus - penalty, dropping assist and damage points.
+#   2. Ties. The site breaks a tie on points by booyahs, kills, then the placement in the
+#      last map played, or by the order the organizer arranged (event.tie_breakers). The copy
+#      stopped at kills.
+#   3. Imported teams. The copy grouped by tournament_team__team__team_name, which is NULL for
+#      every ghost team, so all of them collapsed into one row named null.
+#
+# Solo events have no shared event-wide core (the site's Combined tab is team only), so the
+# solo fold stays here, scored the way the admin standings view scores a solo lobby:
+# placement + kill + bonus - penalty (a solo row's stored total_points leaves bonus and
+# penalty out, scoring.compute_solo_points).
 
 
 def serialize_standings(event, partner):
-    """Event-wide final standings: a ranked list of competitors with public handle +
-    toggled stats. Reads from the ALREADY-FINALIZED stat rows and ranks by the same
-    recomputed `effective_total` metric the admin standings view uses (see the module
-    comment above for why total_points is NOT trusted), then assigns a 1-based `rank`.
+    """Event-wide standings: ranked rows carrying a public handle, the country, the score
+    (`points`) and the toggled stats. Never a competitor or team PK.
 
-    Solo events fold SoloPlayerMatchStats by competitor; squad/duo events fold
-    TournamentTeamMatchStats by team. Either way we emit ONLY a public handle, the
-    rank, and the toggled-on stat fields - never the underlying competitor/team PK.
+    Solo events rank players (username + in_game_id); squad and duo events rank teams.
     """
     if event.participant_type == "solo":
         return _solo_standings(event, partner)
     return _team_standings(event, partner)
 
 
-# Booyah = a 1st-place finish. Counting these mirrors the admin view's `total_booyah`
-# tiebreaker (Sum of "1 when placement==1 else 0") so partner and official ties break
-# the same way.
-#
-# AGGREGATE ROWS (owner 2026-08-20, external results import): a row with is_aggregate=True
-# summarises a whole group and stores placement=NULL, so the placement==1 test below matches nothing
-# no matter how many times that team actually won. The true count lives in booyah_count, which is
-# exactly why that field exists: it cannot be derived from a summed row. Take booyah_count for an
-# aggregate row and fall back to the placement test for every ordinary row, where booyah_count is 0
-# and counting placement==1 remains correct.
-_BOOYAH = Sum(
-    Case(
-        When(is_aggregate=True, then="booyah_count"),
-        When(placement=1, then=Value(1)),
-        default=Value(0),
-        output_field=IntegerField(),
-    )
-)
-
-# The SOLO twin of _BOOYAH (inbox #202, 2026-10-09). _BOOYAH reads `is_aggregate` and
-# `booyah_count`, which exist only on TournamentTeamMatchStats; a solo row has neither, so using
-# it on SoloPlayerMatchStats raised FieldError and every solo event's standings answered 500.
-# Found because a partner's hourly sync ended on detty-december-solos/standings/ every hour, and
-# its HTTP client treats a 500 as a failed run. A solo row is always one real match, so a booyah
-# is simply a first place.
+# The solo booyah: a first place. A solo row is always one real match (the imported aggregate
+# rows of the external results import are team rows only), so there is no booyah_count to read.
+# Using the TEAM expression here is what answered 500 on every solo event (inbox #202).
 _SOLO_BOOYAH = Sum(
     Case(
         When(placement=1, then=Value(1)),
@@ -451,10 +564,8 @@ _SOLO_BOOYAH = Sum(
     )
 )
 
-# Recomputed-on-read rank metric, identical to the admin view's `effective_total`
-# (placement + kill + bonus - penalty). We never order by the stored total_points,
-# which can be stale.
-_EFFECTIVE_TOTAL = (
+# The solo score, as the admin standings view computes it for a solo lobby.
+_SOLO_POINTS = (
     Coalesce(Sum("placement_points"), 0)
     + Coalesce(Sum("kill_points"), 0)
     + Coalesce(Sum("bonus_points"), 0)
@@ -463,33 +574,42 @@ _EFFECTIVE_TOTAL = (
 
 
 def _team_standings(event, partner):
-    # Fold every team's finalized match rows in this event into one summary per team,
-    # then rank by recomputed effective_total (admin parity), booyahs, kills - winners
-    # first. total_points is still summed only to expose it; it is NOT the sort key.
-    rows = (
-        TournamentTeamMatchStats.objects
-        .filter(tournament_team__event=event)
-        .values("tournament_team__team__team_name")
-        .annotate(
-            effective_total=_EFFECTIVE_TOTAL,
-            total_booyah=_BOOYAH,
-            total_points=Sum("total_points"),
-            kills=Sum("kills"),
-            damage=Sum("damage"),
-            assists=Sum("assists"),
-            best_placement=Min("placement"),
-            # Sum(matches_counted), not Count(rows): an aggregate row stands for a whole group and
-            # carries its real span in matches_counted. Ordinary rows default to 1, so this returns
-            # what it always did for them (owner 2026-08-20).
-            matches_played=Sum("matches_counted"),
+    from afc_tournament_and_scrims import round_robin
+
+    stats = TournamentTeamMatchStats.objects.filter(match__group__stage__event=event)
+    ranked = round_robin._aggregate_team_standings(stats, event=event)
+
+    # The three columns a partner already received that the shared core does not carry: damage,
+    # assists and the best finish. One grouped query, joined on tournament_team_id, which is used
+    # here as a dict key and never emitted. Best finish is over PLAYED maps (a map a team sat
+    # out is stored with placement 0).
+    extra = {
+        r["tournament_team_id"]: r
+        for r in stats.values("tournament_team_id").annotate(
+            damage=Coalesce(Sum("damage"), 0),
+            assists=Coalesce(Sum("assists"), 0),
+            best_placement=Min("placement", filter=Q(placement__gt=0)),
         )
-        .order_by("-effective_total", "-total_booyah", "-kills")
-    )
+    }
+
     out = []
-    for i, r in enumerate(rows, start=1):
-        # rank is a derived ordinal; team_name is the public handle. No PKs.
-        entry = {"rank": i, "team": r["tournament_team__team__team_name"]}
-        _apply_standings_toggles(entry, r, partner)
+    for i, r in enumerate(ranked, start=1):
+        more = extra.get(r["tournament_team_id"], {})
+        entry = {"rank": i, "team": r["team_name"]}
+        entry.update(_country_fields(r.get("team_country")))
+        _apply_standings_fields(entry, partner, {
+            "points": r["effective_total"],
+            "placement_points": r["placement_sum"],
+            "kill_points": r["kill_sum"],
+            "bonus_points": r["bonus_sum"],
+            "penalty_points": r["penalty_sum"],
+            "booyahs": r["total_booyah"],
+            "matches_played": r["games_played"],
+            "placement": more.get("best_placement"),
+            "kills": r["total_kills"],
+            "damage": more.get("damage", 0),
+            "assists": more.get("assists", 0),
+        })
         out.append(entry)
     return out
 
@@ -498,17 +618,22 @@ def _solo_standings(event, partner):
     rows = (
         SoloPlayerMatchStats.objects
         .filter(match__group__stage__event=event)
-        .values("competitor__user__username", "competitor__user__uid")
+        # Both country columns ride along for the player-flag rule (ip_country or country). They
+        # belong to the same user, so they do not split the GROUP BY.
+        .values("competitor__user__username", "competitor__user__uid",
+                "competitor__user__ip_country", "competitor__user__country")
         .annotate(
-            effective_total=_EFFECTIVE_TOTAL,
-            # _SOLO_BOOYAH, never _BOOYAH: see the note above it.
-            total_booyah=_SOLO_BOOYAH,
-            total_points=Sum("total_points"),
-            kills=Sum("kills"),
-            best_placement=Min("placement"),
+            points=_SOLO_POINTS,
+            placement_points=Coalesce(Sum("placement_points"), 0),
+            kill_points=Coalesce(Sum("kill_points"), 0),
+            bonus_points=Coalesce(Sum("bonus_points"), 0),
+            penalty_points=Coalesce(Sum("penalty_points"), 0),
+            booyahs=_SOLO_BOOYAH,
+            kills=Coalesce(Sum("kills"), 0),
+            best_placement=Min("placement", filter=Q(placement__gt=0)),
             matches_played=Count("id"),
         )
-        .order_by("-effective_total", "-total_booyah", "-kills")
+        .order_by("-points", "-booyahs", "-kills")
     )
     out = []
     for i, r in enumerate(rows, start=1):
@@ -517,7 +642,18 @@ def _solo_standings(event, partner):
             "username": r["competitor__user__username"],
             "in_game_id": r["competitor__user__uid"],
         }
-        _apply_standings_toggles(entry, r, partner)
+        entry.update(_country_fields(r["competitor__user__ip_country"] or r["competitor__user__country"]))
+        _apply_standings_fields(entry, partner, {
+            "points": r["points"],
+            "placement_points": r["placement_points"],
+            "kill_points": r["kill_points"],
+            "bonus_points": r["bonus_points"],
+            "penalty_points": r["penalty_points"],
+            "booyahs": r["booyahs"],
+            "matches_played": r["matches_played"],
+            "placement": r["best_placement"],
+            "kills": r["kills"],
+        })
         out.append(entry)
     return out
 
@@ -585,16 +721,29 @@ def serialize_design(design, partner):
     return out
 
 
-def _apply_standings_toggles(entry, row, partner):
-    """Copy ONLY the toggled-on aggregated stats from an annotated standings row into the
-    public entry. `row` is a dict from a .values().annotate() queryset; we never spread
-    it wholesale (that would leak the competitor/team key), only pull named stats."""
+def _apply_standings_fields(entry, partner, values):
+    """Copy a standings row's numbers into the public entry, each behind the toggle that guards
+    the stat it reveals. `values` is a dict of NAMED numbers built by the caller, never a raw
+    queryset row, so no team or competitor key can ride along.
+
+    Ungated (inbox #220): points, the score the row is ranked by, with the adjustments it
+    includes (bonus_points, penalty_points) and matches_played. Gated: placement,
+    placement_points and booyahs reveal finishing places (include_placements); kills and
+    kill_points reveal kills (include_kills); damage and assists their own toggles. damage and
+    assists are absent from solo rows because a solo event does not record them.
+    """
+    entry["points"] = values["points"] or 0
+    entry["bonus_points"] = values["bonus_points"] or 0
+    entry["penalty_points"] = values["penalty_points"] or 0
+    entry["matches_played"] = values["matches_played"] or 0
     if partner.include_placements:
-        entry["placement"] = row.get("best_placement")
+        entry["placement"] = values["placement"]
+        entry["placement_points"] = values["placement_points"] or 0
+        entry["booyahs"] = values["booyahs"] or 0
     if partner.include_kills:
-        entry["kills"] = row.get("kills") or 0
-    # damage/assists only exist on the team aggregate; .get() is None for solo rows.
-    if partner.include_damage and "damage" in row:
-        entry["damage"] = row.get("damage") or 0
-    if partner.include_assists and "assists" in row:
-        entry["assists"] = row.get("assists") or 0
+        entry["kills"] = values["kills"] or 0
+        entry["kill_points"] = values["kill_points"] or 0
+    if partner.include_damage and "damage" in values:
+        entry["damage"] = values["damage"] or 0
+    if partner.include_assists and "assists" in values:
+        entry["assists"] = values["assists"] or 0
