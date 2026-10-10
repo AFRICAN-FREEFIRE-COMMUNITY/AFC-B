@@ -5006,6 +5006,181 @@ def _event_not_found():
     return Response({"message": "Event not found.", "code": "event_not_found"}, status=404)
 
 
+def _public_group_overall(event, stage, group, results_hidden):
+    """One group's OVERALL standings as the public tournament page shows them, signed in or not.
+
+    ONE builder for both public event endpoints (owner, inbox #226, 2026-10-10). get_event_details
+    (signed in) and get_event_details_not_logged_in (signed out) each carried their own copy of this
+    block, and the signed-out copy had lost the step that lists teams drawn into the group with no
+    result yet: on DYNASTY CUP GRAND FINALS SSA a visitor signed in saw Xrootz at 0 in the Grand
+    Finals and a visitor signed out did not. A table is not a per-viewer thing, so both endpoints call
+    this and test_public_group_tables (afc_tournament_and_scrims) holds them equal.
+
+    Returns the materialised list of row dicts: the stored stats ranked exactly like the results
+    editor (PUBLIC == ADMIN, owner 2026-07-06), the seeded-at-0 rows appended, and the Point-Rush
+    carry-over folded in (skipped while results are withheld; the callers return [] then anyway).
+    """
+    # -------- OVERALL LEADERBOARD --------
+    # PUBLIC == ADMIN (owner 2026-07-06): the public page must show EXACTLY what the
+    # admin/organizer results editor collected + set + edited - same stored stats, same
+    # computed columns, and the SAME ranking/tiebreak. This used to sum only total_points and
+    # order by (-total_points,-total_kills,name), omitting the booyah + last-map-placement
+    # tiebreaks the editor (get_all_leaderboard_details_for_event) uses, so equal-point teams
+    # ranked DIFFERENTLY on the public page than on the editor. The annotations + .order_by()
+    # below are now byte-identical to that editor builder (booyah = Sum(placement==1),
+    # effective_total, last_match_placement=last map's stored placement, 999 when none).
+    if event.participant_type == "solo":
+        last_placement_subq = Subquery(
+            SoloPlayerMatchStats.objects
+            # placement__gt=0 (owner rule #6, 2026-07-06): the last-map tiebreak is the placement
+            # in the most recent map the competitor ACTUALLY PLACED in. A not-played map stores
+            # placement=0, which would sort BEST (0 < any real rank); excluding it makes a team
+            # that sat out the last map fall to 999 (worst) instead of jumping to the top.
+            .filter(match__group=group, competitor_id=OuterRef("competitor_id"), placement__gt=0)
+            .order_by("-match__match_number").values("placement")[:1]
+        )
+        overall = (
+            SoloPlayerMatchStats.objects
+            .filter(match__group=group)
+            .values("competitor_id", "competitor__user__username")
+            .annotate(
+                matches_played=Count("match_id", distinct=True),
+                total_kills=Coalesce(Sum("kills"), 0),
+                total_booyah=Coalesce(Sum(Case(
+                    When(placement=1, then=Value(1)), default=Value(0),
+                    output_field=IntegerField())), 0),
+                # placement_sum: summed placement points, surfaced so the standings can show
+                # the placement-points contribution as its own column, not just the combined
+                # total (owner 2026-06-15). Public event-detail surface (TournamentStructure).
+                placement_sum=Coalesce(Sum("placement_points"), 0),
+                kill_sum=Coalesce(Sum("kill_points"), 0),
+                bonus_sum=Coalesce(Sum("bonus_points"), 0),
+                penalty_sum=Coalesce(Sum("penalty_points"), 0),
+                total_points=Coalesce(Sum("total_points"), 0),
+                effective_total=(
+                    Coalesce(Sum("placement_points"), 0) + Coalesce(Sum("kill_points"), 0) +
+                    Coalesce(Sum("bonus_points"), 0) - Coalesce(Sum("penalty_points"), 0)
+                ),
+                last_match_placement=Coalesce(last_placement_subq, Value(999), output_field=IntegerField()),
+            )
+            .order_by("-effective_total", "-total_booyah", "-total_kills",
+                      "last_match_placement", "competitor__user__username")
+        )
+    else:
+        last_placement_subq = Subquery(
+            TournamentTeamMatchStats.objects
+            # placement__gt=0 (owner rule #6, 2026-07-06): the last-map tiebreak is the placement
+            # in the last map the team actually PLAYED. A not-played last map (placement 0) must
+            # NOT count (else it sorts best=0); excluding it falls back to the last played map, or
+            # 999 via the Coalesce when the team played nothing. Mirrors the solo subqueries.
+            .filter(match__group=group, tournament_team_id=OuterRef("tournament_team_id"), placement__gt=0)
+            .order_by("-match__match_number").values("placement")[:1]
+        )
+        overall = (
+            TournamentTeamMatchStats.objects
+            .filter(match__group=group)
+            .values(
+                "tournament_team_id",
+                "tournament_team__team__team_name",
+                # team_country (owner 2026-07-03): flag beside each standings row's team name.
+                # A .values() keyword expression, so it just joins another GROUP BY column
+                # (country is functionally determined by tournament_team_id, already grouped,
+                # so no row is split). Emitted under the uniform `team_country` key.
+                team_country=F("tournament_team__team__country"),
+                    # Ghost-aware name + country. The plain paths above traverse the
+                    # REAL team and are NULL for a ghost, which is how ghosts fell
+                    # through to the frontend's "Player <id>" placeholder in the
+                    # standings table. New keys, so existing consumers are untouched.
+                    competitor_name=_COMPETITOR_NAME,
+                    competitor_country=_COMPETITOR_COUNTRY,
+                    # The ghost's OWN id, NULL for a real team. The name alone cannot tell
+                    # the frontend whether /teams/<name> exists, so every standings table
+                    # linked imported competitors to a page that cannot be there. Its
+                    # presence IS the ghost test (components/ui/entity-link isGhost), and it
+                    # also addresses the ghost for a future claim action. Functionally
+                    # dependent on tournament_team, so the GROUP BY does not split rows.
+                    competitor_ghost_id=F("tournament_team__ghost_team_id"),
+            )
+            .annotate(
+                matches_played=Count("match_id", distinct=True),
+                total_kills=Coalesce(Sum("kills"), 0),
+                total_booyah=Coalesce(Sum(Case(
+                    When(placement=1, then=Value(1)), default=Value(0),
+                    output_field=IntegerField())), 0),
+                # placement_sum: summed placement points, surfaced so the standings can show
+                # the placement-points contribution as its own column, not just the combined
+                # total (owner 2026-06-15). Public event-detail surface (TournamentStructure).
+                placement_sum=Coalesce(Sum("placement_points"), 0),
+                kill_sum=Coalesce(Sum("kill_points"), 0),
+                bonus_sum=Coalesce(Sum("bonus_points"), 0),
+                penalty_sum=Coalesce(Sum("penalty_points"), 0),
+                total_points=Coalesce(Sum("total_points"), 0),
+                # team effective_total == stored total_points sum (placement+kill+assist+damage
+                # +bonus-penalty), exactly the editor's aliased effective_total. Reference the
+                # total_points annotation via F() (NOT a second Sum, which would nest aggregates).
+                effective_total=F("total_points"),
+                last_match_placement=Coalesce(last_placement_subq, Value(999), output_field=IntegerField()),
+            )
+            .order_by("-effective_total", "-total_booyah", "-total_kills",
+                      "last_match_placement", _COMPETITOR_NAME)
+        )
+
+    # ── Include SEEDED competitors with no results yet (owner 2026-06-21 bug fix) ──
+    # Same gap as the admin leaderboard: the aggregation only yields competitors that already
+    # have stats rows, so a team/player SEEDED into this group but not yet played was missing
+    # from the PUBLIC standings too. Materialize + append a 0 row for each seeded competitor
+    # absent from the list so it shows at 0 points (appended after the DB-ordered real rows).
+    overall = list(overall)
+    if event.participant_type == "solo":
+        _present = {r["competitor_id"] for r in overall}
+        for _sc in StageGroupCompetitor.objects.filter(
+            stage_group=group, player__isnull=False,
+        ).select_related("player__user"):
+            if _sc.player_id in _present:
+                continue
+            # 0-row carries the SAME keys as a real row (incl. the tiebreak keys booyah +
+            # last_match_placement=999) so it sorts identically to the editor's seeded 0-rows.
+            overall.append({
+                "competitor_id": _sc.player_id,
+                "competitor__user__username": (
+                    _sc.player.user.username if _sc.player and _sc.player.user else ""
+                ),
+                "matches_played": 0, "total_kills": 0, "total_booyah": 0,
+                "placement_sum": 0, "kill_sum": 0, "bonus_sum": 0, "penalty_sum": 0,
+                "total_points": 0, "effective_total": 0, "last_match_placement": 999,
+            })
+    else:
+        _present = {r["tournament_team_id"] for r in overall}
+        for _sc in StageGroupCompetitor.objects.filter(
+            stage_group=group, tournament_team__isnull=False,
+        ).select_related("tournament_team__team", "tournament_team__ghost_team"):
+            if _sc.tournament_team_id in _present:
+                continue
+            overall.append({
+                "tournament_team_id": _sc.tournament_team_id,
+                "tournament_team__team__team_name": (
+                    _sc.tournament_team.display_name if _sc.tournament_team else ""
+                ),
+                # Mirror the queryset's team_country key so seeded 0-rows carry the flag too.
+                "team_country": (
+                    _sc.tournament_team.competitor.country if _sc.tournament_team else ""
+                ),
+                "matches_played": 0, "total_kills": 0, "total_booyah": 0,
+                "placement_sum": 0, "kill_sum": 0, "bonus_sum": 0, "penalty_sum": 0,
+                "total_points": 0, "effective_total": 0, "last_match_placement": 999,
+            })
+
+    # ── Point-Rush carry-over overlay (scoring-modes) ─────────────────────────────────────
+    # Fold any bonus banked by an earlier stage that targets THIS stage into the PUBLIC
+    # standings, so the carried-over points show on the user-facing tournament page too - not
+    # only in the admin results editor. Computed on read, never persisted (mirrors the admin
+    # builder). Skipped when results are withheld (overall is returned [] anyway), which also
+    # avoids the extra source-stage ranking queries for the common no-Point-Rush event.
+    if not results_hidden:
+        _apply_public_carry_over(stage, overall, event.participant_type)
+    return overall
+
+
 @api_view(["POST"])
 def get_event_details(request):
     user = None
@@ -5491,164 +5666,8 @@ def get_event_details(request):
                     "stats": list(stats),
                 })
 
-            # -------- OVERALL LEADERBOARD --------
-            # PUBLIC == ADMIN (owner 2026-07-06): the public page must show EXACTLY what the
-            # admin/organizer results editor collected + set + edited - same stored stats, same
-            # computed columns, and the SAME ranking/tiebreak. This used to sum only total_points and
-            # order by (-total_points,-total_kills,name), omitting the booyah + last-map-placement
-            # tiebreaks the editor (get_all_leaderboard_details_for_event) uses, so equal-point teams
-            # ranked DIFFERENTLY on the public page than on the editor. The annotations + .order_by()
-            # below are now byte-identical to that editor builder (booyah = Sum(placement==1),
-            # effective_total, last_match_placement=last map's stored placement, 999 when none).
-            if event.participant_type == "solo":
-                last_placement_subq = Subquery(
-                    SoloPlayerMatchStats.objects
-                    # placement__gt=0 (owner rule #6, 2026-07-06): the last-map tiebreak is the placement
-                    # in the most recent map the competitor ACTUALLY PLACED in. A not-played map stores
-                    # placement=0, which would sort BEST (0 < any real rank); excluding it makes a team
-                    # that sat out the last map fall to 999 (worst) instead of jumping to the top.
-                    .filter(match__group=group, competitor_id=OuterRef("competitor_id"), placement__gt=0)
-                    .order_by("-match__match_number").values("placement")[:1]
-                )
-                overall = (
-                    SoloPlayerMatchStats.objects
-                    .filter(match__group=group)
-                    .values("competitor_id", "competitor__user__username")
-                    .annotate(
-                        matches_played=Count("match_id", distinct=True),
-                        total_kills=Coalesce(Sum("kills"), 0),
-                        total_booyah=Coalesce(Sum(Case(
-                            When(placement=1, then=Value(1)), default=Value(0),
-                            output_field=IntegerField())), 0),
-                        # placement_sum: summed placement points, surfaced so the standings can show
-                        # the placement-points contribution as its own column, not just the combined
-                        # total (owner 2026-06-15). Public event-detail surface (TournamentStructure).
-                        placement_sum=Coalesce(Sum("placement_points"), 0),
-                        kill_sum=Coalesce(Sum("kill_points"), 0),
-                        bonus_sum=Coalesce(Sum("bonus_points"), 0),
-                        penalty_sum=Coalesce(Sum("penalty_points"), 0),
-                        total_points=Coalesce(Sum("total_points"), 0),
-                        effective_total=(
-                            Coalesce(Sum("placement_points"), 0) + Coalesce(Sum("kill_points"), 0) +
-                            Coalesce(Sum("bonus_points"), 0) - Coalesce(Sum("penalty_points"), 0)
-                        ),
-                        last_match_placement=Coalesce(last_placement_subq, Value(999), output_field=IntegerField()),
-                    )
-                    .order_by("-effective_total", "-total_booyah", "-total_kills",
-                              "last_match_placement", "competitor__user__username")
-                )
-            else:
-                last_placement_subq = Subquery(
-                    TournamentTeamMatchStats.objects
-                    # placement__gt=0 (owner rule #6, 2026-07-06): the last-map tiebreak is the placement
-                    # in the last map the team actually PLAYED. A not-played last map (placement 0) must
-                    # NOT count (else it sorts best=0); excluding it falls back to the last played map, or
-                    # 999 via the Coalesce when the team played nothing. Mirrors the solo subqueries.
-                    .filter(match__group=group, tournament_team_id=OuterRef("tournament_team_id"), placement__gt=0)
-                    .order_by("-match__match_number").values("placement")[:1]
-                )
-                overall = (
-                    TournamentTeamMatchStats.objects
-                    .filter(match__group=group)
-                    .values(
-                        "tournament_team_id",
-                        "tournament_team__team__team_name",
-                        # team_country (owner 2026-07-03): flag beside each standings row's team name.
-                        # A .values() keyword expression, so it just joins another GROUP BY column
-                        # (country is functionally determined by tournament_team_id, already grouped,
-                        # so no row is split). Emitted under the uniform `team_country` key.
-                        team_country=F("tournament_team__team__country"),
-                            # Ghost-aware name + country. The plain paths above traverse the
-                            # REAL team and are NULL for a ghost, which is how ghosts fell
-                            # through to the frontend's "Player <id>" placeholder in the
-                            # standings table. New keys, so existing consumers are untouched.
-                            competitor_name=_COMPETITOR_NAME,
-                            competitor_country=_COMPETITOR_COUNTRY,
-                            # The ghost's OWN id, NULL for a real team. The name alone cannot tell
-                            # the frontend whether /teams/<name> exists, so every standings table
-                            # linked imported competitors to a page that cannot be there. Its
-                            # presence IS the ghost test (components/ui/entity-link isGhost), and it
-                            # also addresses the ghost for a future claim action. Functionally
-                            # dependent on tournament_team, so the GROUP BY does not split rows.
-                            competitor_ghost_id=F("tournament_team__ghost_team_id"),
-                    )
-                    .annotate(
-                        matches_played=Count("match_id", distinct=True),
-                        total_kills=Coalesce(Sum("kills"), 0),
-                        total_booyah=Coalesce(Sum(Case(
-                            When(placement=1, then=Value(1)), default=Value(0),
-                            output_field=IntegerField())), 0),
-                        # placement_sum: summed placement points, surfaced so the standings can show
-                        # the placement-points contribution as its own column, not just the combined
-                        # total (owner 2026-06-15). Public event-detail surface (TournamentStructure).
-                        placement_sum=Coalesce(Sum("placement_points"), 0),
-                        kill_sum=Coalesce(Sum("kill_points"), 0),
-                        bonus_sum=Coalesce(Sum("bonus_points"), 0),
-                        penalty_sum=Coalesce(Sum("penalty_points"), 0),
-                        total_points=Coalesce(Sum("total_points"), 0),
-                        # team effective_total == stored total_points sum (placement+kill+assist+damage
-                        # +bonus-penalty), exactly the editor's aliased effective_total. Reference the
-                        # total_points annotation via F() (NOT a second Sum, which would nest aggregates).
-                        effective_total=F("total_points"),
-                        last_match_placement=Coalesce(last_placement_subq, Value(999), output_field=IntegerField()),
-                    )
-                    .order_by("-effective_total", "-total_booyah", "-total_kills",
-                              "last_match_placement", _COMPETITOR_NAME)
-                )
-
-            # ── Include SEEDED competitors with no results yet (owner 2026-06-21 bug fix) ──
-            # Same gap as the admin leaderboard: the aggregation only yields competitors that already
-            # have stats rows, so a team/player SEEDED into this group but not yet played was missing
-            # from the PUBLIC standings too. Materialize + append a 0 row for each seeded competitor
-            # absent from the list so it shows at 0 points (appended after the DB-ordered real rows).
-            overall = list(overall)
-            if event.participant_type == "solo":
-                _present = {r["competitor_id"] for r in overall}
-                for _sc in StageGroupCompetitor.objects.filter(
-                    stage_group=group, player__isnull=False,
-                ).select_related("player__user"):
-                    if _sc.player_id in _present:
-                        continue
-                    # 0-row carries the SAME keys as a real row (incl. the tiebreak keys booyah +
-                    # last_match_placement=999) so it sorts identically to the editor's seeded 0-rows.
-                    overall.append({
-                        "competitor_id": _sc.player_id,
-                        "competitor__user__username": (
-                            _sc.player.user.username if _sc.player and _sc.player.user else ""
-                        ),
-                        "matches_played": 0, "total_kills": 0, "total_booyah": 0,
-                        "placement_sum": 0, "kill_sum": 0, "bonus_sum": 0, "penalty_sum": 0,
-                        "total_points": 0, "effective_total": 0, "last_match_placement": 999,
-                    })
-            else:
-                _present = {r["tournament_team_id"] for r in overall}
-                for _sc in StageGroupCompetitor.objects.filter(
-                    stage_group=group, tournament_team__isnull=False,
-                ).select_related("tournament_team__team", "tournament_team__ghost_team"):
-                    if _sc.tournament_team_id in _present:
-                        continue
-                    overall.append({
-                        "tournament_team_id": _sc.tournament_team_id,
-                        "tournament_team__team__team_name": (
-                            _sc.tournament_team.display_name if _sc.tournament_team else ""
-                        ),
-                        # Mirror the queryset's team_country key so seeded 0-rows carry the flag too.
-                        "team_country": (
-                            _sc.tournament_team.competitor.country if _sc.tournament_team else ""
-                        ),
-                        "matches_played": 0, "total_kills": 0, "total_booyah": 0,
-                        "placement_sum": 0, "kill_sum": 0, "bonus_sum": 0, "penalty_sum": 0,
-                        "total_points": 0, "effective_total": 0, "last_match_placement": 999,
-                    })
-
-            # ── Point-Rush carry-over overlay (scoring-modes) ─────────────────────────────────────
-            # Fold any bonus banked by an earlier stage that targets THIS stage into the PUBLIC
-            # standings, so the carried-over points show on the user-facing tournament page too - not
-            # only in the admin results editor. Computed on read, never persisted (mirrors the admin
-            # builder). Skipped when results are withheld (overall is returned [] anyway), which also
-            # avoids the extra source-stage ranking queries for the common no-Point-Rush event.
-            if not results_hidden:
-                _apply_public_carry_over(stage, overall, event.participant_type)
+            # One builder for the group's standings, shared with the other public endpoint (#226).
+            overall = _public_group_overall(event, stage, group, results_hidden)
 
             groups_payload.append({
                 "group_id": group.group_id,
@@ -6247,103 +6266,8 @@ def get_event_details_not_logged_in(request):
                     "stats": list(stats),
                 })
 
-            # overall leaderboard for group - PUBLIC == ADMIN (owner 2026-07-06): identical annotations
-            # + tiebreak to get_all_leaderboard_details_for_event (and to the logged-in public endpoint
-            # above), so anonymous, logged-in, and admin views rank the same stored stats identically.
-            if event.participant_type == "solo":
-                last_placement_subq = Subquery(
-                    SoloPlayerMatchStats.objects
-                    # placement__gt=0 (owner rule #6, 2026-07-06): the last-map tiebreak is the placement
-                    # in the most recent map the competitor ACTUALLY PLACED in. A not-played map stores
-                    # placement=0, which would sort BEST (0 < any real rank); excluding it makes a team
-                    # that sat out the last map fall to 999 (worst) instead of jumping to the top.
-                    .filter(match__group=group, competitor_id=OuterRef("competitor_id"), placement__gt=0)
-                    .order_by("-match__match_number").values("placement")[:1]
-                )
-                overall = (SoloPlayerMatchStats.objects
-                           .filter(match__group=group)
-                           .values("competitor_id", "competitor__user__username")
-                           .annotate(
-                               matches_played=Count("match_id", distinct=True),
-                               total_kills=Coalesce(Sum("kills"), 0),
-                               total_booyah=Coalesce(Sum(Case(
-                                   When(placement=1, then=Value(1)), default=Value(0),
-                                   output_field=IntegerField())), 0),
-                               # placement_sum: summed placement points, surfaced as its own standings
-                               # column (owner 2026-06-15). Public event-detail surface.
-                               placement_sum=Coalesce(Sum("placement_points"), 0),
-                               kill_sum=Coalesce(Sum("kill_points"), 0),
-                               bonus_sum=Coalesce(Sum("bonus_points"), 0),
-                               penalty_sum=Coalesce(Sum("penalty_points"), 0),
-                               total_points=Coalesce(Sum("total_points"), 0),
-                               effective_total=(
-                                   Coalesce(Sum("placement_points"), 0) + Coalesce(Sum("kill_points"), 0) +
-                                   Coalesce(Sum("bonus_points"), 0) - Coalesce(Sum("penalty_points"), 0)
-                               ),
-                               last_match_placement=Coalesce(last_placement_subq, Value(999), output_field=IntegerField()),
-                           )
-                           .order_by("-effective_total", "-total_booyah", "-total_kills",
-                                     "last_match_placement", "competitor__user__username"))
-            else:
-                last_placement_subq = Subquery(
-                    TournamentTeamMatchStats.objects
-                    # placement__gt=0 (owner rule #6, 2026-07-06): the last-map tiebreak is the placement
-                    # in the last map the team actually PLAYED. A not-played last map (placement 0) must
-                    # NOT count (else it sorts best=0); excluding it falls back to the last played map, or
-                    # 999 via the Coalesce when the team played nothing. Mirrors the solo subqueries.
-                    .filter(match__group=group, tournament_team_id=OuterRef("tournament_team_id"), placement__gt=0)
-                    .order_by("-match__match_number").values("placement")[:1]
-                )
-                overall = (TournamentTeamMatchStats.objects
-                           .filter(match__group=group)
-                           .values(
-                               "tournament_team_id",
-                               "tournament_team__team__team_name",
-                               # team_country (owner 2026-07-03): flag on each anonymous standings row.
-                               # Extra GROUP BY column functionally determined by the already-grouped
-                               # tournament_team_id, so no row splits. Uniform `team_country` key.
-                               team_country=F("tournament_team__team__country"),
-                            # Ghost-aware name + country. The plain paths above traverse the
-                            # REAL team and are NULL for a ghost, which is how ghosts fell
-                            # through to the frontend's "Player <id>" placeholder in the
-                            # standings table. New keys, so existing consumers are untouched.
-                            competitor_name=_COMPETITOR_NAME,
-                            competitor_country=_COMPETITOR_COUNTRY,
-                            # The ghost's OWN id, NULL for a real team. The name alone cannot tell
-                            # the frontend whether /teams/<name> exists, so every standings table
-                            # linked imported competitors to a page that cannot be there. Its
-                            # presence IS the ghost test (components/ui/entity-link isGhost), and it
-                            # also addresses the ghost for a future claim action. Functionally
-                            # dependent on tournament_team, so the GROUP BY does not split rows.
-                            competitor_ghost_id=F("tournament_team__ghost_team_id"),
-                           )
-                           .annotate(
-                               matches_played=Count("match_id", distinct=True),
-                               total_kills=Coalesce(Sum("kills"), 0),
-                               total_booyah=Coalesce(Sum(Case(
-                                   When(placement=1, then=Value(1)), default=Value(0),
-                                   output_field=IntegerField())), 0),
-                               # placement_sum: summed placement points, surfaced as its own standings
-                               # column (owner 2026-06-15). Public event-detail surface.
-                               placement_sum=Coalesce(Sum("placement_points"), 0),
-                               kill_sum=Coalesce(Sum("kill_points"), 0),
-                               bonus_sum=Coalesce(Sum("bonus_points"), 0),
-                               penalty_sum=Coalesce(Sum("penalty_points"), 0),
-                               total_points=Coalesce(Sum("total_points"), 0),
-                               # F() reference to the total_points annotation (not a nested Sum).
-                               effective_total=F("total_points"),
-                               last_match_placement=Coalesce(last_placement_subq, Value(999), output_field=IntegerField()),
-                           )
-                           .order_by("-effective_total", "-total_booyah", "-total_kills",
-                                     "last_match_placement", _COMPETITOR_NAME))
-
-            # ── Point-Rush carry-over overlay (anon public view) ──────────────────────────────────
-            # Same on-read overlay as get_event_details: materialise the standings so we can fold the
-            # carried-over bonus (banked by an earlier stage targeting THIS stage) into the rows the
-            # anonymous tournament page shows. Skipped when results are withheld (output is [] anyway).
-            overall = list(overall)
-            if not results_hidden:
-                _apply_public_carry_over(stage, overall, event.participant_type)
+            # One builder for the group's standings, shared with the other public endpoint (#226).
+            overall = _public_group_overall(event, stage, group, results_hidden)
 
             groups_payload.append({
                 "group_id": group.group_id,
