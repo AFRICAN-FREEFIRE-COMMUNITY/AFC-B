@@ -26,10 +26,23 @@
 #   • room credentials      - room_id, room_password, room_name
 #   • PII / contact         - contact_email, email, full_name/real names, discord_id,
 #                             discord_role_id (stage/group/waitlist discord role ids)
-#   • internal config/flags - scoring_settings, rankings_verified, is_draft, creator,
-#                             partner_published
+#   • internal config/flags - the raw scoring_settings JSON, rankings_verified, is_draft,
+#                             creator, partner_published
 # `is_native_afc` is derived as `organization_id is None` (a boolean), so partners
 # learn an event is a native AFC event WITHOUT ever receiving the raw org PK.
+#
+# Added UNGATED on 2026-10-10 (owner, inbox #220 + #221), each because the public site
+# already shows it to a signed-out visitor, so a partner learns nothing a spectator cannot:
+#   • country + country_code on every team and player (the flag beside a name on the site;
+#     _country_fields below);
+#   • points on every standings row (the score the row is RANKED by: a table of ranks
+#     without the score that produced them is not a leaderboard);
+#   • the point system (point_system on events and matches, champion_point / point_rush on
+#     stages): the rules shown on the event's Structure tab. It is built field by field from
+#     Match.scoring_settings (_point_system), never passed through raw.
+# The parts of a points breakdown that would reveal a GATED stat stay behind that stat's
+# toggle: placement_points and booyahs behind include_placements, kill_points behind
+# include_kills.
 #
 # Aggregation note: match/team/standings/player stats are folded from the
 # ALREADY-FINALIZED stat rows (TournamentTeamMatchStats for squad/duo events,
@@ -75,6 +88,121 @@ def _media_url(filefield):
     return f"{settings.AFC_API_BASE_URL.rstrip('/')}{path}"
 
 
+# ── country ────────────────────────────────────────────────────────────────────
+def _country_fields(raw):
+    """{"country": "Nigeria", "country_code": "NG"} for a stored country value, both None when
+    it is blank or not a country (inbox #220).
+
+    AFC's country columns hold a mix of ISO codes and names ('NG' and 'Nigeria' are both in
+    production), so the partner gets the ISO 3166-1 alpha-2 code as the key and ONE name per
+    code, whatever spelling the row holds. The resolver is afc_auth.country_grouping, which
+    mirrors the frontend's flag table so the API and the site agree on every value.
+
+    WHICH column is the caller's job, and each caller uses the rule the site's own flag uses:
+      team   -> Team.country (derived from the roster), or a ghost's GhostTeam.country;
+      player -> User.ip_country or User.country (where the player is, profile as fallback).
+    """
+    from afc_auth.country_grouping import country_code, country_display_name
+
+    code = country_code(raw)
+    return {"country": country_display_name(code), "country_code": code}
+
+
+def _player_country(user):
+    """The player-flag rule, the same one afc_player.aggregation and the team roster read."""
+    return _country_fields(user.ip_country or user.country)
+
+
+# ── images on table rows ───────────────────────────────────────────────────────
+# Owner, inbox #224 (2026-10-10): "does the data send out team logos and player esport images?"
+# They always went out on /teams/ (logo_url) and /players/ + rosters (esports_image_url), behind
+# include_media. The standings and the /results/ tree now carry them too, on every TABLE row and
+# bracket side, so a partner can draw a leaderboard from one response. Map result rows stay lean.
+def _team_logos(tournament_team_ids):
+    """{tournament_team_id: absolute logo url or None}, one query. An imported (ghost) team has
+    no AFC account and so no logo."""
+    from afc_tournament_and_scrims.models import TournamentTeam
+
+    return {tt.pk: (None if tt.is_ghost else _media_url(tt.team.team_logo))
+            for tt in TournamentTeam.objects.filter(pk__in=list(tournament_team_ids))
+            .select_related("team")}
+
+
+def _player_image(user):
+    """The player's esport (roster) photo, absolute, or None.
+
+    It lives on UserProfile, NOT on User (bug found 2026-07-02: consumers read user.esports_pic,
+    which does not exist, so images never showed), so it is resolved through canonical_profile,
+    the SAME lowest-profile_id row the writers (upload_esport_image) and every other reader use.
+    Duplicate UserProfile rows exist in prod, so any other row can miss an uploaded image. A
+    PUBLIC promo headshot, not PII: no real name, email or discord ever crosses."""
+    from afc_auth.models import canonical_profile
+
+    profile = canonical_profile(user)
+    return _media_url(profile.esports_pic) if profile else None
+
+
+# ── point system ───────────────────────────────────────────────────────────────
+def _number(value, default=0):
+    """A stored scoring number as JSON: 1.0 -> 1, 0.5 stays 0.5, junk -> the default."""
+    try:
+        n = float(value)
+    except (TypeError, ValueError):
+        return default
+    return int(n) if n.is_integer() else n
+
+
+def _point_system(scoring_settings):
+    """One map's point system, built FIELD BY FIELD from Match.scoring_settings (inbox #221).
+
+    These four values are exactly what scores a map: afc_tournament_and_scrims.result_writes.
+    scoring_context reads them off the match and scoring.compute_team_points applies them, so a
+    partner can recompute any row it is sent. The raw JSON is never passed through: anything
+    else somebody stores in it stays inside.
+
+        {"placement_points": {"1": 12, "2": 9, ...}, "points_per_kill": 1,
+         "points_per_assist": 0, "points_per_1000_damage": 0}
+
+    placement_points is keyed by finishing place as a string (JSON object keys are strings), in
+    place order; a place missing from it scores 0.
+    """
+    s = scoring_settings if isinstance(scoring_settings, dict) else {}
+    table = {}
+    raw_table = s.get("placement_points") if isinstance(s.get("placement_points"), dict) else {}
+    for place, pts in raw_table.items():
+        try:
+            table[int(place)] = _number(pts)
+        except (TypeError, ValueError):
+            continue
+    return {
+        "placement_points": {str(place): table[place] for place in sorted(table)},
+        "points_per_kill": _number(s.get("kill_point", 1), 1),
+        "points_per_assist": _number(s.get("points_per_assist", 0)),
+        "points_per_1000_damage": _number(s.get("points_per_1000_damage", 0)),
+    }
+
+
+def _event_point_system(ev):
+    """(point_system, varies) for a whole event.
+
+    Every map carries its own point system, and an organizer can change one map's. Measured on
+    production 2026-10-10: 70 of the 72 events a partner reads use one point system on every
+    map, 2 do not. So the event carries that point system when every map agrees, and None with
+    varies=True when they do not (each match then carries its own, see serialize_match). An
+    event with no maps yet has None and varies=False.
+    """
+    from afc_tournament_and_scrims.models import Match
+
+    systems = []
+    for raw in Match.objects.filter(group__stage__event=ev).values_list("scoring_settings", flat=True):
+        system = _point_system(raw)
+        if system not in systems:
+            systems.append(system)
+    if len(systems) == 1:
+        return systems[0], False
+    return None, len(systems) > 1
+
+
 # ── event ──────────────────────────────────────────────────────────────────────
 def serialize_event(ev, partner):
     """Public event card: slug + display fields + dates + status. No PKs, no flags.
@@ -93,6 +221,22 @@ def serialize_event(ev, partner):
         "end_date": ev.end_date,
         "is_native_afc": ev.organization_id is None,
     }
+    # The point system the event's maps are scored with (inbox #221), ungated: it is the rules
+    # block on the event's public Structure tab. None + varies=True when maps differ.
+    out["point_system"], out["point_system_varies"] = _event_point_system(ev)
+    # Where the event is decided, and whether that stage's results are in (inbox #222). Measured
+    # on production 2026-10-10: events reach partners marked completed whose semi-final and final
+    # were never entered (DECA CUP Season 5, FFWS Fall SSA). Their final standings then rank the
+    # last stage that HAS results, and without this a partner would take that stage's leader for
+    # the champion. final_stage is the stage marked as the finals, else the last one
+    # (views._final_stage_for_event, the same choice final_standings makes).
+    from afc_tournament_and_scrims.views import _final_stage_for_event
+
+    final = _final_stage_for_event(ev)
+    out["final_stage"] = final.stage_name if final else None
+    stats = SoloPlayerMatchStats if ev.participant_type == "solo" else TournamentTeamMatchStats
+    out["final_stage_has_results"] = bool(final) and stats.objects.filter(
+        match__group__stage=final).exists()
     # Prize pool is a detail field, gated on include_prize.
     if partner.include_prize:
         out["prize_pool"] = ev.prizepool
@@ -111,13 +255,12 @@ def serialize_event(ev, partner):
 def serialize_stage(stage, partner):
     """Public stage row: name + 1-based order within the event + dates + status.
 
-    `order` is computed from the stage's position among its event's stages (ordered
-    by stage_id, the same ordering the admin standings view uses) rather than exposing
-    the raw stage_id - partners get a stable sequence number, never a DB PK.
+    `order` is the stage's 1-based position in RUNNING order, the order the tournament page
+    shows: the organizer's manual order (stage_order), then start date (inbox #222,
+    2026-10-10; it used to count by stage_id, which is creation order, so a reordered event
+    came out in the wrong sequence). A sequence number, never the raw stage_id.
     """
-    # Position of this stage among its siblings, ordered by stage_id (creation order).
-    # Counting stages created before-or-at this one yields a 1-based ordinal.
-    order = (stage.event.stages.filter(stage_id__lte=stage.stage_id).count())
+    order = [s.stage_id for s in _stages_in_running_order(stage.event)].index(stage.stage_id) + 1
     out = {
         "stage_name": stage.stage_name,
         "order": order,
@@ -126,6 +269,29 @@ def serialize_stage(stage, partner):
         "start_date": stage.start_date,
         "end_date": stage.end_date,
     }
+    # The stage's scoring MODES (inbox #221), part of the point system, ungated like it. Each is
+    # None when the stage does not use it.
+    #   champion_point: a team that reaches `threshold` points then wins a map is champion
+    #                   (afc_tournament_and_scrims.scoring.champion_for_group).
+    #   point_rush:     the lobby's finishing places earn `reward` bonus points, carried into the
+    #                   stage named `target_stage` (scoring.rewards_from_standings). The target
+    #                   is named, never its stage_id.
+    out["champion_point"] = (
+        {"threshold": stage.champion_point_threshold} if stage.champion_point_enabled else None)
+    if stage.point_rush_enabled:
+        reward = {}
+        for place, pts in (stage.point_rush_reward or {}).items():
+            try:
+                reward[int(place)] = _number(pts)
+            except (TypeError, ValueError):
+                continue
+        target = stage.point_rush_target_stage
+        out["point_rush"] = {
+            "reward": {str(place): reward[place] for place in sorted(reward)},
+            "target_stage": target.stage_name if target else None,
+        }
+    else:
+        out["point_rush"] = None
     return out
 
 
@@ -156,6 +322,9 @@ def serialize_match(match, partner):
     out = {
         "match_number": match.match_number,
         "result_inputted": match.result_inputted,
+        # This map's own point system (inbox #221), built field by field (_point_system), never
+        # the raw scoring_settings JSON. Ungated, like the event's.
+        "point_system": _point_system(match.scoring_settings),
     }
     if partner.include_maps:
         out["map"] = match.match_map
@@ -273,6 +442,9 @@ def serialize_team(tt, partner):
     # the only honest field. tt.team is None on a ghost row, so team_tag/logo_url/description
     # fall back to the honest empty value instead of crashing on tt.team.team_tag etc.
     out = {"team": tt.display_name, "team_tag": (None if tt.is_ghost else tt.team.team_tag)}
+    # The team's country (inbox #220): competitor.country is Team.country, or GhostTeam.country
+    # for an imported team, the same value the site draws the team's flag from. Ungated identity.
+    out.update(_country_fields(tt.competitor.country if tt.competitor else None))
 
     # Team BRAND art: the logo a broadcaster puts next to the team's name. Absolute url,
     # None when the team never uploaded one (or the competitor is a ghost).
@@ -290,7 +462,9 @@ def serialize_team(tt, partner):
         TournamentTeamMatchStats.objects
         .filter(tournament_team=tt)
         .aggregate(
-            best_placement=Min("placement"),
+            # Over the maps it PLAYED: a map a team sat out is stored with placement 0
+            # (result_writes), which made "best" 0 for any team that missed one (fixed 2026-10-10).
+            best_placement=Min("placement", filter=Q(placement__gt=0)),
             kills=Sum("kills"),
             damage=Sum("damage"),
             assists=Sum("assists"),
@@ -351,6 +525,8 @@ def serialize_player(user, partner, tournament_team=None):
     truly-global player view; every current caller passes the team.)
     """
     out = {"username": user.username, "in_game_id": user.uid}
+    # The player's country (inbox #220), by the site's player-flag rule. Ungated identity.
+    out.update(_player_country(user))
 
     # Player ESPORT IMAGE: the posed roster photo broadcasters use in lower-thirds and
     # versus cards. It lives on UserProfile, NOT on User (bug found 2026-07-02: consumers
@@ -360,10 +536,7 @@ def serialize_player(user, partner, tournament_team=None):
     # prod, so resolving any other row can miss an image that was really uploaded.
     # This is a PUBLIC promo headshot, not PII: no real name, email or discord ever crosses.
     if partner.include_media:
-        from afc_auth.models import canonical_profile
-
-        profile = canonical_profile(user)
-        out["esports_image_url"] = _media_url(profile.esports_pic) if profile else None
+        out["esports_image_url"] = _player_image(user)
 
     # Only touch the stat tables if at least one stat toggle is on (avoids a needless query).
     if partner.include_kills or partner.include_damage or partner.include_assists:
@@ -383,66 +556,126 @@ def serialize_player(user, partner, tournament_team=None):
 
 # ── standings ──────────────────────────────────────────────────────────────────
 #
-# Ranking metric - why `effective_total`, not the stored `total_points` column:
-# the official admin standings view (afc_tournament_and_scrims.views.
-# get_all_leaderboard_details_for_event) does NOT trust the persisted total_points
-# column - it RECOMPUTES the rank metric on read as
-#       effective_total = placement_points + kill_points + bonus_points - penalty_points
-# precisely because total_points can be STALE (e.g. a bonus/penalty edited after the
-# row was first saved). To keep partner rankings aligned with official AFC standings we
-# compute the SAME effective_total here and order by it, with the admin view's leading
-# tiebreakers that are well-defined over an event-wide fold:
-#       -effective_total, -total_booyah (1st-place finishes), -total_kills.
+# THE FINAL TABLE IS AFC'S OFFICIAL ONE (inbox #220 + #222, 2026-10-10). Squad and duo
+# standings come from afc_tournament_and_scrims.final_standings.event_final_standings, the
+# module behind a team page's "Final placement" and the prize payouts (owner rule
+# 2026-07-14): a team is placed by the LAST stage it played, deeper stages first, and inside
+# that stage by the table the site shows for it (points, configured tie-breakers, Point-Rush
+# carry-over, Champion-Point pin). Every number on a row is from that stage, which the row
+# names in `decided_in`.
 #
-# Honest scope note (so this comment can't drift false like the old one): the admin view
-# is computed PER LOBBY/GROUP and carries two extra steps we deliberately do NOT
-# replicate in this event-wide partner aggregate - (a) its final `last_match_placement`
-# tiebreaker (a per-group "placement in the latest match" subquery) and (b) the
-# scoring-mode carry-over overlay. Those are lobby-local; the partner standings are a
-# single event-wide ranking. We match the admin's PRIMARY ordering exactly; the residual
-# last-match tiebreaker only ever matters when effective_total, booyah, AND kills all tie.
+# This module used to sum every map of the event into one table instead. Measured on
+# production 2026-10-10 over the 71 team events a partner reads: 11 came out in a different
+# order from AFC's official placement, 4 with a different WINNER (DECA CUP Season 5 named
+# NO PRESSURE, the official champion is V-ENT ESPORTS), and one merged every imported team
+# into a single row named null. Its score also dropped assist and damage points.
+#
+# Every table is built from the site's shared aggregator
+# (round_robin._aggregate_team_standings, through final_standings), so a partner's numbers
+# are the site's numbers.
+#
+# Solo events have no official multi-stage module (the site's tables are team based), so a
+# solo table is summed across the maps it covers, scored the way the admin standings view
+# scores a solo lobby: placement + kill + bonus - penalty (a solo row's stored total_points
+# leaves bonus and penalty out, scoring.compute_solo_points).
 
 
 def serialize_standings(event, partner):
-    """Event-wide final standings: a ranked list of competitors with public handle +
-    toggled stats. Reads from the ALREADY-FINALIZED stat rows and ranks by the same
-    recomputed `effective_total` metric the admin standings view uses (see the module
-    comment above for why total_points is NOT trusted), then assigns a 1-based `rank`.
+    """The event's final standings: ranked rows carrying a public handle, the country, the score
+    (`points`) and the toggled stats. Never a competitor or team PK.
 
-    Solo events fold SoloPlayerMatchStats by competitor; squad/duo events fold
-    TournamentTeamMatchStats by team. Either way we emit ONLY a public handle, the
-    rank, and the toggled-on stat fields - never the underlying competitor/team PK.
+    Solo events rank players (username + in_game_id); squad and duo events rank teams.
     """
     if event.participant_type == "solo":
-        return _solo_standings(event, partner)
-    return _team_standings(event, partner)
+        return _solo_table(SoloPlayerMatchStats.objects.filter(match__group__stage__event=event),
+                           partner)
+    return _final_team_standings(event, partner)
 
 
-# Booyah = a 1st-place finish. Counting these mirrors the admin view's `total_booyah`
-# tiebreaker (Sum of "1 when placement==1 else 0") so partner and official ties break
-# the same way.
-#
-# AGGREGATE ROWS (owner 2026-08-20, external results import): a row with is_aggregate=True
-# summarises a whole group and stores placement=NULL, so the placement==1 test below matches nothing
-# no matter how many times that team actually won. The true count lives in booyah_count, which is
-# exactly why that field exists: it cannot be derived from a summed row. Take booyah_count for an
-# aggregate row and fall back to the placement test for every ordinary row, where booyah_count is 0
-# and counting placement==1 remains correct.
-_BOOYAH = Sum(
-    Case(
-        When(is_aggregate=True, then="booyah_count"),
-        When(placement=1, then=Value(1)),
-        default=Value(0),
-        output_field=IntegerField(),
-    )
-)
+def _team_extras(stats):
+    """{tournament_team_id: {damage, assists, best_placement}} over a stats queryset: the three
+    columns a partner already received that the shared aggregator does not carry. One grouped
+    query. Best finish is over PLAYED maps (a map a team sat out is stored with placement 0).
+    The id is a dict key for the caller and is never emitted."""
+    return {
+        r["tournament_team_id"]: r
+        for r in stats.values("tournament_team_id").annotate(
+            damage=Coalesce(Sum("damage"), 0),
+            assists=Coalesce(Sum("assists"), 0),
+            best_placement=Min("placement", filter=Q(placement__gt=0)),
+        )
+    }
 
-# The SOLO twin of _BOOYAH (inbox #202, 2026-10-09). _BOOYAH reads `is_aggregate` and
-# `booyah_count`, which exist only on TournamentTeamMatchStats; a solo row has neither, so using
-# it on SoloPlayerMatchStats raised FieldError and every solo event's standings answered 500.
-# Found because a partner's hourly sync ended on detty-december-solos/standings/ every hour, and
-# its HTTP client treats a 500 as a failed run. A solo row is always one real match, so a booyah
-# is simply a first place.
+
+def _team_row(rank, row, extras, partner, logos):
+    """One public standings row from a shared-aggregator row (+ its carry-over, if folded).
+    `logos` is _team_logos over the table's teams (read only when include_media is on)."""
+    more = extras.get(row["tournament_team_id"], {})
+    entry = {"rank": rank, "team": row["team_name"]}
+    entry.update(_country_fields(row.get("team_country")))
+    if partner.include_media:
+        entry["logo_url"] = logos.get(row["tournament_team_id"])
+    _apply_standings_fields(entry, partner, {
+        # effective_total already holds any carry-over the official builders folded in.
+        "points": row["effective_total"],
+        "carry_over_points": row.get("carry_over_points", 0),
+        "placement_points": row["placement_sum"],
+        "kill_points": row["kill_sum"],
+        "bonus_points": row["bonus_sum"],
+        "penalty_points": row["penalty_sum"],
+        "booyahs": row["total_booyah"],
+        "matches_played": row["games_played"],
+        "placement": more.get("best_placement"),
+        "kills": row["total_kills"],
+        "damage": more.get("damage", 0),
+        "assists": more.get("assists", 0),
+    })
+    return entry
+
+
+def _final_team_standings(event, partner):
+    from afc_tournament_and_scrims.final_standings import (
+        event_final_standings, official_stage_standings)
+    from afc_tournament_and_scrims.models import Stages, TournamentTeam
+
+    ordered, _rank_by_tt, _reached, _final = event_final_standings(event)
+    logos = (_team_logos(item["tournament_team_id"] for item in ordered)
+             if partner.include_media else {})
+    tables = {}  # stage_id -> ({tournament_team_id: official row}, extras)
+    out = []
+    for item in ordered:
+        stage_id = item["stage_id"]
+        if stage_id not in tables:
+            stage = Stages.objects.get(pk=stage_id)
+            rows = {r["tournament_team_id"]: r for r in official_stage_standings(stage)}
+            extras = _team_extras(TournamentTeamMatchStats.objects.filter(match__group__stage=stage))
+            tables[stage_id] = (rows, extras)
+        rows, extras = tables[stage_id]
+        row = rows.get(item["tournament_team_id"])
+        if row is None:
+            # event_final_standings' own defensive branch: a team in a tier but missing from the
+            # stage table. Never seen in production; a zero row keeps it visible and named.
+            tt = TournamentTeam.objects.filter(pk=item["tournament_team_id"]).first()
+            row = {"tournament_team_id": item["tournament_team_id"],
+                   "team_name": tt.display_name if tt else None,
+                   "team_country": tt.competitor.country if tt and tt.competitor else None,
+                   "effective_total": 0, "placement_sum": 0, "kill_sum": 0, "bonus_sum": 0,
+                   "penalty_sum": 0, "total_booyah": 0, "games_played": 0, "total_kills": 0}
+        entry = _team_row(item["rank"], row, extras, partner, logos)
+        # Where this place was decided, and whether the team made the event's final stage.
+        # Inserted right after the identity so a row reads top to bottom.
+        identity = ("rank", "team", "country", "country_code", "logo_url")
+        entry = {**{k: entry[k] for k in identity if k in entry},
+                 "decided_in": item["stage_name"],
+                 "reached_final_stage": bool(item["reached_final_stage"]),
+                 **{k: v for k, v in entry.items() if k not in identity}}
+        out.append(entry)
+    return out
+
+
+# The solo booyah: a first place. A solo row is always one real match (the imported aggregate
+# rows of the external results import are team rows only), so there is no booyah_count to read.
+# Using the TEAM expression here is what answered 500 on every solo event (inbox #202).
 _SOLO_BOOYAH = Sum(
     Case(
         When(placement=1, then=Value(1)),
@@ -451,10 +684,8 @@ _SOLO_BOOYAH = Sum(
     )
 )
 
-# Recomputed-on-read rank metric, identical to the admin view's `effective_total`
-# (placement + kill + bonus - penalty). We never order by the stored total_points,
-# which can be stale.
-_EFFECTIVE_TOTAL = (
+# The solo score, as the admin standings view computes it for a solo lobby.
+_SOLO_POINTS = (
     Coalesce(Sum("placement_points"), 0)
     + Coalesce(Sum("kill_points"), 0)
     + Coalesce(Sum("bonus_points"), 0)
@@ -462,54 +693,43 @@ _EFFECTIVE_TOTAL = (
 )
 
 
-def _team_standings(event, partner):
-    # Fold every team's finalized match rows in this event into one summary per team,
-    # then rank by recomputed effective_total (admin parity), booyahs, kills - winners
-    # first. total_points is still summed only to expose it; it is NOT the sort key.
-    rows = (
-        TournamentTeamMatchStats.objects
-        .filter(tournament_team__event=event)
-        .values("tournament_team__team__team_name")
-        .annotate(
-            effective_total=_EFFECTIVE_TOTAL,
-            total_booyah=_BOOYAH,
-            total_points=Sum("total_points"),
-            kills=Sum("kills"),
-            damage=Sum("damage"),
-            assists=Sum("assists"),
-            best_placement=Min("placement"),
-            # Sum(matches_counted), not Count(rows): an aggregate row stands for a whole group and
-            # carries its real span in matches_counted. Ordinary rows default to 1, so this returns
-            # what it always did for them (owner 2026-08-20).
-            matches_played=Sum("matches_counted"),
-        )
-        .order_by("-effective_total", "-total_booyah", "-kills")
-    )
-    out = []
-    for i, r in enumerate(rows, start=1):
-        # rank is a derived ordinal; team_name is the public handle. No PKs.
-        entry = {"rank": i, "team": r["tournament_team__team__team_name"]}
-        _apply_standings_toggles(entry, r, partner)
-        out.append(entry)
-    return out
+def _solo_table(stats, partner, carry_over=None):
+    """Rank the players in a SoloPlayerMatchStats queryset (a whole event, or one group).
 
-
-def _solo_standings(event, partner):
-    rows = (
-        SoloPlayerMatchStats.objects
-        .filter(match__group__stage__event=event)
-        .values("competitor__user__username", "competitor__user__uid")
+    `carry_over` is the Point-Rush head start keyed by competitor id ({} or None for none); it is
+    folded into points before ranking, exactly as the team builders fold theirs.
+    """
+    carry_over = carry_over or {}
+    rows = list(
+        stats
+        # competitor_id is the carry-over key; both country columns ride along for the player-flag
+        # rule (ip_country or country). All belong to one competitor, so the GROUP BY is not split.
+        .values("competitor_id", "competitor__user__username", "competitor__user__uid",
+                "competitor__user__ip_country", "competitor__user__country")
         .annotate(
-            effective_total=_EFFECTIVE_TOTAL,
-            # _SOLO_BOOYAH, never _BOOYAH: see the note above it.
-            total_booyah=_SOLO_BOOYAH,
-            total_points=Sum("total_points"),
-            kills=Sum("kills"),
-            best_placement=Min("placement"),
+            points=_SOLO_POINTS,
+            placement_points=Coalesce(Sum("placement_points"), 0),
+            kill_points=Coalesce(Sum("kill_points"), 0),
+            bonus_points=Coalesce(Sum("bonus_points"), 0),
+            penalty_points=Coalesce(Sum("penalty_points"), 0),
+            booyahs=_SOLO_BOOYAH,
+            kills=Coalesce(Sum("kills"), 0),
+            best_placement=Min("placement", filter=Q(placement__gt=0)),
             matches_played=Count("id"),
         )
-        .order_by("-effective_total", "-total_booyah", "-kills")
     )
+    for r in rows:
+        r["carry_over_points"] = carry_over.get(r["competitor_id"], 0)
+        r["points"] += r["carry_over_points"]
+    rows.sort(key=lambda r: (-r["points"], -r["booyahs"], -r["kills"],
+                             r["competitor__user__username"] or ""))
+    images = {}
+    if partner.include_media:
+        from afc_tournament_and_scrims.models import RegisteredCompetitors
+
+        images = {rc.pk: (_player_image(rc.user) if rc.user else None)
+                  for rc in RegisteredCompetitors.objects.filter(
+                      pk__in=[r["competitor_id"] for r in rows]).select_related("user")}
     out = []
     for i, r in enumerate(rows, start=1):
         entry = {
@@ -517,7 +737,21 @@ def _solo_standings(event, partner):
             "username": r["competitor__user__username"],
             "in_game_id": r["competitor__user__uid"],
         }
-        _apply_standings_toggles(entry, r, partner)
+        entry.update(_country_fields(r["competitor__user__ip_country"] or r["competitor__user__country"]))
+        if partner.include_media:
+            entry["esports_image_url"] = images.get(r["competitor_id"])
+        _apply_standings_fields(entry, partner, {
+            "points": r["points"],
+            "carry_over_points": r["carry_over_points"],
+            "placement_points": r["placement_points"],
+            "kill_points": r["kill_points"],
+            "bonus_points": r["bonus_points"],
+            "penalty_points": r["penalty_points"],
+            "booyahs": r["booyahs"],
+            "matches_played": r["matches_played"],
+            "placement": r["best_placement"],
+            "kills": r["kills"],
+        })
         out.append(entry)
     return out
 
@@ -585,16 +819,406 @@ def serialize_design(design, partner):
     return out
 
 
-def _apply_standings_toggles(entry, row, partner):
-    """Copy ONLY the toggled-on aggregated stats from an annotated standings row into the
-    public entry. `row` is a dict from a .values().annotate() queryset; we never spread
-    it wholesale (that would leak the competitor/team key), only pull named stats."""
+def _apply_points(entry, partner, values):
+    """The points of one row, broken down so they ADD UP, each part behind the toggle that guards
+    the stat it reveals (inbox #220 + #223, 2026-10-10).
+
+        points = placement_points + kill_points + other_points
+                 + bonus_points - penalty_points + carry_over_points
+
+    Ungated: points (the score the row is ranked by), the two ADMIN ADJUSTMENTS and `adjusted`,
+    and the Point-Rush carry-over. An AFC admin or the organizer can add points to a team's
+    result on a map (bonus_points) or take them away (penalty_points), for example as a
+    punishment for a rules breach; the table then no longer matches placements and kills alone,
+    so every row says so plainly instead of leaving a partner to find a discrepancy. AFC keeps no
+    written reason for an adjustment, so none is sent.
+
+    Gated: placement_points behind include_placements, kill_points behind include_kills, and
+    other_points only when BOTH are on (on its own it would give the two away). other_points is
+    what the stored map total holds beyond placement and kill points: assist and damage points,
+    the total a results import brought from another platform, and rounding.
+    """
+    points = values["points"] or 0
+    bonus = values["bonus_points"] or 0
+    penalty = values["penalty_points"] or 0
+    carry = values.get("carry_over_points", 0) or 0
+    entry["points"] = points
+    entry["bonus_points"] = bonus
+    entry["penalty_points"] = penalty
+    entry["adjusted"] = bool(bonus or penalty)
+    entry["carry_over_points"] = carry
     if partner.include_placements:
-        entry["placement"] = row.get("best_placement")
+        entry["placement_points"] = values["placement_points"] or 0
     if partner.include_kills:
-        entry["kills"] = row.get("kills") or 0
-    # damage/assists only exist on the team aggregate; .get() is None for solo rows.
-    if partner.include_damage and "damage" in row:
-        entry["damage"] = row.get("damage") or 0
-    if partner.include_assists and "assists" in row:
-        entry["assists"] = row.get("assists") or 0
+        entry["kill_points"] = values["kill_points"] or 0
+    if partner.include_placements and partner.include_kills:
+        entry["other_points"] = (points - carry - bonus + penalty
+                                 - entry["placement_points"] - entry["kill_points"])
+
+
+def _apply_standings_fields(entry, partner, values):
+    """Copy a standings row's numbers into the public entry. `values` is a dict of NAMED numbers
+    built by the caller, never a raw queryset row, so no team or competitor key can ride along.
+
+    Points first (_apply_points), then matches_played (ungated), then the stats each behind its
+    toggle: placement and booyahs reveal finishing places (include_placements), kills
+    (include_kills), damage and assists their own toggles. damage and assists are absent from
+    solo rows because a solo event does not record them.
+    """
+    _apply_points(entry, partner, values)
+    entry["matches_played"] = values["matches_played"] or 0
+    if partner.include_placements:
+        entry["placement"] = values["placement"]
+        entry["booyahs"] = values["booyahs"] or 0
+    if partner.include_kills:
+        entry["kills"] = values["kills"] or 0
+    if partner.include_damage and "damage" in values:
+        entry["damage"] = values["damage"] or 0
+    if partner.include_assists and "assists" in values:
+        entry["assists"] = values["assists"] or 0
+
+
+# ── the whole event as one tree ────────────────────────────────────────────────
+#
+# GET /events/<slug>/results/ (owner, inbox #222, 2026-10-10: "can our data that is been sent
+# be very properly structured and arranged in a way that it is very easy to understand,
+# especially when several structures are mixed into one event").
+#
+# The flat endpoints answer one question each and leave a partner to reassemble the event:
+# /matches/ did not even say which stage or group a map belonged to, and Clash Squad brackets
+# were not sent at all. This builds the event the way the tournament page shows it, in running
+# order, and says at every level WHAT KIND of thing it is, so a reader never has to infer it:
+#
+#   event            the event card (= /events/<slug>/): the point system, the final stage and
+#                    whether its results are in
+#   final_standings  the official final placement (= /standings/)
+#   stages[]         in running order; each says its `game` (battle_royale / clash_squad) and
+#                    its `structure`:
+#                      lobbies      Battle Royale groups, each scored on placement + kills
+#                      round_robin  Battle Royale round robin: teams in base groups meet across
+#                                   game-day lobbies, ranked on the whole stage
+#                      brackets     Clash Squad: each group is a head-to-head bracket
+#     standings      the stage's own table (what decides who goes through)
+#     groups[]       each says its `type`:
+#                      lobby    standings + maps[], each map with its point system and results
+#                      bracket  standings (W/D/L, rounds) + matches[] (team_a v team_b, score)
+#
+# Same firewall rules as everything above: built field by field, names never ids, stats behind
+# their toggles. The document is ONE event, so it is not paged; its size is bounded by the
+# event's own structure (the largest production event is a few hundred map rows).
+
+# The bracket engine names (StageGroups.bracket_format) in the words a partner reads.
+_BRACKET_FORMAT_NAMES = {
+    "single_elim": "knockout",
+    "double_elim": "double_elimination",
+    "league": "league",
+    "round_robin_h2h": "round_robin",
+}
+
+# HeadToHeadMatch.result_type in the words a partner reads ("normal" is an ordinary played set).
+_RESULT_TYPE_NAMES = {"normal": "played", "forfeit": "forfeit", "walkover": "walkover",
+                      "dq": "disqualification"}
+
+
+def _stages_in_running_order(event):
+    """The order the tournament page shows stages in: the organizer's manual order, then date."""
+    return list(event.stages.order_by("stage_order", "start_date", "stage_id"))
+
+
+def _groups_in_running_order(stage):
+    """The order the tournament page shows a stage's groups in. Synthetic groups are left out:
+    head_to_head.write_placement_stats hangs a "Bracket Results" bookkeeping group off a Clash
+    Squad stage, and nobody plays in it."""
+    return list(stage.groups.filter(is_synthetic=False)
+                .order_by("group_order", "playing_date", "playing_time", "group_id"))
+
+
+def _stage_structure(stage):
+    from afc_tournament_and_scrims.stage_formats import is_clash_squad
+
+    if is_clash_squad(stage.stage_format):
+        return "brackets"
+    if str(stage.stage_format or "").strip().lower() == "br - round robin":
+        return "round_robin"
+    return "lobbies"
+
+
+def serialize_results(event, partner):
+    """The whole event as one structured document (see the section comment above)."""
+    from afc_tournament_and_scrims.views import _final_stage_for_event
+
+    final_stage = _final_stage_for_event(event)
+    stages = _stages_in_running_order(event)
+    return {
+        # The same event card /events/<slug>/ answers (one serializer per shape), so it carries
+        # the point system and final_stage / final_stage_has_results.
+        "event": serialize_event(event, partner),
+        "final_standings": serialize_standings(event, partner),
+        "stages": [_results_stage(stage, i, final_stage, partner)
+                   for i, stage in enumerate(stages, start=1)],
+    }
+
+
+def _results_stage(stage, order, final_stage, partner):
+    from afc_tournament_and_scrims import head_to_head
+
+    solo = stage.event.participant_type == "solo"
+    structure = _stage_structure(stage)
+    base = serialize_stage(stage, partner)  # the scoring modes, built once
+    out = {
+        "order": order,
+        "stage_name": stage.stage_name,
+        "game": "clash_squad" if structure == "brackets" else "battle_royale",
+        "structure": structure,
+        "format": stage.stage_format,
+        "status": stage.stage_status,
+        "start_date": stage.start_date,
+        "end_date": stage.end_date,
+        "is_final_stage": bool(final_stage and final_stage.stage_id == stage.stage_id),
+        "teams_qualifying": stage.teams_qualifying_from_stage,
+        "champion_point": base["champion_point"],
+        "point_rush": base["point_rush"],
+        "standings": _stage_table(stage, partner, solo),
+    }
+
+    if structure == "round_robin":
+        # The base groups the round robin is built on (A, B, C ...), each with its teams. The
+        # lobbies below are the game days those groups were merged into.
+        out["round_robin_groups"] = [
+            {"label": rr.label,
+             "teams": sorted(t.display_name for t in rr.teams.select_related("team", "ghost_team"))}
+            for rr in stage.round_robin_groups.all()
+        ]
+
+    groups = []
+    if structure == "brackets" and head_to_head.bracket_matches(stage, None).exists():
+        # LEGACY Clash Squad shape: one bracket owned by the whole stage (group NULL).
+        groups.append(_results_bracket(stage, None, partner))
+    carry = None
+    for group in _groups_in_running_order(stage):
+        if group.bracket_format:
+            groups.append(_results_bracket(stage, group, partner))
+        else:
+            if carry is None and solo:
+                from afc_tournament_and_scrims.views import _carry_over_for_stage
+                carry = _carry_over_for_stage(stage, "solo")
+            groups.append(_results_lobby(group, partner, solo, carry))
+    out["groups"] = groups
+    return out
+
+
+def _stage_table(stage, partner, solo):
+    """The stage's own table, the one that decides who goes through: official_stage_standings
+    for teams (all its lobbies summed, carry-over and Champion-Point applied), the solo fold
+    for players."""
+    if solo:
+        from afc_tournament_and_scrims.views import _carry_over_for_stage
+        return _solo_table(SoloPlayerMatchStats.objects.filter(match__group__stage=stage), partner,
+                           _carry_over_for_stage(stage, "solo"))
+    from afc_tournament_and_scrims.final_standings import official_stage_standings
+
+    rows = official_stage_standings(stage)
+    extras = _team_extras(TournamentTeamMatchStats.objects.filter(match__group__stage=stage))
+    logos = _team_logos(r["tournament_team_id"] for r in rows) if partner.include_media else {}
+    return [_team_row(i, r, extras, partner, logos) for i, r in enumerate(rows, start=1)]
+
+
+def _results_lobby(group, partner, solo, solo_carry):
+    """One Battle Royale group: its table, then each map with its point system and results."""
+    from afc_tournament_and_scrims.models import Match, StageGroupCompetitor
+
+    matches = list(Match.objects.filter(group=group).order_by("match_number"))
+    systems = []
+    for m in matches:
+        system = _point_system(m.scoring_settings)
+        if system not in systems:
+            systems.append(system)
+    out = {
+        "group_name": group.group_name,
+        "type": "lobby",
+        "playing_date": group.playing_date,
+        # The game day this lobby belongs to in a round-robin stage, else None.
+        "game_day": group.game_day,
+        "point_system": systems[0] if len(systems) == 1 else None,
+        "point_system_varies": len(systems) > 1,
+    }
+    if partner.include_maps:
+        out["maps"] = list(group.match_maps or [])
+
+    if solo:
+        out["standings"] = _solo_table(SoloPlayerMatchStats.objects.filter(match__group=group),
+                                       partner, solo_carry)
+        present = {r["username"] for r in out["standings"]}
+        for sc in (StageGroupCompetitor.objects.filter(stage_group=group, player__isnull=False)
+                   .select_related("player__user")):
+            user = sc.player.user if sc.player else None
+            if user and user.username not in present:
+                out["standings"].append(_zero_row(len(out["standings"]) + 1, partner, {
+                    "username": user.username, "in_game_id": user.uid, **_player_country(user),
+                    **({"esports_image_url": _player_image(user)} if partner.include_media else {})}))
+    else:
+        from afc_tournament_and_scrims.final_standings import official_group_standings
+
+        rows = official_group_standings(group)
+        extras = _team_extras(TournamentTeamMatchStats.objects.filter(match__group=group))
+        logos = _team_logos(r["tournament_team_id"] for r in rows) if partner.include_media else {}
+        out["standings"] = [_team_row(i, r, extras, partner, logos)
+                            for i, r in enumerate(rows, start=1)]
+        # Champion-Point: the team the rule crowned in this lobby, by name; None when the stage
+        # does not use it or nobody has triggered it yet.
+        if group.stage.champion_point_enabled:
+            out["champion"] = next((r["team_name"] for r in rows if r.get("is_champion")), None)
+        # Teams drawn into the group with no result yet: listed at 0, after the ranked rows, as
+        # the tournament page lists them, so an upcoming group still shows who is in it.
+        present = {r["tournament_team_id"] for r in rows}
+        for sc in (StageGroupCompetitor.objects.filter(stage_group=group, tournament_team__isnull=False)
+                   .select_related("tournament_team__team", "tournament_team__ghost_team")):
+            tt = sc.tournament_team
+            if tt.pk not in present:
+                present.add(tt.pk)
+                out["standings"].append(_zero_row(len(out["standings"]) + 1, partner, {
+                    "team": tt.display_name,
+                    **_country_fields(tt.competitor.country if tt.competitor else None),
+                    **({"logo_url": None if tt.is_ghost else _media_url(tt.team.team_logo)}
+                       if partner.include_media else {})}))
+
+    out["matches"] = [_results_map(m, partner, solo) for m in matches]
+    return out
+
+
+def _zero_row(rank, partner, identity):
+    """A standings row for a competitor drawn into a group that has not played yet."""
+    entry = {"rank": rank, **identity}
+    _apply_standings_fields(entry, partner, {
+        "points": 0, "carry_over_points": 0, "placement_points": 0, "kill_points": 0,
+        "bonus_points": 0, "penalty_points": 0, "booyahs": 0, "matches_played": 0,
+        "placement": None, "kills": 0, **({} if "username" in identity else {"damage": 0, "assists": 0}),
+    })
+    return entry
+
+
+def _results_map(match, partner, solo):
+    """One Battle Royale map: number, status, its point system, and every competitor's result,
+    best finish first (competitors who did not play last)."""
+    out = serialize_match(match, partner)
+    rows = []
+    if solo:
+        stats = (SoloPlayerMatchStats.objects.filter(match=match)
+                 .select_related("competitor__user"))
+        for s in stats:
+            user = s.competitor.user if s.competitor else None
+            entry = {"username": user.username if user else None,
+                     "in_game_id": user.uid if user else None,
+                     **(_player_country(user) if user else _country_fields(None)),
+                     "played": bool(s.played)}
+            _apply_map_fields(entry, partner, s, solo=True)
+            rows.append(entry)
+    else:
+        stats = (TournamentTeamMatchStats.objects.filter(match=match)
+                 .select_related("tournament_team__team", "tournament_team__ghost_team"))
+        for s in stats:
+            tt = s.tournament_team
+            entry = {"team": tt.display_name,
+                     **_country_fields(tt.competitor.country if tt.competitor else None),
+                     "played": bool(s.played)}
+            _apply_map_fields(entry, partner, s, solo=False)
+            rows.append(entry)
+    rows.sort(key=lambda e: (not e["played"], e.get("_sort_place") or 999, -e["points"]))
+    for e in rows:
+        e.pop("_sort_place", None)
+    out["results"] = rows
+    return out
+
+
+def _apply_map_fields(entry, partner, s, solo):
+    """One competitor's result on one map: its points broken down exactly as a table row's are
+    (_apply_points, so an admin's bonus or penalty on THIS map shows here, with `adjusted`), then
+    the stats behind their toggles. A team that sat the map out has placement None."""
+    placement = s.placement or None
+    entry["_sort_place"] = placement  # sort key only, removed before the row is returned
+    if solo:
+        # Solo stored total_points leaves bonus and penalty out; the tables count them, so this does.
+        points = ((s.placement_points or 0) + (s.kill_points or 0)
+                  + (s.bonus_points or 0) - (s.penalty_points or 0))
+    else:
+        points = s.total_points or 0
+    _apply_points(entry, partner, {
+        "points": points, "bonus_points": s.bonus_points, "penalty_points": s.penalty_points,
+        "placement_points": s.placement_points, "kill_points": s.kill_points})
+    # A single map has no Point-Rush head start; that belongs to a table.
+    entry.pop("carry_over_points", None)
+    if partner.include_placements:
+        entry["placement"] = placement
+    if partner.include_kills:
+        entry["kills"] = s.kills or 0
+    if not solo and partner.include_damage:
+        entry["damage"] = s.damage or 0
+    if not solo and partner.include_assists:
+        entry["assists"] = s.assists or 0
+
+
+def _results_bracket(stage, group, partner):
+    """One Clash Squad bracket: its table and its matches. group None = the legacy stage-wide
+    bracket. Scores are ROUNDS won in the set (4-2), never kills."""
+    from afc_tournament_and_scrims import head_to_head
+    from afc_tournament_and_scrims.stage_formats import legacy_bracket_mode
+
+    group_id = group.group_id if group else None
+    engine = group.bracket_format if group else legacy_bracket_mode(stage.stage_format)
+    fmt = _BRACKET_FORMAT_NAMES.get(engine, engine)
+    league = fmt in ("league", "round_robin")
+
+    # Upper bracket (and a league's single list) first, then the lower bracket, then the bronze
+    # match; inside each, round by round, top to bottom.
+    side_order = {"winners": 0, "league": 0, "losers": 1, "third": 2}
+    matches = sorted(
+        head_to_head.bracket_matches(stage, group_id)
+        .select_related("team_a__team", "team_a__ghost_team", "team_b__team", "team_b__ghost_team",
+                        "winner__team", "winner__ghost_team"),
+        key=lambda m: (side_order.get(m.bracket, 3), m.round_number, m.position))
+    teams = {}  # tournament_team_id -> its public identity (name, country, logo)
+    for m in matches:
+        for tt in (m.team_a, m.team_b):
+            if tt is not None and tt.pk not in teams:
+                teams[tt.pk] = {"team": tt.display_name,
+                                **_country_fields(tt.competitor.country if tt.competitor else None)}
+                if partner.include_media:
+                    teams[tt.pk]["logo_url"] = None if tt.is_ghost else _media_url(tt.team.team_logo)
+
+    def side(tt):
+        if tt is None:
+            return None  # an empty slot: waiting on an earlier match, or a bye
+        return dict(teams[tt.pk])
+
+    table = []
+    for r in head_to_head.standings(stage, group_id):
+        entry = {"rank": r["placement"],
+                 **teams.get(r["tournament_team_id"], {"team": r["team_name"]}),
+                 "wins": r["wins"], "draws": r["draws"], "losses": r["losses"],
+                 "rounds_won": r["rounds_won"], "rounds_lost": r["rounds_lost"]}
+        if league:
+            # League points (3 a win, 1 a draw), what a league table ranks on. A knockout ranks on
+            # how far a team went, so it has none.
+            entry["points"] = r["points"]
+        table.append(entry)
+
+    return {
+        "group_name": group.group_name if group else None,
+        "type": "bracket",
+        "bracket_format": fmt,
+        "playing_date": group.playing_date if group else None,
+        "standings": table,
+        "matches": [{
+            "bracket": m.bracket,
+            "round": m.round_number,
+            "position": m.position,
+            "team_a": side(m.team_a),
+            "team_b": side(m.team_b),
+            "score_a": m.score_a,
+            "score_b": m.score_b,
+            "winner": m.winner.display_name if m.winner else None,
+            "status": m.status,
+            "result": _RESULT_TYPE_NAMES.get(m.result_type, m.result_type),
+            "scheduled_date": m.scheduled_date,
+        } for m in matches],
+    }

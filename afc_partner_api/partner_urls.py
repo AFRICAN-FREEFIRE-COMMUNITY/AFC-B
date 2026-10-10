@@ -6,7 +6,7 @@
 # mount point (spec §9), giving us room to ship a /api/v2/partner/ later without
 # breaking existing partner integrations.
 #
-# Seven GET endpoints, each a function-based @api_view (DRF returns 405 for the wrong
+# Nine GET endpoints, each a function-based @api_view (DRF returns 405 for the wrong
 # verb, so one path() per view is enough). Events are addressed by their human-readable
 # slug (<slug:event_slug>) - never the raw event_id - because the serializer firewall
 # never exposes PKs, so the slug is the only handle a partner ever has.
@@ -32,4 +32,8 @@ urlpatterns = [
     # Branded leaderboard design templates for the event's owner (owner 2026-08-03), gated by
     # can_read_designs. Same resolve-event-first pattern as the other nested resources.
     path("events/<slug:event_slug>/designs/", views_partner.event_designs, name="partner_event_designs"),
+
+    # The whole event as one structured document (owner 2026-10-10, inbox #222): stages in
+    # running order, each group's table and maps or bracket matches. Gated by can_read_standings.
+    path("events/<slug:event_slug>/results/", views_partner.event_results, name="partner_event_results"),
 ]

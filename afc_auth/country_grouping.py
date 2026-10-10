@@ -191,3 +191,80 @@ def expand_country_keys(keys, raw_values):
         return sorted({str(key).strip() for key in keys if str(key).strip()})
 
     return sorted(matched)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# ISO CODE + ONE DISPLAY NAME, for anything that hands a country to the OUTSIDE.
+#
+# The partner Data API (afc_partner_api/serialize.py, inbox #220 2026-10-10) sends a
+# country on every team and player. A partner cannot be asked to understand that 'NG' and
+# 'Nigeria' are one country, so it receives the ISO 3166-1 alpha-2 code (the key it can
+# store, sort and draw a flag from) plus ONE name per country, derived from the code, so
+# 'NG' and 'Nigeria' both arrive as {"country": "Nigeria", "country_code": "NG"}.
+#
+# pycountry resolves codes and its own names, but not several spellings AFC's tables
+# really hold: "Democratic Republic of the Congo", "Cape Verde", "Ivory Coast", "DR Congo",
+# and a curly apostrophe in "Côte D’Ivoire" (3 production teams, 2026-10-10). _ALIASES
+# covers them. It mirrors the frontend's NAME_TO_ISO2 (lib/countryFlag.tsx), which is what
+# draws the flag beside a name on the site, so the site and the API resolve a value to the
+# same country.
+# ──────────────────────────────────────────────────────────────────────────────
+_ALIASES = {
+    "democratic republic of the congo": "CD", "dr congo": "CD", "drc": "CD",
+    "congo-kinshasa": "CD", "congo (kinshasa)": "CD",
+    "republic of the congo": "CG", "congo-brazzaville": "CG", "congo (brazzaville)": "CG",
+    "cape verde": "CV", "ivory coast": "CI", "swaziland": "SZ", "the gambia": "GM",
+    "tanzania": "TZ", "turkey": "TR", "türkiye": "TR",
+}
+
+# pycountry's `name` reads as an index entry for a few countries ("Congo, The Democratic
+# Republic of the"). common_name fixes most of them ("Tanzania"); these have none.
+_DISPLAY_NAMES = {"CD": "Democratic Republic of the Congo"}
+
+
+def country_code(value):
+    """The ISO 3166-1 alpha-2 code for a stored country value, or None.
+
+      country_code("NG")             -> "NG"
+      country_code("Nigeria")        -> "NG"
+      country_code("Côte D’Ivoire")  -> "CI"
+      country_code("Unknown")        -> None
+
+    A two-letter value is only accepted if it is a REAL code, so a typo does not become a
+    country. Never raises: an unresolvable value is None, which the API sends as null.
+    """
+    if not value:
+        return None
+    text = str(value).strip().replace("’", "'").replace("‘", "'").replace("ʼ", "'")
+    if not text:
+        return None
+    try:
+        import pycountry
+
+        if len(text) == 2:
+            found = pycountry.countries.get(alpha_2=text.upper())
+            return found.alpha_2 if found else None
+        alias = _ALIASES.get(text.lower())
+        if alias:
+            return alias
+        return pycountry.countries.lookup(text).alpha_2
+    except Exception:
+        # LookupError (not a country) or pycountry missing: unknown, never an error.
+        return None
+
+
+def country_display_name(code):
+    """One English name per ISO code ("NG" -> "Nigeria"), or None for no code."""
+    if not code:
+        return None
+    if code in _DISPLAY_NAMES:
+        return _DISPLAY_NAMES[code]
+    try:
+        import pycountry
+
+        found = pycountry.countries.get(alpha_2=code)
+    except Exception:
+        found = None
+    if not found:
+        return None
+    return getattr(found, "common_name", None) or found.name

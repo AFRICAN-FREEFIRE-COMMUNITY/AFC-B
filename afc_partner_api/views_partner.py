@@ -180,14 +180,18 @@ def event_stages(request, partner, event_slug):
     event = _visible_event_or_404(partner, event_slug)
     if not event:
         return Response({"error": "not_found", "code": "event_stages_refused"}, status=404)
-    # stage_id order == creation order, which is also the order serialize_stage numbers.
-    qs = event.stages.order_by("stage_id")
+    # RUNNING order, the order the tournament page shows (inbox #222, 2026-10-10; it was
+    # stage_id, which is creation order), and the order serialize_stage numbers.
+    qs = event.stages.order_by("stage_order", "start_date", "stage_id")
 
     def _serialize_stage_with_groups(stage, p):
         # A stage's public row plus its groups (groups are part of the stage resource,
         # gated by the same can_read_stages toggle - they carry no extra stat fields).
+        # Groups in the page's order too, without the synthetic bookkeeping group a Clash
+        # Squad bracket stage carries (serialize._groups_in_running_order).
         out = serialize.serialize_stage(stage, p)
-        out["groups"] = [serialize.serialize_group(g, p) for g in stage.groups.order_by("group_id")]
+        out["groups"] = [serialize.serialize_group(g, p)
+                         for g in serialize._groups_in_running_order(stage)]
         return out
 
     return _paginate(request, qs, _serialize_stage_with_groups, partner)
@@ -205,11 +209,28 @@ def event_matches(request, partner, event_slug):
     if not event:
         return Response({"error": "not_found", "code": "event_matches_refused"}, status=404)
     # A match belongs to the event through group -> stage -> event. Filter on that chain
-    # so we only ever return THIS event's matches.
+    # so we only ever return THIS event's matches, in running order: stage, then group, then
+    # map number, the order the tournament page lists them (inbox #222, 2026-10-10).
     qs = (Match.objects
           .filter(group__stage__event=event)
-          .order_by("group__stage__stage_id", "match_number", "match_id"))
-    return _paginate(request, qs, serialize.serialize_match, partner)
+          .select_related("group__stage")
+          .order_by("group__stage__stage_order", "group__stage__start_date", "group__stage__stage_id",
+                    "group__group_order", "group__playing_date", "group__playing_time",
+                    "group__group_id", "match_number", "match_id"))
+    # Each row says WHERE it was played (stage name and running position, group name): a flat
+    # list of maps from a multi-stage event was unreadable without it. Positions are computed once.
+    stage_order = {s.stage_id: i for i, s in
+                   enumerate(serialize._stages_in_running_order(event), start=1)}
+
+    def _serialize_match_in_place(match, p):
+        out = serialize.serialize_match(match, p)
+        group = match.group
+        return {"stage_name": group.stage.stage_name if group else None,
+                "stage_order": stage_order.get(group.stage_id) if group else None,
+                "group_name": group.group_name if group else None,
+                **out}
+
+    return _paginate(request, qs, _serialize_match_in_place, partner)
 
 
 # ── 5. event standings ──────────────────────────────────────────────────────────
@@ -297,3 +318,29 @@ def event_designs(request, partner, event_slug):
         return Response({"error": "not_found", "code": "event_designs_refused"}, status=404)
     qs = serialize.designs_for_event(event)
     return _paginate(request, qs, serialize.serialize_design, partner)
+
+
+# ── 9. the whole event as one structured document ───────────────────────────────
+@api_view(["GET"])
+@partner_endpoint("can_read_standings")
+def event_results(request, partner, event_slug):
+    """GET /events/<slug>/results/ - the whole event in one document, laid out like the
+    tournament page (owner, inbox #222, 2026-10-10: "very properly structured and arranged in a
+    way that it is very easy to understand, especially when several structures are mixed into
+    one event").
+
+    Request:  no parameters. Auth: X-API-Key header.
+    Response: {event, final_standings, stages[]}; each stage names its game and structure
+              (lobbies / round_robin / brackets) and carries its own table and its groups, each
+              group its own table and its maps (with each map's point system and results) or its
+              bracket matches. Built by serialize.serialize_results; the shape is documented in
+              PARTNER_API.md and the public guide (frontend app/(root)/partners/api).
+    Not paged: it is ONE event, bounded by that event's own structure.
+    Gating:   can_read_standings (it is the event's results) + the event in scope (404 otherwise);
+              every stat inside sits behind the same field toggles as the flat endpoints.
+    Consumed by: external partner integrations. No AFC frontend surface calls it.
+    """
+    event = _visible_event_or_404(partner, event_slug)
+    if not event:
+        return Response({"error": "not_found", "code": "event_results_refused"}, status=404)
+    return Response(serialize.serialize_results(event, partner))
