@@ -355,6 +355,53 @@ def _normalize_team_tag(raw):
     return tag, None
 
 
+def _invite_identifiers(values):
+    """The usernames (or emails) a Create team request asks to invite, blanks dropped.
+
+    Two shapes arrive in `list_of_players_to_invite` (request.data.getlist):
+      - the Create team form: ONE JSON string, '[{"player": "AmaPlays"}, {"player": ""}]'
+        (app/(user)/teams/create/page.tsx, one row per invite field, empty rows included)
+      - a plain repeated field, 'AmaPlays', 'YawPlays' (older clients, the API by hand)
+    A string that is not valid JSON is read as a plain identifier, never raised.
+    Called by create_team. Tested in afc_team/test_team_invites.py.
+    """
+    out = []
+    for value in values or []:
+        text = (value or "").strip() if isinstance(value, str) else ""
+        if text.startswith("["):
+            try:
+                rows = json.loads(text)
+            except ValueError:
+                rows = []
+            for row in rows if isinstance(rows, list) else []:
+                name = row.get("player") if isinstance(row, dict) else row
+                if isinstance(name, str) and name.strip():
+                    out.append(name.strip())
+        elif text:
+            out.append(text)
+    return list(dict.fromkeys(out))  # each person once, in the order asked
+
+
+def _notify_team_invite(invite):
+    """Tell the invitee, with a link that opens the invite.
+
+    The bell message used to carry no link (no target), and no page lists a player's pending team
+    invites, so a player invited by name had nothing to press: only an invite LINK shared outside
+    AFC could be accepted (inbox #241). target_type "custom" + the relative /invite/<id> path is
+    the existing deep-link kind (afc_auth/notification_links.py), so the bell's "View" button opens
+    app/(root)/invite/[id], where Accept and Decline already live (/team/respond-invite/<id>/).
+    Called by create_team and invite_member.
+    """
+    Notifications.objects.create(
+        user=invite.invitee,
+        message=f"You have been invited to join the team: {invite.team.team_name}.",
+        notification_type="team_invitation",
+        related_invite=invite,
+        target_type="custom",
+        target_id=f"/invite/{invite.invite_id}",
+    )
+
+
 @api_view(["POST"])
 def create_team(request):
     # Retrieve session token
@@ -441,12 +488,18 @@ def create_team(request):
     # Add team creator as owner
     TeamMembers.objects.create(team=team, member=user, management_role='team_captain')
 
-    # Process invites
+    # Process invites. The Create team form (frontend app/(user)/teams/create/page.tsx) posts the
+    # list as ONE JSON string, [{"player": "<username>"}, ...]; this loop used to treat that whole
+    # string as a single username, matched nobody, and dropped every invite without a word. Measured
+    # on production 2026-10-12: 933 teams, 0 invites ever sent from this form (inbox #240).
+    # _invite_identifiers reads both shapes, and each invitee is told the same way invite_member
+    # tells them (a bell notification that opens the invite).
     invited_players = []
-    for identifier in list_of_players_to_invite:
+    for identifier in _invite_identifiers(list_of_players_to_invite):
         invitee = User.objects.filter(Q(username=identifier) | Q(email=identifier)).first()
-        if invitee and not TeamMembers.objects.filter(member=invitee).exists():
-            Invite.objects.create(inviter=user, invitee=invitee, team=team)
+        if invitee and invitee != user and not TeamMembers.objects.filter(member=invitee).exists():
+            invite = Invite.objects.create(inviter=user, invitee=invitee, team=team)
+            _notify_team_invite(invite)
             invited_players.append(invitee.username)
 
     # # Save social media links
@@ -595,13 +648,7 @@ def invite_member(request):
         # Net effect before this fix: every successful invite returned 500 and the captain saw an
         # error toast, even though the Invite row had already been written. The invitee still got
         # no notification, so nothing pointed them at the invite.
-        notification_message = f"You have been invited to join the team: {team.team_name}."
-        Notifications.objects.create(
-            user=invitee,
-            message=notification_message,
-            notification_type="team_invitation",
-            related_invite=invite,
-        )
+        _notify_team_invite(invite)
 
         return Response({'message': 'Invitation sent successfully.'}, status=status.HTTP_201_CREATED)
 
