@@ -76,7 +76,40 @@ class Team(models.Model):
             self.team_name = self.team_name.strip()
         if isinstance(self.team_tag, str):
             self.team_tag = self.team_tag.strip()
+        self._keep_retired_name(kwargs.get("update_fields"))
         super().save(*args, **kwargs)
+
+    def _keep_retired_name(self, update_fields):
+        """A renamed team keeps its old address (owner rule R22, Search Console 2026-10-16).
+
+        A team page is addressed by the NAME (/teams/<team_name>), so a rename used to turn every
+        link, bookmark and search result for the old name into a 404: Search Console listed three
+        such teams on 16 Oct 2026 (MOONLIGHT, BLITZ PROTOCOL). The old name goes into SlugHistory
+        (afc_auth/models.py, the table events, products and coupons already use) against this
+        team's pk, and get_team_details resolves it through afc_auth.slugs.resolve_or_redirect,
+        answering the team plus `moved_to`; the frontend layout (app/(user)/teams/[id]/layout.tsx)
+        turns that into a permanent redirect to the current name.
+
+        Unlike an event slug, a team NAME may be taken again by another team (people choose
+        names), so the row is update_or_create: the most recent team to leave a name owns it, and
+        a team that CURRENTLY holds the name always wins because the resolver tries the live name
+        first. One extra read per save that can rename; saves narrowed to other fields skip it.
+        """
+        if self.pk is None or not isinstance(self.team_name, str):
+            return
+        if update_fields is not None and "team_name" not in update_fields:
+            return
+        old = type(self).objects.filter(pk=self.pk).values_list("team_name", flat=True).first()
+        old = (old or "").strip()
+        # Production compares names case-insensitively (utf8mb4_unicode_ci), so a change of case
+        # alone is not a new address and needs no history row.
+        if not old or old.casefold() == self.team_name.casefold():
+            return
+        from afc_auth.models import SlugHistory
+        SlugHistory.objects.update_or_create(
+            app_label=self._meta.app_label, model=self._meta.model_name, old_slug=old,
+            defaults={"object_pk": str(self.pk)},
+        )
 
     def __str__(self):
         return self.team_name

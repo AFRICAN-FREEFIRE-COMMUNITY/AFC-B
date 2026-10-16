@@ -14,9 +14,9 @@ GitGuardian flagged one Google app password on 2026-09-22. Listing the rest foun
 |---|---|---|---|
 | `MINTROUTE_SECRET_KEY` | `afc/settings.py`, `afc_shop/services/mintroute.py` | yes, and it matches the box's `.env` | **sandbox key** (owner, 2026-09-23), so it signs nothing that spends money. Replace when the live key is issued |
 | Google app password, `africanfreefirecommunity3@gmail.com` | `afc_auth/views.py`, commented mail block | no | revoked 2026-09-22 |
-| Three MORE Google app passwords, earlier copies of that block | `afc_auth/views.py` (`77a9f7d9`, `dab98ccb`, `5a1c9576`) | no | **NOT revoked: nobody knew they existed.** Owner action |
-| SMTP password, 16 characters | `afc_auth/views.py`, beside `from_address` | no | owner action |
-| Google API key (`AIza...`) | `ocr_local_app.py`, `ocr_test.py` | no | owner action |
+| Three MORE Google app passwords, earlier copies of that block | `afc_auth/views.py` (`77a9f7d9`, `dab98ccb`, `5a1c9576`) | no | rotated, owner confirmed 2026-10-16 |
+| SMTP password, 16 characters | `afc_auth/views.py`, beside `from_address` | no | rotated, owner confirmed 2026-10-16 |
+| Google API key (`AIza...`) | `ocr_local_app.py`, `ocr_test.py` | no | rotated, owner confirmed 2026-10-16 |
 | Django `SECRET_KEY` | `afc/settings.py` | no, production reads its own from `.env` | not urgent; rotating signs every user out |
 
 Whether each is deployed was settled by hashing every value in `/home/ubuntu/AFC-B/.env` and
