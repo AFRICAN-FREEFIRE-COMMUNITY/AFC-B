@@ -5706,9 +5706,32 @@ def get_audit_log(request):
 
 @api_view(["GET"])
 def get_total_number_of_users(request):
+    """GET /auth/get-total-number-of-users/ - public site counts, no auth.
+
+    Caller: the public landing page's stats row (frontend app/(root)/page.tsx, fetched on the
+    SERVER with a 10 minute revalidate, so the numbers are in the HTML).
+
+    Response 200: {total_users, verified_users, total_teams, events_held}
+      total_users     every account row (kept for older callers)
+      verified_users  accounts with status "active", which is what the landing calls players
+      total_teams     every team (the landing used to download get-all-teams, 426 KB, to count it)
+      events_held     published events whose status is "completed"
+
+    WHY total_teams and events_held (Search Console work 2026-10-16): the landing page showed
+    hard-coded "1,200+ tournaments held" and "$500K+ prize pool distributed" while production held
+    175 events; the owner's rule is no invented numbers and no fake money on the site. Each of these
+    is a plain COUNT, so a real zero is reported as 0 (never hidden as "no data").
+    """
     total_users = User.objects.count()
     verified_users = User.objects.filter(status="active").count()
-    return Response({"total_users": total_users, "verified_users": verified_users}, status=status.HTTP_200_OK)
+    total_teams = Team.objects.count()
+    events_held = Event.objects.filter(is_draft=False, event_status="completed").count()
+    return Response({
+        "total_users": total_users,
+        "verified_users": verified_users,
+        "total_teams": total_teams,
+        "events_held": events_held,
+    }, status=status.HTTP_200_OK)
 
 
 # @api_view(["GET"])
