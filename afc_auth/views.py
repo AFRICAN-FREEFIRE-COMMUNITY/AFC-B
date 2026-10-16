@@ -4471,7 +4471,7 @@ def send_verification_token(request):
     message = email_reset_token(token, reset_lang)
     send_email(email, subject, message, language=reset_lang, prelocalized=True)
 
-    return Response({"message": "Password reset token has been sent to your email."}, status=status.HTTP_200_OK)
+    return Response({"message": "Password reset token has been sent to your email.", "code": "reset_token_sent"}, status=status.HTTP_200_OK)
 
 
 @api_view(["POST"])
@@ -4495,7 +4495,7 @@ def verify_token(request):
     if not reset_token.is_valid():
         return Response({"message": "Token has expired.", "code": "token_expired"}, status=status.HTTP_400_BAD_REQUEST)
 
-    return Response({"message": "Token is valid."}, status=status.HTTP_200_OK)
+    return Response({"message": "Token is valid.", "code": "reset_token_valid"}, status=status.HTTP_200_OK)
 
 
 @api_view(["POST"])
@@ -4593,7 +4593,7 @@ def resend_token(request):
     message = email_reset_token(token, resend_token_lang)
     send_email(email, subject, message, language=resend_token_lang, prelocalized=True)
 
-    return Response({"message": "A new password reset token has been sent to your email."}, status=status.HTTP_200_OK)
+    return Response({"message": "A new password reset token has been sent to your email.", "code": "reset_token_resent"}, status=status.HTTP_200_OK)
 
 
 @api_view(["POST"])
@@ -4632,7 +4632,7 @@ def change_password(request):
         except Exception as e:
             print(f"Password-changed email failed for {user.email}: {e}")
 
-        return Response({"message": "Password Changed Successfully."}, status=status.HTTP_200_OK)
+        return Response({"message": "Password Changed Successfully.", "code": "password_changed"}, status=status.HTTP_200_OK)
 
     else:
         return Response({"message": "You have Inputted the wrong password.", "code": "inputted_wrong_password"}, status=status.HTTP_400_BAD_REQUEST)

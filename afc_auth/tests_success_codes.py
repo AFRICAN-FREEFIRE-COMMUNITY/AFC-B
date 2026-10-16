@@ -27,6 +27,17 @@ class LoginSuccessCodeTests(TestCase):
         self.assertEqual(res.json()["message"], "Login successful")
 
 
+class PasswordResetSuccessCodeTests(TestCase):
+    def test_reset_token_sent_answers_its_code(self):
+        # Mail goes to the outbox in tests (settings.OUTBOUND_DELIVERY forced by manage.py test).
+        User.objects.create_user(username="resetuser", email="resetuser@gmail.com", password="Secret-123",
+                                 role="player", status="active")
+        res = self.client.post("/auth/send-verification-token/", data=json.dumps({"email": "resetuser@gmail.com"}),
+                               content_type="application/json")
+        self.assertEqual(res.status_code, 200, res.content[:300])
+        self.assertEqual(res.json()["code"], "reset_token_sent")
+
+
 class RegistrationSuccessCodeTests(TestCase):
     """Borrows TeamRegistrationBanTests' fixture (a clean squad, an open free event) without
     inheriting its tests, so they do not run twice."""
