@@ -19,8 +19,10 @@ OUTGOING mail, the same list meant AFC could not email anybody at their own doma
 
 Each time one exception was added; the fault was the gate being on the outgoing side at all.
 Outgoing mail now asks one question, is this shaped like an address (is_deliverable_address).
-Who may sign up is still is_valid_email's decision, and these tests hold BOTH halves in place
-(R28: proven on the offender and on the innocent). Under the test runner OUTBOUND_DELIVERY is
+Since 2026-10-16 (owner, inbox #273: "A", accept any real address and catch typos) the provider
+allowlist is gone from the incoming side too: is_valid_email checks the format only, and a likely
+typo is asked about at sign-up (afc_auth/email_typos.py, afc_auth/tests_any_real_email.py).
+(R28: proven on the offender and on the innocent.) Under the test runner OUTBOUND_DELIVERY is
 outbox, so "sent" means "recorded in afc_auth.outbox"; nothing reaches SMTP.
 """
 from unittest.mock import patch
@@ -61,26 +63,26 @@ class OutgoingMailReachesOwnDomains(SimpleTestCase):
             self.assertFalse(ok, repr(to))
             self.assertEqual(sent, [], repr(to))
 
-    def test_the_gate_is_the_format_helper_not_the_signup_allowlist(self):
-        # The offender: a good address at an unknown provider. Deliverable, not signup-able.
+    def test_the_gate_is_the_format_helper(self):
+        # The offender: a good address at an unknown provider. Deliverable, and since #273 usable.
         self.assertTrue(is_deliverable_address("paul@nexalgaming.co"))
-        self.assertFalse(is_valid_email("paul@nexalgaming.co")[0])
-        # The innocent: signup still lets a known provider through.
+        self.assertTrue(is_valid_email("paul@nexalgaming.co")[0])
+        # The innocent: a known provider, both ways.
         self.assertTrue(is_valid_email("someone@gmail.com")[0])
         self.assertTrue(is_deliverable_address("someone@gmail.com"))
 
 
-class SignupGateUnchanged(SimpleTestCase):
-    """The allowlist keeps doing its own job: an uninvited signup on an unusual domain is refused
-    with the same sentence as before. Only the OUTGOING side stopped consulting it."""
+class IncomingAddressesAreFormatOnly(SimpleTestCase):
+    """Owner 2026-10-16 (#273, "A"): any real address is accepted on the way IN as well. The
+    provider list and its invited-address exception are gone; only the shape is checked."""
 
-    def test_signup_still_refuses_an_unknown_provider(self):
-        with patch("afc_auth.views._is_invited_address", return_value=False):
-            ok, message = is_valid_email("someone@throwaway-mail.example")
-        self.assertFalse(ok)
-        self.assertEqual(message, "Please use a valid email provider (e.g., Gmail, Yahoo).")
+    def test_a_company_or_school_address_is_accepted(self):
+        for email in ("sponsor@acme-drinks.example", "someone@leadsageafrica.com",
+                      "pupil@student.oauife.edu.ng"):
+            ok, _ = is_valid_email(email)
+            self.assertTrue(ok, email)
 
-    def test_signup_still_accepts_an_invited_company_address(self):
-        with patch("afc_auth.views._is_invited_address", return_value=True):
-            ok, _ = is_valid_email("sponsor@acme-drinks.example")
-        self.assertTrue(ok)
+    def test_a_malformed_address_is_still_refused(self):
+        for email in ("", None, "not-an-address", "a@b", "name@", "two@@x.com"):
+            ok, _ = is_valid_email(email)
+            self.assertFalse(ok, repr(email))
