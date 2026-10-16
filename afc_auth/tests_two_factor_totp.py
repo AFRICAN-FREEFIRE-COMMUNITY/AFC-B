@@ -453,7 +453,7 @@ class TotpLoginTests(TotpTestBase):
         self.assertEqual(resp.status_code, 200)
         body = resp.json()
         # Byte-identical to an email-method login and to a no-2FA login.
-        self.assertEqual(set(body.keys()), {"message", "session_token", "user", "geo"})
+        self.assertEqual(set(body.keys()), {"message", "code", "session_token", "user", "geo"})
         self.assertTrue(
             SessionToken.objects.filter(user=self.user, token=body["session_token"]).exists())
 
@@ -876,7 +876,7 @@ class NothingElseChangedTests(TotpTestBase):
         self.assertEqual(resp.status_code, 200)
         body = resp.json()
         # Exactly the keys login() has always returned - no more, no fewer.
-        self.assertEqual(set(body.keys()), {"message", "session_token", "user", "geo"})
+        self.assertEqual(set(body.keys()), {"message", "code", "session_token", "user", "geo"})
         self.assertEqual(body["message"], "Login successful")
         self.assertNotIn("two_factor_required", body)
         self.assertTrue(

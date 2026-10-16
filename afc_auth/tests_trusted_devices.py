@@ -721,7 +721,7 @@ class NoTwoFactorIsUntouchedTests(TrustedDeviceTestBase):
         to a response 6,790 accounts and every client depend on."""
         body = self.do_login().json()
 
-        self.assertEqual(set(body.keys()), {"message", "session_token", "user", "geo"})
+        self.assertEqual(set(body.keys()), {"message", "code", "session_token", "user", "geo"})
         self.assertEqual(set(body["user"].keys()), {"id", "username", "language"})
 
     def test_a_stray_device_token_changes_nothing_for_them(self):
