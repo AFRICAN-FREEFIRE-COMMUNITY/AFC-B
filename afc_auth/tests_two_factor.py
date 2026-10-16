@@ -121,7 +121,8 @@ class LoginWithoutTwoFactorUnchangedTests(TwoFactorTestBase):
         self.assertEqual(resp.status_code, 200)
         body = resp.json()
         # Exactly the keys login() has always returned - no more, no fewer.
-        self.assertEqual(set(body.keys()), {"message", "session_token", "user", "geo"})
+        # "code" added 2026-10-16 (inbox #257): the frontend prints its own en/fr/pt sentence for it.
+        self.assertEqual(set(body.keys()), {"message", "code", "session_token", "user", "geo"})
         self.assertEqual(body["message"], "Login successful")
         self.assertEqual(set(body["user"].keys()), {"id", "username", "language"})
         self.assertEqual(body["user"]["username"], "player1")
@@ -256,7 +257,8 @@ class LoginWithTwoFactorTests(TwoFactorTestBase):
         self.assertEqual(resp.status_code, 200)
         body = resp.json()
         # Identical to a no-2FA login response.
-        self.assertEqual(set(body.keys()), {"message", "session_token", "user", "geo"})
+        # "code" added 2026-10-16 (inbox #257): the frontend prints its own en/fr/pt sentence for it.
+        self.assertEqual(set(body.keys()), {"message", "code", "session_token", "user", "geo"})
         self.assertTrue(
             SessionToken.objects.filter(user=self.user, token=body["session_token"]).exists())
 
@@ -575,7 +577,7 @@ class GoogleSsoTwoFactorTests(TwoFactorTestBase):
         self.assertEqual(resp.status_code, 200)
         body = resp.json()
         # The shape this endpoint has always returned: the login body plus is_new.
-        self.assertEqual(set(body.keys()), {"message", "session_token", "user", "geo", "is_new"})
+        self.assertEqual(set(body.keys()), {"message", "code", "session_token", "user", "geo", "is_new"})
         self.assertFalse(body["is_new"])
         self.assertTrue(
             SessionToken.objects.filter(user=self.user, token=body["session_token"]).exists())

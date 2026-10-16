@@ -7301,6 +7301,7 @@ def register_for_event(request):
 
                 return Response({
                     "message": "Event is full. You have been added to the waitlist.",
+                    "code": "registration_waitlisted",
                     "waitlisted": True
                 }, status=201)
             
@@ -7383,6 +7384,8 @@ def register_for_event(request):
                 if needs_sponsor_approval
                 else "Successfully registered (solo). Discord role queued."
             ),
+            # Stable codes for the frontend's en/fr/pt sentence (inbox #257, 2026-10-16).
+            "code": "registration_pending_sponsor" if needs_sponsor_approval else "registration_ok",
             "registration_id": competitor.id,
             "pending_sponsor_approval": needs_sponsor_approval,
         }, status=201)
@@ -7883,6 +7886,7 @@ def register_for_event(request):
 
                 return Response({
                     "message": "Event is full. Team added to waitlist.",
+                    "code": "registration_waitlisted_team",
                     "waitlisted": True,
                     "tournament_team_id": tt.tournament_team_id
                 }, status=201)
@@ -8033,6 +8037,7 @@ def register_for_event(request):
 
         return Response({
             "message": f"Team successfully registered ({participant_type}). Discord roles queued.",
+            "code": "registration_ok_team",
             "registration_id": competitor.id,
             "tournament_team_id": tt.tournament_team_id,
             "roster_size": len(roster_member_ids),

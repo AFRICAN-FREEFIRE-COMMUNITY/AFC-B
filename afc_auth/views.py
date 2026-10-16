@@ -1385,6 +1385,9 @@ def establish_session(request, user):
     # reads session_token, and user.language seeds the NEXT_LOCALE cookie.
     return {
         'message': 'Login successful',
+        # The frontend shows its own en/fr/pt sentence for this code (lib/i18n/serverMessage.ts,
+        # messages/<locale>/serverMessages.json); the English message stays for older callers.
+        'code': 'login_ok',
         'session_token': session_token,
         'user': {
             'id': user.user_id,
@@ -2014,6 +2017,7 @@ def signup(request):
             return Response({"error": "Failed to send verification email. Please try again later."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
         return Response({"message": "Signup successful. Please check your email for the verification code.",
+                         "code": "signup_ok",
                          "referral": referral_outcome}, status=status.HTTP_201_CREATED)
 
     except IntegrityError:
@@ -2083,7 +2087,7 @@ def verify_code(request):
     except Exception as e:
         print(f"Welcome email failed for {user.email}: {e}")
 
-    return Response({"message": "Account verified successfully."}, status=status.HTTP_200_OK)
+    return Response({"message": "Account verified successfully.", "code": "account_verified"}, status=status.HTTP_200_OK)
 
 
 from django.core.cache import cache
@@ -2142,7 +2146,7 @@ def resend_verification_code(request):
     send_email(user.email, subject, message, language=resend_lang, prelocalized=True)
 
     return Response(
-        {"message": "A new verification code has been sent to your email."},
+        {"message": "A new verification code has been sent to your email.", "code": "verification_code_resent"},
         status=status.HTTP_200_OK
     )
 
