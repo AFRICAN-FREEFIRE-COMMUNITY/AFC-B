@@ -86,6 +86,8 @@ INSTALLED_APPS = [
     # its replies in both directions and its own audit. Replaces a contact form that stored
     # nothing and emailed the words "Valid email." See afc_support/models.py.
     'afc_support',
+    # Bulk marketing email through Amazon SES, consent + tracker (owner 2026-10-16, inbox #259).
+    'afc_mail',
     'afc_partner_api',
     'afc_sponsors',
     # Group draw (owner 2026-09-12): teams turn over a sealed card to pick their own group for a

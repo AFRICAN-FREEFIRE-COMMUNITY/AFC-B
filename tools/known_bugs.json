@@ -93,7 +93,8 @@
       "except": [
         "afc_auth/views.py",
         "afc_whatsapp/client.py",
-        "afc_support/notify.py"
+        "afc_support/notify.py",
+        "afc_mail/transport.py"
       ]
     },
     {

@@ -25,6 +25,11 @@ never values):
 - **gcp**: `google-cloud` and `google-cloud-vision` are in requirements but no module imports them,
   and no GCP credential is in the environment. No spend is possible from this code. Remove the two
   packages on the next dependency pass.
+- **ses** (added 2026-10-16, inbox #259): a NEW AWS account (13 Oct 2026, not the archived one)
+  runs Amazon SES in eu-north-1 for bulk marketing mail (afc_mail). SES is pay per message (about
+  0.10 USD per 1,000; roughly 3 to 5 USD a month at 30,000) and has no hard cap of its own: the
+  limit is SES's sending quota plus an AWS Budgets alert. The owner was advised a 10 USD budget
+  alert on 13 Oct; until they set it and read it back the row stays `?`.
 
 | Service | Cap | Alert at | Where set (URL) | Verified on | By |
 |---|---|---|---|---|---|
@@ -35,3 +40,4 @@ never values):
 | paystack | no prepaid spend: fees are deducted from each payment, no cap exists at the provider | Paystack dashboard alerts on the owner's account | https://dashboard.paystack.com/#/settings | 2026-09-17 | Claude, from the code (afc_shop/paystack_payout.py) |
 | aws | none possible: no key in the environment, no code imports boto3, account archived 2026-09-11 | n/a | https://console.aws.amazon.com/billing (archived account) | 2026-09-17 | Claude, from the environment and the code |
 | gcp | none possible: no credential in the environment, no code imports google.cloud | n/a | https://console.cloud.google.com/billing | 2026-09-17 | Claude, from the environment and the code |
+| ses | SES sending quota (sandbox: 200 a day until production access) | ? (10 USD AWS Budgets alert advised 2026-10-13) | https://us-east-1.console.aws.amazon.com/billing/home#/budgets (the owner's new AWS account) | 2026-10-16 | owner to fill |

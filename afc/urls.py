@@ -37,6 +37,9 @@ urlpatterns = [
     # The support desk: the public contact form + ticket thread, the staff dashboard, and the
     # head-admin audit (owner 2026-09-14). afc_support/urls.py lists every address.
     path("support/", include('afc_support.urls')),
+    # Bulk marketing email (owner 2026-10-16, inbox #259): consent, unsubscribe, tracker, SES events.
+    # afc_mail/views.py lists every address.
+    path("mail/", include('afc_mail.urls')),
     # Sponsor-system redesign P1 (afc_sponsors): sponsor ENTITIES + admin-assigned members +
     # the member-scoped sponsor portal (a ydpay member sees only ydpay). Spec:
     # WEBSITE/tasks/sponsors-redesign-design.md; replaces the user-keyed SponsorEvent dashboard
