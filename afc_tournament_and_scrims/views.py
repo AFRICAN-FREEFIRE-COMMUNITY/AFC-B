@@ -5307,39 +5307,20 @@ def get_event_details(request):
     #     a member of). A viewer only sees a group's room once it's released.
     #   viewer_is_event_waitlisted -> for fcfs_room events, waitlisted competitors also get the room
     #     (the whole point of "first to join the room") even though they're not slotted into a group.
+    # The rule itself lives in room_access.py (inbox #280, 2026-10-16), shared with the Help assistant
+    # (afc_helpbot.facts), so the page and the assistant can never disagree about who sees a room.
+    from .room_access import can_see_room, viewer_room_context
+
     viewer_is_event_staff = _can_see_all_group_rooms(user)
     viewer_group_ids = set()
     viewer_is_event_waitlisted = False
     if user and not viewer_is_event_staff:
-        if event.participant_type == "solo":
-            viewer_group_ids = set(StageGroupCompetitor.objects.filter(
-                stage_group__stage__event=event,
-                player__user=user,
-            ).values_list("stage_group_id", flat=True))
-            viewer_is_event_waitlisted = RegisteredCompetitors.objects.filter(
-                event=event, user=user, is_waitlisted=True).exists()
-        else:
-            tt_ids = list(TournamentTeam.objects.filter(
-                event=event, members__user=user).values_list("tournament_team_id", flat=True))
-            viewer_group_ids = set(StageGroupCompetitor.objects.filter(
-                stage_group__stage__event=event,
-                tournament_team_id__in=tt_ids,
-            ).values_list("stage_group_id", flat=True))
-            viewer_is_event_waitlisted = TournamentTeam.objects.filter(
-                event=event, members__user=user, is_waitlisted=True).exists()
+        viewer_group_ids, viewer_is_event_waitlisted = viewer_room_context(event, user)
 
     def _can_see_room(group_obj, match_obj):
         """Whether THIS viewer may see THIS match's room creds (owner 2026-06-17)."""
-        if viewer_is_event_staff:
-            return True
-        if match_obj.room_details_released_at is None:
-            return False  # not posted yet -> nobody on the user side sees it
-        if group_obj.group_id in viewer_group_ids:
-            return True
-        # fcfs_room: every waitlisted competitor of the event can see the room to race in.
-        if event.waitlist_mode == "fcfs_room" and viewer_is_event_waitlisted:
-            return True
-        return False
+        return can_see_room(event, group_obj.group_id, match_obj, staff=viewer_is_event_staff,
+                            group_ids=viewer_group_ids, waitlisted=viewer_is_event_waitlisted)
 
     sponsors = SponsorEvent.objects.filter(event=event).select_related("sponsor")
 
