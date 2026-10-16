@@ -21,6 +21,7 @@ urlpatterns = [
     path("campaigns/<str:token>/design/", views.campaign_design, name="mail_campaign_design"),
     path("audience/", views.audience, name="mail_audience"),
     path("assets/", views.assets, name="mail_assets"),
+    path("assets/<str:token>/", views.asset_file, name="mail_asset_file"),
     path("templates/", views.templates, name="mail_templates"),
     path("templates/<str:token>/", views.template_detail, name="mail_template_detail"),
 ]

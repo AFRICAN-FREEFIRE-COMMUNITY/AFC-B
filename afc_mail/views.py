@@ -28,6 +28,9 @@ app/(a)/a/email-news/ in AFC_Frontend (lib/mailApi.ts):
   POST       mail/campaigns/<token>/cancel/        stop; unsent rows become skipped
   POST       mail/audience/                        counts AND the picked players/teams left out, and why
   POST       mail/assets/                          upload a picture or a font (multipart file + kind)
+  GET        mail/assets/<token>/                  its bytes, for the composer (a font to show, a picture to
+                                                   draw on the designed-picture canvas: the media host sends no
+                                                   CORS headers, this API does)
   GET|POST   mail/templates/                       list | save a campaign's content as a template
   DELETE     mail/templates/<token>/               delete a template
 Envelope: success bodies are plain objects; refusals are {"message", "code"} (owner rule R35).
@@ -35,7 +38,7 @@ Envelope: success bodies are plain objects; refusals are {"message", "code"} (ow
 import base64
 
 from django.db.models import Count
-from django.http import HttpResponse, HttpResponseRedirect
+from django.http import FileResponse, HttpResponse, HttpResponseRedirect
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.decorators import api_view
@@ -50,7 +53,7 @@ from .content import campaign_links, render_preview, render_test
 from .designs import DesignError, clean_design
 from .document import DocError, doc_is_empty, doc_tokens, parse_doc
 from .models import LANGS, Campaign, CampaignClick, CampaignRecipient, EmailSubscription, EmailTemplate
-from .recipients import audience_count, campaign_spec, freeze_recipients, left_out, set_consent, suppress
+from .recipients import audience_count, campaign_spec, freeze_recipients, left_out, picked, set_consent, suppress
 from .style import font_tokens, parse_style
 
 PIXEL = base64.b64decode("R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7")
@@ -477,17 +480,17 @@ def campaign_audience(request, token):
     if campaign is None:
         return _not_found()
     spec = parse_audience_spec(request.data) if request.method == "POST" else campaign_spec(campaign)
-    return Response({**audience_count(spec), "left_out": left_out(spec)})
+    return Response({**audience_count(spec), "left_out": left_out(spec), "picked": picked(spec)})
 
 
 @api_view(["POST"])
 def audience(request):
-    """The To line's numbers before anything is saved: {selected, recipients, left_out}."""
+    """The To line's numbers before anything is saved: {selected, recipients, left_out, picked}."""
     _admin, err = _require_head_admin(request)
     if err:
         return err
     spec = parse_audience_spec(request.data)
-    return Response({**audience_count(spec), "left_out": left_out(spec)})
+    return Response({**audience_count(spec), "left_out": left_out(spec), "picked": picked(spec)})
 
 
 @api_view(["GET"])
@@ -619,6 +622,20 @@ def assets(request):
         message, refusal_code = ASSET_REFUSALS.get(code, ("That file could not be used.", "mail_asset_refused"))
         return _refuse(message, refusal_code)
     return Response(asset_store.serialize(asset), status=status.HTTP_201_CREATED)
+
+
+@api_view(["GET"])
+def asset_file(request, token):
+    _admin, err = _require_head_admin(request)
+    if err:
+        return err
+    asset = asset_store.load([token]).get(token)
+    if asset is None:
+        return _refuse("No such file.", "mail_asset_not_found", status.HTTP_404_NOT_FOUND)
+    resp = FileResponse(asset.file.open("rb"), content_type=asset.content_type)
+    resp["X-Content-Type-Options"] = "nosniff"
+    resp["Cache-Control"] = "private, max-age=3600"
+    return resp
 
 
 # ── head admin: templates ─────────────────────────────────────────────────────────────────────

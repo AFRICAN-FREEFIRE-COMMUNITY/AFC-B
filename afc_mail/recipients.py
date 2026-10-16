@@ -134,6 +134,20 @@ def left_out(spec):
     return out
 
 
+def picked(spec):
+    """The players and teams picked by name, with their names, so the To line can show them again
+    when a draft is opened (a campaign stores ids only)."""
+    from django.contrib.auth import get_user_model
+
+    from afc_team.models import Team
+
+    out = [{"kind": "team", "id": t.team_id, "name": t.team_name}
+           for t in Team.objects.filter(team_id__in=spec.get("team_ids") or []).only("team_id", "team_name")]
+    out += [{"kind": "player", "id": u.pk, "name": u.username}
+            for u in get_user_model().objects.filter(pk__in=spec.get("user_ids") or []).only("pk", "username")]
+    return out
+
+
 def freeze_recipients(campaign):
     """Write one CampaignRecipient per person, at the moment the admin presses Send. The audience
     is decided once; later opt-ins do not join a campaign that is already going out, and later

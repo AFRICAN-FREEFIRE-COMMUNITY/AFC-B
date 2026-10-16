@@ -199,6 +199,10 @@ class AudienceTests(TestCase):
         teams = [row for row in out["left_out"] if row["kind"] == "team"]
         self.assertEqual((teams[0]["name"], teams[0]["left"], teams[0]["total"]), ("Lagos Titans", 1, 2))
         self.assertEqual(out["recipients"], 2)  # Mailable + the captain
+        names = {(row["kind"], row["name"]) for row in out["picked"]}
+        self.assertIn(("team", "Lagos Titans"), names)
+        self.assertIn(("player", "Mailable"), names)
+        self.assertEqual(len(out["picked"]), 6)
 
 
 # ── the composer's document ─────────────────────────────────────────────────────────────────────
@@ -682,6 +686,12 @@ class AdminApiTests(_MediaMixin, TestCase):
         notfont = self.client.post("/mail/assets/", {"kind": "font", "file": SimpleUploadedFile("x.woff2", b"<html>")}, **auth)
         self.assertEqual(notfont.json()["code"], "mail_not_a_font")
         self.assertEqual(self.client.post("/mail/assets/", {"kind": "video"}, **auth).json()["code"], "mail_asset_kind_invalid")
+        got = self.client.get(f"/mail/assets/{font.json()['token']}/", **auth)
+        self.assertEqual(got.status_code, 200)
+        self.assertEqual(got["Content-Type"], "font/ttf")
+        self.assertEqual(b"".join(got.streaming_content)[:4], b"\x00\x01\x00\x00")
+        self.assertEqual(self.client.get(f"/mail/assets/{font.json()['token']}/", **_auth(self.player)).status_code, 403)
+        self.assertEqual(self.client.get("/mail/assets/a_nope/", **auth).status_code, 404)
 
     def test_a_design_upload_is_cleaned_and_can_be_removed(self):
         c = _campaign(self.admin)
