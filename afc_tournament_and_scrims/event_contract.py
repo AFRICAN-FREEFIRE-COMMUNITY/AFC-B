@@ -397,6 +397,12 @@ EVENT_FIELDS = [
     Field("registration_end_time", read=PUBLIC, write=ORGANIZER, clean=_clean_optional_str),
     Field("event_start_time", read=PUBLIC, write=ORGANIZER, clean=_clean_optional_str),
     Field("event_end_time", read=PUBLIC, write=ORGANIZER, clean=_clean_optional_str),
+    # The host's IANA zone the four times above are written in. PUBLIC since 2026-10-16: it was
+    # PLAYER only because the contract copied the old hand-written readers, so a signed-out visitor
+    # got "16:00" with no zone (components/LocalEventTime.tsx shows the raw time without one), and
+    # the server-rendered page title could not say when an event starts (Search Console listed
+    # same-day scrims with identical titles; app/(user)/tournaments/[slug]/page.tsx).
+    Field("timezone", read=PUBLIC, write=ORGANIZER, clean=_clean_optional_str),
     Field("registration_opens_at", read=PUBLIC,
           get=lambda e, ctx: _registration_window(e)[0].isoformat()),
     Field("registration_closes_at", read=PUBLIC,
@@ -448,7 +454,6 @@ EVENT_FIELDS = [
     # the VIEWER's relationship to the event rather than the event itself, so they are computed by
     # the endpoint and merged in there. A field is only in this table if it belongs to the event.
     Field("slug", read=PLAYER),
-    Field("timezone", read=PLAYER, write=ORGANIZER, clean=_clean_optional_str),
     Field("organization_id", read=PLAYER),
     # Geo restriction: WHO may register. Withheld from an anonymous visitor because it describes
     # the event's gating rather than the event, and the public page has nobody to apply it to.
