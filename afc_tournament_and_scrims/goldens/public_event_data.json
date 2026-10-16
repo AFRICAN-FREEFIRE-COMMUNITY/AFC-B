@@ -55,6 +55,7 @@
   "registration_end_time": null,
   "event_start_time": "18:00:00",
   "event_end_time": "21:00:00",
+  "timezone": "Africa/Lagos",
   "registration_opens_at": "2027-02-01T00:00:00+01:00",
   "registration_closes_at": "2027-02-20T23:59:59.999999+01:00",
   "registration_is_open": false,
