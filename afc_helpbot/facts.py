@@ -15,6 +15,9 @@ The questions players actually bring to support (the Discord bot's history and t
 you get my ticket". So: the account basics, the team and role, the transfer window with its real
 dates, the events that hold them in their team, their registrations, an active ban, and their open
 tickets. Nothing secret: no email address, no phone, no payout details, no session data.
+Since 2026-10-16 (inbox #280) also their own match rooms: room id, name and password, but only the
+rooms the event page already shows this person (their group's, after the organizer released them),
+read through afc_tournament_and_scrims.room_access so the two can never disagree.
 
 FAIL SOFT
 ---------
@@ -159,6 +162,18 @@ def _tickets(user):
     return [{"number": t.ticket_number, "status": t.status, "subject": (t.subject or "")[:80]} for t in rows]
 
 
+def _lobbies(user):
+    """The person's own match rooms (inbox #280, owner 2026-10-16: "the afc bot should be able to see
+    lobby details ... only registered teams or players asking for it are who it gives the information
+    to"). Exactly the rooms the event page shows THIS person: their group's, once the organizer has
+    released them (afc_tournament_and_scrims.room_access, the one rule both read). No staff exception.
+    Returns (released, not_posted_yet)."""
+    from afc_tournament_and_scrims.room_access import released_rooms_for
+
+    rooms = released_rooms_for(user)
+    return rooms["released"], rooms["not_posted_yet"]
+
+
 def account_facts(user) -> dict:
     """The signed-in person's own account, for the assistant. Never raises."""
     facts = {"today": timezone.localdate().isoformat()}
@@ -182,4 +197,27 @@ def account_facts(user) -> dict:
             facts[key] = build()
         except Exception:
             log.exception("help bot facts: section %s failed for user %s", key, user.pk)
+    # Room details: two keys from one query. The log line names the user, never a room or password.
+    try:
+        facts["my_lobbies"], facts["my_lobbies_not_posted_yet"] = _lobbies(user)
+    except Exception:
+        log.exception("help bot facts: section my_lobbies failed for user %s", user.pk)
+    _fit_to_budget(facts)
     return facts
+
+
+# The bot process refuses facts over 8000 characters (afcbot/bot.py WEB_CHAT_MAX_FACTS_CHARS) and the
+# whole answer then fails. Rooms are the only section that grows with a busy day, so they give way
+# first: the not-yet-posted list, then the furthest released rooms (both lists run soonest first).
+FACTS_BUDGET_CHARS = 7500
+
+
+def _fit_to_budget(facts):
+    import json
+
+    def size():
+        return len(json.dumps(facts, default=str))
+
+    for key in ("my_lobbies_not_posted_yet", "my_lobbies"):
+        while facts.get(key) and size() > FACTS_BUDGET_CHARS:
+            facts[key] = facts[key][:-1]

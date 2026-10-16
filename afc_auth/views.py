@@ -110,55 +110,6 @@ from django.db.models import Q  # OR-query for the unverified-takeover lookup in
 
 import re
 
-# Popular email domains whitelist
-ALLOWED_EMAIL_DOMAINS = {
-    "gmail.com",
-    "yahoo.com",
-    "outlook.com",
-    "hotmail.com",
-    "icloud.com",
-    "aol.com",
-    "protonmail.com",
-    "zoho.com",
-    "mail.com",
-    "gmx.com",
-    "yandex.com",
-    "live.com",
-    "msn.com",
-    "me.com",
-    "inbox.com",
-    # AFC'S OWN DOMAIN (2026-08-05). This set was written to stop junk signups from throwaway
-    # providers, but send_email runs every OUTGOING recipient through it too, which meant AFC
-    # could not email itself: the new partner-application notice to info@africanfreefirecommunity
-    # .com was refused here and returned False without sending, silently. Staff addresses on AFC's
-    # own domain are exactly the addresses this list should never have been blocking.
-    "africanfreefirecommunity.com",
-}
-
-
-def _is_invited_address(email: str) -> bool:
-    """Has AFC itself asked this address to join? (owner 2026-08-14)
-
-    The domain allow-list below exists to stop junk signups from throwaway providers, and it does
-    that job. But a sponsor's contact is normally at their own company domain, so inviting them
-    was impossible in both directions: the invitation mail was refused before it was sent, and
-    they could not have created the account it invited them to.
-
-    A PENDING SponsorMemberInvite is AFC's own record that a sponsor-admin deliberately asked for
-    this person, which is a stronger signal than any domain list, so it lifts the restriction for
-    that one address. Nothing else changes: an uninvited signup on an unusual domain is still
-    refused. Lazy import keeps afc_auth free of an import-time dependency on afc_sponsors.
-    """
-    try:
-        from django.utils import timezone as _tz
-        from afc_sponsors.models import SponsorMemberInvite
-        return SponsorMemberInvite.objects.filter(
-            email__iexact=email, status="pending", expires_at__gt=_tz.now(),
-        ).exists()
-    except Exception:  # noqa: BLE001 - a lookup problem must never widen access
-        return False
-
-
 def header_safe(value: str, limit: int = 200) -> str:
     """One line, fit to go in an email header.
 
@@ -172,21 +123,22 @@ def header_safe(value: str, limit: int = 200) -> str:
 
 
 def is_valid_email(email: str) -> tuple[bool, str]:
+    """Is this a well-formed address a person can use on AFC? FORMAT ONLY (owner 2026-10-16, #273).
+
+    It used to also require one of 16 providers (Gmail, Yahoo, ...). Sign-up stopped asking on
+    2026-04-01, but verify-code, resend-code, the password reset steps, the profile edit and the email
+    change kept refusing everything else, so a person at a real school or company address could sign
+    up and then never verify or reset (#238: leadsageafrica.com, meadowhallschool.org, .edu.ng and
+    .edu.gh addresses on production). The owner chose "accept any real address, catch typos": the
+    typo half lives in afc_auth/email_typos.py and is asked at sign-up only. The format check is
+    is_deliverable_address, the one outgoing mail uses, so any address we accept we can also write to.
+    Callers: signup, verify_code, resend_verification_code, edit_profile, send_verification_token,
+    resend_token, request_email_change.
+    """
     if not email:
         return False, "Email is required."
-
-    # Basic format check
-    email_regex = r"^[\w\.-]+@[\w\.-]+\.\w+$"
-    if not re.match(email_regex, email):
+    if not is_deliverable_address(email):
         return False, "Invalid email format."
-
-    # Extract domain
-    domain = email.split("@")[-1].lower()
-
-    # Check if domain is allowed
-    if domain not in ALLOWED_EMAIL_DOMAINS and not _is_invited_address(email):
-        return False, "Please use a valid email provider (e.g., Gmail, Yahoo)."
-
     return True, "Valid email."
 
 
@@ -1385,6 +1337,9 @@ def establish_session(request, user):
     # reads session_token, and user.language seeds the NEXT_LOCALE cookie.
     return {
         'message': 'Login successful',
+        # The frontend shows its own en/fr/pt sentence for this code (lib/i18n/serverMessage.ts,
+        # messages/<locale>/serverMessages.json); the English message stays for older callers.
+        'code': 'login_ok',
         'session_token': session_token,
         'user': {
             'id': user.user_id,
@@ -1808,10 +1763,22 @@ def signup(request):
         if not all([in_game_name, email, password, confirm_password]):
             return Response({"error": "All fields are required.", "code": "signup_refused"}, status=status.HTTP_400_BAD_REQUEST)
         
-        # is_valid, message = is_valid_email(email)
-
-        # if not is_valid:
-        #     return Response({"error": message, "code": "signup_refused"}, status=400)
+        # Any well-formed address is welcome (owner 2026-10-16, #273: "accept any real address,
+        # catch typos"). A domain one or two keystrokes from a common provider (gamil.com, gmail.con)
+        # is asked about ONCE: the answer carries the corrected address, and the form sends the same
+        # address back with email_domain_confirmed when the person says it is right
+        # (afc_auth/email_typos.py; frontend components/auth/CreateAccountForm.tsx).
+        email_ok, email_error = is_valid_email(email)
+        if not email_ok:
+            return Response({"error": email_error, "message": email_error, "code": "email_invalid"},
+                            status=status.HTTP_400_BAD_REQUEST)
+        if str(request.data.get("email_domain_confirmed", "")).lower() not in ("true", "1"):
+            from afc_auth.email_typos import suggest_email_domain
+            suggestion = suggest_email_domain(email)
+            if suggestion:
+                return Response({"error": f"Did you mean {suggestion}?", "message": f"Did you mean {suggestion}?",
+                                 "code": "email_domain_typo", "suggestion": suggestion},
+                                status=status.HTTP_400_BAD_REQUEST)
 
         if password != confirm_password:
             return Response({"error": "Passwords do not match.", "code": "signup_refused"}, status=status.HTTP_400_BAD_REQUEST)
@@ -2014,6 +1981,7 @@ def signup(request):
             return Response({"error": "Failed to send verification email. Please try again later."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
         return Response({"message": "Signup successful. Please check your email for the verification code.",
+                         "code": "signup_ok",
                          "referral": referral_outcome}, status=status.HTTP_201_CREATED)
 
     except IntegrityError:
@@ -2083,7 +2051,7 @@ def verify_code(request):
     except Exception as e:
         print(f"Welcome email failed for {user.email}: {e}")
 
-    return Response({"message": "Account verified successfully."}, status=status.HTTP_200_OK)
+    return Response({"message": "Account verified successfully.", "code": "account_verified"}, status=status.HTTP_200_OK)
 
 
 from django.core.cache import cache
@@ -2142,7 +2110,7 @@ def resend_verification_code(request):
     send_email(user.email, subject, message, language=resend_lang, prelocalized=True)
 
     return Response(
-        {"message": "A new verification code has been sent to your email."},
+        {"message": "A new verification code has been sent to your email.", "code": "verification_code_resent"},
         status=status.HTTP_200_OK
     )
 
@@ -4467,7 +4435,7 @@ def send_verification_token(request):
     message = email_reset_token(token, reset_lang)
     send_email(email, subject, message, language=reset_lang, prelocalized=True)
 
-    return Response({"message": "Password reset token has been sent to your email."}, status=status.HTTP_200_OK)
+    return Response({"message": "Password reset token has been sent to your email.", "code": "reset_token_sent"}, status=status.HTTP_200_OK)
 
 
 @api_view(["POST"])
@@ -4491,7 +4459,7 @@ def verify_token(request):
     if not reset_token.is_valid():
         return Response({"message": "Token has expired.", "code": "token_expired"}, status=status.HTTP_400_BAD_REQUEST)
 
-    return Response({"message": "Token is valid."}, status=status.HTTP_200_OK)
+    return Response({"message": "Token is valid.", "code": "reset_token_valid"}, status=status.HTTP_200_OK)
 
 
 @api_view(["POST"])
@@ -4589,7 +4557,7 @@ def resend_token(request):
     message = email_reset_token(token, resend_token_lang)
     send_email(email, subject, message, language=resend_token_lang, prelocalized=True)
 
-    return Response({"message": "A new password reset token has been sent to your email."}, status=status.HTTP_200_OK)
+    return Response({"message": "A new password reset token has been sent to your email.", "code": "reset_token_resent"}, status=status.HTTP_200_OK)
 
 
 @api_view(["POST"])
@@ -4628,7 +4596,7 @@ def change_password(request):
         except Exception as e:
             print(f"Password-changed email failed for {user.email}: {e}")
 
-        return Response({"message": "Password Changed Successfully."}, status=status.HTTP_200_OK)
+        return Response({"message": "Password Changed Successfully.", "code": "password_changed"}, status=status.HTTP_200_OK)
 
     else:
         return Response({"message": "You have Inputted the wrong password.", "code": "inputted_wrong_password"}, status=status.HTTP_400_BAD_REQUEST)
@@ -4783,7 +4751,8 @@ def contact_us(request):
       - the body was plain text with \n, sent through send_email, which renders HTML. Newlines
         collapse, so even an intact message arrived as one run-on line. It is HTML now, and the
         visitor's text is escaped rather than trusted.
-      - the address was checked against ALLOWED_EMAIL_DOMAINS, the signup allowlist. Somebody
+      - the address was checked against ALLOWED_EMAIL_DOMAINS, the old provider allowlist (gone
+        since 2026-10-16, #273; is_valid_email checks the format only now). Somebody
         writing from a work or school address could not contact support AT ALL, which is exactly
         the person most likely to be locked out of their account. The contact form now only checks
         that the address is a well-formed one it could reply to.
@@ -4832,8 +4801,8 @@ def contact_us(request):
 
     # Where support mail lands. Owner 2026-09-14: it was hardcoded to a gmail nobody watches, so
     # this is the address the Contact page itself publishes, and SUPPORT_EMAIL on the server can
-    # move it without a deploy. AFC's own domain is already allowed through send_email's recipient
-    # check (see ALLOWED_EMAIL_DOMAINS, which carries a scar from exactly that trap).
+    # move it without a deploy. send_email's recipient check is format only (is_deliverable_address),
+    # so AFC's own domain always goes through.
     support_email = os.getenv("SUPPORT_EMAIL", "info@africanfreefirecommunity.com")
     email_subject = f"Contact Us Form Submission from {name}"
     email_body = (
@@ -5706,9 +5675,32 @@ def get_audit_log(request):
 
 @api_view(["GET"])
 def get_total_number_of_users(request):
+    """GET /auth/get-total-number-of-users/ - public site counts, no auth.
+
+    Caller: the public landing page's stats row (frontend app/(root)/page.tsx, fetched on the
+    SERVER with a 10 minute revalidate, so the numbers are in the HTML).
+
+    Response 200: {total_users, verified_users, total_teams, events_held}
+      total_users     every account row (kept for older callers)
+      verified_users  accounts with status "active", which is what the landing calls players
+      total_teams     every team (the landing used to download get-all-teams, 426 KB, to count it)
+      events_held     published events whose status is "completed"
+
+    WHY total_teams and events_held (Search Console work 2026-10-16): the landing page showed
+    hard-coded "1,200+ tournaments held" and "$500K+ prize pool distributed" while production held
+    175 events; the owner's rule is no invented numbers and no fake money on the site. Each of these
+    is a plain COUNT, so a real zero is reported as 0 (never hidden as "no data").
+    """
     total_users = User.objects.count()
     verified_users = User.objects.filter(status="active").count()
-    return Response({"total_users": total_users, "verified_users": verified_users}, status=status.HTTP_200_OK)
+    total_teams = Team.objects.count()
+    events_held = Event.objects.filter(is_draft=False, event_status="completed").count()
+    return Response({
+        "total_users": total_users,
+        "verified_users": verified_users,
+        "total_teams": total_teams,
+        "events_held": events_held,
+    }, status=status.HTTP_200_OK)
 
 
 # @api_view(["GET"])

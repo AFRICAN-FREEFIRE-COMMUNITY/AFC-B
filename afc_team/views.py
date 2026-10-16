@@ -21,6 +21,8 @@ from .models import Team, TeamMembers, Invite, Report, JoinRequest, TeamSocialMe
 # saved settings resolves to exactly the behaviour that was hard-coded here before, per role - see
 # afc_team/permissions.py for the defaults table and the reasoning.
 from .permissions import capabilities_for, team_role_can
+# What a team name must be (a letter or number, not a page's name): one rule for create and rename.
+from .names import MESSAGES as TEAM_NAME_MESSAGES, team_name_problem
 from afc_auth.models import AdminHistory, BannedPlayer, Notifications, TeamBan, User, UserProfile, UserRoles
 from django.utils.timezone import now
 # Invite.invite_id is a UUID. Looking it up with a non-UUID value (e.g. a tampered URL)
@@ -458,6 +460,11 @@ def create_team(request):
 
     if join_settings not in ["open", "by_request"]:
         return Response({"message": "Invalid join settings.", "code": "invalid_join_settings"}, status=status.HTTP_400_BAD_REQUEST)
+
+    # A name needs a letter or number and must not be a page's name (afc_team/names.py, inbox #276).
+    name_problem = team_name_problem(team_name)
+    if name_problem:
+        return Response({"message": TEAM_NAME_MESSAGES[name_problem], "code": name_problem}, status=status.HTTP_400_BAD_REQUEST)
 
     # Check for existing team name
     if Team.objects.filter(team_name=team_name).exists():
@@ -1166,6 +1173,10 @@ def edit_team(request):
 
     # Update fields if provided
     if team_name and team_name != old_team_name:
+        # Checked only on a rename, so a team that already has an old name can still edit the rest.
+        name_problem = team_name_problem(team_name)
+        if name_problem:
+            return Response({"message": TEAM_NAME_MESSAGES[name_problem], "code": name_problem}, status=status.HTTP_400_BAD_REQUEST)
         if Team.objects.filter(team_name=team_name).exclude(team_id=team.team_id).exists():
             return Response({"message": "Team name already exists.", "code": "team_name_already_exists"}, status=status.HTTP_400_BAD_REQUEST)
         team.team_name = team_name
@@ -1229,6 +1240,34 @@ def edit_team(request):
     return Response({"message": "Team details updated successfully.", "team_tag": team.team_tag}, status=status.HTTP_200_OK)
 
 
+def team_activity(team_ids=None):
+    """{team_id: {"events": n, "matches": m}}: how much each team has PLAYED, one definition.
+
+    PLAYED, not REGISTERED (owner ruling 2026-08-08: "count events played, matches they
+    participated in where a score was assigned"). A match counts when the team has a scored
+    TournamentTeamMatchStats row for it: a COUNT of rows, never a truthiness test on the score,
+    so a team that played and scored zero still counts (the falsy-zero trap).
+
+    ONE grouped query for any number of teams. Read by:
+      - get_all_teams     -> events_played / matches_played on every row (the /teams "Most active"
+                             tab, and the sitemap's choice of which team pages to list)
+      - get_team_details  -> events_played on the public identity (the team page's
+                             noindex decision, lib/seo.ts teamIsIndexable on the frontend)
+    Both read this function, so the list and the page cannot disagree (R24, Search Console
+    work 2026-10-16). A team with no row has played nothing: callers default to 0.
+    """
+    from afc_tournament_and_scrims.models import TournamentTeamMatchStats
+    rows = TournamentTeamMatchStats.objects.filter(tournament_team__team__isnull=False)
+    if team_ids is not None:
+        rows = rows.filter(tournament_team__team__in=list(team_ids))
+    rows = (rows.values("tournament_team__team")
+            .annotate(matches=Count("pk"), events=Count("match__group__stage__event", distinct=True)))
+    return {
+        row["tournament_team__team"]: {"matches": row["matches"], "events": row["events"]}
+        for row in rows
+    }
+
+
 @api_view(["GET"])
 def get_all_teams(request):
     # Admin team list (frontend app/(a)/a/teams/page.tsx -> GET /team/get-all-teams/).
@@ -1261,16 +1300,7 @@ def get_all_teams(request):
     #
     # Two grouped queries rather than per-team lookups, because this endpoint returns every team
     # (~570) and the last performance fix here existed to kill exactly that shape.
-    from afc_tournament_and_scrims.models import TournamentTeamMatchStats
-    _stats = (TournamentTeamMatchStats.objects
-              .filter(tournament_team__team__isnull=False)
-              .values("tournament_team__team")
-              .annotate(matches=Count("pk"),
-                        events=Count("match__group__stage__event", distinct=True)))
-    activity = {
-        row["tournament_team__team"]: {"matches": row["matches"], "events": row["events"]}
-        for row in _stats
-    }
+    activity = team_activity()
 
     teams_data = []
     for team in teams:
@@ -1733,9 +1763,13 @@ def get_team_details(request):
     if not team_name:
         return Response({"message": "Team name is required.", "code": "team_name_required"}, status=status.HTTP_400_BAD_REQUEST)
 
-    try:
-        team = Team.objects.get(team_name=team_name)
-    except Team.DoesNotExist:
+    # The current name, or a name the team used to have (Team._keep_retired_name writes those to
+    # SlugHistory on a rename). For an old name, moved_to carries the current one and the page
+    # redirects permanently (frontend app/(user)/teams/[id]/layout.tsx). The resolver strips the
+    # ref, and production's PAD SPACE collation already matches a name stored with trailing spaces.
+    from afc_auth.slugs import resolve_or_redirect
+    team, moved_to = resolve_or_redirect(Team, str(team_name), field="team_name")
+    if team is None:
         return Response({"message": "Team not found.", "code": "team_not_found"}, status=status.HTTP_404_NOT_FOUND)
 
     # ── Viewer + team-stats visibility (self-membership / admin gate) ──────────
@@ -2217,6 +2251,12 @@ def get_team_details(request):
         "country": team.country,
         "total_earnings": str(live_total_earnings),
         "total_members": members_qs.count(),
+        # How many events this team has PLAYED (scored match lines), from the same team_activity()
+        # that fills get_all_teams' events_played. PUBLIC on purpose: the /teams list already shows
+        # it to everyone, and the frontend reads it to decide whether the page is worth indexing
+        # (lib/seo.ts teamIsIndexable: a team that never played is noindex,follow and out of the
+        # sitemap, Search Console work 2026-10-16). Not gated by stats_visible like the detail below.
+        "events_played": team_activity([team.team_id]).get(team.team_id, {}).get("events", 0),
         "members": members_data,
         "social_media_links": social_links,
         # ── Privacy flag: True only for current team members + AFC admins ──
@@ -2276,7 +2316,10 @@ def get_team_details(request):
         "registered_events": registered_events,
     }
 
-    return Response({"team": team_data}, status=status.HTTP_200_OK)
+    # moved_to: the team's current name when the request used an old one, else None. Reported on
+    # the envelope with 200 (never a 301 from the API: fetch() would chase it against the API
+    # host), the convention events and products already follow (afc_auth/slugs.py).
+    return Response({"team": team_data, "moved_to": moved_to}, status=status.HTTP_200_OK)
 
 
 @api_view(["POST"])
