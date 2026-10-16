@@ -21,6 +21,8 @@ from .models import Team, TeamMembers, Invite, Report, JoinRequest, TeamSocialMe
 # saved settings resolves to exactly the behaviour that was hard-coded here before, per role - see
 # afc_team/permissions.py for the defaults table and the reasoning.
 from .permissions import capabilities_for, team_role_can
+# What a team name must be (a letter or number, not a page's name): one rule for create and rename.
+from .names import MESSAGES as TEAM_NAME_MESSAGES, team_name_problem
 from afc_auth.models import AdminHistory, BannedPlayer, Notifications, TeamBan, User, UserProfile, UserRoles
 from django.utils.timezone import now
 # Invite.invite_id is a UUID. Looking it up with a non-UUID value (e.g. a tampered URL)
@@ -458,6 +460,11 @@ def create_team(request):
 
     if join_settings not in ["open", "by_request"]:
         return Response({"message": "Invalid join settings.", "code": "invalid_join_settings"}, status=status.HTTP_400_BAD_REQUEST)
+
+    # A name needs a letter or number and must not be a page's name (afc_team/names.py, inbox #276).
+    name_problem = team_name_problem(team_name)
+    if name_problem:
+        return Response({"message": TEAM_NAME_MESSAGES[name_problem], "code": name_problem}, status=status.HTTP_400_BAD_REQUEST)
 
     # Check for existing team name
     if Team.objects.filter(team_name=team_name).exists():
@@ -1166,6 +1173,10 @@ def edit_team(request):
 
     # Update fields if provided
     if team_name and team_name != old_team_name:
+        # Checked only on a rename, so a team that already has an old name can still edit the rest.
+        name_problem = team_name_problem(team_name)
+        if name_problem:
+            return Response({"message": TEAM_NAME_MESSAGES[name_problem], "code": name_problem}, status=status.HTTP_400_BAD_REQUEST)
         if Team.objects.filter(team_name=team_name).exclude(team_id=team.team_id).exists():
             return Response({"message": "Team name already exists.", "code": "team_name_already_exists"}, status=status.HTTP_400_BAD_REQUEST)
         team.team_name = team_name
