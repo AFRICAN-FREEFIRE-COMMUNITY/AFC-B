@@ -308,6 +308,16 @@
       "reason": "read 2026-10-16: campaign writes go through _apply_fields, which names every accepted key (FIELDS) and checks type and length with coded refusals (mail_field_invalid / mail_field_too_long / mail_audience_invalid / mail_name_required); the audience is re-parsed by afc_auth.audience.parse_audience_spec; consent accepts only a JSON boolean (mail_preference_invalid); paging is bounded with try/except (mail_paging_invalid); request.body is read only by ses_events, which hands it to afc_mail.sns.handle: JSON-parsed, then the SNS signature, topic and certificate host are verified before anything is written (R72)"
     },
     {
+      "rule": "R70",
+      "path": "afc_mail/views.py",
+      "reason": "the own-design upload (campaigns/<t>/design/, head admin only): designs.clean_design sniffs the BYTES (ZIP signature, <mjml, <html), keeps HTML only as text inside the campaign (never stored or served as a file), strips scripts, handlers, frames and forms with BeautifulSoup, and every picture packed in a ZIP goes through assets.store_image_bytes, which decodes and re-encodes it with Pillow and names it opaquely"
+    },
+    {
+      "rule": "R87",
+      "path": "afc_mail/views.py",
+      "reason": "the own-design upload (campaigns/<t>/design/, head admin only): designs.clean_design sniffs the BYTES (ZIP signature, <mjml, <html), keeps HTML only as text inside the campaign (never stored or served as a file), strips scripts, handlers, frames and forms with BeautifulSoup, and every picture packed in a ZIP goes through assets.store_image_bytes, which decodes and re-encodes it with Pillow and names it opaquely"
+    },
+    {
       "rule": "R69",
       "path": "afc_support/views_org.py",
       "reason": "read 2026-10-09: message is required and capped at MAX_QUESTION_LENGTH with codes question_empty / question_too_long, the organization and event are resolved by lookup (organization_not_found / event_not_found), files go through _save_attachments. The house per-handler idiom (validation.note)."

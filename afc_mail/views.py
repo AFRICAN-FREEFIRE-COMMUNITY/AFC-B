@@ -37,7 +37,7 @@ Envelope: success bodies are plain objects; refusals are {"message", "code"} (ow
 """
 import base64
 
-from django.db.models import Count
+from django.db.models import Count, F
 from django.http import FileResponse, HttpResponse, HttpResponseRedirect
 from django.utils import timezone
 from rest_framework import status
@@ -49,6 +49,7 @@ from afc_auth.views_account_deletion import _require_head_admin, _require_user
 
 from . import assets as asset_store
 from . import sns
+from .addresses import frontend_base
 from .content import campaign_links, render_preview, render_test
 from .designs import DesignError, clean_design
 from .document import DocError, doc_is_empty, doc_tokens, parse_doc
@@ -77,7 +78,7 @@ def open_pixel(request, token):
     row = CampaignRecipient.objects.filter(token=token).first()
     if row is not None:
         now = timezone.now()
-        CampaignRecipient.objects.filter(pk=row.pk).update(open_count=row.open_count + 1)
+        CampaignRecipient.objects.filter(pk=row.pk).update(open_count=F("open_count") + 1)  # in the database: parallel loads all count
         if row.first_opened_at is None:
             CampaignRecipient.objects.filter(pk=row.pk, first_opened_at__isnull=True).update(first_opened_at=now)
     resp = HttpResponse(PIXEL, content_type="image/gif")
@@ -89,14 +90,15 @@ def open_pixel(request, token):
 def click(request, token, index):
     row = CampaignRecipient.objects.select_related("campaign").filter(token=token).first()
     links = (row.campaign.links if row else None) or []
-    if row is None or not (0 <= index < len(links)):
-        return _refuse("This link is not valid.", "mail_link_not_found", status.HTTP_404_NOT_FOUND)
-    url = links[index]
+    url = links[index] if row is not None and 0 <= index < len(links) else None
     if not (isinstance(url, str) and url.startswith(("https://", "http://"))):
-        return _refuse("This link is not valid.", "mail_link_not_found", status.HTTP_404_NOT_FOUND)
+        # A reader who clicks a link we cannot place (mistyped, or from an email we no longer hold)
+        # lands on AFC's home page, never on a bare error from the API host. Nothing is counted.
+        return HttpResponseRedirect(frontend_base() + "/")
     now = timezone.now()
     CampaignClick.objects.create(recipient=row, link_index=index)
-    CampaignRecipient.objects.filter(pk=row.pk).update(click_count=row.click_count + 1)
+    # Counted in the database, so two clicks at the same moment both count.
+    CampaignRecipient.objects.filter(pk=row.pk).update(click_count=F("click_count") + 1)
     if row.first_clicked_at is None:
         CampaignRecipient.objects.filter(pk=row.pk, first_clicked_at__isnull=True).update(first_clicked_at=now)
     # A click proves the message was opened, even when images were blocked.
@@ -168,6 +170,8 @@ def preferences(request):
     return Response({
         "marketing_opt_in": bool(sub and sub.marketing_opt_in),
         "opted_in_at": sub.opted_in_at if sub else None,
+        # Has this person ever answered (yes or no)? The home page asks once, until they do.
+        "answered": bool(sub and (sub.opted_in_at or sub.opted_out_at)),
     })
 
 
@@ -279,7 +283,8 @@ def _assets_of(content):
     for doc in (content.get("docs") or {}).values():
         tokens += doc_tokens(doc)
     tokens += font_tokens(content.get("style") or {})
-    return {token: asset_store.serialize(a) for token, a in asset_store.load(tokens).items()}
+    found = asset_store.load(tokens)
+    return {key: asset_store.serialize(a) for key, a in found.items()}
 
 
 def _content(obj):

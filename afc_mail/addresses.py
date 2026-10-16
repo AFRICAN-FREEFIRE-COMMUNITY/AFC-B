@@ -14,7 +14,9 @@ def api_base():
 
 
 def frontend_base():
-    return (getattr(settings, "FRONTEND_URL", "") or "https://africanfreefirecommunity.com").rstrip("/")
+    """The site an email's unsubscribe link opens. MAIL_FRONTEND_BASE is for a local walk only."""
+    return (getattr(settings, "MAIL_FRONTEND_BASE", "") or getattr(settings, "FRONTEND_URL", "")
+            or "https://africanfreefirecommunity.com").rstrip("/")
 
 
 def media_url(name):

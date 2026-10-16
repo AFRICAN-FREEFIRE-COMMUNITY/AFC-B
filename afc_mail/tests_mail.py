@@ -141,13 +141,19 @@ class ConsentTests(TestCase):
 
     def test_off_by_default_then_on_with_a_timestamp(self):
         u = _user("Ama")
-        self.assertFalse(self.client.get("/mail/preferences/", **_auth(u)).json()["marketing_opt_in"])
+        first = self.client.get("/mail/preferences/", **_auth(u)).json()
+        self.assertFalse(first["marketing_opt_in"])
+        self.assertFalse(first["answered"])
         res = self.client.post("/mail/preferences/", data=json.dumps({"marketing_opt_in": True}),
                                content_type="application/json", **_auth(u))
         self.assertTrue(res.json()["marketing_opt_in"])
         sub = EmailSubscription.objects.get(user=u)
         self.assertIsNotNone(sub.opted_in_at)
         self.assertEqual(sub.source, "settings")
+        no = _user("SaidNo")
+        res = self.client.post("/mail/preferences/", data=json.dumps({"marketing_opt_in": False, "source": "prompt"}),
+                               content_type="application/json", **_auth(no))
+        self.assertEqual((res.json()["marketing_opt_in"], res.json()["answered"]), (False, True))
 
     def test_a_non_boolean_is_refused_with_a_code(self):
         u = _user("Kofi")
@@ -293,6 +299,7 @@ class DocumentTests(_MediaMixin, TestCase):
         _subject, html = render_preview(c)
         self.assertIn('@font-face{font-family:"Squad Display"', html)
         self.assertIn('format("woff2")', html)
+        self.assertIn("font-weight:100 900;", html)  # bold headings use the face, not a fake bold
         self.assertIn("'Squad Display', Georgia", html)
 
     def test_a_recipient_gets_tracked_links_a_pixel_an_unsubscribe_link_and_the_preview_line(self):
@@ -377,9 +384,12 @@ class DesignTests(_MediaMixin, TestCase):
                                         b'</mj-column></mj-section></mj-body></mjml>', None)
         self.assertIn("https://x.example/a", out["html"])
         self.assertNotIn("<mj-", out["html"])
+        # mrml's own Google Fonts link is not added, so the admin is not told something was taken out
+        self.assertNotIn("fonts.googleapis.com", out["html"])
+        self.assertEqual(out["report"]["removed"], 0)
         with self.assertRaises(DesignError) as inc:
             clean_design("x.mjml", b'<mjml><mj-body><mj-include path="https://evil.example/x.mjml" /></mj-body></mjml>', None)
-        self.assertEqual(inc.exception.code, "mail_design_mjml_invalid")
+        self.assertEqual(inc.exception.code, "mail_design_mjml_include")
 
     def test_other_files_are_refused(self):
         with self.assertRaises(DesignError) as wrong:
@@ -496,9 +506,15 @@ class TrackingAndUnsubscribeTests(TestCase):
         self.assertEqual(self.r.click_count, 1)
         self.assertEqual(CampaignClick.objects.filter(recipient=self.r, link_index=1).count(), 1)
 
-    def test_a_link_number_the_campaign_does_not_have_is_404(self):
-        self.assertEqual(self.client.get(f"/mail/c/{self.r.token}/9/").status_code, 404)
-        self.assertEqual(self.client.get("/mail/c/r_nope/0/").status_code, 404)
+    def test_a_link_we_cannot_place_goes_home_and_counts_nothing(self):
+        for path in (f"/mail/c/{self.r.token}/9/", "/mail/c/r_nope/0/"):
+            res = self.client.get(path)
+            self.assertEqual(res.status_code, 302)
+            self.assertFalse(res["Location"].startswith("http://testserver"))  # the site, not the API
+            self.assertTrue(res["Location"].endswith("/"))
+        self.r.refresh_from_db()
+        self.assertEqual(self.r.click_count, 0)
+        self.assertFalse(CampaignClick.objects.exists())
 
     def test_get_changes_nothing_post_unsubscribes(self):
         page = self.client.get(f"/mail/unsubscribe/{self.r.token}/")

@@ -743,6 +743,24 @@ WHATSAPP_BUSINESS_ACCOUNT_ID = os.getenv("WHATSAPP_BUSINESS_ACCOUNT_ID", "")
 WHATSAPP_API_VERSION = os.getenv("WHATSAPP_API_VERSION", "v21.0")
 WHATSAPP_WEBHOOK_VERIFY_TOKEN = os.getenv("WHATSAPP_WEBHOOK_VERIFY_TOKEN", "")
 
+# ── Email news (afc_mail): Amazon SES and the addresses an email carries ──────────────────────
+# Every value comes from the box's .env (the owner's steps: tasks/ses-bulk-email-plan-2026-10-13.md);
+# nothing secret is written here. Unset, afc_mail.transport refuses to send and says SES is not set up.
+# MAIL_PUBLIC_API_BASE and MAIL_FRONTEND_BASE are for a local walk only (tracking, media and the
+# unsubscribe page pointing at local servers); production leaves them unset and gets the API host and
+# the site (afc_mail/addresses.py).
+SES_SMTP_HOST = os.getenv("SES_SMTP_HOST", "")
+SES_SMTP_PORT = os.getenv("SES_SMTP_PORT", "")
+SES_SMTP_USER = os.getenv("SES_SMTP_USER", "")
+SES_SMTP_PASSWORD = os.getenv("SES_SMTP_PASSWORD", "")
+SES_CONFIGURATION_SET = os.getenv("SES_CONFIGURATION_SET", "")
+SES_SNS_TOPIC_ARN = os.getenv("SES_SNS_TOPIC_ARN", "")
+SES_MAX_SEND_RATE = os.getenv("SES_MAX_SEND_RATE", "")
+MAIL_FROM = os.getenv("MAIL_FROM", "")
+MAIL_REPLY_TO = os.getenv("MAIL_REPLY_TO", "")
+MAIL_PUBLIC_API_BASE = os.getenv("MAIL_PUBLIC_API_BASE", "")
+MAIL_FRONTEND_BASE = os.getenv("MAIL_FRONTEND_BASE", "")
+
 # ── Outbound messages: live, or held in an outbox ─────────────────────────────────────────────
 # "live" hands email, WhatsApp and Discord DMs to real people. "outbox" records them in
 # afc_auth.outbox instead (and to OUTBOUND_OUTBOX_FILE when set) and reports them sent.

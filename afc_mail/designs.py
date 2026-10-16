@@ -95,9 +95,15 @@ def _from_mjml(data):
         import mrml
     except ImportError:
         raise DesignError("mail_design_mjml_unavailable", "MJML cannot be turned into HTML on this server yet.")
+    # mj-include would read other files; the loader is a no-op, so say why rather than a vague failure.
+    if b"<mj-include" in data.lower():
+        raise DesignError("mail_design_mjml_include", "MJML that includes other files cannot be used. Put it all in one file.")
     try:
         options = mrml.ParserOptions(include_loader=mrml.noop_loader())
-        out = mrml.to_html(data.decode("utf-8", errors="replace"), parser_options=options)
+        # fonts={}: no Google Fonts <link> of its own (mrml adds Ubuntu by default); the cleaner would
+        # strip it and report it as if the admin's file had carried it (walk of 17 Oct 2026).
+        out = mrml.to_html(data.decode("utf-8", errors="replace"), parser_options=options,
+                           render_options=mrml.RenderOptions(fonts={}))
     except Exception:
         raise DesignError("mail_design_mjml_invalid", "That MJML could not be turned into HTML.")
     return out.content.encode("utf-8")

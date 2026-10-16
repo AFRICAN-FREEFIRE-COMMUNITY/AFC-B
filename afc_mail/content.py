@@ -75,7 +75,10 @@ def _fonts_css(style):
         if not asset:
             continue
         fmt = {"font/woff2": "woff2", "font/woff": "woff", "font/otf": "opentype"}.get(asset.content_type, "truetype")
-        rules.append(f'@font-face{{font-family:"{f["family"]}";src:url("{asset_store.public_url(asset)}") format("{fmt}");font-display:swap;}}')
+        # One uploaded file is one face. Declaring it for every weight makes headings (bold) use the
+        # face as drawn, instead of the app smearing it into a fake bold (seen with Impact, 17 Oct).
+        rules.append(f'@font-face{{font-family:"{f["family"]}";src:url("{asset_store.public_url(asset)}") format("{fmt}");'
+                     f'font-weight:100 900;font-display:swap;}}')
     return f"<style>{''.join(rules)}</style>" if rules else ""
 
 
