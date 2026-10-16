@@ -1,36 +1,51 @@
-"""afc_mail: consent, unsubscribe, audience, sending, tracking, SES events, admin API (inbox #259).
+"""afc_mail: consent, unsubscribe, audience, the composer's document and designs, sending, tracking,
+SES events, the admin API (inbox #259, the approved composer #288 #290).
 
 Nothing here reaches a real mailbox: the test runner forces settings.OUTBOUND_DELIVERY to "outbox"
 (afc/settings.py) and afc_mail.transport asks afc_auth.outbox first. The SNS tests sign their own
 messages with a throwaway certificate, served in place of Amazon's through a patched requests.get.
+Files (pictures, fonts) go to a temporary MEDIA_ROOT that is removed afterwards.
 
 Run: .venv\\Scripts\\python.exe manage.py test afc_mail
 """
 import base64
 import datetime
+import io
 import json
+import shutil
+import tempfile
 import uuid
+import zipfile
 from unittest import mock
 
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from cryptography.x509.oid import NameOID
+from django.core.files.storage import default_storage
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase, override_settings
 from django.utils import timezone
 
 from afc_auth import outbox
 from afc_auth.models import Roles, SessionToken, User, UserRoles
+from afc_team.models import Team, TeamMembers
 
+from . import assets as asset_store
 from . import sns
-from .content import body_to_html, extract_links, render_for_recipient
-from .models import Campaign, CampaignClick, CampaignRecipient, EmailSubscription, EmailSuppression
+from .content import campaign_links, render_for_recipient, render_preview
+from .designs import DesignError, clean_design
+from .document import DocError, Renderer, parse_doc
+from .models import Campaign, CampaignClick, CampaignRecipient, EmailSubscription, EmailSuppression, EmailTemplate, MailAsset
 from .recipients import audience_count, freeze_recipients, set_consent, suppress
+from .style import THEMES, parse_style
 from .tasks import send_chunk
 from .transport import build_message
 
 TOPIC = "arn:aws:sns:eu-north-1:123456789012:afc-ses-events"
 CERT_URL = "https://sns.eu-north-1.amazonaws.com/SimpleNotificationService-test.pem"
+RULES = "https://africanfreefirecommunity.com/rules"
+TOURNAMENTS = "https://africanfreefirecommunity.com/tournaments"
 
 
 def _user(name, *, email=None, opt_in=None, status_="active"):
@@ -54,12 +69,71 @@ def _head_admin(name="mailadmin"):
     return u
 
 
+# ── documents as the editor sends them ──────────────────────────────────────────────────────────
+
+def _t(text, *marks):
+    node = {"type": "text", "text": text}
+    if marks:
+        node["marks"] = list(marks)
+    return node
+
+
+def _p(*inlines, **attrs):
+    return {"type": "paragraph", "attrs": attrs, "content": list(inlines)}
+
+
+def _doc(*blocks):
+    return {"type": "doc", "content": list(blocks)}
+
+
+def _link(href):
+    return {"type": "link", "attrs": {"href": href}}
+
+
+BOLD = {"type": "bold"}
+
+
+def _doc_en(title="AFC news"):
+    return _doc(
+        {"type": "heading", "attrs": {"level": 1}, "content": [_t(title)]},
+        _p(_t("Hello "), _t("players", BOLD), _t(".")),
+        _p(_t("Read "), _t("the rules", _link(RULES)), _t(" first.")),
+        {"type": "emailButton", "attrs": {"label": "See tournaments", "href": TOURNAMENTS, "align": "center"}},
+    )
+
+
 def _campaign(admin=None, **kw):
-    data = dict(name="October news", subject_en="AFC news", body_en="Hello **players**.\n\nRead [the rules](https://africanfreefirecommunity.com/rules) or https://africanfreefirecommunity.com/tournaments",
-                audience={"everyone": True})
+    data = dict(name="October news", subject_en="AFC news", docs={"en": _doc_en()}, audience={"everyone": True},
+                style=parse_style({}))
     data.update(kw)
     return Campaign.objects.create(created_by=admin, **data)
 
+
+def _png(w=40, h=20, rgba=(220, 30, 30, 255)):
+    from PIL import Image
+    buf = io.BytesIO()
+    Image.new("RGBA", (w, h), rgba).save(buf, format="PNG")
+    return buf.getvalue()
+
+
+class _MediaMixin:
+    """A throwaway MEDIA_ROOT, so stored pictures and fonts never land in the working tree."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls._media = tempfile.mkdtemp(prefix="afc-mail-test-")
+        cls._media_override = override_settings(MEDIA_ROOT=cls._media)
+        cls._media_override.enable()
+        super().setUpClass()
+
+    @classmethod
+    def tearDownClass(cls):
+        super().tearDownClass()
+        cls._media_override.disable()
+        shutil.rmtree(cls._media, ignore_errors=True)
+
+
+# ── consent and audience ────────────────────────────────────────────────────────────────────────
 
 class ConsentTests(TestCase):
     def test_no_session_is_refused(self):
@@ -104,37 +178,145 @@ class AudienceTests(TestCase):
         c = _campaign(audience={})
         self.assertEqual(freeze_recipients(c), 0)
 
+    def test_picked_people_and_teams_that_cannot_be_mailed_are_named_with_the_reason(self):
+        admin = _head_admin()
+        yes = _user("Mailable", opt_in=True)
+        never = _user("NeverAsked")
+        left = _user("LeftLater", opt_in=True)
+        set_consent(left, False, "settings")
+        bounced = _user("Bouncy", opt_in=True)
+        suppress(bounced.email, "bounce")
+        nomail = _user("NoAddress", email="", opt_in=True)
+        owner = _user("Captain", opt_in=True)
+        team = Team.objects.create(team_name="Lagos Titans", join_settings="open", team_creator=owner, team_owner=owner, country="NG")
+        TeamMembers.objects.create(team=team, member=never, management_role="member")
+        body = {"audience": {"user_ids": [yes.pk, never.pk, left.pk, bounced.pk, nomail.pk], "team_ids": [team.team_id]}}
+        res = self.client.post("/mail/audience/", data=json.dumps(body), content_type="application/json", **_auth(admin))
+        self.assertEqual(res.status_code, 200, res.content[:300])
+        out = res.json()
+        reasons = {row["name"]: row["reason"] for row in out["left_out"] if row["kind"] == "player"}
+        self.assertEqual(reasons, {"NeverAsked": "no_consent", "LeftLater": "unsubscribed", "Bouncy": "bounced", "NoAddress": "no_address"})
+        teams = [row for row in out["left_out"] if row["kind"] == "team"]
+        self.assertEqual((teams[0]["name"], teams[0]["left"], teams[0]["total"]), ("Lagos Titans", 1, 2))
+        self.assertEqual(out["recipients"], 2)  # Mailable + the captain
 
-class ContentTests(TestCase):
-    def test_links_are_found_in_order_and_once(self):
-        links = extract_links("[a](https://x.example/1) then https://x.example/2", "https://x.example/1 again")
-        self.assertEqual(links, ["https://x.example/1", "https://x.example/2"])
 
-    def test_text_is_escaped_and_bold_and_links_render(self):
-        out = body_to_html("<script>x</script> **bold** [go](https://x.example)")
-        self.assertNotIn("<script>", out)
-        self.assertIn("&lt;script&gt;", out)
-        self.assertIn("<strong>bold</strong>", out)
-        self.assertIn('href="https://x.example"', out)
+# ── the composer's document ─────────────────────────────────────────────────────────────────────
 
-    def test_a_recipient_gets_tracked_links_a_pixel_and_an_unsubscribe_link(self):
-        c = _campaign()
-        c.links = extract_links(c.body_en)
+class DocumentTests(_MediaMixin, TestCase):
+    def test_parse_keeps_what_is_listed_and_drops_the_rest(self):
+        raw = _doc(
+            {"type": "codeBlock", "content": [_t("rm -rf /")]},
+            {"type": "heading", "attrs": {"level": 9, "onclick": "x"}, "content": [_t("Title")]},
+            _p(_t("bad", _link("javascript:alert(1)")), _t("ok", _link("https://x.example/a")), onerror="x", textAlign="justify"),
+            {"type": "emailImage", "attrs": {"asset": "../etc/passwd", "src": "https://evil.example/x.png"}},
+            {"type": "orderedList", "attrs": {"start": 3, "listStyle": "upper-roman"},
+             "content": [{"type": "listItem", "content": [_p(_t("one"))]}]},
+            {"type": "emailButton", "attrs": {"label": "Go", "href": "vbscript:x"}},
+        )
+        doc, tokens = parse_doc(raw)
+        kinds = [n["type"] for n in doc["content"]]
+        self.assertEqual(kinds, ["heading", "paragraph", "orderedList"])
+        self.assertEqual(doc["content"][0]["attrs"], {"level": 2})
+        para = doc["content"][1]
+        self.assertEqual(para["attrs"], {})
+        self.assertNotIn("marks", para["content"][0])
+        self.assertEqual(para["content"][1]["marks"], [{"type": "link", "attrs": {"href": "https://x.example/a"}}])
+        self.assertEqual(doc["content"][2]["attrs"], {"start": 3, "listStyle": "upper-roman"})
+        self.assertEqual(tokens, [])
+
+    def test_text_is_escaped_and_the_style_is_inlined(self):
+        doc, _ = parse_doc(_doc(
+            {"type": "heading", "attrs": {"level": 1, "textAlign": "center"}, "content": [_t("Hi <script>x</script>")]},
+            _p(_t("big gold", {"type": "textStyle", "attrs": {"color": "rgb(234, 179, 8)", "fontSize": "24px", "fontFamily": "Georgia, serif"}})),
+            {"type": "bulletList", "attrs": {"listStyle": "square"}, "content": [{"type": "listItem", "content": [_p(_t("dot"))]}]},
+            {"type": "emailButton", "attrs": {"label": "Join", "href": TOURNAMENTS, "align": "left"}},
+        ))
+        style = parse_style({**THEMES["Gold night"], "theme": "Gold night", "headFont": "Georgia"})
+        html = Renderer(style, lambda t, o: None).html(doc)
+        self.assertNotIn("<script", html)
+        self.assertIn("&lt;script&gt;", html)
+        self.assertIn("font-size:28px", html)
+        self.assertIn("color:#eab308", html)                       # Gold night headings
+        self.assertIn("text-align:center", html)
+        self.assertIn("color:#eab308;font-family:Georgia", html)   # the span's own colour and font
+        self.assertIn("font-size:24px", html)
+        self.assertIn("list-style-type:square", html)
+        self.assertIn('bgcolor="#eab308"', html)                   # Gold night buttons
+        self.assertIn('align="left"', html)
+
+    def test_a_font_name_nobody_chose_is_dropped(self):
+        doc, _ = parse_doc(_doc(_p(_t("x", {"type": "textStyle", "attrs": {"fontFamily": "Comic Sans MS"}}))))
+        html = Renderer(parse_style({}), lambda t, o: None).html(doc)
+        self.assertNotIn("Comic", html)
+
+    def test_a_document_too_big_or_not_a_document_is_refused(self):
+        with self.assertRaises(DocError) as big:
+            parse_doc(_doc(*[_p(_t("x")) for _ in range(5000)]))
+        self.assertEqual(big.exception.code, "mail_doc_too_big")
+        with self.assertRaises(DocError) as wrong:
+            parse_doc({"type": "paragraph"})
+        self.assertEqual(wrong.exception.code, "mail_doc_invalid")
+
+    def test_a_picture_is_an_afc_asset_and_transparency_is_baked_into_a_png(self):
+        asset, code = asset_store.store_image_bytes(_png(), None, name="squad.png")
+        self.assertIsNone(code)
+        doc, tokens = parse_doc(_doc(
+            {"type": "emailImage", "attrs": {"asset": asset.token, "alt": "Squad", "width": 45, "opacity": 0.5, "align": "right",
+                                             "href": "https://x.example/teams"}},
+            {"type": "emailImage", "attrs": {"asset": "a_" + "0" * 32}},   # a token the server never issued
+        ))
+        self.assertEqual(tokens, [asset.token, "a_" + "0" * 32])
+        c = _campaign(docs={"en": doc})
+        _subject, html = render_preview(c)
+        self.assertIn(f"/media/mail/baked/{asset.token}-o50.png", html)
+        self.assertTrue(default_storage.exists(f"mail/baked/{asset.token}-o50.png"))
+        self.assertIn('width="248"', html)                          # 45% of 552 px, for Outlook
+        self.assertIn("text-align:right", html)
+        self.assertEqual(html.count("<img"), 1)                     # the unknown token renders nothing
+        from PIL import Image
+        with default_storage.open(f"mail/baked/{asset.token}-o50.png") as fh, Image.open(fh) as img:
+            self.assertEqual(img.getpixel((1, 1))[3], 127)
+
+    def test_an_uploaded_font_is_declared_with_its_fallback(self):
+        font = SimpleUploadedFile("Squad Display.woff2", b"wOF2" + b"\x00" * 64, content_type="font/woff2")
+        asset, code = asset_store.store_font(font, None)
+        self.assertIsNone(code)
+        self.assertEqual(asset.family, "Squad Display")
+        style = parse_style({"fonts": [{"asset": asset.token, "fallback": "Georgia"}], "headFont": "Squad Display"},
+                            font_assets={asset.token: asset})
+        c = _campaign(style=style)
+        _subject, html = render_preview(c)
+        self.assertIn('@font-face{font-family:"Squad Display"', html)
+        self.assertIn('format("woff2")', html)
+        self.assertIn("'Squad Display', Georgia", html)
+
+    def test_a_recipient_gets_tracked_links_a_pixel_an_unsubscribe_link_and_the_preview_line(self):
+        c = _campaign(preheader_en="41 squads are in")
+        c.links = campaign_links(c)
         c.save()
+        self.assertEqual(c.links, [RULES, TOURNAMENTS])
         r = CampaignRecipient.objects.create(campaign=c, email="a@gmail.com")
         subject, html, text = render_for_recipient(c, r)
+        self.assertEqual(subject, "AFC news")
         self.assertIn(f"/mail/c/{r.token}/0/", html)
         self.assertIn(f"/mail/c/{r.token}/1/", html)
         self.assertIn(f"/mail/o/{r.token}.gif", html)
         self.assertIn(f"/email/unsubscribe/{r.token}", html)
-        self.assertNotIn("https://africanfreefirecommunity.com/rules\"", html)  # never the raw link
+        self.assertIn("41 squads are in", html)
+        self.assertNotIn(f'href="{RULES}"', html)                  # never the raw link
+        self.assertIn(f"/mail/c/{r.token}/0/", text)
+        self.assertIn("See tournaments", text)
 
     def test_the_readers_language_is_used_when_the_campaign_has_it(self):
-        c = _campaign(subject_fr="Nouvelles AFC", body_fr="Bonjour.")
+        c = _campaign(subject_fr="Nouvelles AFC", docs={"en": _doc_en(), "fr": _doc(_p(_t("Bonjour.")))})
         r = CampaignRecipient(campaign=c, email="b@gmail.com", language="fr", token="r_x")
         subject, html, _text = render_for_recipient(c, r)
         self.assertEqual(subject, "Nouvelles AFC")
         self.assertIn("Se désabonner", html)
+        half = _campaign(subject_pt="Notícias")                      # a subject without an email
+        r2 = CampaignRecipient(campaign=half, email="c@gmail.com", language="pt", token="r_y")
+        self.assertEqual(render_for_recipient(half, r2)[0], "AFC news")
 
     def test_headers_carry_one_click_unsubscribe_and_the_ses_tags(self):
         with override_settings(SES_CONFIGURATION_SET="afc-marketing"):
@@ -146,6 +328,78 @@ class ContentTests(TestCase):
         self.assertIn("recipient=r_1", msg["X-SES-MESSAGE-TAGS"])
         self.assertIn("news.africanfreefirecommunity.com", msg["From"])
 
+
+# ── your own design ─────────────────────────────────────────────────────────────────────────────
+
+EVIL_HTML = f"""<!doctype html><html><head><meta http-equiv="refresh" content="0;url=https://evil.example">
+<base href="https://evil.example/"><link rel="stylesheet" href="https://evil.example/x.css">
+<style>@import url(https://evil.example/y.css); .a {{ color: red; background: expression(alert(1)); }}</style>
+<script>alert(1)</script></head><body onload="alert(1)">
+<!-- a note --><!--[if mso]><table><tr><td><![endif]-->
+<p onclick="alert(1)">Hello <a href="javascript:alert(1)">bad</a> <a href="{RULES}">rules</a></p>
+<iframe src="https://evil.example"></iframe><form action="https://evil.example"><input name="pw"></form>
+<img src="data:image/png;base64,{base64.b64encode(_png()).decode()}" alt="packed">
+<img src="https://cdn.example/web.png" alt="web">
+<svg onload="alert(1)"></svg></body></html>"""
+
+
+class DesignTests(_MediaMixin, TestCase):
+    def test_an_html_design_is_cleaned_and_its_packed_picture_moves_to_afc(self):
+        out = clean_design("news.html", EVIL_HTML.encode(), None)
+        html = out["html"].lower()
+        for bad in ("<script", "<iframe", "<form", "<input", "<base", "<link", "http-equiv", "onload", "onclick",
+                    "javascript:", "@import", "expression(", "<svg", "a note"):
+            self.assertNotIn(bad, html, bad)
+        self.assertIn("[if mso]", out["html"])            # Outlook's own section is kept
+        self.assertIn("/media/mail/", out["html"])        # the packed picture is now an AFC asset
+        self.assertIn("https://cdn.example/web.png", out["html"])
+        r = out["report"]
+        self.assertEqual((r["packed"], r["web_pictures"], r["links"]), (1, 1, 1))
+        self.assertGreaterEqual(r["removed"], 6)
+        self.assertGreaterEqual(r["handlers"], 3)
+
+    def test_a_zip_brings_its_pictures(self):
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr("mail/index.html", '<html><body><img src="img/pic.png" alt="pic"><a href="https://x.example">x</a></body></html>')
+            zf.writestr("mail/img/pic.png", _png())
+        out = clean_design("design.zip", buf.getvalue(), None)
+        self.assertIn("/media/mail/", out["html"])
+        self.assertNotIn("img/pic.png", out["html"])
+        self.assertEqual(out["report"]["packed"], 1)
+
+    def test_mjml_is_compiled_and_its_includes_are_refused(self):
+        out = clean_design("news.mjml", b'<mjml><mj-body><mj-section><mj-column><mj-text>Hi <a href="https://x.example/a">there</a></mj-text>'
+                                        b'</mj-column></mj-section></mj-body></mjml>', None)
+        self.assertIn("https://x.example/a", out["html"])
+        self.assertNotIn("<mj-", out["html"])
+        with self.assertRaises(DesignError) as inc:
+            clean_design("x.mjml", b'<mjml><mj-body><mj-include path="https://evil.example/x.mjml" /></mj-body></mjml>', None)
+        self.assertEqual(inc.exception.code, "mail_design_mjml_invalid")
+
+    def test_other_files_are_refused(self):
+        with self.assertRaises(DesignError) as wrong:
+            clean_design("notes.txt", b"just words", None)
+        self.assertEqual(wrong.exception.code, "mail_design_wrong_type")
+        with self.assertRaises(DesignError) as big:
+            clean_design("big.html", b"<html>" + b"x" * (2 * 1024 * 1024) + b"</html>", None)
+        self.assertEqual(big.exception.code, "mail_design_too_big")
+
+    def test_a_design_goes_out_with_tracking_the_footer_and_the_pixel(self):
+        out = clean_design("news.html", f'<html><body><p>Hi <a href="{RULES}">rules</a></p></body></html>'.encode(), None)
+        c = _campaign(mode="design", designs={"en": out})
+        c.links = campaign_links(c)
+        c.save()
+        self.assertEqual(c.links, [RULES])
+        r = CampaignRecipient.objects.create(campaign=c, email="d@gmail.com")
+        _subject, html, text = render_for_recipient(c, r)
+        self.assertIn(f"/mail/c/{r.token}/0/", html)
+        self.assertIn(f"/mail/o/{r.token}.gif", html)
+        self.assertIn(f"/email/unsubscribe/{r.token}", html)
+        self.assertIn("Unsubscribe", text)
+
+
+# ── sending, tracking, SES ──────────────────────────────────────────────────────────────────────
 
 class SendingTests(TestCase):
     def setUp(self):
@@ -164,6 +418,7 @@ class SendingTests(TestCase):
         self.assertEqual(send_chunk(c.pk, sleep=lambda s: None), 0)
         c.refresh_from_db()
         self.assertEqual(c.status, "sent")
+        self.assertEqual(c.links, [RULES, TOURNAMENTS])
         sent = outbox.drain()
         self.assertEqual([m["to"] for m in sent], [self.yes.email])
         self.assertEqual(CampaignRecipient.objects.get(campaign=c).status, "sent")
@@ -196,6 +451,14 @@ class SendingTests(TestCase):
         c.refresh_from_db()
         self.assertEqual(c.status, "draft")
 
+    def test_what_must_be_there_before_sending(self):
+        empty = _campaign(self.admin, docs={"en": _doc(_p())})
+        self.assertEqual(self.client.post(f"/mail/campaigns/{empty.token}/send/", **_auth(self.admin)).json()["code"], "mail_english_required")
+        half = _campaign(self.admin, subject_fr="Nouvelles")
+        self.assertEqual(self.client.post(f"/mail/campaigns/{half.token}/send/", **_auth(self.admin)).json()["code"], "mail_version_incomplete_fr")
+        design = _campaign(self.admin, mode="design")
+        self.assertEqual(self.client.post(f"/mail/campaigns/{design.token}/send/", **_auth(self.admin)).json()["code"], "mail_english_required")
+
     def test_cancel_marks_the_rest_skipped(self):
         c = _campaign(self.admin)
         c.status = "sending"
@@ -210,7 +473,7 @@ class TrackingAndUnsubscribeTests(TestCase):
     def setUp(self):
         self.user = _user("Clicker", opt_in=True)
         self.c = _campaign()
-        self.c.links = extract_links(self.c.body_en)
+        self.c.links = campaign_links(self.c)
         self.c.save()
         self.r = CampaignRecipient.objects.create(campaign=self.c, user=self.user, email=self.user.email, status="sent")
 
@@ -224,7 +487,7 @@ class TrackingAndUnsubscribeTests(TestCase):
     def test_a_click_counts_and_goes_to_the_campaigns_own_link(self):
         res = self.client.get(f"/mail/c/{self.r.token}/1/")
         self.assertEqual(res.status_code, 302)
-        self.assertEqual(res["Location"], "https://africanfreefirecommunity.com/tournaments")
+        self.assertEqual(res["Location"], TOURNAMENTS)
         self.r.refresh_from_db()
         self.assertEqual(self.r.click_count, 1)
         self.assertEqual(CampaignClick.objects.filter(recipient=self.r, link_index=1).count(), 1)
@@ -340,23 +603,38 @@ class SesEventTests(TestCase):
                          "sns_topic_not_configured")
 
 
-class AdminApiTests(TestCase):
+# ── the admin API ───────────────────────────────────────────────────────────────────────────────
+
+class AdminApiTests(_MediaMixin, TestCase):
     def setUp(self):
         self.admin = _head_admin()
         self.player = _user("Plain")
 
-    def test_no_session_and_a_player_are_refused(self):
-        self.assertEqual(self.client.get("/mail/campaigns/").status_code, 401)
-        res = self.client.get("/mail/campaigns/", **_auth(self.player))
-        self.assertEqual(res.status_code, 403)
-        self.assertEqual(res.json()["code"], "head_admin_required")
+    def _json(self, method, url, body=None, user=None):
+        return getattr(self.client, method)(url, data=json.dumps(body or {}), content_type="application/json",
+                                            **_auth(user or self.admin))
+
+    def test_no_session_and_a_player_are_refused_on_every_admin_address(self):
+        c = _campaign(self.admin)
+        tpl = EmailTemplate.objects.create(name="T", data={})
+        for method, url in [("get", "/mail/campaigns/"), ("post", "/mail/campaigns/"), ("get", f"/mail/campaigns/{c.token}/"),
+                            ("patch", f"/mail/campaigns/{c.token}/"), ("delete", f"/mail/campaigns/{c.token}/"),
+                            ("post", f"/mail/campaigns/{c.token}/start-from/"), ("post", f"/mail/campaigns/{c.token}/design/"),
+                            ("get", f"/mail/campaigns/{c.token}/preview/"), ("post", f"/mail/campaigns/{c.token}/test/"),
+                            ("post", f"/mail/campaigns/{c.token}/send/"), ("post", "/mail/audience/"), ("post", "/mail/assets/"),
+                            ("get", "/mail/templates/"), ("post", "/mail/templates/"), ("delete", f"/mail/templates/{tpl.token}/")]:
+            self.assertEqual(getattr(self.client, method)(url).status_code, 401, url)
+            res = getattr(self.client, method)(url, **_auth(self.player))
+            self.assertEqual(res.status_code, 403, url)
+            self.assertEqual(res.json()["code"], "head_admin_required")
+        self.assertTrue(Campaign.objects.filter(pk=c.pk).exists())
 
     def test_create_list_page_and_detail(self):
-        res = self.client.post("/mail/campaigns/", data=json.dumps({"name": "N1", "subject_en": "S", "body_en": "B",
-                                                                    "audience": {"everyone": True}, "status": "sent"}),
-                               content_type="application/json", **_auth(self.admin))
+        res = self._json("post", "/mail/campaigns/", {"subject_en": "The group stage", "docs": {"en": _doc_en()},
+                                                      "audience": {"everyone": True}, "status": "sent"})
         self.assertEqual(res.status_code, 201, res.content[:300])
         self.assertEqual(res.json()["status"], "draft")  # status is not a writable field (R65)
+        self.assertEqual(res.json()["name"], "The group stage")  # listed by its subject
         for i in range(3):
             _campaign(self.admin, name=f"C{i}")
         page = self.client.get("/mail/campaigns/?limit=2&offset=0", **_auth(self.admin)).json()
@@ -364,25 +642,87 @@ class AdminApiTests(TestCase):
         self.assertTrue(page["has_more"])
         self.assertEqual(page["next_offset"], 2)
         self.assertEqual(page["total_count"], 4)
-        token = res.json()["token"]
-        detail = self.client.get(f"/mail/campaigns/{token}/", **_auth(self.admin)).json()
-        self.assertIn("stats", detail)
-        self.assertIn("links", detail)
+        detail = self.client.get(f"/mail/campaigns/{res.json()['token']}/", **_auth(self.admin)).json()
+        for key in ("stats", "links", "docs", "style", "designs", "assets", "preheader_en", "mode"):
+            self.assertIn(key, detail)
 
-    def test_a_name_is_required_and_only_drafts_are_edited(self):
-        res = self.client.post("/mail/campaigns/", data=json.dumps({"subject_en": "S"}),
-                               content_type="application/json", **_auth(self.admin))
-        self.assertEqual(res.json()["code"], "mail_name_required")
+    def test_a_bad_document_or_style_is_refused_and_only_drafts_change(self):
         c = _campaign(self.admin)
+        self.assertEqual(self._json("patch", f"/mail/campaigns/{c.token}/", {"docs": {"en": {"type": "nope"}}}).json()["code"], "mail_doc_invalid")
+        self.assertEqual(self._json("patch", f"/mail/campaigns/{c.token}/", {"style": "dark"}).json()["code"], "mail_style_invalid")
+        self.assertEqual(self._json("patch", f"/mail/campaigns/{c.token}/", {"mode": "html"}).json()["code"], "mail_mode_invalid")
+        self.assertEqual(self._json("patch", f"/mail/campaigns/{c.token}/", {"designs": {"en": {"html": "<script>"}}}).json()["code"],
+                         "mail_design_upload_only")
+        ok = self._json("patch", f"/mail/campaigns/{c.token}/", {"style": {"theme": "AFC light", **THEMES["AFC light"], "page": "red"}})
+        self.assertEqual(ok.status_code, 200)
+        self.assertEqual(ok.json()["style"]["page"], THEMES["AFC light"]["page"])  # "red" is not a colour it keeps
         c.status = "sent"
         c.save()
-        res = self.client.patch(f"/mail/campaigns/{c.token}/", data=json.dumps({"subject_en": "x"}),
-                                content_type="application/json", **_auth(self.admin))
-        self.assertEqual(res.status_code, 409)
+        self.assertEqual(self._json("patch", f"/mail/campaigns/{c.token}/", {"subject_en": "x"}).status_code, 409)
+        self.assertEqual(self._json("delete", f"/mail/campaigns/{c.token}/").status_code, 409)
+
+    def test_a_draft_can_be_deleted(self):
+        c = _campaign(self.admin)
+        self.assertEqual(self._json("delete", f"/mail/campaigns/{c.token}/").json()["code"], "mail_draft_deleted")
+        self.assertFalse(Campaign.objects.filter(pk=c.pk).exists())
+
+    def test_pictures_and_fonts_upload_and_fakes_are_refused(self):
+        auth = _auth(self.admin)
+        pic = self.client.post("/mail/assets/", {"kind": "image", "file": SimpleUploadedFile("pic.png", _png(), content_type="image/png")}, **auth)
+        self.assertEqual(pic.status_code, 201, pic.content[:300])
+        self.assertTrue(pic.json()["url"].startswith("https://"))
+        self.assertTrue(pic.json()["token"].startswith("a_"))
+        fake = self.client.post("/mail/assets/", {"kind": "image", "file": SimpleUploadedFile("pic.png", b"<?php echo 1;", content_type="image/png")}, **auth)
+        self.assertEqual(fake.json()["code"], "mail_not_an_image")
+        font = self.client.post("/mail/assets/", {"kind": "font", "file": SimpleUploadedFile("Brand Bold.ttf", b"\x00\x01\x00\x00" + b"\x00" * 60)}, **auth)
+        self.assertEqual(font.status_code, 201, font.content[:300])
+        self.assertEqual(font.json()["family"], "Brand Bold")
+        stored = MailAsset.objects.get(token=font.json()["token"])
+        self.assertTrue(stored.file.name.endswith(".ttf") and "Brand" not in stored.file.name)  # opaque name (R87)
+        notfont = self.client.post("/mail/assets/", {"kind": "font", "file": SimpleUploadedFile("x.woff2", b"<html>")}, **auth)
+        self.assertEqual(notfont.json()["code"], "mail_not_a_font")
+        self.assertEqual(self.client.post("/mail/assets/", {"kind": "video"}, **auth).json()["code"], "mail_asset_kind_invalid")
+
+    def test_a_design_upload_is_cleaned_and_can_be_removed(self):
+        c = _campaign(self.admin)
+        auth = _auth(self.admin)
+        res = self.client.post(f"/mail/campaigns/{c.token}/design/",
+                               {"language": "fr", "file": SimpleUploadedFile("news.html", EVIL_HTML.encode(), content_type="text/html")}, **auth)
+        self.assertEqual(res.status_code, 200, res.content[:300])
+        fr = res.json()["designs"]["fr"]
+        self.assertNotIn("<script", fr["html"].lower())
+        self.assertGreaterEqual(fr["report"]["removed"], 6)
+        wrong = self.client.post(f"/mail/campaigns/{c.token}/design/",
+                                 {"language": "fr", "file": SimpleUploadedFile("x.txt", b"words")}, **auth)
+        self.assertEqual(wrong.json()["code"], "mail_design_wrong_type")
+        gone = self.client.delete(f"/mail/campaigns/{c.token}/design/?language=fr", **auth)
+        self.assertNotIn("fr", gone.json()["designs"])
+
+    def test_templates_save_list_start_from_and_delete(self):
+        sent = _campaign(self.admin, subject_en="Group stage", preheader_en="41 squads")
+        sent.status = "sent"
+        sent.save()
+        made = self._json("post", "/mail/templates/", {"campaign": sent.token})
+        self.assertEqual(made.status_code, 201, made.content[:300])
+        self.assertEqual(made.json()["name"], "Group stage")
+        self.assertEqual(made.json()["source_campaign"], sent.token)
+        listed = self.client.get("/mail/templates/", **_auth(self.admin)).json()
+        self.assertEqual(listed["total_count"], 1)
+        draft = _campaign(self.admin, subject_en="", docs={})
+        started = self._json("post", f"/mail/campaigns/{draft.token}/start-from/", {"template": made.json()["token"]}).json()
+        self.assertEqual((started["subject_en"], started["preheader_en"]), ("Group stage", "41 squads"))
+        self.assertEqual(started["docs"]["en"]["content"][0]["type"], "heading")
+        again = self._json("post", f"/mail/campaigns/{draft.token}/start-from/", {"campaign": sent.token}).json()
+        self.assertEqual(again["subject_en"], "Group stage")
+        blank = self._json("post", f"/mail/campaigns/{draft.token}/start-from/", {"blank": True}).json()
+        self.assertEqual((blank["subject_en"], blank["docs"]), ("", {}))
+        self.assertEqual(self._json("post", f"/mail/campaigns/{draft.token}/start-from/", {"template": "t_nope"}).status_code, 404)
+        self.assertEqual(self._json("delete", f"/mail/templates/{made.json()['token']}/").json()["code"], "mail_template_deleted")
+        self.assertEqual(self._json("delete", f"/mail/templates/{made.json()['token']}/").status_code, 404)
 
     def test_the_tracker_adds_up(self):
         c = _campaign(self.admin)
-        c.links = extract_links(c.body_en)
+        c.links = campaign_links(c)
         c.save()
         users = [_user(f"T{i}", opt_in=True) for i in range(3)]
         rows = [CampaignRecipient.objects.create(campaign=c, user=u, email=u.email, status=s)
@@ -400,12 +740,15 @@ class AdminApiTests(TestCase):
 
     def test_preview_and_test_send_go_to_the_outbox(self):
         outbox.drain()
-        c = _campaign(self.admin, subject_pt="Notícias", body_pt="Olá.")
+        c = _campaign(self.admin, subject_pt="Notícias", docs={"en": _doc_en(), "pt": _doc(_p(_t("Olá.")))})
         prev = self.client.get(f"/mail/campaigns/{c.token}/preview/?language=pt", **_auth(self.admin)).json()
         self.assertEqual(prev["subject"], "Notícias")
+        self.assertIn("Olá.", prev["html"])
+        self.assertGreaterEqual(prev["size_kb"], 1)
         res = self.client.post(f"/mail/campaigns/{c.token}/test/", **_auth(self.admin))
         self.assertEqual(res.status_code, 200, res.content[:300])
         sent = outbox.drain()
         self.assertEqual(len(sent), 1)
         self.assertEqual(sent[0]["to"], self.admin.email)
         self.assertNotIn("/mail/c/", sent[0]["body"])  # a test send is never tracked
+        self.assertNotIn("/mail/o/", sent[0]["body"])

@@ -22,7 +22,8 @@ from celery import shared_task
 from django.conf import settings
 from django.utils import timezone
 
-from .content import one_click_unsubscribe, render_for_recipient, unsubscribe_page
+from .addresses import one_click_unsubscribe, unsubscribe_page
+from .content import render_for_recipient
 from .models import Campaign, CampaignRecipient, EmailSubscription
 from .recipients import is_suppressed
 from .transport import Connection, build_message

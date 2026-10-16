@@ -80,6 +80,60 @@ def audience_count(spec):
     return {"selected": resolve_audience(spec).count(), "recipients": audience_queryset(spec).count()}
 
 
+LEFT_OUT_REASONS = ("inactive", "no_address", "bounced", "unsubscribed", "no_consent")
+
+
+def reason_left_out(user, sub, suppressed, eligible_ids):
+    """Why a picked person would not get the email, or None when they would. In the order the
+    composer explains them: an account that is deleted or suspended, no address, an address SES
+    reported bouncing or complaining, someone who said yes and later unsubscribed, someone who has
+    not said yes (never asked, or said no)."""
+    if user.pk not in eligible_ids:
+        return "inactive"
+    email = normalise_email(user.email)
+    if not email:
+        return "no_address"
+    if email in suppressed:
+        return "bounced"
+    if sub is None or not sub.marketing_opt_in:
+        return "unsubscribed" if (sub and sub.opted_in_at and sub.opted_out_at) else "no_consent"
+    return None
+
+
+def left_out(spec):
+    """The picked players and teams that the email will miss, and why (#286: "select those accounts
+    they want to send to specifically like in broadcast"; the email rule broadcasts do not have is
+    consent, so a pick that cannot be mailed is named rather than silently dropped).
+
+    [{"kind": "player", "id", "name", "reason"}, {"kind": "team", "id", "name", "left", "total"}].
+    Nothing for "everyone" or the category filters: those are counted, not picked by name."""
+    from django.contrib.auth import get_user_model
+
+    from afc_auth.audience import eligible_users
+    from afc_team.models import Team
+
+    if spec.get("everyone"):
+        return []
+    out = []
+    if spec.get("user_ids"):
+        users = list(get_user_model().objects.filter(pk__in=spec["user_ids"]).only("pk", "username", "email"))
+        ids = [u.pk for u in users]
+        subs = {s.user_id: s for s in EmailSubscription.objects.filter(user_id__in=ids)}
+        suppressed = set(EmailSuppression.objects.filter(email__in=[normalise_email(u.email) for u in users]).values_list("email", flat=True))
+        eligible_ids = set(eligible_users(include_suspended=spec.get("include_suspended", False)).filter(pk__in=ids).values_list("pk", flat=True))
+        for u in users:
+            reason = reason_left_out(u, subs.get(u.pk), suppressed, eligible_ids)
+            if reason:
+                out.append({"kind": "player", "id": u.pk, "name": u.username, "reason": reason})
+    for team in Team.objects.filter(team_id__in=spec.get("team_ids") or []).only("team_id", "team_name"):
+        team_spec = parse_audience_spec({"team_ids": [team.team_id], "include_suspended": spec.get("include_suspended", False)})
+        total = resolve_audience(team_spec).count()
+        mailable = audience_queryset(team_spec).count()
+        if total > mailable:
+            out.append({"kind": "team", "id": team.team_id, "name": team.team_name, "left": total - mailable, "total": total})
+    return out
+
+
 def freeze_recipients(campaign):
     """Write one CampaignRecipient per person, at the moment the admin presses Send. The audience
     is decided once; later opt-ins do not join a campaign that is already going out, and later

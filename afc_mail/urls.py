@@ -17,4 +17,10 @@ urlpatterns = [
     path("campaigns/<str:token>/test/", views.campaign_test, name="mail_campaign_test"),
     path("campaigns/<str:token>/send/", views.campaign_send, name="mail_campaign_send"),
     path("campaigns/<str:token>/cancel/", views.campaign_cancel, name="mail_campaign_cancel"),
+    path("campaigns/<str:token>/start-from/", views.campaign_start_from, name="mail_campaign_start_from"),
+    path("campaigns/<str:token>/design/", views.campaign_design, name="mail_campaign_design"),
+    path("audience/", views.audience, name="mail_audience"),
+    path("assets/", views.assets, name="mail_assets"),
+    path("templates/", views.templates, name="mail_templates"),
+    path("templates/<str:token>/", views.template_detail, name="mail_template_detail"),
 ]
