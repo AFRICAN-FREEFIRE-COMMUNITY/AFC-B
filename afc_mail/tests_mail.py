@@ -39,7 +39,7 @@ from .document import DocError, Renderer, parse_doc
 from .models import Campaign, CampaignClick, CampaignRecipient, EmailSubscription, EmailSuppression, EmailTemplate, MailAsset
 from .recipients import audience_count, freeze_recipients, set_consent, suppress
 from .style import THEMES, parse_style
-from .tasks import send_chunk
+from .tasks import RETRIES, send_campaign_chunk, send_chunk
 from .transport import build_message
 
 TOPIC = "arn:aws:sns:eu-north-1:123456789012:afc-ses-events"
@@ -481,6 +481,48 @@ class SendingTests(TestCase):
         res = self.client.post(f"/mail/campaigns/{c.token}/cancel/", **_auth(self.admin))
         self.assertEqual(res.status_code, 200)
         self.assertEqual(CampaignRecipient.objects.get(campaign=c).status, "skipped")
+
+    @override_settings(OUTBOUND_DELIVERY="live", SES_SMTP_USER="", SES_SMTP_PASSWORD="")
+    def test_no_ses_settings_refuses_before_anything_is_frozen(self):
+        # A server whose SES steps are not done yet (production on 17 Oct 2026): a plain refusal, and
+        # the draft stays a draft, instead of a 500 on the test send and a campaign stuck "sending".
+        c = _campaign(self.admin)
+        with mock.patch("afc_mail.tasks.send_campaign_chunk.delay") as queued:
+            send = self.client.post(f"/mail/campaigns/{c.token}/send/", **_auth(self.admin))
+            test = self.client.post(f"/mail/campaigns/{c.token}/test/", **_auth(self.admin))
+        for res in (send, test):
+            self.assertEqual(res.status_code, 503, res.content[:200])
+            self.assertEqual(res.json()["code"], "mail_not_set_up")
+        queued.assert_not_called()
+        c.refresh_from_db()
+        self.assertEqual(c.status, "draft")
+        self.assertFalse(CampaignRecipient.objects.filter(campaign=c).exists())
+        self.assertEqual(outbox.drain(), [])
+
+    def test_an_unreachable_mail_server_is_retried_then_the_campaign_is_closed(self):
+        c = _campaign(self.admin)
+        c.status = "queued"
+        c.save()
+        freeze_recipients(c)
+        # First failures: tried again later, nothing marked, the row still waits its turn.
+        with mock.patch("afc_mail.tasks.send_chunk", side_effect=OSError("no route to host")), \
+                mock.patch.object(send_campaign_chunk, "retry", side_effect=RuntimeError("retry scheduled")) as retry:
+            with self.assertRaises(RuntimeError):
+                send_campaign_chunk.run(c.pk)
+        retry.assert_called_once()
+        self.assertEqual(CampaignRecipient.objects.get(campaign=c).status, "queued")
+        # The last retry: the campaign is closed and the row says why, so the tracker adds up.
+        send_campaign_chunk.push_request(retries=RETRIES)
+        try:
+            with mock.patch("afc_mail.tasks.send_chunk", side_effect=OSError("no route to host")):
+                self.assertEqual(send_campaign_chunk.run(c.pk), 0)
+        finally:
+            send_campaign_chunk.pop_request()
+        row = CampaignRecipient.objects.get(campaign=c)
+        self.assertEqual((row.status, row.error), ("failed", "the mail server could not be reached"))
+        c.refresh_from_db()
+        self.assertEqual(c.status, "sent")
+        self.assertIsNotNone(c.finished_at)
 
 
 class TrackingAndUnsubscribeTests(TestCase):

@@ -36,6 +36,7 @@ app/(a)/a/email-news/ in AFC_Frontend (lib/mailApi.ts):
 Envelope: success bodies are plain objects; refusals are {"message", "code"} (owner rule R35).
 """
 import base64
+import logging
 
 from django.db.models import Count, F
 from django.http import FileResponse, HttpResponse, HttpResponseRedirect
@@ -49,6 +50,7 @@ from afc_auth.views_account_deletion import _require_head_admin, _require_user
 
 from . import assets as asset_store
 from . import sns
+from . import transport
 from .addresses import frontend_base
 from .content import campaign_links, render_preview, render_test
 from .designs import DesignError, clean_design
@@ -57,11 +59,18 @@ from .models import LANGS, Campaign, CampaignClick, CampaignRecipient, EmailSubs
 from .recipients import audience_count, campaign_spec, freeze_recipients, left_out, picked, set_consent, suppress
 from .style import font_tokens, parse_style
 
+logger = logging.getLogger(__name__)
+
 PIXEL = base64.b64decode("R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7")
 
 
 def _refuse(message, code, http=status.HTTP_400_BAD_REQUEST):
     return Response({"message": message, "code": code}, status=http)
+
+
+def _not_set_up():
+    """The server's SES steps are not done (no SMTP user or password): say so before promising a send."""
+    return _refuse("Sending email is not set up on this server yet.", "mail_not_set_up", status.HTTP_503_SERVICE_UNAVAILABLE)
 
 
 def _mask(email):
@@ -543,12 +552,18 @@ def campaign_test(request, token):
         return refusal
     if not (admin.email or "").strip():
         return _refuse("Your account has no email address.", "mail_admin_no_email")
+    if not transport.ready():
+        return _not_set_up()
     language = request.data.get("language", "en")
-    from .transport import send_one
     subject, html_body, text_body = render_test(campaign, language if language in LANGS else "en")
-    ok = send_one(admin.email, f"[TEST] {subject}", html_body, text_body,
-                  one_click_url="https://africanfreefirecommunity.com", page_url="https://africanfreefirecommunity.com",
-                  tags={"campaign": campaign.token, "recipient": "test"})
+    try:
+        ok = transport.send_one(admin.email, f"[TEST] {subject}", html_body, text_body,
+                                one_click_url="https://africanfreefirecommunity.com", page_url="https://africanfreefirecommunity.com",
+                                tags={"campaign": campaign.token, "recipient": "test"})
+    except transport.CONNECTION_ERRORS:
+        # The mail server could not be reached or refused the login. The detail goes to the log only.
+        logger.warning("afc_mail: test send could not reach the mail server", exc_info=True)
+        ok = False
     if not ok:
         return _refuse("The mail server refused the test message.", "mail_test_refused", status.HTTP_502_BAD_GATEWAY)
     return Response({"message": "Test sent.", "code": "mail_test_sent", "to": _mask(admin.email)})
@@ -569,6 +584,8 @@ def campaign_send(request, token):
         return refusal
     if spec_is_empty(campaign_spec(campaign)):
         return _refuse("Choose who should receive it.", "mail_audience_empty")
+    if not transport.ready():
+        return _not_set_up()  # before anything is frozen or queued: the draft stays a draft
     # Claim the draft atomically, so a double click cannot freeze the recipients twice.
     claimed = Campaign.objects.filter(pk=campaign.pk, status="draft").update(status="queued", queued_at=timezone.now())
     if not claimed:

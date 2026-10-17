@@ -12,6 +12,12 @@ PER RECIPIENT, AT SEND TIME: still opted in, not suppressed, then rendered in th
 every link tracked (afc_mail.content.render_for_recipient) and handed to SES
 (afc_mail.transport.Connection). A failure marks that one row "failed" and the chunk carries on.
 
+WHEN SES CANNOT BE REACHED AT ALL (the session will not open, or the login is refused): nothing in
+the chunk was sent and every row is still queued, so the chunk is tried again every RETRY_SECONDS,
+RETRIES times (an hour). After that the campaign is closed honestly: its queued rows become
+"failed" with the reason, and the tracker shows them, instead of the campaign sitting on "sending"
+for ever (found before the 17 Oct 2026 ship, when the box had no SES settings yet).
+
 CONNECTS TO: afc_mail.views.campaign_send (queues the first chunk), afc_mail.models,
 celery_config.py (autodiscovered).
 """
@@ -26,11 +32,13 @@ from .addresses import one_click_unsubscribe, unsubscribe_page
 from .content import render_for_recipient
 from .models import Campaign, CampaignRecipient, EmailSubscription
 from .recipients import is_suppressed
-from .transport import Connection, build_message
+from .transport import CONNECTION_ERRORS, Connection, build_message
 
 logger = logging.getLogger(__name__)
 
 CHUNK_SIZE = 100
+RETRY_SECONDS = 300
+RETRIES = 12
 
 
 def send_rate():
@@ -86,12 +94,27 @@ def send_chunk(campaign_id, *, sleep=time.sleep):
     return len(batch)
 
 
-@shared_task(name="afc_mail.send_campaign_chunk")
-def send_campaign_chunk(campaign_id):
-    handled = send_chunk(campaign_id)
+@shared_task(bind=True, name="afc_mail.send_campaign_chunk", max_retries=RETRIES)
+def send_campaign_chunk(self, campaign_id):
+    try:
+        handled = send_chunk(campaign_id)
+    except CONNECTION_ERRORS as exc:
+        if self.request.retries < self.max_retries:
+            logger.warning("afc_mail: mail server unreachable for campaign %s, trying again in %ss", campaign_id, RETRY_SECONDS)
+            raise self.retry(exc=exc, countdown=RETRY_SECONDS)
+        logger.error("afc_mail: mail server unreachable for an hour; closing campaign %s", campaign_id, exc_info=True)
+        give_up(campaign_id, "the mail server could not be reached")
+        return 0
     if handled:
         send_campaign_chunk.apply_async(args=[campaign_id], countdown=1)
     return handled
+
+
+def give_up(campaign_id, reason):
+    """Close a campaign whose mail server never answered: what was still queued is "failed" with the
+    reason, so the tracker adds up and shows it, and the campaign is finished rather than stuck."""
+    CampaignRecipient.objects.filter(campaign_id=campaign_id, status="queued").update(status="failed", error=reason[:255])
+    Campaign.objects.filter(pk=campaign_id, status__in=("queued", "sending")).update(status="sent", finished_at=timezone.now())
 
 
 def cancel(campaign):

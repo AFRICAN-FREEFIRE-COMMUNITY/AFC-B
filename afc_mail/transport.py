@@ -44,6 +44,23 @@ def _setting(name, default=""):
     return (getattr(settings, name, "") or default)
 
 
+class NotSetUp(RuntimeError):
+    """Live sending was asked for, and this server has no SES SMTP user or password."""
+
+
+# What opening or using the SES session can raise when the server cannot be reached or refuses the
+# login: callers catch this instead of importing smtplib themselves (the chokepoint stays here).
+CONNECTION_ERRORS = (smtplib.SMTPException, OSError, NotSetUp)
+
+
+def ready():
+    """True when a message can be handed over: the outbox (not live), or SES credentials present.
+    The views ask this before they promise a send, so an admin on a server whose SES steps are not
+    done yet gets a plain refusal instead of a crash or a campaign stuck on "sending" (17 Oct 2026).
+    CALLED BY: afc_mail.views.campaign_test and campaign_send."""
+    return not outbox.is_live() or bool(_setting("SES_SMTP_USER") and _setting("SES_SMTP_PASSWORD"))
+
+
 def build_message(to_email, subject, html_body, text_body, *, one_click_url, page_url, tags):
     """The MIME message for one recipient, with the headers every bulk sender now needs.
 
@@ -83,7 +100,7 @@ class Connection:
             user = _setting("SES_SMTP_USER")
             password = _setting("SES_SMTP_PASSWORD")
             if not (user and password):
-                raise RuntimeError("SES_SMTP_USER / SES_SMTP_PASSWORD are not set on this server")
+                raise NotSetUp("SES_SMTP_USER / SES_SMTP_PASSWORD are not set on this server")
             self.smtp = smtplib.SMTP(host, port, timeout=30)
             self.smtp.starttls(context=ssl.create_default_context())
             self.smtp.login(user, password)
