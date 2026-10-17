@@ -20,6 +20,11 @@ number is blocked before the push.
 
 ## Unreleased
 
+### Fixed
+- An SES event posted by an SNS subscription with "Raw message delivery" switched on is refused as
+  `sns_raw_delivery` (it was `sns_wrong_topic`, which pointed at the wrong setting), and every
+  refused SES event is written to the server log with its code.
+
 ## v7.1.128 - 2026-10-17
 
 ### Fixed
