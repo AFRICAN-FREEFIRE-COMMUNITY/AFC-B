@@ -140,6 +140,65 @@
         ".venv/**",
         "venv/**"
       ]
+    },
+    {
+      "id": "be-import-not-in-prod-requirements",
+      "title": "App code imports a package the server never installs (missing from requirements-prod.txt)",
+      "why": "The VPS installs requirements-prod.txt only (59 pins captured from production), never requirements.txt. A package added to requirements.txt alone works on every laptop and is absent on the box: a lazy import degrades silently, a module-level one stops every API address once the URLs load.",
+      "seen": [
+        "2026-09-12 RapidFuzz: the OCR name matcher had run exact-only on production since 2026-08-03; found by the 15 matcher tests that fail without it",
+        "2026-10-17 beautifulsoup4, lxml, mrml for afc_mail (#290): read off the box before shipping; afc_mail/content.py imports bs4 at load, so the first request after the deploy would have failed everywhere"
+      ],
+      "fix": "pin the package (and anything pip says it needs) in requirements-prod.txt at the version the tests ran with; check the box can install it from a wheel: venv/bin/pip install --dry-run --report - <pkg>==<ver>",
+      "kind": "prod-imports",
+      "requirements": "requirements-prod.txt",
+      "globs": [
+        "afc/**/*.py",
+        "afc_*/**/*.py",
+        "afcbot/afc_scraper.py"
+      ],
+      "except": [
+        "**/tests*.py",
+        "**/test_*.py",
+        "**/tests/**",
+        "**/migrations/**",
+        "afc_ocr/training/**"
+      ],
+      "aliases": {
+        "bs4": "beautifulsoup4",
+        "PIL": "pillow",
+        "cv2": "opencv-python-headless",
+        "dotenv": "python-dotenv",
+        "dateutil": "python-dateutil",
+        "pyotp": "PyOTP",
+        "rest_framework": "djangorestframework",
+        "corsheaders": "django-cors-headers",
+        "oauth2_provider": "django-oauth-toolkit",
+        "django_redis": "django-redis",
+        "django_celery_beat": "django-celery-beat",
+        "timezone_field": "django-timezone-field",
+        "google": "google-auth",
+        "rapidfuzz": "RapidFuzz",
+        "MySQLdb": "mysqlclient",
+        "crontab": "python-crontab",
+        "yaml": "PyYAML",
+        "jwt": "PyJWT"
+      },
+      "implied": [
+        {
+          "pattern": "[\"']lxml[\"']",
+          "dist": "lxml",
+          "why": "named as the BeautifulSoup parser"
+        }
+      ],
+      "local": [
+        "afc_scraper"
+      ],
+      "optional": {
+        "onnxruntime": "local OCR engine (afc_ocr/services/local_ocr.py): is_available() probes for it and the router sends every read to Gemini when it is missing; not installed on the box by design",
+        "rapidocr_onnxruntime": "same local OCR engine, only constructed after is_available() found it"
+      },
+      "_notes": "afcbot/afc_scraper.py is checked because afc_bot/tasks.py imports it into the Django worker through sys.path. afc_ocr/training/** are scripts that run off the box (they say so in their docstrings)."
     }
   ]
 }
