@@ -491,12 +491,32 @@ class SendingTests(TestCase):
             send = self.client.post(f"/mail/campaigns/{c.token}/send/", **_auth(self.admin))
             test = self.client.post(f"/mail/campaigns/{c.token}/test/", **_auth(self.admin))
         for res in (send, test):
-            self.assertEqual(res.status_code, 503, res.content[:200])
+            # 409, never a 5xx: nginx swaps an API 502/503/504 for the maintenance page (17 Oct 2026)
+            self.assertEqual(res.status_code, 409, res.content[:200])
             self.assertEqual(res.json()["code"], "mail_not_set_up")
         queued.assert_not_called()
         c.refresh_from_db()
         self.assertEqual(c.status, "draft")
         self.assertFalse(CampaignRecipient.objects.filter(campaign=c).exists())
+
+    @override_settings(OUTBOUND_DELIVERY="live", SES_SMTP_USER="AKIAEXAMPLEEXAMPLE00", SES_SMTP_PASSWORD="x" * 44)
+    def test_each_ses_refusal_of_a_test_send_has_its_own_code(self):
+        # The first live test (17 Oct 2026) was refused "not authorized to perform ses:SendRawEmail"
+        # and the admin saw "Something went wrong". Each refusal now names what to fix, in a 4xx.
+        import smtplib
+        c = _campaign(self.admin)
+        cases = [
+            (smtplib.SMTPDataError(554, b"Access denied: User 'arn:aws:iam::1:user/x' is not authorized to perform 'ses:SendRawEmail'"), "mail_ses_not_authorized"),
+            (smtplib.SMTPDataError(554, b"Message rejected: Email address is not verified. The following identities failed the check"), "mail_ses_unverified"),
+            (smtplib.SMTPDataError(454, b"Throttling failure: Maximum sending rate exceeded."), "mail_ses_throttled"),
+            (smtplib.SMTPAuthenticationError(535, b"Authentication Credentials Invalid"), "mail_ses_login_refused"),
+            (ConnectionRefusedError("refused"), "mail_test_refused"),
+        ]
+        for exc, code in cases:
+            with mock.patch("afc_mail.transport.send_one", side_effect=exc):
+                res = self.client.post(f"/mail/campaigns/{c.token}/test/", **_auth(self.admin))
+            self.assertEqual((res.status_code, res.json()["code"]), (424, code), res.content[:200])
+            self.assertNotIn("arn:aws", res.json()["message"])  # SES's own words stay in the log
         self.assertEqual(outbox.drain(), [])
 
     def test_an_unreachable_mail_server_is_retried_then_the_campaign_is_closed(self):

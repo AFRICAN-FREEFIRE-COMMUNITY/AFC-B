@@ -53,6 +53,23 @@ class NotSetUp(RuntimeError):
 CONNECTION_ERRORS = (smtplib.SMTPException, OSError, NotSetUp)
 
 
+def refusal_code(exc):
+    """What SES's refusal means for the admin, as a code the composer translates. The first live test
+    (17 Oct 2026) came back "Access denied: User ... is not authorized to perform ses:SendRawEmail"
+    and the admin saw only "Something went wrong". The SES text stays in the log, never on screen."""
+    raw = getattr(exc, "smtp_error", None)
+    text = (raw.decode("utf-8", "replace") if isinstance(raw, bytes) else str(raw or exc)).lower()
+    if isinstance(exc, smtplib.SMTPAuthenticationError):
+        return "mail_ses_login_refused"
+    if "not authorized" in text or "access denied" in text:
+        return "mail_ses_not_authorized"
+    if "not verified" in text:
+        return "mail_ses_unverified"
+    if "throttl" in text or "maximum sending rate" in text or "daily message quota" in text:
+        return "mail_ses_throttled"
+    return "mail_test_refused"
+
+
 def ready():
     """True when a message can be handed over: the outbox (not live), or SES credentials present.
     The views ask this before they promise a send, so an admin on a server whose SES steps are not

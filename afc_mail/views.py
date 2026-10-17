@@ -69,8 +69,21 @@ def _refuse(message, code, http=status.HTTP_400_BAD_REQUEST):
 
 
 def _not_set_up():
-    """The server's SES steps are not done (no SMTP user or password): say so before promising a send."""
-    return _refuse("Sending email is not set up on this server yet.", "mail_not_set_up", status.HTTP_503_SERVICE_UNAVAILABLE)
+    """The server's SES steps are not done (no SMTP user or password): say so before promising a send.
+    409, not 503: nginx replaces any 502/503/504 the API answers with the maintenance page, so a 5xx
+    refusal never reached the composer (17 Oct 2026)."""
+    return _refuse("Sending email is not set up on this server yet.", "mail_not_set_up", status.HTTP_409_CONFLICT)
+
+
+# The English sentence for each SES refusal (transport.refusal_code); the composer shows its own words
+# for the code in the reader's language. 424: the request was fine, the service behind it said no.
+SES_REFUSALS = {
+    "mail_ses_not_authorized": "Amazon SES refused: the SMTP user is not allowed to send. Check its IAM policy.",
+    "mail_ses_unverified": "Amazon SES refused: in the sandbox the sender and the recipient must both be verified.",
+    "mail_ses_throttled": "Amazon SES is limiting the sending rate. Try again in a minute.",
+    "mail_ses_login_refused": "Amazon SES did not accept the SMTP user name or password.",
+    "mail_test_refused": "The mail server refused the test message.",
+}
 
 
 def _mask(email):
@@ -560,12 +573,14 @@ def campaign_test(request, token):
         ok = transport.send_one(admin.email, f"[TEST] {subject}", html_body, text_body,
                                 one_click_url="https://africanfreefirecommunity.com", page_url="https://africanfreefirecommunity.com",
                                 tags={"campaign": campaign.token, "recipient": "test"})
-    except transport.CONNECTION_ERRORS:
-        # The mail server could not be reached or refused the login. The detail goes to the log only.
-        logger.warning("afc_mail: test send could not reach the mail server", exc_info=True)
-        ok = False
+    except transport.CONNECTION_ERRORS as exc:
+        # The mail server could not be reached, or SES said no. SES's own words go to the log only;
+        # the admin gets what it means (refusal_code), in a 4xx so nginx lets it through.
+        logger.warning("afc_mail: the test send was refused by the mail server", exc_info=True)
+        code = transport.refusal_code(exc)
+        return _refuse(SES_REFUSALS[code], code, status.HTTP_424_FAILED_DEPENDENCY)
     if not ok:
-        return _refuse("The mail server refused the test message.", "mail_test_refused", status.HTTP_502_BAD_GATEWAY)
+        return _refuse(SES_REFUSALS["mail_test_refused"], "mail_test_refused", status.HTTP_424_FAILED_DEPENDENCY)
     return Response({"message": "Test sent.", "code": "mail_test_sent", "to": _mask(admin.email)})
 
 
