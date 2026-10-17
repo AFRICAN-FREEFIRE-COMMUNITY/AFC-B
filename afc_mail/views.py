@@ -167,9 +167,19 @@ def resubscribe(request, token):
 
 @api_view(["POST"])
 def ses_events(request):
+    """SES delivery, bounce and complaint events, posted by the SNS subscription (afc_mail.sns).
+
+    RESPONSE  200 {result}   400 {message, code} with the sns.Refused code, e.g. sns_wrong_topic,
+              sns_bad_signature, sns_raw_delivery (the subscription's Raw message delivery is ON).
+    AUTH      none: SNS signs the message and sns.verify checks it (rule R72).
+    CONSUMED  by Amazon SNS only; nothing on the website calls it."""
     try:
         result = sns.handle(request.body)
     except sns.Refused as refused:
+        # Logged with its code only, never the body (it carries recipients' addresses). Without this
+        # line a refused event left no trace on the box: on 17 Oct 2026 every live event answered
+        # sns_wrong_topic and only a hand-made probe showed why (inbox #304 #308).
+        logger.warning("afc_mail: SES event refused (%s)", refused.code)
         return _refuse("Not accepted.", refused.code)
     return Response({"result": result})
 
