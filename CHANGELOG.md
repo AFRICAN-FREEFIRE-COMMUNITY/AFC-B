@@ -20,8 +20,19 @@ number is blocked before the push.
 
 ## Unreleased
 
+## v7.1.128 - 2026-10-17
+
+### Fixed
+- The API's own coded refusals (payments, payouts, Help bot offline or timeout, OCR provider errors,
+  results import, email news) reach the screen: nginx no longer swaps every API 502/503/504 for the
+  maintenance page (`deploy/vps/nginx-afc.conf`, applied to the box at the ship) (#134).
+- An email news test send refused by Amazon SES says why (`mail_ses_not_authorized`,
+  `mail_ses_unverified`, `mail_ses_throttled`, `mail_ses_login_refused`, answered 424); "sending is
+  not set up yet" is 409 (#134).
+
 ### Internal
 - Releases follow rule R89: this changelog and `release.json` (one number with AFC_Frontend).
+- known-bugs `be-nginx-swallows-api-errors` keeps the API block from intercepting again (#134).
 
 ## v7.1.127 - 2026-10-17
 
