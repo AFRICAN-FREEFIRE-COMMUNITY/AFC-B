@@ -199,6 +199,21 @@
         "rapidocr_onnxruntime": "same local OCR engine, only constructed after is_available() found it"
       },
       "_notes": "afcbot/afc_scraper.py is checked because afc_bot/tasks.py imports it into the Django worker through sys.path. afc_ocr/training/** are scripts that run off the box (they say so in their docstrings)."
+    },
+    {
+      "id": "be-nginx-swallows-api-errors",
+      "title": "nginx intercepts the API's own 502/503/504 answers and serves the maintenance page instead",
+      "why": "With proxy_intercept_errors on in the API block, every coded 502/503/504 the API answers (payment start, verify and refund, payouts, Help bot offline or timeout, OCR provider errors, results import, mail refusals) is replaced by the HTML maintenance page, so the screen can only say 'Something went wrong'. error_page alone still covers nginx's own errors (the API down).",
+      "seen": [
+        "2026-10-17 the first live email news test send: SES refused (IAM), the API answered 502 mail_test_refused, nginx served the maintenance page, the owner saw 'Something went wrong. Please try again.'",
+        "2026-10-17 the same morning's audit: about 30 API answers with 502/503/504 and a message, all hidden the same way since the VPS config of 2026-09-11"
+      ],
+      "fix": "keep `proxy_intercept_errors on;` only in the website block, marked `# website block only`; the API block says off and keeps `error_page 502 503 504 = @maintenance;` for nginx's own errors",
+      "kind": "regex",
+      "pattern": "^\\s*proxy_intercept_errors\\s+on;(?!.*# website block only)",
+      "globs": [
+        "deploy/vps/*.conf"
+      ]
     }
   ]
 }
