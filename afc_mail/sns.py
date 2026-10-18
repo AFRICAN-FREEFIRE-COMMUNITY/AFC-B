@@ -12,6 +12,8 @@ message with an RSA key whose certificate it names in SigningCertURL. We:
   2. rebuild the canonical string AWS signed (the documented key order per message type);
   3. verify the signature with that certificate (SignatureVersion 1 = SHA1, 2 = SHA256);
   4. accept only the topic in SES_SNS_TOPIC_ARN. No topic configured = nothing is accepted.
+A bare SES event (the subscription's "Raw message delivery" left ON) carries none of this and is
+refused as sns_raw_delivery. Every refusal is logged with its code by afc_mail.views.ses_events.
 A subscription is confirmed only for that topic, and only by fetching a SubscribeURL that is itself
 on sns.<region>.amazonaws.com.
 
@@ -80,11 +82,22 @@ def _default_fetch(url):
     return resp.content
 
 
+def is_raw_delivery(msg):
+    """True for an SES event posted bare, without the SNS envelope: the subscription has "Raw message
+    delivery" switched ON, so TopicArn and the signature are gone. It cannot be verified and is still
+    refused, but under its own code, because the fix is a switch in the SNS console rather than
+    anything here (17 Oct 2026: the first live events were refused as sns_wrong_topic for exactly
+    this, inbox #304 #308)."""
+    return "Type" not in msg and ("eventType" in msg or "notificationType" in msg)
+
+
 def verify(msg, *, fetch=None):
     """Raise Refused unless `msg` (the parsed POST body) is signed by SNS for our topic."""
     topic = getattr(settings, "SES_SNS_TOPIC_ARN", "") or ""
     if not topic:
         raise Refused("sns_topic_not_configured")
+    if is_raw_delivery(msg):
+        raise Refused("sns_raw_delivery")
     if msg.get("TopicArn") != topic:
         raise Refused("sns_wrong_topic")
     cert_url = msg.get("SigningCertURL") or msg.get("SigningCertUrl") or ""

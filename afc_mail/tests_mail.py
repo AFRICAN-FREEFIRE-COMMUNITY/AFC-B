@@ -499,7 +499,9 @@ class SendingTests(TestCase):
         self.assertEqual(c.status, "draft")
         self.assertFalse(CampaignRecipient.objects.filter(campaign=c).exists())
 
-    @override_settings(OUTBOUND_DELIVERY="live", SES_SMTP_USER="AKIAEXAMPLEEXAMPLE00", SES_SMTP_PASSWORD="x" * 44)
+    # A plain placeholder user, not an AWS-shaped key: the security hook (R55) reads AKIA... as a
+    # hardcoded access key id even when it is fake, and blocked the v7.1.129 push on it.
+    @override_settings(OUTBOUND_DELIVERY="live", SES_SMTP_USER="ses-smtp-test-user", SES_SMTP_PASSWORD="x" * 44)
     def test_each_ses_refusal_of_a_test_send_has_its_own_code(self):
         # The first live test (17 Oct 2026) was refused "not authorized to perform ses:SendRawEmail"
         # and the admin saw "Something went wrong". Each refusal now names what to fix, in a 4xx.
@@ -683,6 +685,34 @@ class SesEventTests(TestCase):
     def test_no_topic_configured_accepts_nothing(self):
         self.assertEqual(self._post(_signed(self._event({"eventType": "Delivery"}), self.key)).json()["code"],
                          "sns_topic_not_configured")
+
+    def test_a_raw_delivery_is_refused_with_its_own_code_and_logged_without_the_body(self):
+        # What SNS posts with "Raw message delivery" ON: the bare SES event, no envelope, no signature
+        # (17 Oct 2026, inbox #304 #308). Still refused, but named, and the journal says so.
+        bare = {"eventType": "Delivery", "mail": {"destination": [self.user.email],
+                                                  "tags": {"recipient": [self.r.token]}}}
+        with self.assertLogs("afc_mail.views", level="WARNING") as logs:
+            res = self.client.post("/mail/ses-events/", data=json.dumps(bare), content_type="text/plain",
+                                   HTTP_X_AMZ_SNS_RAWDELIVERY="true")
+        self.assertEqual(res.status_code, 400)
+        self.assertEqual(res.json()["code"], "sns_raw_delivery")
+        self.assertIn("sns_raw_delivery", logs.output[0])
+        self.assertNotIn(self.user.email, " ".join(logs.output))
+        self.r.refresh_from_db()
+        self.assertEqual(self.r.status, "sent")
+
+    def test_every_refusal_is_logged_with_its_code(self):
+        other = self._event({"eventType": "Delivery"})
+        other["TopicArn"] = "arn:aws:sns:eu-north-1:999:someone-else"
+        with self.assertLogs("afc_mail.views", level="WARNING") as logs:
+            self._post(_signed(other, self.key))
+        self.assertIn("sns_wrong_topic", logs.output[0])
+
+    def test_an_enveloped_notification_is_not_taken_for_a_raw_delivery(self):
+        # The signed envelope also names a Type; only a body WITHOUT one is a raw delivery.
+        self.assertFalse(sns.is_raw_delivery(self._event({"eventType": "Delivery"})))
+        self.assertTrue(sns.is_raw_delivery({"notificationType": "Bounce", "bounce": {}}))
+        self.assertFalse(sns.is_raw_delivery({"Type": "SubscriptionConfirmation"}))
 
 
 # ── the admin API ───────────────────────────────────────────────────────────────────────────────
