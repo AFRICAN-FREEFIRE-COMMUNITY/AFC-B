@@ -499,7 +499,9 @@ class SendingTests(TestCase):
         self.assertEqual(c.status, "draft")
         self.assertFalse(CampaignRecipient.objects.filter(campaign=c).exists())
 
-    @override_settings(OUTBOUND_DELIVERY="live", SES_SMTP_USER="AKIAEXAMPLEEXAMPLE00", SES_SMTP_PASSWORD="x" * 44)
+    # A plain placeholder user, not an AWS-shaped key: the security hook (R55) reads AKIA... as a
+    # hardcoded access key id even when it is fake, and blocked the v7.1.129 push on it.
+    @override_settings(OUTBOUND_DELIVERY="live", SES_SMTP_USER="ses-smtp-test-user", SES_SMTP_PASSWORD="x" * 44)
     def test_each_ses_refusal_of_a_test_send_has_its_own_code(self):
         # The first live test (17 Oct 2026) was refused "not authorized to perform ses:SendRawEmail"
         # and the admin saw "Something went wrong". Each refusal now names what to fix, in a 4xx.

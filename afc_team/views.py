@@ -28,6 +28,8 @@ from django.utils.timezone import now
 # Invite.invite_id is a UUID. Looking it up with a non-UUID value (e.g. a tampered URL)
 # raises ValidationError, NOT DoesNotExist, so we catch it to return 404 instead of 500.
 from django.core.exceptions import ValidationError
+from contextlib import contextmanager
+from django.db import transaction
 from django.db.models import Avg, Count, DecimalField, F, Min, Q, Sum, Value
 from django.db.models.functions import Coalesce
 from .models import Team, TeamMembers, Invite, TeamSocialMediaLinks
@@ -112,7 +114,31 @@ def _playing_member_count(team):
     ).count()
 
 
-def _roster_capacity_error(team, incoming_role="member"):
+@contextmanager
+def _team_seat_lock(team):
+    """Hold ONE team's seats while somebody is seated on it: the seat check and the new
+    TeamMembers row happen as one step, so two people accepted at the same moment cannot both read
+    "5 players" and both become the 6th (owner 2026-10-18, inbox #314: "HOW ARE THERE TEAM ON AFC
+    SITE THAT HAVE 7 MEMBERS WHO ARE PLAYERS?").
+
+    It locks the Team row (SELECT ... FOR UPDATE, InnoDB) inside a transaction, so a second add to
+    the SAME team waits until the first has committed and then counts the roster as it now is.
+    Adds to other teams are not held up.
+
+    Only READS may come before an early `return` inside the block: a plain return commits the
+    transaction (Django rolls back only on an exception), so a write made before a refusal would
+    stick (reference_atomic_early_return_dataloss).
+
+    CALLED BY every view that seats somebody: review_join_request, respond_invite, join_team and
+    admin_add_member. afc_team/tests_team_seat_cap.py fails if a TeamMembers row is created
+    anywhere in this module outside this lock (create_team's founding captain excepted).
+    """
+    with transaction.atomic():
+        Team.objects.select_for_update().filter(pk=team.pk).first()
+        yield
+
+
+def _roster_capacity_error(team, incoming_role="member", headcount=True):
     """The single gate every "add somebody to this team" path runs before creating a TeamMembers
     row. Returns a user-facing refusal STRING when `team` has no room for one more person in
     `incoming_role`, or None when there is room.
@@ -140,9 +166,12 @@ def _roster_capacity_error(team, incoming_role="member"):
     captain learns immediately instead of the invitee being bounced days later), review_invitation,
     respond_invite, send_join_request, review_join_request and join_team (checked again at the
     moment the row is created, because the roster can change between invite and acceptance).
-    admin_add_member keeps its own check so admins retain the override_limit escape hatch.
+    admin_add_member keeps its own HEADCOUNT check (override_limit lets an admin seat a 10th
+    person) and calls this with headcount=False for the other two rules, which hold for admins too:
+    until 2026-10-18 the admin door checked the headcount only, so an admin could seat a 7th
+    player (inbox #314).
     """
-    if TeamMembers.objects.filter(team=team).count() >= MAX_MEMBERS:
+    if headcount and TeamMembers.objects.filter(team=team).count() >= MAX_MEMBERS:
         return (
             f"This team is full. A team can hold at most {MAX_MEMBERS} people: "
             f"{MAX_PLAYERS} players plus one coach, one manager and one analyst."
@@ -970,14 +999,16 @@ def review_join_request(request):
             # Seat the requester: a playing place while one is free, otherwise the next free staff
             # place (owner 2026-08-05). Resolved HERE and not at request time because the roster
             # can change between somebody asking and a captain approving, so the seat they end up
-            # in has to be decided against the roster as it is now.
-            join_role, capacity_error = _resolve_join_role(team, "member")
-            if capacity_error:
-                return Response({'message': capacity_error, 'code': 'team_full'}, status=status.HTTP_400_BAD_REQUEST)
+            # in has to be decided against the roster as it is now. Under the team's seat lock, so
+            # two approvals at the same moment cannot both take the last playing seat.
+            with _team_seat_lock(team):
+                join_role, capacity_error = _resolve_join_role(team, "member")
+                if capacity_error:
+                    return Response({'message': capacity_error, 'code': 'team_full'}, status=status.HTTP_400_BAD_REQUEST)
 
-            # Add the user to the team
-            TeamMembers.objects.create(
-                team=team, member=join_request.requester, management_role=join_role)
+                # Add the user to the team
+                TeamMembers.objects.create(
+                    team=team, member=join_request.requester, management_role=join_role)
 
 
         # Update join request status
@@ -2627,36 +2658,46 @@ def respond_invite(request, invite_id):
         # History: an earlier version of this guard used `> 6` (off-by-one, let a 7th player in)
         # and counted `management_role='member'` only (so captains and vice-captains did not
         # count toward the 6). Both are fixed by _playing_member_count / PLAYER_ROLES.
-        incoming_role = invite.role_to_be_given_upon_acceptance
-        capacity_error = _roster_capacity_error(invite.team, incoming_role)
-        if capacity_error:
-            return Response({'message': capacity_error, 'code': 'team_full'}, status=status.HTTP_400_BAD_REQUEST)
-
-        # Every guard passed: consume ONE use and seat the member.
         #
-        # A MULTI-USE link (owner 2026-08-05) burns one of its uses and stays live for the next
-        # person; a single-use invite closes exactly as it always did. invitee is only stamped on
-        # a single-use invite: on a shared link it would record whichever of several people
-        # happened to accept last and read as though the link had been addressed to them, so the
-        # roll is kept in accepted_user_ids instead.
-        invite.use_count += 1
-        invite.accepted_user_ids = list(invite.accepted_user_ids or []) + [user.pk]
-        invite.decision = 'accepted'
-        if invite.is_multi_use():
-            # Closed only once the last use is spent.
-            if invite.is_exhausted():
-                invite.status_of_invite = 'attended_to'
-            invite.save(update_fields=["use_count", "accepted_user_ids", "decision", "status_of_invite"])
-        else:
-            invite.invitee = user
-            invite.status_of_invite = 'attended_to'
-            invite.save(update_fields=["invitee", "use_count", "accepted_user_ids", "decision", "status_of_invite"])
+        # Under the team's seat lock (inbox #314): two people accepting at the same moment can no
+        # longer both read the last free playing seat, or both spend the last use of one link.
+        with _team_seat_lock(invite.team):
+            # Read the invite again now that this request holds the team: another acceptance may
+            # have spent its last use while this one waited for the lock.
+            invite.refresh_from_db()
+            if invite.is_exhausted() or invite.status_of_invite == 'attended_to':
+                return Response({"message": "Invite already used.", "code": "invite_already_used"}, status=400)
 
-        TeamMembers.objects.create(
-            team=invite.team,
-            member=user,
-            management_role=incoming_role
-        )
+            incoming_role = invite.role_to_be_given_upon_acceptance
+            capacity_error = _roster_capacity_error(invite.team, incoming_role)
+            if capacity_error:
+                return Response({'message': capacity_error, 'code': 'team_full'}, status=status.HTTP_400_BAD_REQUEST)
+
+            # Every guard passed: consume ONE use and seat the member.
+            #
+            # A MULTI-USE link (owner 2026-08-05) burns one of its uses and stays live for the next
+            # person; a single-use invite closes exactly as it always did. invitee is only stamped
+            # on a single-use invite: on a shared link it would record whichever of several people
+            # happened to accept last and read as though the link had been addressed to them, so
+            # the roll is kept in accepted_user_ids instead.
+            invite.use_count += 1
+            invite.accepted_user_ids = list(invite.accepted_user_ids or []) + [user.pk]
+            invite.decision = 'accepted'
+            if invite.is_multi_use():
+                # Closed only once the last use is spent.
+                if invite.is_exhausted():
+                    invite.status_of_invite = 'attended_to'
+                invite.save(update_fields=["use_count", "accepted_user_ids", "decision", "status_of_invite"])
+            else:
+                invite.invitee = user
+                invite.status_of_invite = 'attended_to'
+                invite.save(update_fields=["invitee", "use_count", "accepted_user_ids", "decision", "status_of_invite"])
+
+            TeamMembers.objects.create(
+                team=invite.team,
+                member=user,
+                management_role=incoming_role
+            )
         body = {"message": f"You have joined {invite.team.team_name} successfully."}
         if invite.is_multi_use():
             body["uses_left"] = invite.uses_left()
@@ -3292,12 +3333,15 @@ def join_team(request):
     # Playing seat if one is free, otherwise the next free STAFF seat rather than a refusal
     # (owner 2026-08-05: "it should allow them join but auto assign one of the admin roles").
     # _resolve_join_role only turns somebody away when all nine seats are genuinely taken.
-    join_role, capacity_error = _resolve_join_role(team, "member")
-    if capacity_error:
-        return Response({"message": capacity_error, "code": "join_team_refused"}, status=status.HTTP_400_BAD_REQUEST)
+    # Under the team's seat lock (inbox #314), so two people walking in at the same moment cannot
+    # both take the last playing seat.
+    with _team_seat_lock(team):
+        join_role, capacity_error = _resolve_join_role(team, "member")
+        if capacity_error:
+            return Response({"message": capacity_error, "code": "join_team_refused"}, status=status.HTTP_400_BAD_REQUEST)
 
-    # Add user to team
-    TeamMembers.objects.create(team=team, member=user, management_role=join_role)
+        # Add user to team
+        TeamMembers.objects.create(team=team, member=user, management_role=join_role)
 
     # Log the action in the Report table
     Report.objects.create(
@@ -3468,40 +3512,53 @@ def admin_add_member(request):
         return Response({"message": "Player is already a member of this team.", "code": "player_already_member_team"}, status=status.HTTP_400_BAD_REQUEST)
 
     existing = TeamMembers.objects.filter(member=player).select_related("team").first()
-    if existing:
-        if not force_move:
-            return Response({
-                "message": f"Player is currently on team '{existing.team.team_name}'.",
-                "error_code": "player_on_team",
-                "current_team": existing.team.team_name,
-            }, status=status.HTTP_400_BAD_REQUEST)
-        Report.objects.create(
-            team=existing.team,
-            user=admin,
-            action="player_removed",
-            description=f"{player.username} was force-moved from '{existing.team.team_name}' to '{team.team_name}' by admin {admin.username}."
-        )
-        Notifications.objects.create(
-            user=existing.team.team_owner,
-            message=f"{player.username} was removed from your team '{existing.team.team_name}' by an admin.",
-            notification_type="team_kick"
-        )
-        existing.delete()
-
-    # Admins keep their OWN check rather than the shared _roster_capacity_error, because this is the
-    # one path with a deliberate escape hatch: override_limit lets an admin seat somebody on a team
-    # that is already full (the admin UI sets it once the team is at the cap and asks first). Only
-    # the number moved, 8 -> MAX_MEMBERS; the error_code / current_count response shape the admin
-    # team page reads is unchanged.
-    current_count = TeamMembers.objects.filter(team=team).count()
-    if current_count >= MAX_MEMBERS and not override_limit:
+    if existing and not force_move:
         return Response({
-            "message": f"Team already has {current_count} members (the limit is {MAX_MEMBERS}).",
-            "error_code": "team_full",
-            "current_count": current_count,
+            "message": f"Player is currently on team '{existing.team.team_name}'.",
+            "error_code": "player_on_team",
+            "current_team": existing.team.team_name,
         }, status=status.HTTP_400_BAD_REQUEST)
 
-    TeamMembers.objects.create(team=team, member=player, management_role=management_role)
+    # Every seat check runs BEFORE a force-move takes the player off their old team, under the
+    # team's seat lock (inbox #314). The old order removed them first, so an add the checks then
+    # refused left the player on no team at all; and a plain return inside the lock commits, so
+    # nothing may be written above a refusal (reference_atomic_early_return_dataloss).
+    with _team_seat_lock(team):
+        # Admins keep their OWN headcount check rather than the shared one, because this is the one
+        # path with a deliberate escape hatch: override_limit lets an admin seat somebody on a team
+        # that is already full (the admin UI sets it once the team is at the cap). The error_code /
+        # current_count response shape the admin team page reads is unchanged.
+        current_count = TeamMembers.objects.filter(team=team).count()
+        if current_count >= MAX_MEMBERS and not override_limit:
+            return Response({
+                "message": f"Team already has {current_count} members (the limit is {MAX_MEMBERS}).",
+                "error_code": "team_full",
+                "current_count": current_count,
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        # The 6-player cap and one-staff-each hold for admins too; override_limit lifts only the
+        # headcount. This door checked the headcount alone until 2026-10-18, so an admin could
+        # seat a 7th player (inbox #314). The refusal names the way out: seat them as staff.
+        seat_error = _roster_capacity_error(team, management_role, headcount=False)
+        if seat_error:
+            return Response({"message": seat_error, "code": "team_full", "error_code": "team_seat_taken"},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        if existing:
+            Report.objects.create(
+                team=existing.team,
+                user=admin,
+                action="player_removed",
+                description=f"{player.username} was force-moved from '{existing.team.team_name}' to '{team.team_name}' by admin {admin.username}."
+            )
+            Notifications.objects.create(
+                user=existing.team.team_owner,
+                message=f"{player.username} was removed from your team '{existing.team.team_name}' by an admin.",
+                notification_type="team_kick"
+            )
+            existing.delete()
+
+        TeamMembers.objects.create(team=team, member=player, management_role=management_role)
 
     Report.objects.create(
         team=team,
