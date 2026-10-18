@@ -684,6 +684,34 @@ class SesEventTests(TestCase):
         self.assertEqual(self._post(_signed(self._event({"eventType": "Delivery"}), self.key)).json()["code"],
                          "sns_topic_not_configured")
 
+    def test_a_raw_delivery_is_refused_with_its_own_code_and_logged_without_the_body(self):
+        # What SNS posts with "Raw message delivery" ON: the bare SES event, no envelope, no signature
+        # (17 Oct 2026, inbox #304 #308). Still refused, but named, and the journal says so.
+        bare = {"eventType": "Delivery", "mail": {"destination": [self.user.email],
+                                                  "tags": {"recipient": [self.r.token]}}}
+        with self.assertLogs("afc_mail.views", level="WARNING") as logs:
+            res = self.client.post("/mail/ses-events/", data=json.dumps(bare), content_type="text/plain",
+                                   HTTP_X_AMZ_SNS_RAWDELIVERY="true")
+        self.assertEqual(res.status_code, 400)
+        self.assertEqual(res.json()["code"], "sns_raw_delivery")
+        self.assertIn("sns_raw_delivery", logs.output[0])
+        self.assertNotIn(self.user.email, " ".join(logs.output))
+        self.r.refresh_from_db()
+        self.assertEqual(self.r.status, "sent")
+
+    def test_every_refusal_is_logged_with_its_code(self):
+        other = self._event({"eventType": "Delivery"})
+        other["TopicArn"] = "arn:aws:sns:eu-north-1:999:someone-else"
+        with self.assertLogs("afc_mail.views", level="WARNING") as logs:
+            self._post(_signed(other, self.key))
+        self.assertIn("sns_wrong_topic", logs.output[0])
+
+    def test_an_enveloped_notification_is_not_taken_for_a_raw_delivery(self):
+        # The signed envelope also names a Type; only a body WITHOUT one is a raw delivery.
+        self.assertFalse(sns.is_raw_delivery(self._event({"eventType": "Delivery"})))
+        self.assertTrue(sns.is_raw_delivery({"notificationType": "Bounce", "bounce": {}}))
+        self.assertFalse(sns.is_raw_delivery({"Type": "SubscriptionConfirmation"}))
+
 
 # ── the admin API ───────────────────────────────────────────────────────────────────────────────
 
