@@ -20,6 +20,18 @@ number is blocked before the push.
 
 ## Unreleased
 
+### Fixed
+- A team can no longer get a 7th player by any door. An admin adding someone now meets the
+  6-player limit and the one-coach / one-manager / one-analyst rule (the override only lifts the
+  9-person total), and two people joining the same team at the same moment can no longer both take
+  the last playing seat.
+- An admin "move from their current team" that the new team refuses no longer leaves the player on
+  no team: every check runs before they are taken off the old one.
+
+### Internal
+- known-bugs `be-team-seat-unlocked` (new kind `call-outside-with`): a team member created outside
+  the team's seat lock fails the checks and the deploy.
+
 ## v7.1.128 - 2026-10-17
 
 ### Fixed

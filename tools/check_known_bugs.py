@@ -141,6 +141,47 @@ def check_prod_imports(bug: dict, hits: list) -> None:
                 hits.append((bug, rel(p), line, f"needs {imp['dist']} ({imp['why']}), not pinned in {bug['requirements']}"))
 
 
+def _dotted(node: ast.AST) -> str:
+    """`TeamMembers.objects.create` for the func of a call, "" when it is not a plain dotted name."""
+    parts = []
+    while isinstance(node, ast.Attribute):
+        parts.append(node.attr)
+        node = node.value
+    if isinstance(node, ast.Name):
+        parts.append(node.id)
+        return ".".join(reversed(parts))
+    return ""
+
+
+def check_call_outside_with(bug: dict, hits: list) -> None:
+    """A call that must only ever run inside `with <guard>(...)` (inbox #314, 2026-10-18: every
+    TeamMembers row is created under _team_seat_lock, or two joins at once can take one seat).
+    `call` is the dotted call, `with` the guard's name, `allow_functions` the functions exempt."""
+    allowed = set(bug.get("allow_functions", []))
+
+    def guarded_with(node: ast.With) -> bool:
+        return any(isinstance(i.context_expr, ast.Call) and _dotted(i.context_expr.func) == bug["with"]
+                   for i in node.items)
+
+    def walk(node, func, inside, p):
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                walk(child, child.name, False, p)
+                continue
+            now = inside or (isinstance(child, ast.With) and guarded_with(child))
+            if (isinstance(child, ast.Call) and _dotted(child.func) == bug["call"]
+                    and not inside and func not in allowed):
+                hits.append((bug, rel(p), child.lineno, f"{bug['call']} in {func or 'module'} outside `with {bug['with']}(...)`"))
+            walk(child, func, now, p)
+
+    for p in files_for(bug["globs"], bug.get("except")):
+        try:
+            tree = ast.parse(p.read_text(encoding="utf-8"))
+        except SyntaxError:
+            continue
+        walk(tree, None, False, p)
+
+
 def main() -> int:
     # Windows consoles default to cp1252 and choke on the very characters some checks look for.
     try:
@@ -161,6 +202,8 @@ def main() -> int:
             check_crlf(bug, hits)
         elif kind == "prod-imports":
             check_prod_imports(bug, hits)
+        elif kind == "call-outside-with":
+            check_call_outside_with(bug, hits)
         else:
             print(f"unknown check kind {kind!r} for {bug.get('id')}")
             return 2

@@ -214,6 +214,25 @@
       "globs": [
         "deploy/vps/*.conf"
       ]
+    },
+    {
+      "id": "be-team-seat-unlocked",
+      "title": "A team member is seated outside the team's seat lock (a 7th player gets in)",
+      "why": "Every way onto a team counts the roster and then adds a TeamMembers row. Without the team row locked between the two, two people accepted at the same moment both read 5 players and both become the 6th, and a door that forgets the shared cap check lets a 7th in outright. _team_seat_lock (afc_team/views.py) holds the team while the check and the insert happen together.",
+      "seen": [
+        "2025-12 to 2026-08-05 thirteen teams, then CELESTIAL BROTHER on 5 August, went past 6 players while three of the four join doors skipped the cap (fixed 2026-08-04/05, item 33)",
+        "2026-10-18 owner: \"HOW ARE THERE TEAM ON AFC SITE THAT HAVE 7 MEMBERS WHO ARE PLAYERS?\" (inbox #314): 14 of 937 teams over the cap; admin_add_member still checked the headcount only, and no join path locked the team"
+      ],
+      "fix": "create the TeamMembers row inside `with _team_seat_lock(team):`, after _roster_capacity_error / _resolve_join_role, with no write before a refusal inside the block. Only create_team's founding captain is exempt",
+      "kind": "call-outside-with",
+      "call": "TeamMembers.objects.create",
+      "with": "_team_seat_lock",
+      "allow_functions": [
+        "create_team"
+      ],
+      "globs": [
+        "afc_team/views.py"
+      ]
     }
   ]
 }
