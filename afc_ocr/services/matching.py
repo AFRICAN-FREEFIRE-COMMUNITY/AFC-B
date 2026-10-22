@@ -94,6 +94,7 @@ REASON_NO_CANDIDATES = "no_candidates"
 REASON_BELOW_FLOOR = "below_floor"        # the best candidate scored under MATCH_FLOOR
 REASON_AMBIGUOUS = "ambiguous"            # the top score is SHARED by two different records
 REASON_TAG_ONLY = "tag_needs_corroboration"   # teams: a short tag hit with no second signal
+REASON_REJECTED_BEFORE = "rejected_before"  # players: reviewers turned this player down for this spelling
 # Emitted one layer up, by afc_leaderboard.ocr._resolve_row_team, but the vocabulary lives here so
 # the frontend has ONE list of reasons to translate no matter which matcher produced the row.
 REASON_TEAM_CONFLICT = "team_conflict"    # teams: the team cell and the players name DIFFERENT teams
@@ -566,15 +567,15 @@ def match_team_name(raw_name: str, teams: list, player_team_ids=None, players_ta
     }
 
 
-def match_name(raw_name: str, registered: list) -> dict:
+def match_name(raw_name: str, registered: list, memory=None) -> dict:
     """
-    1. Check OCRNameAlias for an exact match, honoured ONLY when that aliased user is in
-       this event's `registered` roster (confidence = 1.0). OCRNameAlias is a GLOBAL table
-       (raw_name unique across all events), so an alias can point at a user who is not in
-       the current event; trusting it blindly would auto-resolve a row to an off-event
-       player at 1.0 with no candidates (and, on team events, a null team). Roster-gating
-       the fast-path keeps aliases event-safe and lets out-of-event aliases fall through
-       to the fuzzy pass so `top_candidates` is still surfaced.
+    1. The organization's NAME MEMORY (`memory`, an afc_ocr.services.name_memory.NameMemory, owner
+       2026-10-22, #334 #335): a spelling reviewers confirmed before binds that player (1.0, or
+       0.95 for a close spelling), honoured ONLY when that player is in `registered`, so a memory
+       of someone outside this roster falls through to the steps below. A player reviewers turned
+       DOWN for this spelling is never auto-picked for it (REASON_REJECTED_BEFORE). Rows decided by
+       memory carry match_source "memory"; every row carries match_source. memory=None (a caller
+       with no organization to remember for) skips both.
     2. NORMALIZED IDENTITY: if exactly one registered username normalizes to the same string as the
        read (shared normalize_search_text - decoration, case, punctuation and look-alike digits all
        folded), that IS the player: confidence 1.0, no fuzzing. If SEVERAL do, the read is ambiguous
@@ -598,41 +599,49 @@ def match_name(raw_name: str, registered: list) -> dict:
     Every return carries `unmatched_reason`: "" when the row bound, else one of the REASON_*
     constants, which the review tables render as the "why not" line next to the picker.
     """
-    from afc_ocr.models import OCRNameAlias
-
     row_id = str(uuid.uuid4())
 
-    # Step 1: exact alias lookup, roster-gated.
-    # OCRNameAlias is global (see docstring). `registered` is this event's roster from
-    # get_registered_players (team events carry team_id/team_name; solo events carry None
-    # for both). We only honour the alias when the aliased user is actually in that roster,
-    # deriving the alias user's team by looking them up inside `registered` (no separate
-    # team query lives here). Callers: match_name is invoked per read row by the event OCR
-    # commit/draft flow (afc_ocr.services) and reused by afc_leaderboard.views.ocr_extract's
-    # solo path (which passes the full platform pool, so a real alias user is still "in").
-    alias = (
-        OCRNameAlias.objects
-        .filter(raw_name__iexact=raw_name)
-        .select_related("user")
-        .first()
-    )
-    if alias and alias.user:
-        reg = next((p for p in registered if p["user_id"] == alias.user_id), None)
-        if reg is not None:                       # roster-gated: only trust an in-event alias
+    # Step 1: the organization's name memory (see the docstring). Roster-gated, exactly as the old
+    # global alias step was: `registered` is the event roster from get_registered_players, or the
+    # platform pool on the standalone leaderboard paths.
+    if memory is not None:
+        uid, how = memory.recall(raw_name)
+        reg = next((p for p in registered if p["user_id"] == uid), None) if uid else None
+        if reg is not None:
+            confidence = 1.0 if how == "same" else 0.95
             return {
                 "row_id":            row_id,
                 "raw_name":          raw_name,
-                "matched_user_id":   alias.user_id,
-                "matched_username":  alias.user.username,
-                "confidence":        1.0,
-                "matched_team_id":   reg["team_id"],
-                "matched_team_name": reg["team_name"],
+                "matched_user_id":   uid,
+                "matched_username":  reg["username"],
+                "confidence":        confidence,
+                "matched_team_id":   reg.get("team_id"),
+                "matched_team_name": reg.get("team_name"),
                 "unmatched_reason":  "",
-                "top_candidates":    [],
+                "top_candidates": [{
+                    "user_id": uid, "username": reg["username"],
+                    "team_name": reg.get("team_name"), "confidence": confidence,
+                }],
+                "match_source":      "memory",
             }
-        # Alias points at a user NOT registered for this event -> ignore it and fall through
-        # to fuzzy matching so the reviewer still sees the real roster candidates instead of
-        # an auto-resolved off-event player at confidence 1.0 with no candidates.
+
+    result = _match_unremembered(raw_name, registered, row_id)
+    # The "learn from each failed one" half (owner 2026-10-22): a player reviewers turned down for
+    # this exact spelling is never auto-picked for it again. The row comes back unmatched with its
+    # candidates intact, and the reason tells the reviewer why.
+    if memory is not None and result.get("matched_user_id") in memory.rejected(raw_name):
+        result.update(
+            matched_user_id=None, matched_username=None, confidence=0.0,
+            matched_team_id=None, matched_team_name=None,
+            unmatched_reason=REASON_REJECTED_BEFORE,
+        )
+    result.setdefault("match_source", "")
+    return result
+
+
+def _match_unremembered(raw_name: str, registered: list, row_id: str) -> dict:
+    """match_name without the name memory: normalized identity, then fuzzy matching (steps 2 and 3
+    of match_name's docstring). Only match_name calls it."""
 
     # Step 2: NORMALIZED IDENTITY, before any fuzzing.
     # This is the fix for the owner's "OCR is not matching players" report. On real prod reads, names

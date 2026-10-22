@@ -269,9 +269,12 @@ def get_prompt_context(match) -> tuple:
     registered = get_registered_players(match, event, event_type)
     user_ids = [p["user_id"] for p in registered]
 
+    # The event organization's own name memory (#334 #335): spellings its reviewers confirmed
+    # more often than they turned down, for players on this roster.
     aliases = list(
         OCRNameAlias.objects
-        .filter(user_id__in=user_ids)
+        .filter(user_id__in=user_ids, organization=getattr(event, "organization", None),
+                match_count__gt=dm.F("rejected_count"))
         .select_related("user")
         .order_by("-match_count")[:30]
         .values("raw_name", username=dm.F("user__username"))

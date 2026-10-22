@@ -72,24 +72,56 @@ class OCRSession(models.Model):
 
 class OCRNameAlias(models.Model):
     """
-    Maps a raw OCR name (as Gemini reads it) to the correct registered user.
-    Built passively from admin corrections.
+    The OCR name memory of ONE organization: a spelling the reader produced for a player, which
+    player reviewers confirmed for it, and which suggestions they turned down for it.
+
+    Owner 2026-10-22 (inbox #334, #335): every organizer gets its own memory of player names,
+    removed when the organizer is deleted (CASCADE), and it learns from every confirmed player AND
+    every failed one. A suggestion the reviewer did not keep (changed to someone else, or marked
+    "not on the platform") counts against that player for that spelling, so it is not auto-picked
+    again; the player they chose counts for them.
+
+    organization   null = AFC-run events and leaderboards (AFC's own memory).
+    raw_name       the spelling as read, for people; raw_norm is what is matched
+                   (utils.search_utils.normalize_search_text: fancy fonts, case, symbols folded).
+    match_count    times reviewers CONFIRMED this player for this spelling.
+    rejected_count times a suggestion of this player for this spelling was turned down.
+
+    Written by afc_ocr.services.name_memory.learn (the event OCR commit and the standalone
+    leaderboard apply); read through name_memory.NameMemory by matching.match_name and by
+    gemini.get_prompt_context. Until 2026-10-22 this was one global table, written only when an
+    admin CHANGED a match, read by exact spelling, and it held 0 rows on production.
+
+    `user` stays nullable only so the server-generated migration needs no decision about old rows
+    (migrations are made on the box with --noinput); nothing writes a row without a user.
     """
 
-    raw_name    = models.CharField(max_length=100, db_index=True, unique=True)
+    organization = models.ForeignKey(
+        "afc_organizers.Organization",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="ocr_name_memory",
+    )
+    raw_name    = models.CharField(max_length=100)
+    raw_norm    = models.CharField(max_length=100, db_index=True, default="")
     user        = models.ForeignKey(
         "afc_auth.User",
-        on_delete=models.SET_NULL,
+        on_delete=models.CASCADE,
         null=True,
         related_name="ocr_aliases",
     )
-    match_count = models.PositiveIntegerField(default=1)
+    match_count = models.PositiveIntegerField(default=0)
+    rejected_count = models.PositiveIntegerField(default=0)
     created_at  = models.DateTimeField(auto_now_add=True)
     updated_at  = models.DateTimeField(auto_now=True)
 
     class Meta:
         verbose_name        = "OCR Name Alias"
         verbose_name_plural = "OCR Name Aliases"
+        constraints = [
+            models.UniqueConstraint(fields=["organization", "raw_norm", "user"], name="ocr_alias_org_read_user"),
+        ]
 
     def __str__(self):
         return f'"{self.raw_name}" → {self.user}'

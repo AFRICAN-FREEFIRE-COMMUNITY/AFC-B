@@ -316,6 +316,10 @@ class LeaderboardOcrJob(models.Model):
     applied_match = models.ForeignKey(
         LeaderboardMatch, null=True, blank=True, on_delete=models.SET_NULL, related_name="ocr_jobs",
     )
+    # When a reviewer asked for this map to be read (owner 2026-10-22, #334: each organizer has its own
+    # line). status "pending" with queued_at set = waiting in its organizer's line; afc_leaderboard.ocr_queue
+    # hands out reads in turn between organizers. Null = created but never asked to be read.
+    queued_at = models.DateTimeField(null=True, blank=True, db_index=True)
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, null=True, blank=True,
         on_delete=models.SET_NULL, related_name="leaderboard_ocr_jobs",

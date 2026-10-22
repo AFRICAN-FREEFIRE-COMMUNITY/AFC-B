@@ -546,6 +546,10 @@ OCR_GEMINI_FALLBACK = os.getenv("OCR_GEMINI_FALLBACK", "True").strip().lower() =
 OCR_GATE_MIN_MEAN_SCORE = float(os.getenv("OCR_GATE_MIN_MEAN_SCORE", "0.80"))
 OCR_GATE_MIN_NAMED_FRAC = float(os.getenv("OCR_GATE_MIN_NAMED_FRAC", "0.70"))
 OCR_GATE_MAX_OVERSIZED_FRAC = float(os.getenv("OCR_GATE_MAX_OVERSIZED_FRAC", "0.15"))
+# Screenshot reads of the standalone leaderboard batch that run at once, handed out in turn between
+# organizers (afc_leaderboard/ocr_queue.py, owner 2026-10-22 #334). Two, because each read uses two
+# CPU threads and the API box has four cores that gunicorn also needs.
+OCR_QUEUE_SLOTS = int(os.getenv("OCR_QUEUE_SLOTS", "2"))
 
 # OCR upload image guards (A8). Read by afc_ocr.services.image_validate.validate_ocr_images,
 # which the OCR upload views (afc_ocr.views.upload_ocr_session, afc_leaderboard.views.ocr_extract
