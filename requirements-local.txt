@@ -69,10 +69,12 @@ MarkupSafe==2.1.5
 multidict==6.1.0
 mysqlclient==2.2.6
 numpy==2.4.6
-# OCR self-hosted model (afc_ocr): CPU inference of the two-stage recognizer.
-# onnxruntime serves the ~10MB PP-OCRv5 ONNX student; opencv does the layout crop.
-# No PaddlePaddle/torch on the box (training is off-box) — only these two are runtime deps.
+# OCR self-hosted model (afc_ocr): CPU inference of the on-site reader (services/local_ocr.py).
+# rapidocr runs PaddleOCR's PP-OCRv6 small models (shipped inside its wheel) on onnxruntime.
+# No PaddlePaddle/torch on the box (training is off-box). The server pins live in
+# requirements-prod.txt, which is what the deploy installs: keep the two in step.
 onnxruntime==1.26.0
+rapidocr==3.10.0
 opencv-python-headless==4.13.0.92
 openai==1.59.4
 openpyxl==3.1.5

@@ -152,10 +152,47 @@ class SharedCredentials:
         self.org.ocr_free_reads_left = (self.org.ocr_free_reads_left or 0) + 1
 
 
+def ocr_switched_off(org, actor) -> bool:
+    """AFC switched OCR off for this organization outright (abuse, a disputed bill). That covers
+    the on-site reader too, not only the AI engine. Staff are never switched off."""
+    return org is not None and bool(getattr(org, "ocr_disabled", False)) and not _is_staff(actor)
+
+
+def can_read(org, actor) -> bool:
+    """Can OCR run for this organization right now, WITHOUT spending anything? The upload and
+    batch-run endpoints ask this before they start, so the organizer gets the 402 sentence up
+    front instead of a failed job a minute later.
+
+    Yes whenever the on-site reader is installed (it costs nothing and needs no key; owner
+    2026-10-22: "all i need is for a way to use OCR on the site"), unless AFC switched OCR off
+    for the organization. Without the on-site reader, only when an AI read would be allowed
+    (key_available). Until 22 Oct 2026 the callers asked key_available directly, which refused
+    every organizer whose single free read was spent: seven leaderboard jobs created on 24 and
+    26 Sept 2026 never ran."""
+    if ocr_switched_off(org, actor):
+        return False
+    from django.conf import settings
+    from . import local_ocr
+    if getattr(settings, "OCR_LOCAL_FIRST", True) and local_ocr.is_available():
+        return True
+    return key_available(org, actor)
+
+
+def summary_engine(engines) -> str:
+    """The one engine label for a map read from several screenshots (the review table shows one
+    badge per map). An unsure on-site draft ("local_best_effort_*") wins over everything, so the
+    reviewer always learns that some screenshot of this map needs checking; otherwise the last
+    engine that answered, as before. Callers: afc_ocr.views.upload_ocr_session and
+    afc_leaderboard.ocr.process_job."""
+    engines = [e for e in engines if e]
+    if not engines:
+        return ""
+    return next((e for e in engines if e.startswith("local_best_effort")), engines[-1])
+
+
 def key_available(org, actor) -> bool:
-    """Would an escalated read be allowed right now, WITHOUT spending anything? The batch run
-    endpoints ask this before queueing a job, so the organizer gets the 402 sentence up front
-    instead of a failed job a minute later."""
+    """Would an escalated (AI) read be allowed right now, WITHOUT spending anything? can_read is
+    the up-front question the endpoints ask; this is its AI half."""
     if org is None or _is_staff(actor):
         return True
     if getattr(org, "ocr_disabled", False):
@@ -245,7 +282,8 @@ _STUDENT_LOCK = threading.Lock()
 
 
 def extract_rows(image_bytes, mime_type, event_type, aliases=None, team_notes=None, prompt_kind=None,
-                 org=None, actor=None, event=None, leaderboard=None, shared_credentials=None):
+                 org=None, actor=None, event=None, leaderboard=None, shared_credentials=None,
+                 allow_draft=True):
     """LOCAL-FIRST OCR extraction with an AI fallback (the self-hosted OCR student, P3).
 
     Own-key OCR (owner 2026-09-12): `org` is the organization that owns the event / leaderboard
@@ -274,9 +312,20 @@ def extract_rows(image_bytes, mime_type, event_type, aliases=None, team_notes=No
     "team_standings" = additionally read a team_name per placement). It is threaded into
     call_gemini; the local student ignores it (it structures from layout, not a prompt). The
     default (prompt_kind=None) reproduces the event flow's pre-P2 behavior exactly.
+
+    NO KEY (owner 2026-10-22): when the local read was not sure enough AND nobody's key can pay
+    for an AI read (no organization key, no free read left), the organizer still gets the local
+    read as a draft to check, engine "local_best_effort_*", instead of a refusal. Every caller
+    that shows a review table before anything is saved wants that (allow_draft=True, the
+    default). A caller that SAVES what it reads without a review step passes allow_draft=False
+    and keeps the refusal (afc_tournament_and_scrims.views.upload_match_result_image). An
+    organization AFC switched OCR off for is refused before anything is read.
     """
     from django.conf import settings
     from . import local_ocr, ocr_confidence
+
+    if ocr_switched_off(org, actor):
+        raise OcrKeyRequired(org)
 
     gemini_enabled = getattr(settings, "OCR_GEMINI_FALLBACK", True)
 
@@ -299,9 +348,16 @@ def extract_rows(image_bytes, mime_type, event_type, aliases=None, team_notes=No
         # Whose key: the organization's own, AFC's free read, or AFC's (staff / AFC-run). A missing
         # key raises OcrKeyRequired for the views to turn into the connect-your-key answer.
         shared = shared_credentials if shared_credentials is not None else SharedCredentials(org, actor)
-        creds = shared.get()
+        try:
+            creds = shared.get()
+        except OcrKeyRequired:
+            # No key, no free read: hand back the local draft for checking (see NO KEY above),
+            # unless the caller saves without a review or the local read found nothing.
+            if allow_draft and student_json is not None and student_json.get("placements"):
+                return student_json, f"local_best_effort_{(conf or {}).get('model_version', 'v0')}"
+            raise
         if not creds.api_key:
-            if student_json is not None:
+            if allow_draft and student_json is not None:
                 return student_json, f"local_best_effort_{(conf or {}).get('model_version', 'v0')}"
             raise RuntimeError("No OCR engine available (local unavailable and no AI key configured).")
         try:
@@ -316,7 +372,7 @@ def extract_rows(image_bytes, mime_type, event_type, aliases=None, team_notes=No
         out["_paid_by"] = creds.paid_by
         return out, engine
 
-    if student_json is not None:  # Gemini off/unavailable: best-effort local draft for review
+    if allow_draft and student_json is not None:  # Gemini off/unavailable: best-effort local draft for review
         return student_json, f"local_best_effort_{(conf or {}).get('model_version', 'v0')}"
 
     raise RuntimeError("No OCR engine available (local unavailable and Gemini disabled).")

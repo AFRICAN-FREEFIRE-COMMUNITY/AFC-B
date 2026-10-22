@@ -24621,8 +24621,11 @@ def _extract_results_from_image(image_file, participant_type, org=None, actor=No
     # injected - same as the old OpenAI call, which also used none. The shared service handles the
     # empty context fine; alias-assisted OCR still runs on the primary afc_ocr upload path.
     # Own-key OCR (owner 2026-09-12): org / actor / event decide whose key pays (services.extract).
+    # allow_draft=False: this endpoint SAVES what it reads, with no review table in between, so an
+    # unsure on-site read must never stand in for a missing AI key here (owner 2026-10-22; the
+    # review flows take that draft instead). A sure on-site read is saved like an AI read.
     raw_output, _engine = extract_rows(image_bytes, mime, event_type, aliases=[], team_notes=[],
-                                       org=org, actor=actor, event=event)
+                                       org=org, actor=actor, event=event, allow_draft=False)
 
     placements = (raw_output or {}).get("placements", []) or []
     paid_by = (raw_output or {}).get("_paid_by", "")
@@ -24725,11 +24728,11 @@ def upload_match_result_image(request):
     # free read left -> 402 with the connect-your-key sentence BEFORE any image is read; a provider
     # refusal -> 503 carrying the provider's own words. Inside the loop too, because the free read
     # is one image and a multi-image upload can run out mid-batch.
-    from afc_ocr.services.extract import OcrKeyRequired, key_available
+    from afc_ocr.services.extract import OcrKeyRequired, can_read
     from afc_ocr.services.providers import ProviderError
     from afc_ocr.views import key_required_response
     event_org = getattr(event, "organization", None)
-    if not key_available(event_org, admin):
+    if not can_read(event_org, admin):
         return key_required_response(OcrKeyRequired(event_org))
 
     all_raw = []
