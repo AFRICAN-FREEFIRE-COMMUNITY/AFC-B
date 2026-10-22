@@ -20,6 +20,8 @@ number is blocked before the push.
 
 ## Unreleased
 
+## v7.2.0 - 2026-10-22
+
 ### Changed
 - Result screenshots are now read on the server first, for free, by PaddleOCR's PP-OCRv6 reader;
   only a screenshot it is not sure about goes to the AI engine. The reader was built in June but
