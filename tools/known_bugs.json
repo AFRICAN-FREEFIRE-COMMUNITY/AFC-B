@@ -147,7 +147,8 @@
       "why": "The VPS installs requirements-prod.txt only (59 pins captured from production), never requirements.txt. A package added to requirements.txt alone works on every laptop and is absent on the box: a lazy import degrades silently, a module-level one stops every API address once the URLs load.",
       "seen": [
         "2026-09-12 RapidFuzz: the OCR name matcher had run exact-only on production since 2026-08-03; found by the 15 matcher tests that fail without it",
-        "2026-10-17 beautifulsoup4, lxml, mrml for afc_mail (#290): read off the box before shipping; afc_mail/content.py imports bs4 at load, so the first request after the deploy would have failed everywhere"
+        "2026-10-17 beautifulsoup4, lxml, mrml for afc_mail (#290): read off the box before shipping; afc_mail/content.py imports bs4 at load, so the first request after the deploy would have failed everywhere",
+        "2026-10-22 onnxruntime + rapidocr: the on-site OCR reader was built on 2026-06-08 with its packages in requirements-local.txt only, so on the box local_ocr.is_available() was False and every screenshot went to Gemini for four months. This check did not fire because this entry listed both as optional, \"not installed on the box by design\": the exemption turned a dead feature into a silent one"
       ],
       "fix": "pin the package (and anything pip says it needs) in requirements-prod.txt at the version the tests ran with; check the box can install it from a wheel: venv/bin/pip install --dry-run --report - <pkg>==<ver>",
       "kind": "prod-imports",
@@ -189,16 +190,17 @@
           "pattern": "[\"']lxml[\"']",
           "dist": "lxml",
           "why": "named as the BeautifulSoup parser"
+        },
+        {
+          "pattern": "EngineType\\.ONNXRUNTIME",
+          "dist": "onnxruntime",
+          "why": "the on-site OCR reader runs its models on onnxruntime; its import sits in a try (is_available) so only this names it"
         }
       ],
       "local": [
         "afc_scraper"
       ],
-      "optional": {
-        "onnxruntime": "local OCR engine (afc_ocr/services/local_ocr.py): is_available() probes for it and the router sends every read to Gemini when it is missing; not installed on the box by design",
-        "rapidocr_onnxruntime": "same local OCR engine, only constructed after is_available() found it"
-      },
-      "_notes": "afcbot/afc_scraper.py is checked because afc_bot/tasks.py imports it into the Django worker through sys.path. afc_ocr/training/** are scripts that run off the box (they say so in their docstrings)."
+      "_notes": "afcbot/afc_scraper.py is checked because afc_bot/tasks.py imports it into the Django worker through sys.path. afc_ocr/training/** are scripts that run off the box (they say so in their docstrings). The optional list was removed on 2026-10-22 (inbox #328): the on-site OCR reader is required on the box now, and an exemption here is what hid it. Add one back only for a module the server really does without, with its reason."
     },
     {
       "id": "be-nginx-swallows-api-errors",
