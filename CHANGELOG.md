@@ -20,6 +20,8 @@ number is blocked before the push.
 
 ## Unreleased
 
+## v7.3.0 - 2026-10-22
+
 ### Added
 - Each organizer has its own memory of how player names come out of screenshots, and it is removed
   with the organizer. Every committed or applied review teaches it: the player a reviewer kept or
