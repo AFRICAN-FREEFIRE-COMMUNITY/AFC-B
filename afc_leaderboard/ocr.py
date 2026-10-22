@@ -492,8 +492,9 @@ def process_job(job):
             except Exception:
                 pass
             started = time.monotonic()
-            # Own-key OCR (owner 2026-09-12): the leaderboard's organization pays, or spends its
-            # free read; with neither, OcrKeyRequired fails the job with the sentence (below).
+            # Own-key OCR (owner 2026-09-12): the on-site reader reads first, for free; an unsure
+            # screenshot goes to the organization's key or its free read, and with neither it comes
+            # back as the on-site draft to check (extract.extract_rows, "NO KEY", 2026-10-22).
             raw, eng = extract.extract_rows(
                 data, _guess_mime(img.image.name), event_type, prompt_kind=prompt_kind,
                 org=key_org, actor=key_actor, leaderboard=lb, shared_credentials=shared_creds,
@@ -508,12 +509,13 @@ def process_job(job):
             outputs = list(ex.map(_read_one, images))  # ex.map preserves image order
 
         placement_lists = []
-        engine = ""
         for img, (raw, eng) in zip(images, outputs):
             img.raw_output = raw
             img.save(update_fields=["raw_output"])
             placement_lists.append(raw.get("placements", []) or [])
-            engine = eng or engine
+        # One label for the map: an unsure on-site draft on ANY screenshot wins, so the review shows
+        # "check every row" (extract.summary_engine, shared with the event upload).
+        engine = extract.summary_engine(eng for _raw, eng in outputs)
 
         merged = merge_placements(placement_lists, is_team)
         if is_team:

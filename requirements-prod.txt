@@ -21,6 +21,7 @@ click==8.4.1
 click-didyoumean==0.3.1
 click-plugins==1.1.1.2
 click-repl==0.3.0
+colorlog==6.12.0  # on-site OCR reader, see rapidocr
 cron-descriptor==1.4.5
 cryptography==50.0.0
 Django==5.2.17
@@ -32,6 +33,7 @@ django-timezone-field==7.2.2
 djangorestframework==3.17.2
 dotenv==0.9.9
 et_xmlfile==2.0.0
+flatbuffers==25.12.19  # on-site OCR reader, see rapidocr
 google-auth==2.32.0
 gunicorn==26.0.0
 idna==3.18
@@ -43,32 +45,51 @@ mrml==0.2.4
 mysqlclient==2.2.8
 numpy==1.26.4
 oauthlib==3.3.1
+omegaconf==2.4.0  # on-site OCR reader, see rapidocr
+onnxruntime==1.26.0  # on-site OCR reader, see rapidocr
 opencv-python-headless==4.10.0.84
 openpyxl==3.1.5
 packaging==26.2
 pillow==12.3.0
 pillow_heif==1.4.0
 prompt_toolkit==3.0.52
+protobuf==7.36.2  # on-site OCR reader, see rapidocr
 pyasn1==0.6.4        # 2026-09-22 pip-audit: 6 advisories fixed here
 pyasn1_modules==0.4.2
+pyclipper==1.4.0  # on-site OCR reader, see rapidocr
 pycountry==26.2.16
 pycparser==3.0
 PyOTP==2.10.0
 python-crontab==3.3.0
 python-dateutil==2.9.0.post0
 python-dotenv==1.2.2
+PyYAML==6.0.3  # on-site OCR reader, see rapidocr
 # RapidFuzz: the OCR name matcher (afc_ocr/services/matching.py) scores every read name with it and
 # degrades to exact-only matching without it. It was never on the AWS box, so production has been
 # matching names exact-only since 2026-08-03; found 2026-09-12 by the 15 matcher tests that fail
 # without it. Same pin as requirements.txt.
 RapidFuzz==3.13.0
+# rapidocr + onnxruntime: the on-site OCR reader (afc_ocr/services/local_ocr.py). It reads every
+# result screenshot first, for free, and only an unsure read goes to the AI engine. The code was
+# there since 2026-06-08 but these packages were only ever in requirements-local.txt, so on the box
+# local_ocr.is_available() was False and every read went to Gemini (found 2026-10-22, inbox #327).
+# rapidocr 3.10 ships PaddleOCR's PP-OCRv6 small models INSIDE the wheel: nothing is downloaded at
+# run time. Resolved for Linux / Python 3.12 against this file: these 10 packages are new, no
+# existing pin moves. The full PaddleOCR (paddleocr 3.7 + paddlepaddle 3.3) was measured and NOT
+# taken: 58 new packages, a second OpenCV build beside opencv-python-headless, 47 s a
+# screenshot and 2.3 GB of memory on a desktop, and on our 12 reviewed screenshots it read fewer rows right (97.4% vs
+# 98.3%) with wrong kill counts the small model did not make (tasks/ocr-eval-2026-10-22, HANDOVER-
+# 2026-10-16 section 45).
+rapidocr==3.10.0
 redis==8.0.0
 requests==2.34.2
 rsa==4.9.1
+shapely==2.2.0  # on-site OCR reader, see rapidocr
 six==1.17.0
 soupsieve==2.9.2
 sqlparse==0.6.0      # 2026-09-22 pip-audit: 9 advisories fixed here
 sympy==1.14.0
+tqdm==4.70.1  # on-site OCR reader, see rapidocr
 typing_extensions==4.15.0
 tzdata==2026.2
 tzlocal==5.3.1

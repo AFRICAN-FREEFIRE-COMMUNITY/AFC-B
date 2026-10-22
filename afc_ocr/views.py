@@ -292,8 +292,10 @@ def upload_ocr_session(request):
         return Response({"message": "Could not read that screenshot. Please try again."}, status=503)
 
     placement_lists = [(raw.get("placements", []) or []) for raw, _eng in outputs]
-    # Record the last non-empty engine for the FE "which engine" badge (mirrors process_job).
-    engine = next((eng for _raw, eng in reversed(outputs) if eng), "")
+    # One engine label for the FE "which engine" badge: an unsure on-site draft on ANY screenshot
+    # wins, else the last engine that answered (extract.summary_engine, shared with process_job).
+    from .services.extract import summary_engine
+    engine = summary_engine(eng for _raw, eng in outputs)
     # Whose key paid (own-key OCR, owner 2026-09-12): "org" / "afc_free" / "afc" / "" (local read).
     # The FE tells the organizer when a read was AFC's free one, so the next refusal is no surprise.
     paid_by = next((raw.get("_paid_by") for raw, _eng in outputs if raw.get("_paid_by")), "")
@@ -401,6 +403,11 @@ def ocr_session_detail(request, session_id):
             "match_id":   session.match_id,
             "map_index":  session.map_index,
             "draft_rows": session.draft_rows,
+            # Which reader produced the draft, stored at upload (raw_output["_engine"]). The review
+            # dialog shows it in words and, for an unsure on-site draft ("local_best_effort_*"),
+            # asks for a full check (AFC_Frontend OcrEngineNote). Missing before 2026-10-22, so a
+            # session reopened from the list never said who read it.
+            "engine":     (session.raw_output or {}).get("_engine", ""),
             "created_at": session.created_at,
             "updated_at": session.updated_at,
         })

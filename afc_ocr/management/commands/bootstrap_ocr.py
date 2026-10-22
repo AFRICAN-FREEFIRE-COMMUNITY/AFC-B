@@ -100,8 +100,9 @@ class Command(BaseCommand):
                 self.stderr.write(f"skip {name}: {e}")
                 continue
 
-            # 1. detector boxes (crop regions + candidate reads)
-            boxes = engine._recognize(image_bytes)
+            # 1. detector boxes (crop regions + candidate reads), read from the screenshot turned
+            # upright (local_ocr._read_oriented); the crops below are cut from that same image.
+            img, boxes = engine._read_oriented(image_bytes)
 
             # 2. Gemini authoritative read (the verifier)
             try:
@@ -114,7 +115,7 @@ class Command(BaseCommand):
             gem_names = self._gemini_names(gem)
 
             # 3. align detected NAME boxes to Gemini names
-            crops, disagreements = self._align(boxes, gem_names, image_bytes)
+            crops, disagreements = self._align(boxes, gem_names, img)
             totals["images"] += 1
             totals["disagreements"] += len(disagreements)
 
@@ -155,12 +156,9 @@ class Command(BaseCommand):
                     out.append(nm)
         return out
 
-    def _align(self, boxes, gem_names, image_bytes):
+    def _align(self, boxes, gem_names, img):
         """Match each detected NAME box to its Gemini name. Returns (crops, disagreements).
         crops = [{"crop_bytes", "text"}]; disagreements = the box texts that matched nothing."""
-        import cv2
-        import numpy as np
-        img = cv2.imdecode(np.frombuffer(image_bytes, np.uint8), cv2.IMREAD_COLOR)
         crops, disagreements = [], []
         used = set()
         for b in boxes:

@@ -20,6 +20,29 @@ number is blocked before the push.
 
 ## Unreleased
 
+### Changed
+- Result screenshots are now read on the server first, for free, by PaddleOCR's PP-OCRv6 reader;
+  only a screenshot it is not sure about goes to the AI engine. The reader was built in June but
+  its packages were never installed on the server, so every read went to Gemini (#327, #328).
+  Measured on the 12 admin-checked screenshots: 98% of player rows right, every kill count it
+  found right, about 3 seconds a screenshot on the server.
+- An organizer with no AI key can use OCR: a sure read is used as it is, and an unsure one comes
+  back as a draft marked "check every row" instead of the "connect your own AI key" refusal.
+  Uploads that save results straight away, with no review step, still need a sure read or a key.
+  An organization AFC switched OCR off for stays off, on-site reader included.
+- A screenshot uploaded sideways or upside down is turned the right way up before it is read.
+
+### Fixed
+- Leaderboard OCR batches no longer refuse to start for an organizer whose free read was used:
+  seven batches made on 24 and 26 Sept 2026 never ran.
+- A reopened OCR session now says which reader read it.
+- A map read from several screenshots says "check every row" when any one of them needed it, not
+  only when the last one did.
+
+### Internal
+- The known-bugs check for packages the server code needs no longer exempts the OCR reader's
+  packages, which is what let them stay off the server unnoticed.
+
 ## v7.1.129 - 2026-10-18
 
 ### Fixed
