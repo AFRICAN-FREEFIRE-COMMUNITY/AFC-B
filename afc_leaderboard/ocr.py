@@ -30,6 +30,7 @@ from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 
 from afc_ocr.services import extract
+from afc_ocr.services.name_memory import NameMemory
 from afc_ocr.services.matching import (
     all_platform_players, all_platform_teams_with_ghosts, match_team_name, match_name,
     derive_team_tag, REASON_TEAM_CONFLICT,
@@ -162,7 +163,7 @@ def _resolve_row_team(name_match, players_detail):
 
 
 # ── row builders (one review row per competitor) ─────────────────────────────────────────────────
-def build_team_ocr_rows(raw_output, teams, players_pool=None):
+def build_team_ocr_rows(raw_output, teams, players_pool=None, memory=None):
     """Turn the extractor's raw {placements:[...]} into review rows for a TEAM leaderboard.
 
     For each placement we read the team_name (the team_standings prompt asks Gemini for it) and match it
@@ -206,7 +207,7 @@ def build_team_ocr_rows(raw_output, teams, players_pool=None):
                 pname = (p.get("name") or "").strip()
                 if not pname:
                     continue
-                pm = match_name(pname, players_pool)
+                pm = match_name(pname, players_pool, memory=memory)
                 players_detail.append({
                     "name": pname,
                     "kills": int(p.get("kills", 0) or 0),
@@ -222,6 +223,8 @@ def build_team_ocr_rows(raw_output, teams, players_pool=None):
                     # Why this player did not auto-bind (afc_ocr.services.matching REASON_*), so the
                     # players panel can say "two accounts matched" instead of a bare "not on platform".
                     "unmatched_reason": pm.get("unmatched_reason", ""),
+                    # "memory" when the organization's name memory decided it (afc_ocr name_memory, #334 #335)
+                    "match_source": pm.get("match_source", ""),
                     "top_candidates": pm["top_candidates"],
                     "is_unmatched": pm["matched_user_id"] is None,
                 })
@@ -267,7 +270,7 @@ def build_team_ocr_rows(raw_output, teams, players_pool=None):
     return rows
 
 
-def build_solo_ocr_rows(raw_output, players):
+def build_solo_ocr_rows(raw_output, players, memory=None):
     """Turn the extractor's raw {placements:[...]} into review rows for a SOLO leaderboard.
 
     Each placement holds one (or more) player rows; we match each read player name against the platform
@@ -281,7 +284,7 @@ def build_solo_ocr_rows(raw_output, players):
         for player in entry.get("players", []):
             raw_name = (player.get("name") or "").strip()
             kills = int(player.get("kills", 0) or 0)
-            m = match_name(raw_name, players)
+            m = match_name(raw_name, players, memory=memory)
             rows.append({
                 "row_id": m["row_id"],
                 "raw_name": raw_name,
@@ -292,6 +295,8 @@ def build_solo_ocr_rows(raw_output, players):
                 "confidence": m["confidence"],
                 # Why this row did not auto-bind (afc_ocr.services.matching REASON_*), "" when it did.
                 "unmatched_reason": m.get("unmatched_reason", ""),
+                # "memory" when the organization's name memory decided it (afc_ocr name_memory, #334 #335)
+                "match_source": m.get("match_source", ""),
                 "top_candidates": m["top_candidates"],
                 "is_unmatched": m["matched_user_id"] is None,
             })
@@ -299,7 +304,7 @@ def build_solo_ocr_rows(raw_output, players):
 
 
 # ── match-log file rows (the "upload result file" option) ────────────────────────────────────────
-def build_rows_from_match_log(parsed_teams, teams, players_pool):
+def build_rows_from_match_log(parsed_teams, teams, players_pool, memory=None):
     """Turn utils.match_log.parse_team_match_log output into the SAME review rows the OCR flows
     produce, so the FE reuses one review table + one apply pipeline for screenshots AND files.
 
@@ -353,7 +358,7 @@ def build_rows_from_match_log(parsed_teams, teams, players_pool):
                     "is_unmatched": False,
                 })
                 continue
-            pm = match_name(pname, players_pool)
+            pm = match_name(pname, players_pool, memory=memory)
             players_detail.append({
                 "name": pname,
                 "kills": int(p.get("kills", 0) or 0),
@@ -363,6 +368,8 @@ def build_rows_from_match_log(parsed_teams, teams, players_pool):
                 "matched_team_name": pm.get("matched_team_name"),
                 "confidence": pm["confidence"],
                 "unmatched_reason": pm.get("unmatched_reason", ""),
+                # "memory" when the organization's name memory decided it (afc_ocr name_memory, #334 #335)
+                "match_source": pm.get("match_source", ""),
                 "top_candidates": pm["top_candidates"],
                 "is_unmatched": pm["matched_user_id"] is None,
             })
@@ -518,6 +525,8 @@ def process_job(job):
         engine = extract.summary_engine(eng for _raw, eng in outputs)
 
         merged = merge_placements(placement_lists, is_team)
+        # The leaderboard organization's name memory decides first (afc_ocr name_memory, #334 #335).
+        memory = NameMemory(lb.organization)
         if is_team:
             # Team pool INCLUDES ghost teams (suggest the ghost an earlier map created instead of
             # duplicating it); players_pool ALSO matches each read player against the platform user
@@ -526,9 +535,10 @@ def process_job(job):
                 {"placements": merged},
                 all_platform_teams_with_ghosts(),
                 players_pool=all_platform_players(),
+                memory=memory,
             )
         else:
-            rows = build_solo_ocr_rows({"placements": merged}, all_platform_players())
+            rows = build_solo_ocr_rows({"placements": merged}, all_platform_players(), memory=memory)
 
         job.rows = rows
         job.engine = engine

@@ -10,6 +10,7 @@ from afc_tournament_and_scrims.models import Event, Match, MatchResultImage
 from .models import OCRSession
 from .services.gemini import call_gemini, get_prompt_context
 from .services.matching import get_registered_players, match_name, detect_team_mismatches
+from .services.name_memory import NameMemory
 # A8/A5 per-request image cap. Shared server-side validator (mime + per-file size + count)
 # used by the OCR upload views ONLY (upload_ocr_session below). Returns a client-safe error
 # string or None; rejecting garbage/oversize/HEIC uploads BEFORE any Gemini call keeps the
@@ -306,7 +307,9 @@ def upload_ocr_session(request):
     # path below is byte-for-byte unchanged whether one or many screenshots were uploaded.
     raw_output = {"placements": merged, "_engine": engine}
 
-    # Build draft rows from the extracted output (same shape whether local student or Gemini)
+    # Build draft rows from the extracted output (same shape whether local student or Gemini).
+    # The event organization's name memory decides first (services/name_memory, #334 #335).
+    memory = NameMemory(_org_for_key)
     draft_rows = []
     for placement_entry in raw_output.get("placements", []):
         # A7: _safe_int guards raw Gemini output (null / "" / "3 kills" / a float) so a garbage
@@ -315,7 +318,7 @@ def upload_ocr_session(request):
         for player_data in placement_entry.get("players", []):
             raw_name = player_data.get("name", "").strip()
             kills    = _safe_int(player_data.get("kills", 0))
-            row = match_name(raw_name, registered)
+            row = match_name(raw_name, registered, memory=memory)
             row["placement"] = placement
             row["kills"]     = kills
             draft_rows.append(row)
@@ -518,7 +521,6 @@ def commit_ocr_session(request, session_id):
             save_team_notes,
         )
 
-        save_name_corrections(final_rows, session.draft_rows)
         save_team_notes(final_rows, session.match, user)
 
         # #14: commit_team_result returns (lb, unmatched_blocks) so unmatched OCR team blocks
@@ -541,6 +543,11 @@ def commit_ocr_session(request, session_id):
         session.status = "committed"
         session.draft_rows = final_rows  # persist final state
         session.save(update_fields=["status", "draft_rows"])
+
+        # Teach the event organization's name memory from this review (#334 #335): every committed
+        # row confirms its spelling, every suggestion that was not kept is remembered as wrong for
+        # it. After the write, so a failed commit teaches nothing; learn() never raises.
+        save_name_corrections(final_rows, original_draft, getattr(_get_event(session.match), "organization", None))
 
         # ── OCR learning loop (Phase 1): capture this committed review as training
         # data. The leaderboard write above already succeeded and is committed; this
@@ -749,6 +756,7 @@ def ocr_from_stored_image(request):
         return Response({"message": "Could not read that screenshot. Please try again."}, status=503)
     raw_output.setdefault("_engine", engine)  # persisted for the FE badge + training corpus
 
+    memory = NameMemory(getattr(event, "organization", None))  # services/name_memory, #334 #335
     draft_rows = []
     for placement_entry in raw_output.get("placements", []):
         # A7: _safe_int guards raw Gemini output so a null/blank/garbage cell yields 0, not a 500.
@@ -756,7 +764,7 @@ def ocr_from_stored_image(request):
         for player_data in placement_entry.get("players", []):
             raw_name = player_data.get("name", "").strip()
             kills    = _safe_int(player_data.get("kills", 0))
-            row = match_name(raw_name, registered)
+            row = match_name(raw_name, registered, memory=memory)
             row["placement"] = placement
             row["kills"]     = kills
             draft_rows.append(row)

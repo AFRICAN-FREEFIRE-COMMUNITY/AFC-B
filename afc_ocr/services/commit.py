@@ -1,7 +1,7 @@
 import json
 from collections import defaultdict
 
-from django.db import transaction, models as dm
+from django.db import transaction
 
 # Single source of truth for the per-match point formula + placement-points normalizer.
 # Previously OCR carried its own DEFAULT_PLACEMENT + _normalize_pp copies, which is exactly
@@ -389,32 +389,27 @@ def commit_solo_result(match, final_rows: list):
     return lb, skipped
 
 
-def save_name_corrections(final_rows: list, original_rows: list):
+def save_name_corrections(final_rows: list, original_rows: list, organization=None):
     """
-    For every row where the admin changed the matched player, save to OCRNameAlias.
+    Teach the organization's OCR name memory from a committed review (services/name_memory, owner
+    2026-10-22, #334 #335). Every committed row CONFIRMS its spelling for the player it was committed
+    as; every draft suggestion that was not kept is a REJECTION of that player for that spelling.
+    organization: the event's organization, None for an AFC-run event. Called by
+    afc_ocr.views.commit_ocr_session AFTER the results are written; never raises.
+
+    Until 2026-10-22 this saved only rows where the admin CHANGED the match, into one global table,
+    so the site learned nothing from the reads it got right and nothing per organizer.
     """
-    from afc_ocr.models import OCRNameAlias
+    from afc_ocr.services.name_memory import learn
 
-    original_map = {r["row_id"]: r for r in original_rows}
-
-    for row in final_rows:
-        orig = original_map.get(row.get("row_id"))
-        if not orig:
+    original_map = {r.get("row_id"): r for r in (original_rows or []) if isinstance(r, dict)}
+    decisions = []
+    for row in final_rows or []:
+        if not isinstance(row, dict):
             continue
-
-        if row.get("matched_user_id") and row["matched_user_id"] != orig.get("matched_user_id"):
-            raw_name = row.get("raw_name", "")
-            if not raw_name:
-                continue
-
-            alias, created = OCRNameAlias.objects.get_or_create(
-                raw_name=raw_name,
-                defaults={"user_id": row["matched_user_id"]},
-            )
-            if not created:
-                alias.user_id = row["matched_user_id"]
-                alias.match_count = dm.F("match_count") + 1
-                alias.save()
+        orig = original_map.get(row.get("row_id")) or {}
+        decisions.append((row.get("raw_name", ""), orig.get("matched_user_id"), row.get("matched_user_id")))
+    return learn(organization, decisions)
 
 
 def save_team_notes(final_rows: list, match, confirmed_by_user):

@@ -11,12 +11,17 @@ through to the rapidfuzz pass so `top_candidates` is still surfaced.
 Fixture idiom mirrors test_ringer_flag / test_platform_matchers: real Users + a real OCRNameAlias, but
 the `registered` roster is an in-memory list of {"user_id","username","team_id","team_name"} dicts (the
 exact shape get_registered_players produces), so these are pure matcher tests with NO HTTP and no event.
+
+2026-10-22 (#334 #335): the alias table became each organization's NAME MEMORY
+(afc_ocr/services/name_memory.py). The roster gate these tests guard is unchanged; the memory is now
+taught with name_memory.learn and handed to match_name as memory=NameMemory(org). A memory hit lists
+the remembered player as its one candidate (it used to return none) and says match_source "memory".
 """
 from django.test import TestCase
 
 from afc_auth.models import User
-from afc_ocr.models import OCRNameAlias
 from afc_ocr.services.matching import match_name
+from afc_ocr.services.name_memory import NameMemory, learn
 
 
 def _user(username):
@@ -33,17 +38,18 @@ def _reg(user, team_id=None, team_name=None):
 
 class MatchNameAliasRosterGateTests(TestCase):
     def test_alias_in_roster_resolves_10(self):
-        # The aliased user IS on the roster -> trust the alias: confidence 1.0, no candidates, and the
+        # The aliased user IS on the roster -> trust the alias: confidence 1.0, itself as the only candidate, and the
         # team is taken from that user's roster row (team-event roster carries team_id/team_name).
         player = _user("SniperKing")
-        OCRNameAlias.objects.create(raw_name="SNP.King", user=player)
+        learn(None, [("SNP.King", None, player.pk)])
         registered = [_reg(player, team_id=777, team_name="Alpha")]
 
-        row = match_name("SNP.King", registered)
+        row = match_name("SNP.King", registered, memory=NameMemory(None))
 
         self.assertEqual(row["matched_user_id"], player.pk)
         self.assertEqual(row["confidence"], 1.0)
-        self.assertEqual(row["top_candidates"], [])
+        self.assertEqual(row["match_source"], "memory")
+        self.assertEqual([c["user_id"] for c in row["top_candidates"]], [player.pk])
         self.assertEqual(row["matched_team_id"], 777)
         self.assertEqual(row["matched_team_name"], "Alpha")
 
@@ -59,10 +65,10 @@ class MatchNameAliasRosterGateTests(TestCase):
         # part of the OPTIONS for that ARDNT") - one click in the review table, not a silent guess.
         off_roster = _user("arendt_offevent")
         roster_user = _user("ARENDT")
-        OCRNameAlias.objects.create(raw_name="ARDNT", user=off_roster)
+        learn(None, [("ARDNT", None, off_roster.pk)])
         registered = [_reg(roster_user)]
 
-        row = match_name("ARDNT", registered)
+        row = match_name("ARDNT", registered, memory=NameMemory(None))
 
         self.assertNotEqual(row["matched_user_id"], off_roster.pk)  # the alias never wins
         self.assertIsNone(row["matched_user_id"])                   # and the near miss is not asserted
@@ -75,10 +81,10 @@ class MatchNameAliasRosterGateTests(TestCase):
         # falls through to fuzzy, which matches nothing above the cutoff -> no user, empty candidates.
         off_roster = _user("ghost_alias_user")
         unrelated = _user("Qwopklmn")
-        OCRNameAlias.objects.create(raw_name="XZXZXZ", user=off_roster)
+        learn(None, [("XZXZXZ", None, off_roster.pk)])
         registered = [_reg(unrelated)]
 
-        row = match_name("XZXZXZ", registered)
+        row = match_name("XZXZXZ", registered, memory=NameMemory(None))
 
         self.assertIsNone(row["matched_user_id"])
         self.assertEqual(row["top_candidates"], [])

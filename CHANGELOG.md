@@ -20,6 +20,22 @@ number is blocked before the push.
 
 ## Unreleased
 
+### Added
+- Each organizer has its own memory of how player names come out of screenshots, and it is removed
+  with the organizer. Every committed or applied review teaches it: the player a reviewer kept or
+  picked is remembered for that spelling, and a suggestion they turned down (changed, or marked "not
+  on the platform") is remembered as wrong for it and is not picked again. The next read of that
+  spelling, or a very close one, is matched from memory, only to a player on that roster (#334, #335).
+- Each organizer has its own line for leaderboard screenshot reads: two maps are read at a time and
+  organizers take turns, so one organizer's big batch no longer holds up another's maps. A map waiting
+  in line reports its place and the expected wait; a read stuck for 10 minutes is stopped with a
+  sentence and frees its place (#334).
+
+### Changed
+- The OCR name memory used to be one table for everyone, written only when an admin changed a match
+  and read by exact spelling; it held nothing on production. It is now per organizer and learns from
+  every review. The AI prompt only uses the event organizer's own memory.
+
 ## v7.2.0 - 2026-10-22
 
 ### Changed

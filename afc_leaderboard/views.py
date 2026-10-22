@@ -73,6 +73,8 @@ from afc_ocr.services import extract
 # wasted. Contract: validate_ocr_images(files) -> str | None (client-safe error, or None if all pass);
 # it never raises. Used by ocr_extract (single file) and ocr_job_create (multi-file) below.
 from afc_ocr.services.image_validate import validate_ocr_images
+from afc_ocr.services.name_memory import NameMemory, learn as learn_names
+from .ocr_queue import dispatch as dispatch_ocr, enqueue as enqueue_ocr, estimates as ocr_estimates
 from afc_ocr.services.matching import (
     all_platform_players, all_platform_teams_with_ghosts, match_team_name, match_name,
 )
@@ -89,7 +91,8 @@ from .permissions import can_manage_standalone_lb, can_set_rankings_flag
 from .standings import standalone_standings
 # Row builders live in afc_leaderboard.ocr (the testable OCR-engine layer) so the batch worker and the
 # legacy single-shot endpoint share one row shape. Aliased to the original private names so ocr_extract
-# below is unchanged. process_leaderboard_ocr_job is the Celery task the batch endpoints enqueue.
+# below is unchanged. process_leaderboard_ocr_job is the batch Celery task; the endpoints reach it only
+# through afc_leaderboard.ocr_queue (each organizer's line, #334). Imported here so tests can patch it.
 from .ocr import (
     build_team_ocr_rows as _build_team_ocr_rows,
     build_solo_ocr_rows as _build_solo_ocr_rows,
@@ -1604,9 +1607,10 @@ def ocr_extract(request, lb_id):
         # instead of duplicating it) + per-player platform matches for the review table.
         rows = _build_team_ocr_rows(
             raw_output, all_platform_teams_with_ghosts(), players_pool=all_platform_players(),
+            memory=NameMemory(lb.organization),
         )
     else:
-        rows = _build_solo_ocr_rows(raw_output, all_platform_players())
+        rows = _build_solo_ocr_rows(raw_output, all_platform_players(), memory=NameMemory(lb.organization))
 
     # draft_id is a stateless correlation id for the FE only (we never persist an OCRSession here - 
     # the standalone flow has no Match to bind one to). The FE echoes it back on apply for tracing.
@@ -1676,6 +1680,7 @@ def results_file_extract(request, lb_id):
 
     rows = _build_rows_from_match_log(
         parsed, all_platform_teams_with_ghosts(), all_platform_players(),
+        memory=NameMemory(lb.organization),
     )
     return Response({"draft_id": str(uuid.uuid4()), "format": lb.format, "rows": rows})
 
@@ -1772,6 +1777,41 @@ def ocr_apply(request, lb_id):
     })
 
 
+def _int_or_none(value):
+    """A positive integer id from JSON (an int, or a string of digits), else None. bool is not an id."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if value > 0 else None
+    if isinstance(value, str) and value.strip().isdigit():
+        return int(value.strip()) or None
+    return None
+
+
+def _reviewed_decisions(rows):
+    """The per-player review decisions the standalone review table sends on apply, as
+    (name, suggested_user_id, user_id) for afc_ocr.services.name_memory.learn. Each row MAY carry
+    reviewed_players: [{"name": the spelling read, "suggested_user_id": who the site suggested,
+    "user_id": who the reviewer kept or picked, null for "not on the platform"}] (AFC_Frontend
+    standalone OcrReviewTable, 2026-10-22). Named fields only, typed, at most 8 players a row, and
+    ids of users that do not exist are dropped, so nothing else in the body reaches the memory."""
+    decisions = []
+    for row in rows if isinstance(rows, list) else []:
+        players = row.get("reviewed_players") if isinstance(row, dict) else None
+        if not isinstance(players, list):
+            continue
+        for p in players[:8]:
+            if not isinstance(p, dict):
+                continue
+            name = p.get("name")
+            if not isinstance(name, str) or not name.strip():
+                continue
+            decisions.append((name.strip()[:100], _int_or_none(p.get("suggested_user_id")), _int_or_none(p.get("user_id"))))
+    ids = {i for _n, a, b in decisions for i in (a, b) if i}
+    real = set(User.objects.filter(pk__in=ids).values_list("pk", flat=True)) if ids else set()
+    return [(n, a if a in real else None, b if b in real else None) for n, a, b in decisions]
+
+
 def _apply_ocr_rows(lb, rows, match_map, user, draft_id=None):
     """Shared apply: turn reviewed OCR rows into ONE new map + its participants + scored results, atomically.
 
@@ -1813,6 +1853,10 @@ def _apply_ocr_rows(lb, rows, match_map, user, draft_id=None):
             created_participants.append(participant)
             _save_one_result(match, participant, row, lb)
 
+    # Teach the leaderboard organization's name memory from the reviewed players (#334 #335): each
+    # player kept or picked confirms their spelling, each suggestion not kept is remembered as wrong
+    # for it. After the atomic block, so a failed apply teaches nothing; learn() never raises.
+    learn_names(lb.organization, _reviewed_decisions(rows))
     # De-dupe participants for the response (a re-applied real entity could appear once per row).
     seen = set()
     unique_participants = []
@@ -1838,9 +1882,11 @@ def _apply_ocr_rows(lb, rows, match_map, user, draft_id=None):
 # The heavy read/merge/match work is in afc_leaderboard.ocr.process_job (run by the Celery task); these
 # views only persist, enqueue, serialize, and apply. can_manage_standalone_lb gates every endpoint.
 # ════════════════════════════════════════════════════════════════════════════════════════════
-def _serialize_job(job, image_count=None):
+def _serialize_job(job, image_count=None, queue=None):
     """One OCR-job row for the FE poll. `rows` is the merged review table (null until the job is done);
-    image_count is passed in by the list endpoint (prefetched) or counted here for a single job."""
+    image_count is passed in by the list endpoint (prefetched) or counted here for a single job.
+    queue: (place_in_line, wait_seconds) from ocr_queue.estimates for a map waiting in its organizer's
+    line, else None (#334); the batch dialog shows "N maps ahead, about S seconds"."""
     return {
         "id": str(job.id),
         "map_label": job.map_label,
@@ -1852,6 +1898,8 @@ def _serialize_job(job, image_count=None):
         # Only meaningful once status == "done"; the FE renders these in the editable review table.
         "rows": job.rows,
         "created_at": job.created_at.isoformat() if job.created_at else None,
+        "queue_position": queue[0] if queue else None,
+        "wait_seconds": queue[1] if queue else None,
     }
 
 
@@ -1906,9 +1954,10 @@ def ocr_job_run(request, lb_id, job_id):
     """
     POST leaderboards/standalone/<id>/ocr/jobs/<job_id>/run/  - enqueue ONE map's background read.
 
-    Auth: Bearer SessionToken + can_manage_standalone_lb. Resets the job to pending + clears any prior
-    error, then dispatches the Celery task (process_leaderboard_ocr_job). Idempotent-ish: a job already
-    processing is left alone. Response 200: { "job": <job dict> }.
+    Auth: Bearer SessionToken + can_manage_standalone_lb. Puts the map in its organizer's line
+    (ocr_queue.enqueue: pending + queued_at, prior error cleared); ocr_queue.dispatch starts it when a
+    reading slot is free. A job already processing is left alone. Response 200: { "job": <job dict> },
+    with queue_position / wait_seconds while it waits.
     """
     user, err = _auth_user(request)
     if err:
@@ -1928,11 +1977,10 @@ def ocr_job_run(request, lb_id, job_id):
     from afc_ocr.views import key_required_response
     if not can_read(lb.organization, user):
         return key_required_response(OcrKeyRequired(lb.organization))
-    job.status = "pending"
-    job.error = ""
-    job.save(update_fields=["status", "error", "updated_at"])
-    process_leaderboard_ocr_job.delay(str(job.id))
-    return Response({"job": _serialize_job(job)})
+    # Into its organizer's line (afc_leaderboard.ocr_queue, #334); dispatch starts it when a slot is free.
+    enqueue_ocr([job])
+    job.refresh_from_db()
+    return Response({"job": _serialize_job(job, queue=ocr_estimates([job]).get(str(job.id)))})
 
 
 @api_view(["POST"])
@@ -1940,10 +1988,11 @@ def ocr_run_all(request, lb_id):
     """
     POST leaderboards/standalone/<id>/ocr/run-all/  - enqueue EVERY not-yet-read map at once.
 
-    Auth: Bearer SessionToken + can_manage_standalone_lb. Enqueues all jobs in pending/failed state so a
-    whole batch processes in parallel across Celery workers (the owner's "run them as a group
-    simultaneously"). Already-done/applied/processing jobs are skipped. Response 200:
-    { "jobs": [<every job dict>], "queued": <count enqueued> }.
+    Auth: Bearer SessionToken + can_manage_standalone_lb. Puts every pending/failed map in this
+    organizer's line (ocr_queue.enqueue); the line reads up to OCR_QUEUE_SLOTS maps at once when no other
+    organizer is waiting, and takes turns with other organizers when they are (owner 2026-10-22, #334).
+    Already-done/applied/processing jobs are skipped. Response 200:
+    { "jobs": [<every job dict, with queue_position / wait_seconds while waiting>], "queued": <count> }.
     """
     user, err = _auth_user(request)
     if err:
@@ -1960,13 +2009,13 @@ def ocr_run_all(request, lb_id):
         return key_required_response(OcrKeyRequired(lb.organization))
 
     to_run = list(lb.ocr_jobs.filter(status__in=["pending", "failed"]))
-    for j in to_run:
-        j.status = "pending"
-        j.error = ""
-        j.save(update_fields=["status", "error", "updated_at"])
-        process_leaderboard_ocr_job.delay(str(j.id))
-    jobs = lb.ocr_jobs.prefetch_related("images").all()
-    return Response({"jobs": [_serialize_job(j, image_count=j.images.count()) for j in jobs], "queued": len(to_run)})
+    # Into this organizer's line (afc_leaderboard.ocr_queue, #334): reads are handed out in turn
+    # between organizers, so a big batch here never holds up another organizer's maps.
+    enqueue_ocr(to_run)
+    jobs = list(lb.ocr_jobs.prefetch_related("images").all())
+    queue = ocr_estimates(jobs)
+    return Response({"jobs": [_serialize_job(j, image_count=j.images.count(), queue=queue.get(str(j.id))) for j in jobs],
+                     "queued": len(to_run)})
 
 
 @api_view(["GET"])
@@ -1986,8 +2035,12 @@ def ocr_job_list(request, lb_id):
         return nf
     if not can_manage_standalone_lb(user, lb):
         return Response({"message": "You do not have permission to view this leaderboard.", "code": "not_permission_view_leaderboard"}, status=403)
-    jobs = lb.ocr_jobs.prefetch_related("images").all()
-    return Response({"jobs": [_serialize_job(j, image_count=j.images.count()) for j in jobs]})
+    # Every poll also hands out free reading slots (and frees a slot held by a read that hung), so the
+    # lines keep moving even if a worker died (afc_leaderboard.ocr_queue.dispatch).
+    dispatch_ocr()
+    jobs = list(lb.ocr_jobs.prefetch_related("images").all())
+    queue = ocr_estimates(jobs)
+    return Response({"jobs": [_serialize_job(j, image_count=j.images.count(), queue=queue.get(str(j.id))) for j in jobs]})
 
 
 @api_view(["POST"])
