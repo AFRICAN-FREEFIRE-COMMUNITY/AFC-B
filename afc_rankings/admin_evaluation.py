@@ -91,7 +91,7 @@ def run_evaluation(request, season_id):
 
     season = Season.objects.filter(pk=season_id).first()
     if not season:
-        return Response({"message": "Season not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "Season not found.", "code": "season_not_found"}, status=status.HTTP_404_NOT_FOUND)
 
     # Coerce the two optional flags. Anything truthy in the JSON body → True; absent → False.
     dry_run = bool(request.data.get("dry_run", False))
@@ -114,7 +114,7 @@ def run_evaluation(request, season_id):
     # ok:False with a human message. Surface it as a 409 Conflict.
     if not summary.get("ok"):
         return Response(
-            {"message": summary.get("error", "Evaluation could not be run.")},
+            {"message": summary.get("error", "Evaluation could not be run."), "code": "run_evaluation_refused"},
             status=status.HTTP_409_CONFLICT,
         )
 
@@ -221,7 +221,7 @@ def recalc_status(request):
 
     season = _resolve_season(request)
     if not season:
-        return Response({"message": "No active season."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "No active season.", "code": "no_active_season"}, status=status.HTTP_404_NOT_FOUND)
 
     running, determinable = _probe_season_recalc_running(season)
 
@@ -279,7 +279,7 @@ def recalc_entity(request):
     entity_type = (data.get("entity_type") or "").strip().lower()
     if entity_type not in ("team", "player"):
         return Response(
-            {"message": "entity_type must be one of: team, player."},
+            {"message": "entity_type must be one of: team, player.", "code": "entity_type_team_player"},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
@@ -287,14 +287,14 @@ def recalc_entity(request):
     try:
         entity_id = int(data.get("id"))
     except (TypeError, ValueError):
-        return Response({"message": "id must be an integer."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "id must be an integer.", "code": "recalc_entity_integer"}, status=status.HTTP_400_BAD_REQUEST)
 
     # ── optional season_id: if present it must resolve to a real season ──
     season = None
     if data.get("season_id") not in (None, ""):
         season = Season.objects.filter(pk=data.get("season_id")).first()
         if not season:
-            return Response({"message": "Season not found."}, status=status.HTTP_404_NOT_FOUND)
+            return Response({"message": "Season not found.", "code": "season_not_found"}, status=status.HTTP_404_NOT_FOUND)
     season_id = season.season_id if season else None
 
     # (2) reason - OPTIONAL for a manual recalc (it re-derives from source data, it doesn't

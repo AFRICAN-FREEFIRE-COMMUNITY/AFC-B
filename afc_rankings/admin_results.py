@@ -274,7 +274,7 @@ def _get_event(event_id):
     """Resolve an Event by PK, or return (None, 404 Response)."""
     event = Event.objects.filter(pk=event_id).first()
     if not event:
-        return None, Response({"message": "Event not found."}, status=status.HTTP_404_NOT_FOUND)
+        return None, Response({"message": "Event not found.", "code": "event_not_found"}, status=status.HTTP_404_NOT_FOUND)
     return event, None
 
 
@@ -438,7 +438,7 @@ def event_counting_update(request, event_id):
     # such an event whatever this row says, so accepting the toggle would only lie to the admin.
     if event.open_roster and supplied.get("counts_toward_rankings") is True:
         return Response(
-            {"message": "This is an open-roster event: it never counts toward rankings or tiers."},
+            {"message": "This is an open-roster event: it never counts toward rankings or tiers.", "code": "open_roster_event_never"},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
@@ -540,10 +540,10 @@ def result_exclusion_create(request):
     # ── event FK ──
     event_id = data.get("event_id")
     if not event_id:
-        return Response({"message": "event_id is required."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "event_id is required.", "code": "event_required"}, status=status.HTTP_400_BAD_REQUEST)
     event = Event.objects.filter(pk=event_id).first()
     if not event:
-        return Response({"message": "Event not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "Event not found.", "code": "event_not_found"}, status=status.HTTP_404_NOT_FOUND)
 
     # ── entity_type ──
     entity_type = (data.get("entity_type") or "").strip()
@@ -558,17 +558,17 @@ def result_exclusion_create(request):
     player_id = data.get("player_id")
     if entity_type == "team":
         if not team_id:
-            return Response({"message": "team_id is required when entity_type is 'team'."},
+            return Response({"message": "team_id is required when entity_type is 'team'.", "code": "team_required_entity_type"},
                             status=status.HTTP_400_BAD_REQUEST)
         if player_id:
-            return Response({"message": "Provide team_id only (not player_id) for a team exclusion."},
+            return Response({"message": "Provide team_id only (not player_id) for a team exclusion.", "code": "provide_team_not_player"},
                             status=status.HTTP_400_BAD_REQUEST)
     else:  # entity_type == "player"
         if not player_id:
-            return Response({"message": "player_id is required when entity_type is 'player'."},
+            return Response({"message": "player_id is required when entity_type is 'player'.", "code": "player_required_entity_type"},
                             status=status.HTTP_400_BAD_REQUEST)
         if team_id:
-            return Response({"message": "Provide player_id only (not team_id) for a player exclusion."},
+            return Response({"message": "Provide player_id only (not team_id) for a player exclusion.", "code": "provide_player_not_team"},
                             status=status.HTTP_400_BAD_REQUEST)
 
     with transaction.atomic():
@@ -585,7 +585,7 @@ def result_exclusion_create(request):
             # The unique (event, team) / (event, player) constraint rejected a duplicate, or a
             # bad team/player FK was supplied - surface as a clean 400 rather than a 500.
             return Response(
-                {"message": "This team/player is already excluded from this event (or the id is invalid)."},
+                {"message": "This team/player is already excluded from this event (or the id is invalid).", "code": "team_player_already_excluded"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -629,7 +629,7 @@ def result_exclusion_delete(request, exclusion_id):
                  .select_related("event", "team", "player")
                  .filter(pk=exclusion_id).first())
     if not exclusion:
-        return Response({"message": "Result exclusion not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "Result exclusion not found.", "code": "result_exclusion_not_found"}, status=status.HTTP_404_NOT_FOUND)
 
     with transaction.atomic():
         before = serialize_exclusion(exclusion)

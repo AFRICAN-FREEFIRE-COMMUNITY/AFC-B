@@ -208,3 +208,52 @@ class LegacyDiscordConnectTests(TestCase):
         self.assertEqual(resp.status_code, 302)
         self.assertIn("discord=failed", resp["Location"])
         self.assertNotIn("evil", resp["Location"])
+
+    # ── the TOURNAMENT copy, connect-discord/ (inbox #211, 9 Oct 2026) ──────────────────────────
+    # Left behind on 2026-08-26: it still took ?session_token= and sent "<token>|<url>" to Discord,
+    # which discord_callback no longer accepts, so registration's Connect Discord always failed.
+    def _tournament_start(self, query, **headers):
+        from django.test import Client
+
+        return Client().get(f"/auth/connect-discord/{query}", **headers)
+
+    def test_the_tournament_start_wants_a_session(self):
+        self.assertEqual(self._tournament_start("?tournament_id=cup").status_code, 401)
+        resp = self._tournament_start(f"?session_token={self.token}&tournament_id=cup")
+        self.assertEqual(resp.status_code, 401, "a token in the query string is not a session")
+
+    def test_the_tournament_start_answers_a_consent_url_without_the_token(self):
+        from urllib.parse import parse_qs, urlparse
+
+        from afc_auth.connections import state as conn_state
+
+        resp = self._tournament_start(
+            "?tournament_id=lagos-cup&invite_token=inv123", HTTP_AUTHORIZATION=f"Bearer {self.token}",
+        )
+        self.assertEqual(resp.status_code, 200, resp.content)
+        url = resp.json()["authorize_url"]
+        self.assertTrue(url.startswith("https://discord.com/"), url)
+        self.assertNotIn(self.token, url)
+        # the state is a nonce discord_callback can consume, and it brings the player back to the event
+        payload = conn_state.consume(parse_qs(urlparse(url).query)["state"][0])
+        self.assertEqual(payload["provider"], "discord")
+        self.assertEqual(payload["user_id"], self.user.user_id)
+        self.assertEqual(payload["return_to"],
+                         "https://africanfreefirecommunity.com/tournaments/lagos-cup?invite_token=inv123")
+
+    def test_the_tournament_start_cannot_be_pointed_off_the_event_page(self):
+        from urllib.parse import parse_qs, urlparse
+
+        from afc_auth.connections import state as conn_state
+
+        resp = self._tournament_start(
+            "?tournament_id=//evil.example/x", HTTP_AUTHORIZATION=f"Bearer {self.token}",
+        )
+        payload = conn_state.consume(parse_qs(urlparse(resp.json()["authorize_url"]).query)["state"][0])
+        self.assertTrue(payload["return_to"].startswith("https://africanfreefirecommunity.com/tournaments/"))
+        self.assertNotIn("//evil.example", payload["return_to"])
+
+    def test_the_tournament_start_needs_the_event(self):
+        resp = self._tournament_start("", HTTP_AUTHORIZATION=f"Bearer {self.token}")
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.json()["code"], "tournament_id_required")

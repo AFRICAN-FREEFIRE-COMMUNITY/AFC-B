@@ -44,7 +44,7 @@ class MarkWelcomeSeenEndpointTests(TestCase):
     def test_requires_authorization_header(self):
         # No Authorization header -> 400, flag untouched.
         resp = self._post()
-        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.status_code, 401)
         self.user.refresh_from_db()
         self.assertFalse(self.user.has_seen_welcome)
 

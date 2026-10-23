@@ -12,8 +12,9 @@ How it fits into the system:
   - AFC authenticates with a CUSTOM SessionToken (Authorization: "Bearer <token>"), NOT Django's
     session framework, so request.user is the AnonymousUser. We therefore resolve the acting User
     ourselves the same way the views do (SessionToken lookup, expiry check) - see _resolve_actor.
-    That logic is a local copy of afc_auth.views.validate_token / get_client_ip, kept local so this
-    middleware module has NO import-time dependency on the large views module.
+    That logic is a local copy of afc_auth.views.validate_token, kept local so this middleware
+    module has NO import-time dependency on the large views module. The visitor's address comes
+    from afc_auth.client_ip, which imports nothing from views (inbox #141).
   - Only admin/staff actors are logged (User.role in the admin set, OR any granular UserRoles row,
     OR is_staff/superuser). A normal player editing their own profile is not an "admin action".
 
@@ -451,13 +452,10 @@ def _resolve_actor(request):
     return session.user
 
 
-def _client_ip(request):
-    """Real client IP, honoring X-Forwarded-For (prod runs behind nginx on EC2). Local copy of
-    afc_auth.views.get_client_ip."""
-    xff = request.META.get("HTTP_X_FORWARDED_FOR")
-    if xff:
-        return xff.split(",")[0].strip()
-    return request.META.get("REMOTE_ADDR")
+# The visitor's address: one rule for the whole API (afc_auth/client_ip.py, inbox #141).
+# afc_auth.client_ip imports nothing from views, so the middleware can use it without the import
+# cycle that made this a local copy before.
+from afc_auth.client_ip import client_ip as _client_ip  # noqa: E402
 
 
 def _redact(value):

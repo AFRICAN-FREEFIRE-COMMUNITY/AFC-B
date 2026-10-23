@@ -93,7 +93,147 @@
       "except": [
         "afc_auth/views.py",
         "afc_whatsapp/client.py",
-        "afc_support/notify.py"
+        "afc_support/notify.py",
+        "afc_mail/transport.py"
+      ]
+    },
+    {
+      "id": "be-raw-name-in-site-link",
+      "title": "A player or team name pasted raw into a website address",
+      "why": "Player and team pages are addressed by the name, and names carry spaces, '#', '?', '/', '%' and Free Fire glyphs. A raw one breaks the link: '/teams/A#1' opens '/teams/A', 'AC/DC' becomes two segments. urllib's default quote() leaves '/' alone.",
+      "seen": [
+        "2026-08-08 team invitation notifications pointed at /teams/<id>, then at the raw name",
+        "2026-09-30 NG.KILLA (name ends U+F8FF): the admin player page said Player not found; notification, poll and QR links were raw or half-encoded (inbox #90, #91)"
+      ],
+      "fix": "build the path with afc_auth/site_paths.py (player_path, team_path, admin_player_path, referral_path, segment); it is quote(value, safe='')",
+      "kind": "regex",
+      "pattern": "f[\"'](https://africanfreefirecommunity\\.com)?/(players|teams|a/players|a/teams|a/sponsors|r)/\\{",
+      "globs": [
+        "**/*.py"
+      ],
+      "except": [
+        "afc_auth/site_paths.py",
+        "tools/check_email_links.py",
+        "**/test*.py",
+        "**/migrations/**",
+        ".venv/**"
+      ]
+    },
+    {
+      "id": "be-forwarded-for-read",
+      "title": "The visitor's address read from a header outside afc_auth/client_ip.py",
+      "why": "nginx APPENDS to whatever X-Forwarded-For a request arrives with ($proxy_add_x_forwarded_for), so the FIRST entry is written by the visitor. Every copy took that entry as the visitor's address, so a script sending a new X-Forwarded-For per request looked like a new person each time and walked past every per-address limit (feedback 5 an hour, partner applications, QR link creation, referral clicks, the Turnstile remoteip, the audit log, sign-in device and country). The one rule lives in afc_auth/client_ip.py: X-Real-IP (set by nginx from the connection) is the caller, and only a private or loopback caller (our own Next.js server) may name a visitor in X-Forwarded-For. Reading X-Real-IP directly is not the hole, but it is a second rule, so it is caught too.",
+      "seen": [
+        "2025-12-17 to 2026-09-23 afc_auth/views.py get_client_ip, afc_auth/middleware.py (audit log, 2026-06-09), afc_feedback (2026-08-03), afc_partner_apply (2026-08-04), afc_auth/bot_protection.py (2026-09-23): each its own copy of the first-entry read",
+        "2026-09-26 the same copy three more times in one day: afc_qr, afc_referrals, and the signup referral line in afc_auth/views.py; all eight found together 2026-10-04 (inbox #141), plus the frontend QR route forwarding the visitor's own chain (AFC_Frontend fe-forwarded-for-read)"
+      ],
+      "fix": "from afc_auth.client_ip import client_ip; ip = client_ip(request). Never read HTTP_X_FORWARDED_FOR or HTTP_X_REAL_IP (or request.headers X-Forwarded-For / X-Real-IP) anywhere else",
+      "kind": "regex",
+      "pattern": "^(?!\\s*#).*(HTTP_X_FORWARDED_FOR|HTTP_X_REAL_IP|headers(\\.get\\(|\\[)\\s*[\\\"'](?i:x-forwarded-for|x-real-ip)[\\\"'])",
+      "globs": [
+        "**/*.py"
+      ],
+      "except": [
+        "afc_auth/client_ip.py",
+        "**/test*.py",
+        "**/migrations/**",
+        ".venv/**",
+        "venv/**"
+      ]
+    },
+    {
+      "id": "be-import-not-in-prod-requirements",
+      "title": "App code imports a package the server never installs (missing from requirements-prod.txt)",
+      "why": "The VPS installs requirements-prod.txt only (59 pins captured from production), never requirements.txt. A package added to requirements.txt alone works on every laptop and is absent on the box: a lazy import degrades silently, a module-level one stops every API address once the URLs load.",
+      "seen": [
+        "2026-09-12 RapidFuzz: the OCR name matcher had run exact-only on production since 2026-08-03; found by the 15 matcher tests that fail without it",
+        "2026-10-17 beautifulsoup4, lxml, mrml for afc_mail (#290): read off the box before shipping; afc_mail/content.py imports bs4 at load, so the first request after the deploy would have failed everywhere",
+        "2026-10-22 onnxruntime + rapidocr: the on-site OCR reader was built on 2026-06-08 with its packages in requirements-local.txt only, so on the box local_ocr.is_available() was False and every screenshot went to Gemini for four months. This check did not fire because this entry listed both as optional, \"not installed on the box by design\": the exemption turned a dead feature into a silent one"
+      ],
+      "fix": "pin the package (and anything pip says it needs) in requirements-prod.txt at the version the tests ran with; check the box can install it from a wheel: venv/bin/pip install --dry-run --report - <pkg>==<ver>",
+      "kind": "prod-imports",
+      "requirements": "requirements-prod.txt",
+      "globs": [
+        "afc/**/*.py",
+        "afc_*/**/*.py",
+        "afcbot/afc_scraper.py"
+      ],
+      "except": [
+        "**/tests*.py",
+        "**/test_*.py",
+        "**/tests/**",
+        "**/migrations/**",
+        "afc_ocr/training/**"
+      ],
+      "aliases": {
+        "bs4": "beautifulsoup4",
+        "PIL": "pillow",
+        "cv2": "opencv-python-headless",
+        "dotenv": "python-dotenv",
+        "dateutil": "python-dateutil",
+        "pyotp": "PyOTP",
+        "rest_framework": "djangorestframework",
+        "corsheaders": "django-cors-headers",
+        "oauth2_provider": "django-oauth-toolkit",
+        "django_redis": "django-redis",
+        "django_celery_beat": "django-celery-beat",
+        "timezone_field": "django-timezone-field",
+        "google": "google-auth",
+        "rapidfuzz": "RapidFuzz",
+        "MySQLdb": "mysqlclient",
+        "crontab": "python-crontab",
+        "yaml": "PyYAML",
+        "jwt": "PyJWT"
+      },
+      "implied": [
+        {
+          "pattern": "[\"']lxml[\"']",
+          "dist": "lxml",
+          "why": "named as the BeautifulSoup parser"
+        },
+        {
+          "pattern": "EngineType\\.ONNXRUNTIME",
+          "dist": "onnxruntime",
+          "why": "the on-site OCR reader runs its models on onnxruntime; its import sits in a try (is_available) so only this names it"
+        }
+      ],
+      "local": [
+        "afc_scraper"
+      ],
+      "_notes": "afcbot/afc_scraper.py is checked because afc_bot/tasks.py imports it into the Django worker through sys.path. afc_ocr/training/** are scripts that run off the box (they say so in their docstrings). The optional list was removed on 2026-10-22 (inbox #328): the on-site OCR reader is required on the box now, and an exemption here is what hid it. Add one back only for a module the server really does without, with its reason."
+    },
+    {
+      "id": "be-nginx-swallows-api-errors",
+      "title": "nginx intercepts the API's own 502/503/504 answers and serves the maintenance page instead",
+      "why": "With proxy_intercept_errors on in the API block, every coded 502/503/504 the API answers (payment start, verify and refund, payouts, Help bot offline or timeout, OCR provider errors, results import, mail refusals) is replaced by the HTML maintenance page, so the screen can only say 'Something went wrong'. error_page alone still covers nginx's own errors (the API down).",
+      "seen": [
+        "2026-10-17 the first live email news test send: SES refused (IAM), the API answered 502 mail_test_refused, nginx served the maintenance page, the owner saw 'Something went wrong. Please try again.'",
+        "2026-10-17 the same morning's audit: about 30 API answers with 502/503/504 and a message, all hidden the same way since the VPS config of 2026-09-11"
+      ],
+      "fix": "keep `proxy_intercept_errors on;` only in the website block, marked `# website block only`; the API block says off and keeps `error_page 502 503 504 = @maintenance;` for nginx's own errors",
+      "kind": "regex",
+      "pattern": "^\\s*proxy_intercept_errors\\s+on;(?!.*# website block only)",
+      "globs": [
+        "deploy/vps/*.conf"
+      ]
+    },
+    {
+      "id": "be-team-seat-unlocked",
+      "title": "A team member is seated outside the team's seat lock (a 7th player gets in)",
+      "why": "Every way onto a team counts the roster and then adds a TeamMembers row. Without the team row locked between the two, two people accepted at the same moment both read 5 players and both become the 6th, and a door that forgets the shared cap check lets a 7th in outright. _team_seat_lock (afc_team/views.py) holds the team while the check and the insert happen together.",
+      "seen": [
+        "2025-12 to 2026-08-05 thirteen teams, then CELESTIAL BROTHER on 5 August, went past 6 players while three of the four join doors skipped the cap (fixed 2026-08-04/05, item 33)",
+        "2026-10-18 owner: \"HOW ARE THERE TEAM ON AFC SITE THAT HAVE 7 MEMBERS WHO ARE PLAYERS?\" (inbox #314): 14 of 937 teams over the cap; admin_add_member still checked the headcount only, and no join path locked the team"
+      ],
+      "fix": "create the TeamMembers row inside `with _team_seat_lock(team):`, after _roster_capacity_error / _resolve_join_role, with no write before a refusal inside the block. Only create_team's founding captain is exempt",
+      "kind": "call-outside-with",
+      "call": "TeamMembers.objects.create",
+      "with": "_team_seat_lock",
+      "allow_functions": [
+        "create_team"
+      ],
+      "globs": [
+        "afc_team/views.py"
       ]
     }
   ]

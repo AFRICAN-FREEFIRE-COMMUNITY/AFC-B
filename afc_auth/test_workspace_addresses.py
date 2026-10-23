@@ -119,7 +119,7 @@ class EventResolveTests(TestCase):
         self.assertEqual(r.status_code, 200)
         self.assertEqual(r.json()["slug"], "address-cup")
         self.assertEqual(client.get("/events/resolve/", {"ref": "missing"}, **auth).status_code, 404)
-        self.assertEqual(client.get("/events/resolve/", {"ref": event.slug}).status_code, 400)
+        self.assertEqual(client.get("/events/resolve/", {"ref": event.slug}).status_code, 401)
 
 
 class StandaloneAddressTests(TestCase):

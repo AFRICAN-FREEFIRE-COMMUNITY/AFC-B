@@ -54,7 +54,7 @@ def get_organization_public(request, slug):
     org = Organization.objects.filter(slug=slug).first()
     if org is None or org.status != "active":
         return Response(
-            {"message": "Organization not found."},
+            {"message": "Organization not found.", "code": "organization_not_found"},
             status=status.HTTP_404_NOT_FOUND,
         )
 

@@ -52,7 +52,7 @@ class MarkDashboardIntroSeenEndpointTests(TestCase):
 
     def test_requires_authorization_header(self):
         resp = self._post(body={"dashboard": "sponsor"}, token=None)
-        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.status_code, 401)
 
     def test_rejects_invalid_token(self):
         resp = self._post(body={"dashboard": "sponsor"}, token="bogus")

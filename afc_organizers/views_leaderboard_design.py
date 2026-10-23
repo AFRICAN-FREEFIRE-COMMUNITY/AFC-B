@@ -86,7 +86,7 @@ def _resolve_library(request, raw_org_id):
     # correct regardless of the field name (filter(id=...) raises FieldError on this model).
     org = Organization.objects.filter(pk=raw_org_id).first()
     if not org:
-        return None, False, Response({"message": "Organization not found."}, status=404)
+        return None, False, Response({"message": "Organization not found.", "code": "organization_not_found"}, status=404)
     return org, org_can(user, "can_submit_designs", org), None
 
 
@@ -612,9 +612,9 @@ def designs_collection(request):
         # org-owned leaderboard could open the export picker but fail to load that org's designs (403).
         if org is None:
             if user.role != "admin":
-                return Response({"message": "Admins only."}, status=status.HTTP_403_FORBIDDEN)
+                return Response({"message": "Admins only.", "code": "designs_collection_admins"}, status=status.HTTP_403_FORBIDDEN)
         elif user.role != "admin" and not _member_or_403(user, org):
-            return Response({"message": "You do not have access to this organization."},
+            return Response({"message": "You do not have access to this organization.", "code": "not_access_organization"},
                             status=status.HTTP_403_FORBIDDEN)
         rows = [_serialize_design(d, request) for d in _library_qs(org)]
         return Response({"results": rows, "total_count": len(rows)})
@@ -624,11 +624,11 @@ def designs_collection(request):
     if err:
         return err
     if not can_write:
-        return Response({"message": "You do not have permission to manage these designs."},
+        return Response({"message": "You do not have permission to manage these designs.", "code": "not_permission_manage_designs"},
                         status=status.HTTP_403_FORBIDDEN)
     name = (request.data.get("name") or "").strip()
     if not name:
-        return Response({"message": "A design name is required."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "A design name is required.", "code": "design_name_required"}, status=status.HTTP_400_BAD_REQUEST)
     d = OrgLeaderboardDesign(organization=org, name=name, created_by=user)
     _apply_fields(d, request.data)
     if request.FILES.get("background_instagram"):
@@ -657,9 +657,9 @@ def design_item(request, design_id):
         d = (OrgLeaderboardDesign.objects.select_related("organization")
              .prefetch_related("logos", "fields", "texts", "pages").get(id=design_id))
     except OrgLeaderboardDesign.DoesNotExist:
-        return Response({"message": "Design not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "Design not found.", "code": "design_not_found"}, status=status.HTTP_404_NOT_FOUND)
     if not _can_write_design(user, d):
-        return Response({"message": "You do not have permission to manage this design."},
+        return Response({"message": "You do not have permission to manage this design.", "code": "not_permission_manage_design"},
                         status=status.HTTP_403_FORBIDDEN)
 
     if request.method == "DELETE":
@@ -707,9 +707,9 @@ def _get_design_for_write(user, design_id):
         d = (OrgLeaderboardDesign.objects.select_related("organization")
              .prefetch_related("pages").get(id=design_id))
     except OrgLeaderboardDesign.DoesNotExist:
-        return None, Response({"message": "Design not found."}, status=status.HTTP_404_NOT_FOUND)
+        return None, Response({"message": "Design not found.", "code": "design_not_found"}, status=status.HTTP_404_NOT_FOUND)
     if not _can_write_design(user, d):
-        return None, Response({"message": "You do not have permission to manage this design."},
+        return None, Response({"message": "You do not have permission to manage this design.", "code": "not_permission_manage_design"},
                               status=status.HTTP_403_FORBIDDEN)
     return d, None
 
@@ -729,7 +729,7 @@ def design_logos(request, design_id):
         return err
     image = request.FILES.get("image")
     if not image:
-        return Response({"message": "A logo image is required."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "A logo image is required.", "code": "logo_image_required"}, status=status.HTTP_400_BAD_REQUEST)
     size = (request.data.get("size") or "medium").lower()
     logo = OrgLeaderboardDesignLogo.objects.create(
         design=d,
@@ -753,7 +753,7 @@ def design_logo_item(request, design_id, logo_id):
         return err
     logo = OrgLeaderboardDesignLogo.objects.filter(design=d, id=logo_id).first()
     if not logo:
-        return Response({"message": "Logo not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "Logo not found.", "code": "logo_not_found"}, status=status.HTTP_404_NOT_FOUND)
 
     if request.method == "DELETE":
         logo.delete()
@@ -874,7 +874,7 @@ def design_page_item(request, design_id, page_id):
 
     page = OrgLeaderboardDesignPage.objects.filter(design=d, id=page_id).first()
     if not page:
-        return Response({"message": "Page not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "Page not found.", "code": "page_not_found"}, status=status.HTTP_404_NOT_FOUND)
 
     if request.method == "DELETE":
         page.delete()
@@ -933,7 +933,7 @@ def apply_background_to_all(request, design_id):
     yt_file = request.FILES.get("background_youtube")
     if not ig_file and not yt_file:
         return Response(
-            {"message": "Upload at least one background image to apply."},
+            {"message": "Upload at least one background image to apply.", "code": "upload_least_background_image"},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
@@ -1011,7 +1011,7 @@ def apply_field_enablement_to_all(request, design_id):
     if single:
         target = OrgLeaderboardDesignField.objects.filter(design=d, id=raw_field_id).first()
         if not target:
-            return Response({"message": "Field not found."}, status=status.HTTP_404_NOT_FOUND)
+            return Response({"message": "Field not found.", "code": "field_not_found"}, status=status.HTTP_404_NOT_FOUND)
         # Enable THIS column on both sizes, plus its twin (same field_type + column_group) on every
         # other page of the design (multi-page "all pages"). Matching by type+group keeps the same
         # logical column in sync without needing per-page ids from the caller.
@@ -1106,7 +1106,7 @@ def design_fields(request, design_id):
         return err
     ft = (request.data.get("field_type") or "").strip()
     if ft not in FIELD_TYPES:
-        return Response({"message": "Unknown field type."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "Unknown field type.", "code": "unknown_field_type"}, status=status.HTTP_400_BAD_REQUEST)
     f = OrgLeaderboardDesignField(design=d, field_type=ft, x_pct=_clamp_pct(request.data.get("x_pct"), 10.0))
     _apply_field_attrs(f, request.data, d)
     # Optional page scoping (multi-page, owner 2026-06-14). page_id null = legacy / page-1 layout.
@@ -1132,7 +1132,7 @@ def design_field_item(request, design_id, field_id):
         return err
     f = OrgLeaderboardDesignField.objects.filter(design=d, id=field_id).first()
     if not f:
-        return Response({"message": "Field not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "Field not found.", "code": "field_not_found"}, status=status.HTTP_404_NOT_FOUND)
     if request.method == "DELETE":
         f.delete()
         return Response({"message": "Field removed."})
@@ -1219,7 +1219,7 @@ def design_text_item(request, design_id, text_id):
         return err
     t = OrgLeaderboardDesignText.objects.filter(design=d, id=text_id).first()
     if not t:
-        return Response({"message": "Text not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "Text not found.", "code": "text_not_found"}, status=status.HTTP_404_NOT_FOUND)
     if request.method == "DELETE":
         t.delete()
         return Response({"message": "Text removed."})
@@ -1230,6 +1230,9 @@ def design_text_item(request, design_id, text_id):
 
 # ───────────── FONT library (uploaded TTF/OTF, org-scoped or AFC-native) ─────────────
 FONT_EXTS = (".ttf", ".otf")
+# A full CJK font can be ~20 MB; the scoreboard fonts organizers bring are Latin display faces,
+# a few hundred KB. 5 MB leaves room and keeps an upload from being used as file storage.
+MAX_FONT_BYTES = 5 * 1024 * 1024
 
 
 @api_view(["GET", "POST"])
@@ -1247,9 +1250,9 @@ def fonts_collection(request):
             return err
         if org is None:
             if user.role != "admin":
-                return Response({"message": "Admins only."}, status=status.HTTP_403_FORBIDDEN)
+                return Response({"message": "Admins only.", "code": "fonts_collection_admins"}, status=status.HTTP_403_FORBIDDEN)
         elif user.role != "admin" and not _member_or_403(user, org):
-            return Response({"message": "You do not have access to this organization."},
+            return Response({"message": "You do not have access to this organization.", "code": "not_access_organization"},
                             status=status.HTTP_403_FORBIDDEN)
         qs = (OrgLeaderboardDesignFont.objects.filter(organization__isnull=True)
               if org is None else OrgLeaderboardDesignFont.objects.filter(organization=org))
@@ -1261,15 +1264,24 @@ def fonts_collection(request):
     if err:
         return err
     if not can_write:
-        return Response({"message": "You do not have permission to manage these fonts."},
+        return Response({"message": "You do not have permission to manage these fonts.", "code": "not_permission_manage_fonts"},
                         status=status.HTTP_403_FORBIDDEN)
     upload = request.FILES.get("file")
     if not upload:
-        return Response({"message": "A font file is required."}, status=status.HTTP_400_BAD_REQUEST)
-    if not upload.name.lower().endswith(FONT_EXTS):
-        return Response({"message": "Only .ttf or .otf font files are allowed."},
+        return Response({"message": "A font file is required.", "code": "font_file_required"}, status=status.HTTP_400_BAD_REQUEST)
+    # R87 (2026-09-30): the name check alone let anything ending ".ttf" through and kept the client's
+    # filename on disk. Now the BYTES must be a TrueType / OpenType font, the file is capped, and it
+    # is stored under an opaque name whose extension came from the sniff.
+    from afc_auth.upload_safety import opaque_name, sniff_upload
+    kind, font_ext, _mime = sniff_upload(upload, {"font"})
+    if not upload.name.lower().endswith(FONT_EXTS) or kind != "font":
+        return Response({"message": "Only .ttf or .otf font files are allowed.", "code": "ttf_otf_font_files"},
+                        status=status.HTTP_400_BAD_REQUEST)
+    if upload.size > MAX_FONT_BYTES:
+        return Response({"message": "A font file can be at most 5 MB.", "code": "font_file_too_large"},
                         status=status.HTTP_400_BAD_REQUEST)
     name = (request.data.get("name") or "").strip() or upload.name.rsplit(".", 1)[0][:80]
+    upload.name = opaque_name(font_ext)
     f = OrgLeaderboardDesignFont.objects.create(
         organization=org, name=name, file=upload, created_by=user)
     return Response({"font": _serialize_font(f, request)}, status=status.HTTP_201_CREATED)
@@ -1284,11 +1296,11 @@ def font_item(request, font_id):
         return err
     f = OrgLeaderboardDesignFont.objects.select_related("organization").filter(id=font_id).first()
     if not f:
-        return Response({"message": "Font not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "Font not found.", "code": "font_not_found"}, status=status.HTTP_404_NOT_FOUND)
     can_write = (user.role == "admin") if f.organization_id is None else org_can(
         user, "can_submit_designs", f.organization)
     if not can_write:
-        return Response({"message": "You do not have permission to manage this font."},
+        return Response({"message": "You do not have permission to manage this font.", "code": "not_permission_manage_font"},
                         status=status.HTTP_403_FORBIDDEN)
     f.delete()
     return Response({"message": "Font removed."})
@@ -1321,9 +1333,17 @@ def font_file(request, font_id):
     # is inferred by the browser regardless, but a correct type keeps caches/proxies happy.
     name = f.file.name.lower()
     ctype = "font/otf" if name.endswith(".otf") else "font/ttf"
-    resp = FileResponse(f.file.open("rb"), content_type=ctype)
+    # A row whose file is gone from disk is "not found", never a 500 (found by the R88 probe,
+    # 2026-09-30).
+    try:
+        handle = f.file.open("rb")
+    except (FileNotFoundError, OSError):
+        raise Http404("Font not found.")
+    resp = FileResponse(handle, content_type=ctype)
     # Font bytes are immutable for a given id, and the FE loads each once per session, so cache hard.
     resp["Cache-Control"] = "public, max-age=31536000, immutable"
+    # An uploaded file served from our own origin (owner rule R87): never sniffed into something else.
+    resp["X-Content-Type-Options"] = "nosniff"
     return resp
 
 
@@ -1339,13 +1359,13 @@ def design_duplicate(request, design_id):
     request._afc_user = user
     src = OrgLeaderboardDesign.objects.filter(id=design_id).first()
     if not src:
-        return Response({"message": "Design not found."}, status=404)
+        return Response({"message": "Design not found.", "code": "design_not_found"}, status=404)
     _org, can_write, gate_err = _resolve_library(
         request, src.organization_id if src.organization_id else None)
     if gate_err:
         return gate_err
     if not can_write:
-        return Response({"message": "You cannot modify this design library."}, status=403)
+        return Response({"message": "You cannot modify this design library.", "code": "cannot_modify_design_library"}, status=403)
 
     # ── 1. The design row itself (never the default; images shared by reference). ──
     copy = OrgLeaderboardDesign.objects.create(
@@ -1461,24 +1481,29 @@ _BG_GOLD_RGB = (212, 175, 55)
 def _generate_afc_background(w, h):
     """Build one AFC-branded background as a PIL Image (RGB, size w x h).
 
-    The look is intentionally SUBTLE so the white standings text stays readable: a dark base with a
-    soft GREEN glow anchored in the top-left corner and a soft GOLD glow in the opposite bottom-right
-    corner, both heavily blurred so the centre of the canvas (where the rows sit) stays near-black.
-    This is the corner-glow reading of the site's diagonal `from-primary via-transparent to-gold`
-    gradient. Called by _afc_default_background_bytes (which caches the PNG); the result is composited
-    behind the placed columns by afc_leaderboard.graphic on export."""
+    FLAT SURFACES, NO GLOW (owner 2026-08-17, hard rule; this used to be two blurred corner glows,
+    which is exactly the "soft colour bloom" that rule bans). The look now: a dark base, one slightly
+    lighter band behind the header area and one behind the rows, and a flat AFC-green rule under the
+    header. Nothing blurs, nothing halos, and the centre of the canvas stays near-black so the white
+    standings text keeps its contrast. Called by _afc_default_background_bytes (which caches the PNG);
+    the result is composited behind the placed columns by afc_leaderboard.graphic on export."""
     base = Image.new("RGB", (w, h), _BG_BASE_RGB)
-    # Corner glows on a transparent layer, then one big Gaussian blur to spread them softly.
-    glow = Image.new("RGBA", (w, h), (0, 0, 0, 0))
-    gd = ImageDraw.Draw(glow)
-    span = int(max(w, h) * 0.85)          # glow diameter ~ the long edge, so it fills a corner
-    r = span // 2
-    # Green glow centred on the TOP-LEFT corner (mostly off-canvas, so only the corner is lit).
-    gd.ellipse([-r, -r, r, r], fill=_BG_GREEN_RGB + (120,))
-    # Gold glow centred on the BOTTOM-RIGHT corner (opposite side).
-    gd.ellipse([w - r, h - r, w + r, h + r], fill=_BG_GOLD_RGB + (95,))
-    glow = glow.filter(ImageFilter.GaussianBlur(radius=int(max(w, h) * 0.16)))
-    return Image.alpha_composite(base.convert("RGBA"), glow).convert("RGB")
+    d = ImageDraw.Draw(base)
+
+    def _step(rgb, amount):
+        """One step off the page colour: the surface hierarchy is built from fills, not lines."""
+        return tuple(min(255, int(c + (255 - c) * amount)) for c in rgb)
+
+    header_band = _step(_BG_BASE_RGB, 0.055)
+    rows_band = _step(_BG_BASE_RGB, 0.028)
+    # The header sits in the top ~26% of the canvas, the rows below it: one fill each, hard edges.
+    d.rectangle([0, 0, w, int(h * 0.26)], fill=header_band)
+    d.rectangle([0, int(h * 0.26), w, int(h * 0.94)], fill=rows_band)
+    # A flat green rule where the two surfaces meet. A stroke here is the one place the design rule
+    # allows it: it is the brand mark of the board, not structure standing in for a card.
+    rule = max(2, int(h * 0.004))
+    d.rectangle([0, int(h * 0.26) - rule, w, int(h * 0.26)], fill=_BG_GREEN_RGB)
+    return base
 
 
 def _afc_default_background_path(size):
@@ -1611,6 +1636,115 @@ _LEFT_COLUMNS = [
 _RIGHT_COLUMNS = [(ft, x + 50.0, al) for (ft, x, al) in _LEFT_COLUMNS]
 
 
+# ══ DEFAULT DESIGNS FOR THE LIVE SCENES (owner 2026-09-22, inbox #38) ═══════════════════════════
+# "I also want us to design default designs that can be used for any event as overlay."
+#
+# The 12 / 15 / 24 presets above cover the STANDINGS board. The live overlay has four more scenes -
+# the booyah moment, the MVP, the top killers and a head to head - and each could only be laid out by
+# hand, which meant most events ran them on the built-in fallback layouts. These specs give each
+# scene a finished AFC default, built from the SAME pieces (column groups + placed columns), so an
+# operator gets a usable overlay kit for any event in one click and can still edit every part.
+#
+# The stat columns lean on what AFC Capture actually records now (knocks, headshots, grenade kills):
+# a live board that shows only kills wastes the stream the client already carries.
+_BOOYAH_TEAM_COLUMNS = [
+    ("team_logo", 14.0, "center"),
+    ("team_name", 29.0, "left"),
+    ("match_map", 63.0, "center"),
+    ("kills", 78.0, "center"),
+    ("total_points", 92.0, "center"),
+]
+# Three stats, not five: the labels above them (KILLS / KNOCKS / HEADSHOTS) need room at portrait
+# width, and the walk on 2026-09-22 showed a five-stat row running its headers into each other.
+_BOOYAH_PLAYER_COLUMNS = [
+    ("esports_image", 14.0, "center"),
+    ("player_name", 29.0, "left"),
+    ("kills", 64.0, "center"),
+    ("knockdowns", 78.0, "center"),
+    ("headshots", 92.0, "center"),
+]
+_MVP_COLUMNS = [
+    ("esports_image", 16.0, "center"),
+    ("player_name", 33.0, "left"),
+    ("kills", 63.0, "center"),
+    ("headshots", 78.0, "center"),
+    ("mvp_count", 92.0, "center"),
+]
+# Two stats beside the name, not three: KILLS and HEADSHOTS both fit their labels at portrait
+# width, where a third (KNOCKS) ran into HEADSHOTS on the 2026-09-22 walk. Knocks is one drag away
+# in the palette for an operator who wants it.
+_TOP_KILLER_COLUMNS = [
+    ("pos", 5.0, "center"),
+    ("esports_image", 12.0, "center"),
+    ("player_name", 24.0, "left"),
+    ("team_name", 46.0, "left"),
+    ("kills", 74.0, "center"),
+    ("headshots", 90.0, "center"),
+]
+# Head to head: one column group per SIDE, both at the same Y, mirrored across the middle.
+_H2H_LEFT_COLUMNS = [
+    ("team_logo", 8.0, "center"),
+    ("team_name", 18.0, "left"),
+    ("kills", 45.0, "center"),
+]
+_H2H_RIGHT_COLUMNS = [
+    ("kills", 55.0, "center"),
+    ("team_name", 82.0, "right"),
+    ("team_logo", 92.0, "center"),
+]
+
+# preset -> (label, design_type, max_rows, column_groups, columns_by_group)
+_SCENE_PRESETS = {
+    "booyah": {
+        "label": "Booyah",
+        "design_type": "booyah",
+        "max_rows": 5,
+        # Row 1 is the winning TEAM (the booyah board sends it as slot 1); rows 2..5 are its players.
+        "column_groups": [
+            {"row_start_pct": 30.0, "row_height_pct": 9.0, "row_count": 1, "start_rank": 1},
+            {"row_start_pct": 48.0, "row_height_pct": 8.0, "row_count": 4, "start_rank": 2},
+        ],
+        "columns_by_group": [_BOOYAH_TEAM_COLUMNS, _BOOYAH_PLAYER_COLUMNS],
+    },
+    "mvp": {
+        "label": "MVP",
+        "design_type": "mvp",
+        "max_rows": 1,
+        # ONE row: the MVP alone, given the height a portrait needs.
+        "column_groups": [
+            {"row_start_pct": 38.0, "row_height_pct": 16.0, "row_count": 1, "start_rank": 1},
+        ],
+        "columns_by_group": [_MVP_COLUMNS],
+    },
+    "top_killers": {
+        "label": "Top killers",
+        "design_type": "top_killers",
+        "max_rows": 5,
+        "column_groups": [
+            {"row_start_pct": 32.0, "row_height_pct": 8.5, "row_count": 5, "start_rank": 1},
+        ],
+        "columns_by_group": [_TOP_KILLER_COLUMNS],
+    },
+    "h2h": {
+        "label": "Head to head",
+        "design_type": "h2h",
+        "max_rows": 2,
+        # Two groups of one row at the SAME Y: the two sides, facing each other.
+        "column_groups": [
+            {"row_start_pct": 44.0, "row_height_pct": 12.0, "row_count": 1, "start_rank": 1},
+            {"row_start_pct": 44.0, "row_height_pct": 12.0, "row_count": 1, "start_rank": 2},
+        ],
+        "columns_by_group": [_H2H_LEFT_COLUMNS, _H2H_RIGHT_COLUMNS],
+    },
+}
+
+# What "set" creates: the standings board every event needs, then one design per live scene.
+_DEFAULT_SET = ("15", "booyah", "mvp", "top_killers", "h2h")
+
+# Every value the endpoint accepts as `preset`.
+_DEFAULT_PRESETS = ("12", "15", "24") + tuple(_SCENE_PRESETS) + ("set",)
+
+
 def _afc_default_spec(preset):
     """Return the geometry spec for a preset: max_rows, the column_groups row tiling
     (OrgLeaderboardDesign.column_groups shape {row_start_pct,row_height_pct,row_count,start_rank}),
@@ -1636,6 +1770,10 @@ def _afc_default_spec(preset):
             ],
             "columns_by_group": [_SC_COLUMNS],
         }
+    if preset in _SCENE_PRESETS:
+        # A live-scene default (owner 2026-09-22): same shape as the standings presets, plus the
+        # design_type marker that tells the overlay this design may render that scene.
+        return dict(_SCENE_PRESETS[preset])
     # "24" -> two 12-row columns side by side (ranks 1-12 left, 13-24 right) = 24 capacity.
     return {
         "label": "24",
@@ -1648,57 +1786,13 @@ def _afc_default_spec(preset):
     }
 
 
-@api_view(["POST"])
-def create_default_design(request):
-    """POST organizers/leaderboard-designs/create-default/ - one-click AFC default design.
+def _build_default_design(request, org, user, preset):
+    """Create ONE branded AFC default design for `preset` and return (fresh_design, note).
 
-    Request (multipart or JSON):
-        preset            "12" | "15" | "24" (required) - the team-capacity size preset.
-        organization_id   optional. Absent/blank => the AFC-native library (AFC admins). Present =>
-                          that org's library.
-
-    Auth/gate: IDENTICAL to designs_collection POST - org_can(can_submit_designs) for an org
-    library (owner / granted sub-organizer / AFC platform-admin bypass), AFC staff admin
-    (user.role == "admin") for the AFC-native one. Resolved by _resolve_library.
-
-    Response 201: {"design": <serialized design>, "note": <branding note string>}, matching the
-    create response shape the FE LeaderboardDesignsManager already consumes, so the new design drops
-    straight into its list on reload.
-
-    BRANDING (owner 2026-07-04, "the default design should be there with a default background and
-    already set as a design"): the design ships FINISHED, not as a bare theme.
-      * A real AFC-branded BACKGROUND is generated + SET on both sizes (background_instagram 1080x1350
-        + background_youtube 1920x1080): a dark base with subtle green/gold corner glows matching the
-        AFC site. See _generate_afc_background. So it renders on its own art, not the plain-dark
-        renderer fallback.
-      * The AFC LOGO is placed TOP-LEFT as a real IMAGE (OrgLeaderboardDesignLogo pointing at the
-        bundled afc_organizers/assets/afc-logo.png), NOT editable text.
-      * The AFC dark/green theme is also applied via text_color/accent_color.
-    When the target is an ORG library and the org has an uploaded logo, that logo is added as a
-    positioned logo TOP-RIGHT (opposite the AFC logo), sharing the org's stored image by reference
-    (same idiom as design_duplicate). So the two brands bookend the header: AFC left, organizer right.
-
-    CONSUMED BY: LeaderboardDesignsManager.tsx "Create default AFC design" 12/15/24 buttons via
-    leaderboardDesignsApi.createDefault (frontend/lib/leaderboardDesigns.ts).
-    """
-    user, err = _authenticate(request)
-    if err:
-        return err
-    request._afc_user = user
-
-    preset = str(request.data.get("preset") or "").strip()
-    if preset not in ("12", "15", "24"):
-        return Response({"message": "Choose a preset: 12, 15, or 24 teams."},
-                        status=status.HTTP_400_BAD_REQUEST)
-
-    # Resolve which library this targets + whether the caller may write to it (same as create).
-    org, can_write, err = _resolve_library(request, request.data.get("organization_id"))
-    if err:
-        return err
-    if not can_write:
-        return Response({"message": "You do not have permission to manage these designs."},
-                        status=status.HTTP_403_FORBIDDEN)
-
+    Extracted from create_default_design on 2026-09-22 so the "set" preset can build the whole
+    overlay kit in one request (standings + booyah + MVP + top killers + head to head) without a
+    second copy of the branding. Everything below is the body that endpoint has always run; the only
+    additions are the design_type marker a live-scene preset carries and the return."""
     spec = _afc_default_spec(preset)
 
     # First design in the library auto-becomes the default (mirrors designs_collection POST).
@@ -1707,6 +1801,8 @@ def create_default_design(request):
     d = OrgLeaderboardDesign.objects.create(
         organization=org,
         name=f"AFC Default ({spec['label']})",
+        # A live-scene preset carries its marker; a standings preset leaves it "leaderboard".
+        design_type=spec.get("design_type", "leaderboard"),
         text_color=AFC_DEFAULT_TEXT_COLOR,
         accent_color=AFC_DEFAULT_ACCENT_COLOR,
         max_rows=spec["max_rows"],
@@ -1779,8 +1875,79 @@ def create_default_design(request):
     # Re-fetch with related rows so the serialized design carries its fields/logos/texts (no N+1).
     d_fresh = (OrgLeaderboardDesign.objects.select_related("organization")
                .prefetch_related("logos", "fields", "texts", "pages").get(id=d.id))
+    return d_fresh, logo_note
+
+
+@api_view(["POST"])
+def create_default_design(request):
+    """POST organizers/leaderboard-designs/create-default/ - one-click AFC default design.
+
+    Request (multipart or JSON):
+        preset            "12" | "15" | "24" (required) - the team-capacity size preset.
+        organization_id   optional. Absent/blank => the AFC-native library (AFC admins). Present =>
+                          that org's library.
+
+    Auth/gate: IDENTICAL to designs_collection POST - org_can(can_submit_designs) for an org
+    library (owner / granted sub-organizer / AFC platform-admin bypass), AFC staff admin
+    (user.role == "admin") for the AFC-native one. Resolved by _resolve_library.
+
+    Response 201: {"design": <serialized design>, "note": <branding note string>}, matching the
+    create response shape the FE LeaderboardDesignsManager already consumes, so the new design drops
+    straight into its list on reload.
+
+    BRANDING (owner 2026-07-04, "the default design should be there with a default background and
+    already set as a design"): the design ships FINISHED, not as a bare theme.
+      * A real AFC-branded BACKGROUND is generated + SET on both sizes (background_instagram 1080x1350
+        + background_youtube 1920x1080): a dark base with subtle green/gold corner glows matching the
+        AFC site. See _generate_afc_background. So it renders on its own art, not the plain-dark
+        renderer fallback.
+      * The AFC LOGO is placed TOP-LEFT as a real IMAGE (OrgLeaderboardDesignLogo pointing at the
+        bundled afc_organizers/assets/afc-logo.png), NOT editable text.
+      * The AFC dark/green theme is also applied via text_color/accent_color.
+    When the target is an ORG library and the org has an uploaded logo, that logo is added as a
+    positioned logo TOP-RIGHT (opposite the AFC logo), sharing the org's stored image by reference
+    (same idiom as design_duplicate). So the two brands bookend the header: AFC left, organizer right.
+
+    CONSUMED BY: LeaderboardDesignsManager.tsx "Create default AFC design" 12/15/24 buttons via
+    leaderboardDesignsApi.createDefault (frontend/lib/leaderboardDesigns.ts).
+    """
+    user, err = _authenticate(request)
+    if err:
+        return err
+    request._afc_user = user
+
+    preset = str(request.data.get("preset") or "").strip().lower()
+    if preset not in _DEFAULT_PRESETS:
+        return Response(
+            {"message": "Choose a preset: 12, 15 or 24 teams, a live scene "
+                        "(booyah, mvp, top_killers, h2h), or set for the whole overlay kit.", "code": "choose_preset_teams_live"},
+            status=status.HTTP_400_BAD_REQUEST)
+
+    # Resolve which library this targets + whether the caller may write to it (same as create).
+    org, can_write, err = _resolve_library(request, request.data.get("organization_id"))
+    if err:
+        return err
+    if not can_write:
+        return Response({"message": "You do not have permission to manage these designs.", "code": "not_permission_manage_designs"},
+                        status=status.HTTP_403_FORBIDDEN)
+
+    # One preset, or the whole kit. "set" = the standings board every event needs plus one design
+    # per live scene, which is what "default designs that can be used for any event as overlay"
+    # means in practice: an operator points an event at a library and every scene has a look.
+    presets = _DEFAULT_SET if preset == "set" else (preset,)
+    designs, notes = [], []
+    for one in presets:
+        d_fresh, note = _build_default_design(request, org, user, one)
+        designs.append(_serialize_design(d_fresh, request))
+        notes.append(note)
+
+    if len(designs) == 1:
+        return Response({"design": designs[0], "designs": designs, "note": notes[0]},
+                        status=status.HTTP_201_CREATED)
+    made = ", ".join(d.get("name") or "?" for d in designs)
     return Response(
-        {"design": _serialize_design(d_fresh, request), "note": logo_note},
+        {"design": designs[0], "designs": designs,
+         "note": "Created %d designs: %s. %s" % (len(designs), made, notes[0])},
         status=status.HTTP_201_CREATED,
     )
 

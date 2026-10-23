@@ -28,6 +28,16 @@ from afc_auth.models import Roles, SessionToken, User, UserRoles
 from afc_support.models import SupportAttachment, SupportMessage, SupportTicket
 
 
+def _real_png():
+    """A REAL picture (RGBA, so the re-encode keeps it PNG). Since R87 (2026-09-30) the bytes decide
+    what a file is, so the old b"\\x89PNG fake bytes" fixture is refused like any disguised file."""
+    import io
+    from PIL import Image
+    buf = io.BytesIO()
+    Image.new("RGBA", (8, 8), (20, 160, 80, 255)).save(buf, "PNG")
+    return buf.getvalue()
+
+
 class SupportDeskTests(TestCase):
     def setUp(self):
         self.client = Client()
@@ -45,6 +55,13 @@ class SupportDeskTests(TestCase):
                        self.dms.append((discord_id, content)) or True))
         p2.start()
         self.addCleanup(p2.stop)
+        # The bot check is stubbed at the same boundary (afc_auth.bot_protection has its own tests).
+        # Without this the suite read TURNSTILE_SECRET_KEY from the machine's environment, so on a
+        # box with the real secret every contact post was refused and 17 tests failed for a reason
+        # that had nothing to do with the desk (found 28 Sep 2026, inbox #71).
+        p3 = patch("afc_support.views.require_human", return_value=None)
+        p3.start()
+        self.addCleanup(p3.stop)
 
         self.player = User.objects.create(username="writer", email="writer@gmail.com",
                                           full_name="Writer Person", password="x",
@@ -121,7 +138,7 @@ class SupportDeskTests(TestCase):
 
     # ── files ────────────────────────────────────────────────────────────────────────────────
     def test_an_attached_picture_is_stored_with_its_real_name(self):
-        upload = SimpleUploadedFile("proof of payment.png", b"\x89PNG fake bytes",
+        upload = SimpleUploadedFile("proof of payment.png", _real_png(),
                                     content_type="image/png")
         r = self._contact(files=[upload])
         self.assertEqual(r.status_code, 200, r.content[:300])
@@ -232,7 +249,7 @@ class SupportDeskTests(TestCase):
 
     # ── attachments are private ──────────────────────────────────────────────────────────────
     def test_an_attachment_needs_staff_or_the_tickets_own_token(self):
-        upload = SimpleUploadedFile("id card.png", b"\x89PNG bytes", content_type="image/png")
+        upload = SimpleUploadedFile("id card.png", _real_png(), content_type="image/png")
         self._contact(files=[upload])
         att = SupportAttachment.objects.get()
         ticket = SupportTicket.objects.first()
@@ -244,6 +261,48 @@ class SupportDeskTests(TestCase):
                                          **self._auth(self.staff)).status_code, 200)
         self.assertEqual(self.client.get(
             f"/support/attachments/{att.id}/?t={ticket.public_token}").status_code, 200)
+
+    # ── inbox #168: staff open files from the desk ───────────────────────────────────────────
+    # The test above proved staff could download WITH an Authorization header. The desk shows a
+    # file as a LINK, and a browser following a link sends no header, so every staff click was a
+    # 404 on production while that test stayed green. These follow the link the desk is given,
+    # exactly as a browser would: no header.
+    def _staff_link(self, user):
+        ticket = SupportTicket.objects.first()
+        r = self.client.get(f"/support/tickets/{ticket.ticket_number}/", **self._auth(user))
+        self.assertEqual(r.status_code, 200, r.content)
+        files = [a for m in r.json()["messages"] for a in m["attachments"]]
+        self.assertEqual(len(files), 1)
+        return files[0]["url"]
+
+    def test_staff_open_a_file_from_the_link_the_desk_shows(self):
+        self._contact(files=[SimpleUploadedFile("id card.png", _real_png(), content_type="image/png")])
+        url = self._staff_link(self.staff)
+        self.assertIn("?s=", url)
+        r = self.client.get(url)                     # no Authorization header, like a browser
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r["Content-Type"], "image/png")
+
+    def test_a_signed_link_opens_only_its_own_file_and_only_while_fresh(self):
+        self._contact(files=[SimpleUploadedFile("id card.png", _real_png(), content_type="image/png")])
+        url = self._staff_link(self.staff)
+        att = SupportAttachment.objects.get()
+        signature = url.split("?s=", 1)[1]
+        other = SupportAttachment.objects.create(message=att.message, file=att.file,
+                                                 original_name="other.png", content_type="image/png",
+                                                 size_bytes=att.size_bytes)
+        self.assertEqual(self.client.get(f"/support/attachments/{other.id}/?s={signature}").status_code, 404)
+        self.assertEqual(self.client.get(f"/support/attachments/{att.id}/?s=forged:abc:def").status_code, 404)
+        with patch("afc_support.views.ATTACHMENT_LINK_MAX_AGE", -1):
+            self.assertEqual(self.client.get(url).status_code, 404)
+
+    def test_the_requester_never_receives_a_signed_link(self):
+        self._contact(files=[SimpleUploadedFile("id card.png", _real_png(), content_type="image/png")])
+        ticket = SupportTicket.objects.first()
+        r = self.client.get(f"/support/t/{ticket.public_token}/")
+        self.assertEqual(r.status_code, 200, r.content)
+        body = str(r.json())
+        self.assertNotIn("?s=", body)
 
     # ── the audit ────────────────────────────────────────────────────────────────────────────
     def test_only_head_admins_open_the_audit(self):
@@ -287,11 +346,11 @@ class SupportDeskTests(TestCase):
     # ── what the frontend asks before drawing anything ───────────────────────────────────────
     def test_access_tells_the_frontend_what_to_draw(self):
         anon = self.client.get("/support/access/").json()
-        self.assertEqual(anon, {"can_work_tickets": False, "can_read_audit": False})
+        self.assertEqual(anon, {"can_work_tickets": False, "can_read_audit": False, "organizer_desks": []})
         desk = self.client.get("/support/access/", **self._auth(self.staff)).json()
-        self.assertEqual(desk, {"can_work_tickets": True, "can_read_audit": False})
+        self.assertEqual(desk, {"can_work_tickets": True, "can_read_audit": False, "organizer_desks": []})
         boss = self.client.get("/support/access/", **self._auth(self.boss)).json()
-        self.assertEqual(boss, {"can_work_tickets": True, "can_read_audit": True})
+        self.assertEqual(boss, {"can_work_tickets": True, "can_read_audit": True, "organizer_desks": []})
 
     # ── the legacy endpoint still stores ─────────────────────────────────────────────────────
     def test_the_old_contact_endpoint_opens_a_ticket_too(self):

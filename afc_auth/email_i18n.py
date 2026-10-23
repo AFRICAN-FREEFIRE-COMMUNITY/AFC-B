@@ -348,6 +348,17 @@ SUBJECTS = {
         "fr": "AFC a répondu à votre message ({ticket})",
         "pt": "A AFC respondeu à sua mensagem ({ticket})",
     },
+    # -- afc_support: questions asked of an ORGANIZER (inbox #175) --
+    "support_org_reply": {
+        "en": "{org} replied to your question ({ticket})",
+        "fr": "{org} a répondu à votre question ({ticket})",
+        "pt": "{org} respondeu à sua pergunta ({ticket})",
+    },
+    "support_org_question": {
+        "en": "New question for {org} ({ticket})",
+        "fr": "Nouvelle question pour {org} ({ticket})",
+        "pt": "Nova pergunta para {org} ({ticket})",
+    },
     # -- afc_auth.account_deletion (inbox #20) --
     "account_deleted": {
         "en": "Your AFC account has been deleted",
@@ -1411,6 +1422,8 @@ COPY = {
             "next_steps": "An AFC admin will read it and decide, and we aim to get back to you within a few working days. We will email you either way, and if anything needs correcting we will tell you exactly what.",
             "what_it_is": "You have applied for Sign in with AFC. It lets an AFC player sign in to your site with their AFC account, using standard OpenID Connect, so you never handle their password. Once you are approved you receive a client id and a client secret, and you choose which player details you need; AFC grants the smallest set that does the job.",
             "guide": "You do not have to wait to start reading. The full integration guide is here: {guide}. It covers the endpoints, the scopes, the claims each one returns, the error responses and a complete worked example.",
+            "what_it_is_data_api": "You have applied for the AFC Data API. It lets your server read the tournament data AFC publishes to partners: results, standings, rosters and player stats for the events you are granted. Once you are approved you receive an API key, which belongs on your server and never in a browser or an app.",
+            "guide_data_api": "The Data API reference is here: {api_guide}. It covers authentication, every endpoint, what each one returns and what to do when a call fails.",
             "keep_link": "You can check the status at any time here: {link}. Keep this email, the link is how you reach your application.",
         },
         "fr": {
@@ -1419,6 +1432,8 @@ COPY = {
             "next_steps": "Un administrateur AFC va la lire et se prononcer, et nous visons une réponse sous quelques jours ouvrés. Nous vous écrirons dans les deux cas, et si quelque chose doit être corrigé, nous vous dirons précisément quoi.",
             "what_it_is": "Vous avez demandé Sign in with AFC. Cela permet à un joueur AFC de se connecter à votre site avec son compte AFC, via OpenID Connect standard, sans que vous ayez jamais à manipuler son mot de passe. Une fois approuvé, vous recevez un identifiant client et un secret client, et vous choisissez les informations dont vous avez besoin ; l'AFC accorde le strict nécessaire.",
             "guide": "Vous pouvez commencer à lire dès maintenant. Le guide d'intégration complet est ici : {guide}. Il couvre les points de terminaison, les portées, les données renvoyées par chacune, les réponses d'erreur et un exemple complet.",
+            "what_it_is_data_api": "Vous avez demandé l'API de données AFC. Elle permet à votre serveur de lire les données de tournoi que l'AFC publie pour ses partenaires : résultats, classements, compositions d'équipes et statistiques des joueurs, pour les événements qui vous sont accordés. Une fois approuvé, vous recevez une clé d'API, qui doit rester sur votre serveur et jamais dans un navigateur ou une application.",
+            "guide_data_api": "La documentation de l'API de données est ici : {api_guide}. Elle couvre l'authentification, chaque point de terminaison, ce que chacun renvoie et que faire quand un appel échoue.",
             "keep_link": "Vous pouvez suivre l'état de votre demande à tout moment ici : {link}. Conservez cet e-mail, ce lien est votre accès à votre demande.",
         },
         "pt": {
@@ -1427,6 +1442,8 @@ COPY = {
             "next_steps": "Um administrador da AFC vai lê-la e decidir, e procuramos responder dentro de alguns dias úteis. Enviaremos um e-mail em qualquer dos casos e, se algo precisar de ser corrigido, diremos exatamente o quê.",
             "what_it_is": "Candidatou-se ao Sign in with AFC. Permite que um jogador da AFC inicie sessão no seu site com a conta AFC, através de OpenID Connect padrão, sem que alguma vez tenha de lidar com a palavra-passe dele. Depois de aprovado, recebe um id de cliente e um segredo de cliente, e escolhe que dados de jogador precisa; a AFC concede o mínimo necessário.",
             "guide": "Não precisa de esperar para começar a ler. O guia de integração completo está aqui: {guide}. Cobre os endpoints, os scopes, os dados que cada um devolve, as respostas de erro e um exemplo completo.",
+            "what_it_is_data_api": "Candidatou-se à API de dados da AFC. Permite que o seu servidor leia os dados de torneios que a AFC publica para os parceiros: resultados, classificações, plantéis e estatísticas de jogadores, dos eventos a que lhe for dado acesso. Depois de aprovado, recebe uma chave de API, que deve ficar no seu servidor e nunca num navegador ou numa aplicação.",
+            "guide_data_api": "A documentação da API de dados está aqui: {api_guide}. Cobre a autenticação, todos os endpoints, o que cada um devolve e o que fazer quando uma chamada falha.",
             "keep_link": "Pode consultar o estado a qualquer momento aqui: {link}. Guarde este e-mail, esta ligação é a sua forma de aceder à candidatura.",
         },
     },
@@ -1729,6 +1746,35 @@ COPY = {
         },
     },
 
+    # -- afc_auth.account_deletion: a head admin deleted it at the person's request (inbox #59) --
+    # Same restore / reuse / cta sentences as "account_deleted"; only who did it changes.
+    "account_deleted_on_request": {
+        "en": {
+            "heading": "Your account has been deleted",
+            "intro": "You asked AFC to delete your account, and a head admin did that today. You are signed out everywhere and your in-game name, email, UID and WhatsApp number are free for a new account to use.",
+            "restore": "Nothing has been thrown away. If you change your mind, write to support from this address and a head admin can put the account back exactly as it was, as long as nobody has taken your in-game name or email in the meantime.",
+            "reuse": "Your match results and history stay in AFC's records under a hidden name.",
+            "cta": "Contact support",
+            "disclaimer": "You are getting this because an AFC head admin deleted the account with this address after a request to do so. If you did not ask for this, contact support straight away and it can be restored.",
+        },
+        "fr": {
+            "heading": "Votre compte a été supprimé",
+            "intro": "Vous avez demandé à AFC de supprimer votre compte, et un head admin l'a fait aujourd'hui. Vous êtes déconnecté partout, et votre nom en jeu, votre e-mail, votre UID et votre numéro WhatsApp sont libres pour un nouveau compte.",
+            "restore": "Rien n'a été jeté. Si vous changez d'avis, écrivez au support depuis cette adresse : un head admin peut remettre le compte exactement comme il était, tant que personne n'a pris votre nom en jeu ou votre e-mail entre-temps.",
+            "reuse": "Vos résultats de matchs et votre historique restent dans les archives d'AFC sous un nom masqué.",
+            "cta": "Contacter le support",
+            "disclaimer": "Vous recevez ce message parce qu'un head admin d'AFC a supprimé le compte lié à cette adresse à la suite d'une demande. Si vous n'avez rien demandé, contactez le support tout de suite : le compte peut être restauré.",
+        },
+        "pt": {
+            "heading": "A sua conta foi eliminada",
+            "intro": "Pediu à AFC para eliminar a sua conta, e um head admin fê-lo hoje. Tem a sessão terminada em todo o lado, e o seu nome no jogo, e-mail, UID e número de WhatsApp ficam livres para uma nova conta.",
+            "restore": "Nada foi deitado fora. Se mudar de ideias, escreva ao suporte a partir deste endereço e um head admin pode repor a conta exatamente como estava, desde que ninguém tenha ficado com o seu nome no jogo ou e-mail entretanto.",
+            "reuse": "Os seus resultados de partidas e o seu histórico ficam nos registos da AFC sob um nome oculto.",
+            "cta": "Contactar o suporte",
+            "disclaimer": "Está a receber isto porque um head admin da AFC eliminou a conta com este endereço depois de um pedido nesse sentido. Se não pediu isto, contacte o suporte de imediato e a conta pode ser reposta.",
+        },
+    },
+
     # -- afc_auth.account_deletion: a head admin restored it --
     "account_restored": {
         "en": {
@@ -1760,13 +1806,16 @@ COPY = {
             "heading": "AFC replied",
             "intro": "Somebody on the AFC team has answered your message ({ticket}).",
             "thread": "Read the full reply and answer back on your ticket page. Anything you add there reaches the same people.",
+            # Inbox #174: one reply can answer several of a person's open messages at once.
+            "also": "This also answers your other open messages: {tickets}.",
             "cta": "Open my ticket",
             "disclaimer": "Replying to this email will not reach us. Use the ticket page so your answer lands with the person handling it.",
         },
         "fr": {
-            "heading": "AFC a repondu",
+            "heading": "AFC a répondu",
             "intro": "Quelqu'un de l'équipe AFC a répondu à votre message ({ticket}).",
             "thread": "Lisez la réponse complète et répondez sur la page de votre ticket. Tout ce que vous y ajoutez arrive aux mêmes personnes.",
+            "also": "Cette réponse concerne aussi vos autres messages ouverts : {tickets}.",
             "cta": "Ouvrir mon ticket",
             "disclaimer": "Répondre à cet e-mail ne nous parviendra pas. Utilisez la page du ticket pour que votre réponse arrive à la personne qui s'en occupe.",
         },
@@ -1774,8 +1823,69 @@ COPY = {
             "heading": "A AFC respondeu",
             "intro": "Alguém da equipa da AFC respondeu à sua mensagem ({ticket}).",
             "thread": "Leia a resposta completa e responda na página do seu ticket. Tudo o que acrescentar aí chega às mesmas pessoas.",
+            "also": "Esta resposta também se aplica às suas outras mensagens em aberto: {tickets}.",
             "cta": "Abrir o meu ticket",
             "disclaimer": "Responder a este e-mail não chega até nós. Use a página do ticket para que a sua resposta chegue à pessoa que está a tratar do assunto.",
+        },
+    },
+
+    # -- afc_support: an ORGANIZER answered a player's question (inbox #175) --
+    # Sent by notify.email_ticket_reply when the ticket is addressed to an organization. `note`
+    # says plainly that the answer is the organizer's, so a player does not read it as AFC's word.
+    "support_org_reply": {
+        "en": {
+            "heading": "{org} replied",
+            "intro": "{org} has answered the question you asked them ({ticket}).",
+            "note": "This answer comes from the organizer, not from the AFC team.",
+            "thread": "Read the full reply and answer back on your ticket page. Anything you add there reaches the organizer.",
+            "also": "This also answers your other open questions to them: {tickets}.",
+            "cta": "Open my question",
+            "disclaimer": "Replying to this email will not reach the organizer. Use the ticket page so your answer lands with them.",
+        },
+        "fr": {
+            "heading": "{org} a répondu",
+            "intro": "{org} a répondu à la question que vous lui avez posée ({ticket}).",
+            "note": "Cette réponse vient de l'organisateur, pas de l'équipe AFC.",
+            "thread": "Lisez la réponse complète et répondez sur la page de votre ticket. Tout ce que vous y ajoutez arrive à l'organisateur.",
+            "also": "Cette réponse concerne aussi vos autres questions ouvertes à cet organisateur : {tickets}.",
+            "cta": "Ouvrir ma question",
+            "disclaimer": "Répondre à cet e-mail ne parviendra pas à l'organisateur. Utilisez la page du ticket pour que votre réponse lui arrive.",
+        },
+        "pt": {
+            "heading": "{org} respondeu",
+            "intro": "{org} respondeu à pergunta que lhe fez ({ticket}).",
+            "note": "Esta resposta vem do organizador, não da equipa da AFC.",
+            "thread": "Leia a resposta completa e responda na página do seu ticket. Tudo o que acrescentar aí chega ao organizador.",
+            "also": "Esta resposta também se aplica às suas outras perguntas em aberto a este organizador: {tickets}.",
+            "cta": "Abrir a minha pergunta",
+            "disclaimer": "Responder a este e-mail não chega ao organizador. Use a página do ticket para que a sua resposta lhe chegue.",
+        },
+    },
+
+    # -- afc_support: a player asked an ORGANIZER something (inbox #175) --
+    # Sent by notify.email_org_new_question to each member who may answer (owner or Answer support),
+    # in their own language. The question itself is quoted under the intro by the builder.
+    "support_org_question": {
+        "en": {
+            "heading": "A player asked {org} a question",
+            "intro": "{name} asked {org} a question ({ticket}).",
+            "about": "It is about {event}.",
+            "cta": "Answer on the Support page",
+            "disclaimer": "You get this email because you can answer support questions for {org}. Replying to this email will not reach the player: answer on the Support page of your organizer portal.",
+        },
+        "fr": {
+            "heading": "Un joueur a posé une question à {org}",
+            "intro": "{name} a posé une question à {org} ({ticket}).",
+            "about": "Elle concerne {event}.",
+            "cta": "Répondre sur la page Support",
+            "disclaimer": "Vous recevez cet e-mail parce que vous pouvez répondre aux questions d'assistance de {org}. Répondre à cet e-mail ne parviendra pas au joueur : répondez sur la page Support de votre espace organisateur.",
+        },
+        "pt": {
+            "heading": "Um jogador fez uma pergunta a {org}",
+            "intro": "{name} fez uma pergunta a {org} ({ticket}).",
+            "about": "É sobre {event}.",
+            "cta": "Responder na página de Suporte",
+            "disclaimer": "Recebe este e-mail porque pode responder às perguntas de suporte de {org}. Responder a este e-mail não chega ao jogador: responda na página de Suporte do seu portal de organizador.",
         },
     },
 }

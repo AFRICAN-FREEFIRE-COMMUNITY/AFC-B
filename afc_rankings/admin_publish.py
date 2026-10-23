@@ -50,7 +50,7 @@ def publish_state(request, season_id):
         return err
     season = Season.objects.filter(pk=season_id).first()
     if not season:
-        return Response({"message": "Season not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "Season not found.", "code": "season_not_found"}, status=status.HTTP_404_NOT_FOUND)
 
     before = {"rankings_published": season.rankings_published, "tiers_published": season.tiers_published}
     changed = []
@@ -66,7 +66,7 @@ def publish_state(request, season_id):
         season.tiers_published_by = user if season.tiers_published else None
         changed += ["tiers_published", "tiers_published_at", "tiers_published_by"]
     if not changed:
-        return Response({"message": "Provide rankings_published and/or tiers_published."},
+        return Response({"message": "Provide rankings_published and/or tiers_published.", "code": "provide_rankings_published_tiers"},
                         status=status.HTTP_400_BAD_REQUEST)
 
     season.save(update_fields=changed)

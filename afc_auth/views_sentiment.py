@@ -69,7 +69,7 @@ def get_sentiment(request):
     target_id = request.query_params.get("target_id")
     target_user, target_team, err = _resolve_subject(subject_type, target_id)
     if err:
-        return Response({"message": err}, status=400)
+        return Response({"message": err, "code": "get_sentiment_refused"}, status=400)
 
     data = _counts(subject_type, target_user, target_team)
 
@@ -100,22 +100,22 @@ def set_sentiment(request):
     """
     me = _bearer_user(request)
     if not me:
-        return Response({"message": "Please log in to react."}, status=401)
+        return Response({"message": "Please log in to react.", "code": "log_react"}, status=401)
 
     subject_type = request.data.get("subject_type")
     target_id = request.data.get("target_id")
     stance = request.data.get("stance")
     if stance not in ("fan", "hater"):
-        return Response({"message": "stance must be 'fan' or 'hater'."}, status=400)
+        return Response({"message": "stance must be 'fan' or 'hater'.", "code": "stance_fan_hater"}, status=400)
 
     target_user, target_team, err = _resolve_subject(subject_type, target_id)
     if err:
-        return Response({"message": err}, status=400)
+        return Response({"message": err, "code": "set_sentiment_refused"}, status=400)
 
     # Cannot fan/hate your own player profile (a team has no single owner-voter guard;
     # owning a team and being a fan of it is harmless).
     if subject_type == "player" and target_user.user_id == me.user_id:
-        return Response({"message": "You cannot react to your own profile."}, status=400)
+        return Response({"message": "You cannot react to your own profile.", "code": "cannot_react_profile"}, status=400)
 
     lookup = {
         "voter": me,

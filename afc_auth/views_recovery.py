@@ -416,12 +416,12 @@ def recovery_start(request):
     """
     identifier = (request.data.get("identifier") or "").strip()
     if not identifier:
-        return Response({"message": "Enter your email, in-game name or UID."},
+        return Response({"message": "Enter your email, in-game name or UID.", "code": "enter_email_game_name"},
                         status=status.HTTP_400_BAD_REQUEST)
 
     if _ip_throttled(request):
         return Response(
-            {"message": "Too many recovery attempts from this device. Try again in an hour."},
+            {"message": "Too many recovery attempts from this device. Try again in an hour.", "code": "too_many_recovery_attempts"},
             status=status.HTTP_429_TOO_MANY_REQUESTS,
         )
 
@@ -500,7 +500,7 @@ def recovery_verify(request):
     challenge = two_factor.get_challenge(token, purpose="recovery")
     if challenge is None:
         return Response(
-            {"message": _GENERIC_CODE_ERROR, "attempts_left": TwoFactorChallenge.MAX_ATTEMPTS},
+            {"message": _GENERIC_CODE_ERROR, "attempts_left": TwoFactorChallenge.MAX_ATTEMPTS, "code": "recovery_verify_refused"},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
@@ -509,10 +509,10 @@ def recovery_verify(request):
     ok, reason = two_factor.verify_code(challenge, code)
     if not ok:
         if reason == "locked":
-            return Response({"message": _GENERIC_CODE_ERROR, "attempts_left": 0},
+            return Response({"message": _GENERIC_CODE_ERROR, "attempts_left": 0, "code": "recovery_verify_refused"},
                             status=status.HTTP_429_TOO_MANY_REQUESTS)
         return Response({"message": _GENERIC_CODE_ERROR,
-                         "attempts_left": two_factor.attempts_left(challenge)},
+                         "attempts_left": two_factor.attempts_left(challenge), "code": "recovery_verify_refused"},
                         status=status.HTTP_400_BAD_REQUEST)
 
     user = challenge.user
@@ -590,7 +590,7 @@ def recovery_reset_password(request):
     """
     grant = _live_grant((request.data.get("grant_token") or "").strip())
     if grant is None:
-        return Response({"message": _GENERIC_GRANT_ERROR}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": _GENERIC_GRANT_ERROR, "code": "recovery_reset_password_refused"}, status=status.HTTP_400_BAD_REQUEST)
 
     user = grant.user
 
@@ -601,7 +601,7 @@ def recovery_reset_password(request):
     new_password = request.data.get("new_password") or ""
     problem = _password_problem(new_password)
     if problem:
-        return Response({"message": problem}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": problem, "code": "recovery_reset_password_refused"}, status=status.HTTP_400_BAD_REQUEST)
 
     # Everything above is validation. Only now do we write: a `return Response(...)` from inside an
     # atomic block silently discards the writes that came before it on this codebase.
@@ -749,7 +749,7 @@ def _refuse_if_two_factor(user):
     """
     if two_factor.is_enabled_for(user):
         return Response(
-            {"message": _TWO_FACTOR_REFUSAL, "two_factor_enabled": True},
+            {"message": _TWO_FACTOR_REFUSAL, "two_factor_enabled": True, "code": "_refuse_if_two_factor_refused"},
             status=status.HTTP_409_CONFLICT,
         )
     return None
@@ -819,7 +819,7 @@ def recovery_request_email_change(request):
     """
     grant = _live_grant((request.data.get("grant_token") or "").strip())
     if grant is None:
-        return Response({"message": _GENERIC_GRANT_ERROR}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": _GENERIC_GRANT_ERROR, "code": "recovery_request_email_change_refused"}, status=status.HTTP_400_BAD_REQUEST)
 
     user = grant.user
 
@@ -829,21 +829,21 @@ def recovery_request_email_change(request):
 
     new_email = (request.data.get("new_email") or "").strip()
     if not new_email:
-        return Response({"message": "Enter the new email address."},
+        return Response({"message": "Enter the new email address.", "code": "enter_new_email_address"},
                         status=status.HTTP_400_BAD_REQUEST)
 
     ok, msg = is_valid_email(new_email)
     if not ok:
-        return Response({"message": msg}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": msg, "code": "recovery_request_email_change_refused"}, status=status.HTTP_400_BAD_REQUEST)
 
     if new_email.lower() == (user.email or "").lower():
-        return Response({"message": "That is already the address on this account."},
+        return Response({"message": "That is already the address on this account.", "code": "already_address_account"},
                         status=status.HTTP_400_BAD_REQUEST)
 
     # Case-insensitive, matching admin_set_user_email: MySQL's default collation already compares
     # this way, but __iexact states the rule in the code so it cannot drift with a collation change.
     if User.objects.exclude(pk=user.pk).filter(email__iexact=new_email).exists():
-        return Response({"message": "That email is already registered to another account."},
+        return Response({"message": "That email is already registered to another account.", "code": "email_already_registered_account"},
                         status=status.HTTP_400_BAD_REQUEST)
 
     # The cross-column trap uniqueness cannot see. See the docstring.
@@ -858,7 +858,7 @@ def recovery_request_email_change(request):
     # apply, read off the pending row's own timestamp so no extra state is needed.
     existing = EmailChangeRequest.objects.filter(user=user).first()
     if existing and (timezone.now() - existing.created_at).total_seconds() < 60:
-        return Response({"message": "Wait at least a minute before asking for another code."},
+        return Response({"message": "Wait at least a minute before asking for another code.", "code": "wait_least_minute_before"},
                         status=status.HTTP_429_TOO_MANY_REQUESTS)
 
     # update_or_create because EmailChangeRequest is OneToOne: asking again for a DIFFERENT address
@@ -892,7 +892,7 @@ def recovery_request_email_change(request):
         # The address is never logged beside the failure.
         print(f"Recovery email-change code could not be sent for {user.username}")
         return Response(
-            {"message": "We could not send a code to that address. Check it is right and try again."},
+            {"message": "We could not send a code to that address. Check it is right and try again.", "code": "could_not_send_code"},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
@@ -956,7 +956,7 @@ def recovery_confirm_email_change(request):
     """
     grant = _live_grant((request.data.get("grant_token") or "").strip())
     if grant is None:
-        return Response({"message": _GENERIC_GRANT_ERROR}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": _GENERIC_GRANT_ERROR, "code": "recovery_confirm_email_change_refused"}, status=status.HTTP_400_BAD_REQUEST)
 
     user = grant.user
 
@@ -977,12 +977,12 @@ def recovery_confirm_email_change(request):
             grant.consume()
             EmailChangeRequest.objects.filter(user=user).delete()
             return Response(
-                {"message": "Too many wrong codes. Start the recovery again.", "attempts_left": 0},
+                {"message": "Too many wrong codes. Start the recovery again.", "attempts_left": 0, "code": "too_many_wrong_codes"},
                 status=status.HTTP_429_TOO_MANY_REQUESTS,
             )
         return Response(
             {"message": _GENERIC_EMAIL_CODE_ERROR,
-             "attempts_left": max(TwoFactorChallenge.MAX_ATTEMPTS - used, 0)},
+             "attempts_left": max(TwoFactorChallenge.MAX_ATTEMPTS - used, 0), "code": "recovery_confirm_email_change_refused"},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
@@ -994,7 +994,7 @@ def recovery_confirm_email_change(request):
     if User.objects.exclude(pk=user.pk).filter(email__iexact=new_email).exists():
         pending.delete()
         return Response(
-            {"message": "That address was just registered to another account. Start again with a different one."},
+            {"message": "That address was just registered to another account. Start again with a different one.", "code": "address_just_registered_account"},
             status=status.HTTP_400_BAD_REQUEST,
         )
 

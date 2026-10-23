@@ -126,10 +126,10 @@ class SSOAdminApiTests(TestCase):
 
     def test_missing_and_malformed_and_dead_tokens_are_refused(self):
         resp = self.client.get(APPS_URL)
-        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.status_code, 401)
 
         resp = self.client.get(APPS_URL, HTTP_AUTHORIZATION="tok-admin")
-        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.status_code, 401)
 
         resp = self.client.get(APPS_URL, **self._auth("not-a-real-token"))
         self.assertEqual(resp.status_code, 401)

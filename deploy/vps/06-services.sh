@@ -51,6 +51,6 @@ sleep 8
 echo "SERVICES:"
 systemctl is-active django_app celery-worker celery-beat celery-rankings || true
 echo "beat processes (0 in rehearsal, 1 after cutover): $(pgrep -fc 'celery -A afc beat' || true)"
-echo "api local probe (expect 400): $(curl -s -o /dev/null -w '%{http_code}' -H 'Host: api.africanfreefirecommunity.com' http://127.0.0.1:8000/auth/connections/)"
+echo "api local probe (expect 401): $(curl -s -o /dev/null -w '%{http_code}' -H 'Host: api.africanfreefirecommunity.com' http://127.0.0.1:8000/auth/connections/)"
 echo "frontend local probe: $(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3000/)"
 docker inspect -f 'container {{.State.Status}} restart={{.HostConfig.RestartPolicy.Name}}' africanfreefire-frontend

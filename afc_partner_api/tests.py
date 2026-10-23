@@ -419,28 +419,178 @@ class SerializeTests(TestCase):
         for r in rows:
             self._assert_no_forbidden(r)
 
-    def test_standings_rank_by_effective_total_not_stale_total_points(self):
-        # Regression guard for the ranking-metric mismatch: standings MUST rank by the
-        # recomputed effective_total (placement+kill+bonus-penalty), the SAME metric the
-        # admin standings view uses, NOT the stored total_points column (which can be
-        # stale). We make the two diverge: give the team with the LOWER stored
-        # total_points a bonus that flips the true (effective) ranking. If standings still
-        # ranked by total_points, Team Alpha would lead; with effective_total, Team Bravo
-        # must lead.
-        #
-        #   Team Alpha (tts1): total_points=22, no bonus/penalty -> effective=12+10=22
-        #   Team Bravo (tts2): stored total_points=15 (STALE) but a +20 bonus banked later
-        #                      -> effective = 9 + 6 + 20 = 35  (beats Alpha's 22)
-        self.tts2.bonus_points = 20
-        self.tts2.save(update_fields=["bonus_points"])
+    # ── standings: the site's ranking, with points (inbox #220, 2026-10-10) ──
+    # This replaces a test that pinned the partner's OWN re-derived score
+    # (placement + kill + bonus - penalty). The site ranks by the stored per-map total, which
+    # also holds ASSIST and DAMAGE points, so the partner table disagreed with the site's on 7
+    # of 72 production events. The partner now reads the site's shared aggregator.
+    def test_standings_rank_and_score_like_the_sites_combined_table(self):
+        # Bravo's map was scored with assist and damage points (scoring.compute_team_points):
+        # 9 placement + 6 kill + 2 x 2 assist + 1.8 x 5 damage = 28 stored, beating Alpha's 22.
+        # The old re-derived score said 9 + 6 = 15 and put Alpha first.
+        self.tts2.total_points = 28
+        self.tts2.save(update_fields=["total_points"])
 
         from afc_partner_api.serialize import serialize_standings
+        from afc_tournament_and_scrims import round_robin
+        from afc_tournament_and_scrims.models import TournamentTeamMatchStats
 
         rows = serialize_standings(self.event, self.partner)
-        # Bravo's higher effective_total wins despite its lower stored total_points.
-        self.assertEqual(rows[0]["team"], "Team Bravo")
-        self.assertEqual(rows[0]["rank"], 1)
-        self.assertEqual(rows[1]["team"], "Team Alpha")
+        site = round_robin._aggregate_team_standings(
+            TournamentTeamMatchStats.objects.filter(match__group__stage__event=self.event),
+            event=self.event)
+        self.assertEqual([r["team"] for r in rows], ["Team Bravo", "Team Alpha"])
+        self.assertEqual([r["team"] for r in rows], [r["team_name"] for r in site])
+        self.assertEqual([r["points"] for r in rows], [r["effective_total"] for r in site])
+        self.assertEqual(rows[0]["points"], 28)
+
+    def test_standings_carry_points_ungated_and_the_breakdown_behind_its_stat(self):
+        from afc_partner_api.serialize import serialize_standings
+
+        self.tts1.bonus_points = 3
+        self.tts1.penalty_points = 1
+        self.tts1.total_points = 24
+        self.tts1.save(update_fields=["bonus_points", "penalty_points", "total_points"])
+
+        # Every field toggle off: the score is still there, the stats are not.
+        alpha = serialize_standings(self.event, self.partner)[0]
+        self.assertEqual(alpha["team"], "Team Alpha")
+        self.assertEqual((alpha["points"], alpha["bonus_points"], alpha["penalty_points"],
+                          alpha["matches_played"]), (24, 3, 1, 1))
+        for gated in ("placement", "placement_points", "booyahs", "kills", "kill_points",
+                      "damage", "assists"):
+            self.assertNotIn(gated, alpha)
+
+        # Placements and kills on: their halves of the breakdown appear.
+        self.partner.include_placements = True
+        self.partner.include_kills = True
+        self.partner.save()
+        alpha = serialize_standings(self.event, self.partner)[0]
+        self.assertEqual((alpha["placement"], alpha["placement_points"], alpha["booyahs"]), (1, 12, 1))
+        self.assertEqual((alpha["kills"], alpha["kill_points"]), (10, 10))
+        self._assert_no_forbidden(alpha)
+
+    def test_standings_and_teams_carry_the_team_country(self):
+        from afc_partner_api.serialize import serialize_standings, serialize_team
+
+        rows = serialize_standings(self.event, self.partner)
+        self.assertEqual({r["team"]: (r["country"], r["country_code"]) for r in rows},
+                         {"Team Alpha": ("Nigeria", "NG"), "Team Bravo": ("Ghana", "GH")})
+        # The column holds codes and names (both are in production): one answer for both.
+        self.team1.country = "NG"
+        self.team1.save(update_fields=["country"])
+        out = serialize_team(self.tteam, self.partner)
+        self.assertEqual((out["country"], out["country_code"]), ("Nigeria", "NG"))
+        # A spelling pycountry misses, with the curly apostrophe production holds.
+        self.team1.country = "Côte D’Ivoire"
+        self.team1.save(update_fields=["country"])
+        out = serialize_team(self.tteam, self.partner)
+        self.assertEqual(out["country_code"], "CI")
+        # Not set, or not a country: present and null.
+        for raw in ("", "Unknown"):
+            self.team1.country = raw
+            self.team1.save(update_fields=["country"])
+            out = serialize_team(self.tteam, self.partner)
+            self.assertEqual((out["country"], out["country_code"]), (None, None))
+
+    def test_imported_teams_keep_their_own_rows_and_countries(self):
+        # Two ghost teams (external results import) used to fold into ONE row named null,
+        # because the old fold grouped on tournament_team__team__team_name.
+        from afc_rankings.models import GhostTeam
+        from afc_tournament_and_scrims.models import TournamentTeam, TournamentTeamMatchStats
+        from afc_partner_api.serialize import serialize_standings
+
+        for name, country, pts in (("Phantoms", "NG", 8), ("Spectres", "Kenya", 5)):
+            ghost = GhostTeam.objects.create(team_name=name, country=country, created_by=self.admin)
+            tt = TournamentTeam.objects.create(event=self.event, ghost_team=ghost, status="active")
+            TournamentTeamMatchStats.objects.create(
+                match=self.match, tournament_team=tt, placement=3, kills=1, total_points=pts)
+
+        rows = serialize_standings(self.event, self.partner)
+        self.assertEqual([r["team"] for r in rows],
+                         ["Team Alpha", "Team Bravo", "Phantoms", "Spectres"])
+        self.assertEqual([r["country_code"] for r in rows[2:]], ["NG", "KE"])
+
+    def test_imported_aggregate_rows_count_their_booyahs_and_maps(self):
+        # An aggregate row (one row for a whole imported group) stores placement NULL; its wins
+        # and maps live in booyah_count and matches_counted. The shared aggregator now reads them,
+        # so the partner keeps the numbers its own fold used to give, and the site gains them.
+        from afc_partner_api.serialize import serialize_standings
+
+        self.tts2.is_aggregate = True
+        self.tts2.placement = None
+        self.tts2.booyah_count = 3
+        self.tts2.matches_counted = 6
+        self.tts2.save()
+        self.partner.include_placements = True
+        self.partner.save()
+        bravo = [r for r in serialize_standings(self.event, self.partner) if r["team"] == "Team Bravo"][0]
+        self.assertEqual((bravo["booyahs"], bravo["matches_played"]), (3, 6))
+
+    def test_best_placement_skips_a_map_the_team_sat_out(self):
+        # A map a team did not play is stored with placement 0, which made "best" 0.
+        from afc_tournament_and_scrims.models import Match, TournamentTeamMatchStats
+        from afc_partner_api.serialize import serialize_standings, serialize_team
+
+        m2 = Match.objects.create(leaderboard=self.leaderboard, group=self.group, match_number=2,
+                                  match_map="bermuda", result_inputted=True)
+        TournamentTeamMatchStats.objects.create(match=m2, tournament_team=self.tteam2,
+                                                placement=0, played=False)
+        self.partner.include_placements = True
+        self.partner.save()
+        self.assertEqual(serialize_team(self.tteam2, self.partner)["placement"], 2)
+        bravo = [r for r in serialize_standings(self.event, self.partner) if r["team"] == "Team Bravo"][0]
+        self.assertEqual(bravo["placement"], 2)
+
+    # ── point system (inbox #221, 2026-10-10) ──
+    def test_point_system_on_the_event_and_each_match(self):
+        from afc_tournament_and_scrims.models import Match
+        from afc_partner_api.serialize import serialize_event, serialize_match
+
+        system = {"kill_point": 1.0, "points_per_assist": 0.5, "points_per_1000_damage": 2,
+                  "placement_points": {"2": 9, "1": 12, "10": 1}, "internal_note": "never sent"}
+        self.match.scoring_settings = system
+        self.match.save(update_fields=["scoring_settings"])
+        expected = {"placement_points": {"1": 12, "2": 9, "10": 1}, "points_per_kill": 1,
+                    "points_per_assist": 0.5, "points_per_1000_damage": 2}
+
+        event = serialize_event(self.event, self.partner)
+        self.assertEqual(event["point_system"], expected)
+        self.assertIs(event["point_system_varies"], False)
+        self.assertEqual(serialize_match(self.match, self.partner)["point_system"], expected)
+        self.assertNotIn("internal_note", str(event))
+        self._assert_no_forbidden(event)
+
+        # A second map scored differently: the event says so, each match carries its own.
+        m2 = Match.objects.create(leaderboard=self.leaderboard, group=self.group, match_number=2,
+                                  match_map="bermuda", scoring_settings={"kill_point": 2})
+        event = serialize_event(self.event, self.partner)
+        self.assertIsNone(event["point_system"])
+        self.assertIs(event["point_system_varies"], True)
+        self.assertEqual(serialize_match(m2, self.partner)["point_system"]["points_per_kill"], 2)
+
+    def test_point_system_scoring_modes_on_the_stage(self):
+        from afc_tournament_and_scrims.models import Stages
+        from afc_partner_api.serialize import serialize_stage
+
+        out = serialize_stage(self.stage, self.partner)
+        self.assertIsNone(out["champion_point"])
+        self.assertIsNone(out["point_rush"])
+
+        final = Stages.objects.create(
+            event=self.event, stage_name="Last Chance", start_date="2026-01-03",
+            end_date="2026-01-03", number_of_groups=1, stage_format="br - normal",
+            teams_qualifying_from_stage=1, stage_status="completed")
+        self.stage.champion_point_enabled = True
+        self.stage.champion_point_threshold = 80
+        self.stage.point_rush_enabled = True
+        self.stage.point_rush_reward = {"2": 5, "1": 10}
+        self.stage.point_rush_target_stage = final
+        self.stage.save()
+        out = serialize_stage(self.stage, self.partner)
+        self.assertEqual(out["champion_point"], {"threshold": 80})
+        self.assertEqual(out["point_rush"], {"reward": {"1": 10, "2": 5}, "target_stage": "Last Chance"})
+        self._assert_no_forbidden(out)
 
     # ── player ──
     def test_player_serialization_public_handle_only(self):
@@ -458,6 +608,28 @@ class SerializeTests(TestCase):
         self.assertNotIn("Real Name One", json.dumps(out, default=str))  # PII name never leaks
         self.assertNotIn("discord-1", json.dumps(out, default=str))      # discord id never leaks
         self._assert_no_forbidden(out)
+
+    def test_player_carries_the_country_the_site_flags(self):
+        # inbox #220. The site's player flag is ip_country (where the player is), falling back to
+        # the profile country; the partner gets the same, as one name plus the ISO code.
+        from afc_partner_api.serialize import serialize_player, serialize_team
+
+        self.player1.country = "Nigeria"
+        self.player1.ip_country = "GH"
+        self.player1.save(update_fields=["country", "ip_country"])
+        out = serialize_player(self.player1, self.partner, tournament_team=self.tteam)
+        self.assertEqual((out["country"], out["country_code"]), ("Ghana", "GH"))
+
+        self.player1.ip_country = ""
+        self.player1.save(update_fields=["ip_country"])
+        out = serialize_player(self.player1, self.partner, tournament_team=self.tteam)
+        self.assertEqual((out["country"], out["country_code"]), ("Nigeria", "NG"))
+
+        # And inside a team's roster, which is built by the same serializer.
+        self.partner.include_rosters = True
+        self.partner.save()
+        roster = serialize_team(self.tteam, self.partner)["roster"]
+        self.assertEqual([(p["username"], p["country_code"]) for p in roster], [("ProGamer", "NG")])
 
     def test_player_stats_scoped_to_event_not_lifetime(self):
         # Regression guard for the cross-event leak: serialize_player MUST fold only the
@@ -699,8 +871,9 @@ class TeamParticipationStatusTests(TestCase):
     def test_status_is_ungated_and_nothing_else_changed(self):
         # status rides with the public handles, not behind a toggle: a partner already integrated
         # would otherwise stay exactly as unable to tell a competitor from a no-show. Every OTHER
-        # key must still be toggle-gated, so a default (all-off) partner sees these three and
-        # nothing more.
+        # key must still be toggle-gated, so a default (all-off) partner sees these and nothing
+        # more. country + country_code joined the ungated identity on 2026-10-10 (inbox #220):
+        # the team's flag, which the site shows to anyone.
         from afc_partner_api.serialize import serialize_team
 
         tteam = self._team(status="active")
@@ -708,7 +881,7 @@ class TeamParticipationStatusTests(TestCase):
 
         out = serialize_team(tteam, self.partner)
 
-        self.assertEqual(set(out), {"team", "team_tag", "status"})
+        self.assertEqual(set(out), {"team", "team_tag", "status", "country", "country_code"})
         self.assertEqual(out["team"], "Team 1")
         self.assertEqual(out["status"], "played")
 
@@ -1176,7 +1349,7 @@ class PartnerAdminEndpointTests(TestCase):
     def test_missing_token_400(self):
         # No Authorization header at all -> 400 (malformed request, not an auth failure yet).
         resp = self.client.get("/partners/admin/list/")
-        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.status_code, 401)
 
     def test_bad_token_401(self):
         # Well-formed Bearer header but the token resolves to no session -> 401.
@@ -1916,7 +2089,7 @@ class PartnerKeyLifecycleAuditTests(TestCase):
         self._issue_via_endpoint({})
         key_id = PartnerApiKey.objects.get().key_id
         self.assertEqual(
-            self.client.delete(f"/partners/admin/keys/{key_id}/delete/").status_code, 400)
+            self.client.delete(f"/partners/admin/keys/{key_id}/delete/").status_code, 401)
         self.assertEqual(
             self.client.delete(f"/partners/admin/keys/{key_id}/delete/",
                                HTTP_AUTHORIZATION="Bearer nonsense").status_code, 401)
@@ -2003,3 +2176,600 @@ class PartnerKeyLifecycleAuditTests(TestCase):
             content_type="application/json", **self._auth())
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(self.partner.allowed_events.count(), 0)
+
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Solo standings (inbox #202, 2026-10-09)
+# ──────────────────────────────────────────────────────────────────────────────
+# Every solo event's standings answered 500: _BOOYAH reads is_aggregate / booyah_count, which
+# only TournamentTeamMatchStats has. Nothing tested a solo event here, which is how it shipped.
+# A partner's hourly sync ended on a solo event every hour, and its HTTP client treats a 500 as
+# a failed run, so the partner saw no data at all.
+def _bare_event(**kw):
+    from afc_tournament_and_scrims.models import Event
+
+    fields = dict(
+        event_name="AFC Solo Cup", competition_type="tournament", participant_type="squad",
+        event_type="internal", max_teams_or_players=48, event_mode="virtual",
+        start_date="2026-01-01", end_date="2026-01-02",
+        registration_open_date="2025-12-01", registration_end_date="2025-12-20",
+        prizepool="0", event_rules="-", event_status="completed",
+        registration_link="https://x", tournament_tier="tier_3", number_of_stages=1,
+        # is_draft defaults to TRUE on the model; a real, live event is not a draft.
+        organization=None, is_draft=False)
+    fields.update(kw)
+    return Event.objects.create(**fields)
+
+
+class SoloStandingsTests(TestCase):
+    def setUp(self):
+        from django.core.cache import cache
+
+        from afc_auth.models import User
+        from afc_tournament_and_scrims.models import (
+            Leaderboard, Match, RegisteredCompetitors, SoloPlayerMatchStats, StageGroups, Stages,
+        )
+
+        cache.clear()
+        self.partner = Partner.objects.create(
+            name="Solo Reader", slug="solo-reader", can_read_events=True,
+            can_read_standings=True, include_placements=True, include_kills=True)
+        self.event = _bare_event(participant_type="solo", partner_published=True)
+        self.partner.allowed_events.add(self.event)
+
+        stage = Stages.objects.create(
+            event=self.event, stage_name="Final", start_date="2026-01-02", end_date="2026-01-02",
+            number_of_groups=1, stage_format="br - normal", teams_qualifying_from_stage=1,
+            stage_status="completed")
+        group = StageGroups.objects.create(
+            stage=stage, group_name="Group A", playing_date="2026-01-02", playing_time="18:00",
+            teams_qualifying=1, match_count=2, match_maps=["bermuda"])
+        staff = User.objects.create_user(
+            username="solostaff", email="solostaff@x.com", password="x", full_name="Staff",
+            role="admin")
+        board = Leaderboard.objects.create(
+            leaderboard_name="Final LB", event=self.event, stage=stage, group=group,
+            creator=staff, placement_points={"1": 12, "2": 9}, kill_point=1.0,
+            leaderboard_method="manual")
+        m1 = Match.objects.create(leaderboard=board, group=group, match_number=1,
+                                  match_map="bermuda", result_inputted=True)
+        m2 = Match.objects.create(leaderboard=board, group=group, match_number=2,
+                                  match_map="bermuda", result_inputted=True)
+
+        def player(name, uid):
+            user = User.objects.create_user(
+                username=name, email=f"{name}@x.com", password="x", full_name=f"Real {name}",
+                uid=uid, role="player")
+            return RegisteredCompetitors.objects.create(event=self.event, user=user,
+                                                        status="registered")
+
+        winner, runner = player("SoloKing", "5550001"), player("SoloTwo", "5550002")
+        # SoloKing: a booyah and a second place, 21 + 9 kill points. SoloTwo: the reverse
+        # placements but fewer kills, so the winner is decided by points, not by order of rows.
+        SoloPlayerMatchStats.objects.create(match=m1, competitor=winner, placement=1, kills=6,
+                                            placement_points=12, kill_points=6, total_points=18)
+        SoloPlayerMatchStats.objects.create(match=m2, competitor=winner, placement=2, kills=3,
+                                            placement_points=9, kill_points=3, total_points=12)
+        SoloPlayerMatchStats.objects.create(match=m1, competitor=runner, placement=2, kills=1,
+                                            placement_points=9, kill_points=1, total_points=10)
+        SoloPlayerMatchStats.objects.create(match=m2, competitor=runner, placement=1, kills=2,
+                                            placement_points=12, kill_points=2, total_points=14)
+
+        full, prefix, h = auth.generate_key()
+        PartnerApiKey.objects.create(partner=self.partner, key_prefix=prefix, key_hash=h)
+        self.api_key = full
+
+    def test_solo_standings_answer_200_ranked(self):
+        resp = self.client.get(f"/api/v1/partner/events/{self.event.slug}/standings/",
+                               HTTP_X_API_KEY=self.api_key)
+
+        self.assertEqual(resp.status_code, 200, resp.content)
+        rows = resp.json()["results"]
+        self.assertEqual([r["username"] for r in rows], ["SoloKing", "SoloTwo"])
+        self.assertEqual([r["rank"] for r in rows], [1, 2])
+        self.assertEqual(rows[0]["in_game_id"], "5550001")
+        self.assertEqual(rows[0]["kills"], 9)
+        self.assertEqual(rows[0]["placement"], 1)
+        # The firewall still holds on the solo path: no real name, no email.
+        import json
+        self.assertNotIn("Real SoloKing", json.dumps(rows))
+        self.assertNotIn("@x.com", json.dumps(rows))
+
+    def test_solo_standings_carry_points_and_country(self):
+        # inbox #220: the score each row is ranked by, and the player's country.
+        from afc_auth.models import User
+
+        User.objects.filter(username="SoloKing").update(country="NG", ip_country="")
+        User.objects.filter(username="SoloTwo").update(country="Ghana", ip_country="ZA")
+        resp = self.client.get(f"/api/v1/partner/events/{self.event.slug}/standings/",
+                               HTTP_X_API_KEY=self.api_key)
+        rows = resp.json()["results"]
+        # SoloKing: 12 + 6 + 9 + 3 = 30. SoloTwo: 9 + 1 + 12 + 2 = 24.
+        self.assertEqual([(r["username"], r["points"]) for r in rows], [("SoloKing", 30), ("SoloTwo", 24)])
+        self.assertEqual([(r["country"], r["country_code"]) for r in rows],
+                         [("Nigeria", "NG"), ("South Africa", "ZA")])
+        self.assertEqual((rows[0]["placement_points"], rows[0]["kill_points"], rows[0]["booyahs"],
+                          rows[0]["matches_played"]), (21, 9, 1, 2))
+        self.assertNotIn("damage", rows[0])
+
+    def test_solo_standings_carry_the_esport_photo_behind_images_and_files(self):
+        # inbox #224: a solo table names players, so with Images and files on each row carries the
+        # player's esport photo (canonical profile), null when none was uploaded.
+        from afc_auth.models import User, UserProfile
+
+        king = User.objects.get(username="SoloKing")
+        profile = UserProfile.objects.create(user=king)
+        profile.esports_pic.name = "esports_pictures/king.png"
+        profile.save(update_fields=["esports_pic"])
+        url = f"/api/v1/partner/events/{self.event.slug}/standings/"
+
+        rows = self.client.get(url, HTTP_X_API_KEY=self.api_key).json()["results"]
+        self.assertNotIn("esports_image_url", rows[0])
+        self.partner.include_media = True
+        self.partner.save()
+        rows = self.client.get(url, HTTP_X_API_KEY=self.api_key).json()["results"]
+        images = {r["username"]: r["esports_image_url"] for r in rows}
+        self.assertTrue(images["SoloKing"].endswith("/media/esports_pictures/king.png"))
+        self.assertIsNone(images["SoloTwo"])
+
+    def test_every_read_of_a_solo_event_answers(self):
+        """The whole sync a partner runs, on a solo event: nothing may answer 500."""
+        for toggle in ("can_read_stages", "can_read_matches", "can_read_teams",
+                       "can_read_players", "can_read_designs"):
+            setattr(self.partner, toggle, True)
+        self.partner.save()
+        for path in ("/", "/stages/", "/matches/", "/standings/", "/teams/", "/players/",
+                     "/designs/"):
+            resp = self.client.get(f"/api/v1/partner/events/{self.event.slug}{path}",
+                                   HTTP_X_API_KEY=self.api_key)
+            self.assertEqual(resp.status_code, 200, (path, resp.content[:200]))
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Reachable events + publish the finished ones (inbox #201, 2026-10-09)
+# ──────────────────────────────────────────────────────────────────────────────
+class PartnerEventsAdminTests(TestCase):
+    """The partner page's publish card reads every event the partner's SAVED grants reach,
+    through an event, a whole organization, or the native-AFC switch, and can publish all the
+    finished ones in one press."""
+
+    def setUp(self):
+        import datetime
+
+        from afc_auth.models import Roles, SessionToken, User, UserRoles
+        from afc_organizers.models import Organization
+
+        role, _ = Roles.objects.get_or_create(role_name="partner_admin")
+        self.admin = User.objects.create_user(
+            username="pubadmin", email="pubadmin@x.com", password="x", full_name="Pub Admin",
+            role="admin")
+        UserRoles.objects.create(user=self.admin, role=role)
+        expiry = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=1)
+        self.token = SessionToken.objects.create(
+            user=self.admin, token="pub-admin-token-1234567890", expires_at=expiry).token
+        outsider = User.objects.create_user(
+            username="puboutsider", email="puboutsider@x.com", password="x", full_name="Out",
+            role="player")
+        self.outsider_token = SessionToken.objects.create(
+            user=outsider, token="pub-outsider-token-12345678", expires_at=expiry).token
+
+        self.org = Organization.objects.create(name="Nova League", slug="nova-league")
+        other_org = Organization.objects.create(name="Elsewhere", slug="elsewhere")
+        self.partner = Partner.objects.create(name="Game Evo", slug="game-evo",
+                                              allow_all_native_afc=True)
+        self.partner.allowed_organizations.add(self.org)
+
+        # Reached three ways, finished, unpublished: these are what the bulk press publishes.
+        self.by_event = _bare_event(event_name="Granted Org Cup", organization=other_org,
+                                    start_date="2026-03-01", end_date="2026-03-02")
+        self.partner.allowed_events.add(self.by_event)
+        self.by_org = _bare_event(event_name="Nova Finals", organization=self.org,
+                                  start_date="2026-02-01", end_date="2026-02-02")
+        self.native = _bare_event(event_name="AFC Native Open",
+                                  start_date="2026-01-01", end_date="2026-01-02")
+        # Reached but not to be bulk-published: already published, upcoming, cancelled.
+        self.already = _bare_event(event_name="Nova Already", organization=self.org,
+                                   partner_published=True)
+        self.upcoming = _bare_event(event_name="Nova Next", organization=self.org,
+                                    event_status="upcoming", start_date="2099-01-01",
+                                    end_date="2099-01-02", registration_open_date="2098-12-01",
+                                    registration_end_date="2098-12-20")
+        self.cancelled = _bare_event(event_name="Nova Called Off", organization=self.org,
+                                     event_status="cancelled")
+        # Never reached: a draft, and another organization's event with no grant.
+        self.draft = _bare_event(event_name="Nova Draft", organization=self.org, is_draft=True)
+        self.stranger = _bare_event(event_name="Elsewhere Cup", organization=other_org)
+
+    def _get(self, token=None, slug="game-evo", query=""):
+        return self.client.get(f"/partners/admin/{slug}/events/{query}",
+                               HTTP_AUTHORIZATION=f"Bearer {token or self.token}")
+
+    def _publish(self, token=None, slug="game-evo"):
+        return self.client.post(f"/partners/admin/{slug}/publish-finished/",
+                                HTTP_AUTHORIZATION=f"Bearer {token or self.token}")
+
+    def test_lists_every_reachable_event_with_how_it_is_reached(self):
+        resp = self._get(query="?limit=100")
+
+        self.assertEqual(resp.status_code, 200, resp.content)
+        body = resp.json()
+        rows = {r["slug"]: r for r in body["results"]}
+        self.assertEqual(set(rows), {
+            self.by_event.slug, self.by_org.slug, self.native.slug, self.already.slug,
+            self.upcoming.slug, self.cancelled.slug,
+        })
+        self.assertEqual(rows[self.by_event.slug]["via"], ["event"])
+        self.assertEqual(rows[self.by_org.slug]["via"], ["organization"])
+        self.assertEqual(rows[self.native.slug]["via"], ["native"])
+        self.assertTrue(rows[self.already.slug]["partner_published"])
+        self.assertEqual(rows[self.upcoming.slug]["status"], "upcoming")
+        self.assertEqual(body["summary"], {"reachable": 6, "published": 1,
+                                           "finished_unpublished": 3})
+        # Newest first.
+        self.assertEqual(body["results"][0]["slug"], self.upcoming.slug)
+
+    def test_publish_finished_publishes_only_finished_unpublished_reachable_events(self):
+        resp = self._publish()
+
+        self.assertEqual(resp.status_code, 200, resp.content)
+        body = resp.json()
+        self.assertEqual(body["published_count"], 3)
+        self.assertEqual(set(body["published"]),
+                         {self.by_event.slug, self.by_org.slug, self.native.slug})
+        for ev, expected in ((self.by_event, True), (self.by_org, True), (self.native, True),
+                             (self.upcoming, False), (self.cancelled, False),
+                             (self.draft, False), (self.stranger, False)):
+            ev.refresh_from_db()
+            self.assertEqual(ev.partner_published, expected, ev.event_name)
+
+        # Safe to press twice.
+        again = self._publish().json()
+        self.assertEqual(again["published_count"], 0)
+
+        # And the partner can now read them: the read API's own scope agrees.
+        from afc_partner_api.scope import partner_visible_events
+        self.assertEqual(
+            set(partner_visible_events(self.partner).values_list("slug", flat=True)),
+            {self.by_event.slug, self.by_org.slug, self.native.slug, self.already.slug})
+
+    def test_a_past_event_stamped_upcoming_counts_as_finished(self):
+        """The site reads a past-end event as completed even when its stored status was never
+        stamped (effective_event_status). Bulk publish uses the same reading."""
+        stale = _bare_event(event_name="Nova Stale", organization=self.org,
+                            event_status="upcoming")
+        self._publish()
+        stale.refresh_from_db()
+        self.assertTrue(stale.partner_published)
+
+    def test_admin_only(self):
+        self.assertEqual(self._get(token=self.outsider_token).status_code, 403)
+        self.assertEqual(self._publish(token=self.outsider_token).status_code, 403)
+        self.assertEqual(self.client.get("/partners/admin/game-evo/events/").status_code, 401)
+        self.assertEqual(self.client.post("/partners/admin/game-evo/publish-finished/").status_code,
+                         401)
+        self.native.refresh_from_db()
+        self.assertFalse(self.native.partner_published)
+
+    def test_unknown_partner_404(self):
+        self.assertEqual(self._get(slug="ghost").status_code, 404)
+        self.assertEqual(self._publish(slug="ghost").status_code, 404)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Final standings + the structured event (inbox #220 + #222, 2026-10-10)
+# ──────────────────────────────────────────────────────────────────────────────
+# A two-stage event built so that summing every map and AFC's official rule disagree:
+#   Group Stage: CRUSHERS 50 (booyah), ALPHA 10, BRAVO 5
+#   Grand Final: ALPHA 20 (booyah), BRAVO 15         (CRUSHERS did not reach it)
+# Summed, CRUSHERS lead with 50. Officially (owner rule 2026-07-14, final_standings) a team is
+# placed by the LAST stage it played, so ALPHA and BRAVO, the finalists, outrank CRUSHERS.
+# This is the shape of the four production events whose winner the partner feed had wrong.
+class EventStructureTests(TestCase):
+    def setUp(self):
+        from django.core.cache import cache
+
+        from afc_auth.models import User
+        from afc_team.models import Team
+        from afc_tournament_and_scrims.models import (
+            Match, StageGroups, Stages, TournamentTeam, TournamentTeamMatchStats,
+        )
+
+        cache.clear()
+        self.partner = Partner.objects.create(
+            name="Tree Reader", slug="tree-reader", can_read_events=True, can_read_stages=True,
+            can_read_matches=True, can_read_standings=True, include_placements=True,
+            include_kills=True)
+        self.event = _bare_event(event_name="Structure Cup", partner_published=True)
+        self.partner.allowed_events.add(self.event)
+        full, prefix, h = auth.generate_key()
+        PartnerApiKey.objects.create(partner=self.partner, key_prefix=prefix, key_hash=h)
+        self.api_key = full
+
+        owner = User.objects.create_user(username="treeowner", email="treeowner@x.com",
+                                         password="x", full_name="Owner", role="player")
+        self.tt = {}
+        for name, country in (("ALPHA", "NG"), ("BRAVO", "Ghana"), ("CRUSHERS", "Kenya")):
+            team = Team.objects.create(team_name=name, team_tag=name[:3], join_settings="open",
+                                       team_creator=owner, team_owner=owner, country=country)
+            self.tt[name] = TournamentTeam.objects.create(event=self.event, team=team, status="active")
+
+        def stage(name, order, fmt="br", **kw):
+            return Stages.objects.create(
+                event=self.event, stage_name=name, start_date="2026-01-01", end_date="2026-01-01",
+                number_of_groups=1, stage_format=fmt, teams_qualifying_from_stage=2,
+                stage_status="completed", stage_order=order, **kw)
+
+        def group(st, name, **kw):
+            return StageGroups.objects.create(
+                stage=st, group_name=name, playing_date="2026-01-01", playing_time="18:00",
+                teams_qualifying=2, match_count=1, match_maps=["bermuda"], **kw)
+
+        def result(match, team, placement, points, kills=0):
+            TournamentTeamMatchStats.objects.create(
+                match=match, tournament_team=self.tt[team], placement=placement, kills=kills,
+                placement_points=points - kills, kill_points=kills, total_points=points)
+
+        # Created in REVERSE of running order, so stage_id order and running order disagree.
+        self.final = stage("Grand Final", 2, is_finals_stage=True)
+        self.groups = stage("Group Stage", 1)
+        self.final_lobby = group(self.final, "Final Lobby")
+        self.lobby = group(self.groups, "Group A")
+        m1 = Match.objects.create(group=self.lobby, match_number=1, match_map="bermuda",
+                                  result_inputted=True)
+        m2 = Match.objects.create(group=self.final_lobby, match_number=1, match_map="purgatory",
+                                  result_inputted=True,
+                                  scoring_settings={"kill_point": 2, "placement_points": {"1": 15}})
+        result(m1, "CRUSHERS", 1, 50, kills=8)
+        result(m1, "ALPHA", 2, 10, kills=2)
+        result(m1, "BRAVO", 3, 5)
+        result(m2, "ALPHA", 1, 20, kills=4)
+        result(m2, "BRAVO", 2, 15, kills=3)
+
+    def _get(self, path):
+        resp = self.client.get(f"/api/v1/partner/events/{self.event.slug}{path}",
+                               HTTP_X_API_KEY=self.api_key)
+        self.assertEqual(resp.status_code, 200, resp.content[:300])
+        return resp.json()
+
+    def test_final_standings_follow_the_last_stage_played(self):
+        rows = self._get("/standings/")["results"]
+        self.assertEqual([r["team"] for r in rows], ["ALPHA", "BRAVO", "CRUSHERS"])
+        self.assertEqual([r["decided_in"] for r in rows], ["Grand Final", "Grand Final", "Group Stage"])
+        self.assertEqual([r["reached_final_stage"] for r in rows], [True, True, False])
+        # Every number on a row is from the stage that decided it.
+        self.assertEqual([r["points"] for r in rows], [20, 15, 50])
+        self.assertEqual([r["country_code"] for r in rows], ["NG", "GH", "KE"])
+
+    def test_the_results_tree_reads_like_the_tournament_page(self):
+        import json
+
+        doc = self._get("/results/")
+        self.assertEqual(doc["event"]["name"], "Structure Cup")
+        self.assertIs(doc["event"]["point_system_varies"], True)  # the final scores kills at 2
+        self.assertEqual([r["team"] for r in doc["final_standings"]], ["ALPHA", "BRAVO", "CRUSHERS"])
+
+        # Stages in RUNNING order, not creation order, each saying what it is.
+        stages = doc["stages"]
+        self.assertEqual([(s["order"], s["stage_name"]) for s in stages],
+                         [(1, "Group Stage"), (2, "Grand Final")])
+        self.assertEqual({(s["game"], s["structure"]) for s in stages}, {("battle_royale", "lobbies")})
+        self.assertEqual([s["is_final_stage"] for s in stages], [False, True])
+
+        group_stage = stages[0]
+        self.assertEqual([r["team"] for r in group_stage["standings"]], ["CRUSHERS", "ALPHA", "BRAVO"])
+        lobby = group_stage["groups"][0]
+        self.assertEqual((lobby["group_name"], lobby["type"]), ("Group A", "lobby"))
+        self.assertEqual([(r["rank"], r["team"], r["points"]) for r in lobby["standings"]],
+                         [(1, "CRUSHERS", 50), (2, "ALPHA", 10), (3, "BRAVO", 5)])
+        game = lobby["matches"][0]
+        self.assertEqual(game["match_number"], 1)
+        self.assertEqual(game["point_system"]["points_per_kill"], 1)
+        self.assertEqual([(r["placement"], r["team"], r["points"]) for r in game["results"]],
+                         [(1, "CRUSHERS", 50), (2, "ALPHA", 10), (3, "BRAVO", 5)])
+
+        final_map = stages[1]["groups"][0]["matches"][0]
+        self.assertEqual(final_map["point_system"],
+                         {"placement_points": {"1": 15}, "points_per_kill": 2,
+                          "points_per_assist": 0, "points_per_1000_damage": 0})
+
+        text = json.dumps(doc)
+        for key in SerializeTests.FORBIDDEN_KEYS:
+            self.assertNotIn(f'"{key}"', text)
+
+    def test_results_needs_the_standings_toggle(self):
+        self.partner.can_read_standings = False
+        self.partner.save()
+        resp = self.client.get(f"/api/v1/partner/events/{self.event.slug}/results/",
+                               HTTP_X_API_KEY=self.api_key)
+        self.assertEqual(resp.status_code, 403)
+
+    def test_a_clash_squad_bracket_stage_is_sent_as_a_bracket(self):
+        from afc_tournament_and_scrims.models import HeadToHeadMatch, StageGroups, Stages
+
+        cs = Stages.objects.create(
+            event=self.event, stage_name="Showmatch", start_date="2026-01-02",
+            end_date="2026-01-02", number_of_groups=1, stage_format="cs",
+            teams_qualifying_from_stage=1, stage_status="completed", stage_order=3)
+        bracket = StageGroups.objects.create(
+            stage=cs, group_name="Bracket A", playing_date="2026-01-02", playing_time="20:00",
+            teams_qualifying=1, match_count=1, match_maps=[], bracket_format="single_elim")
+        HeadToHeadMatch.objects.create(
+            stage=cs, group=bracket, round_number=1, bracket="winners", position=0,
+            team_a=self.tt["ALPHA"], team_b=self.tt["BRAVO"], score_a=4, score_b=2,
+            winner=self.tt["ALPHA"], status="completed")
+
+        stage = self._get("/results/")["stages"][2]
+        self.assertEqual((stage["game"], stage["structure"]), ("clash_squad", "brackets"))
+        b = stage["groups"][0]
+        self.assertEqual((b["group_name"], b["type"], b["bracket_format"]),
+                         ("Bracket A", "bracket", "knockout"))
+        self.assertEqual([(r["rank"], r["team"], r["wins"], r["rounds_won"]) for r in b["standings"]],
+                         [(1, "ALPHA", 1, 4), (2, "BRAVO", 0, 2)])
+        self.assertNotIn("points", b["standings"][0])  # a knockout has no points table
+        m = b["matches"][0]
+        self.assertEqual((m["team_a"]["team"], m["team_b"]["team"], m["score_a"], m["score_b"],
+                          m["winner"], m["result"]), ("ALPHA", "BRAVO", 4, 2, "ALPHA", "played"))
+        self.assertEqual(m["team_a"]["country_code"], "NG")
+
+    def test_champion_point_crowns_the_lobby_winner_by_the_rule(self):
+        # Threshold 10. Map 1: BRAVO booyahs on 0 (does not win), ALPHA takes 12. Map 2: ALPHA
+        # booyahs while already on 12, so ALPHA is champion with fewer points than BRAVO.
+        from afc_tournament_and_scrims.models import Match, StageGroups, Stages, TournamentTeamMatchStats
+
+        cp = Stages.objects.create(
+            event=self.event, stage_name="Champion Rush", start_date="2026-01-03",
+            end_date="2026-01-03", number_of_groups=1, stage_format="br",
+            teams_qualifying_from_stage=1, stage_status="completed", stage_order=4,
+            champion_point_enabled=True, champion_point_threshold=10)
+        lobby = StageGroups.objects.create(
+            stage=cp, group_name="Rush Lobby", playing_date="2026-01-03", playing_time="18:00",
+            teams_qualifying=1, match_count=2, match_maps=["bermuda"])
+        for number, rows in ((1, (("BRAVO", 1, 30), ("ALPHA", 2, 12))),
+                             (2, (("ALPHA", 1, 5), ("BRAVO", 2, 20)))):
+            m = Match.objects.create(group=lobby, match_number=number, match_map="bermuda",
+                                     result_inputted=True)
+            for team, place, pts in rows:
+                TournamentTeamMatchStats.objects.create(
+                    match=m, tournament_team=self.tt[team], placement=place, total_points=pts,
+                    placement_points=pts)
+
+        stage = self._get("/results/")["stages"][2]
+        self.assertEqual(stage["champion_point"], {"threshold": 10})
+        group = stage["groups"][0]
+        self.assertEqual(group["champion"], "ALPHA")
+        self.assertEqual([(r["team"], r["points"]) for r in group["standings"]],
+                         [("ALPHA", 17), ("BRAVO", 50)])
+
+    def test_a_round_robin_stage_names_its_base_groups(self):
+        from afc_tournament_and_scrims.models import RoundRobinGroup, StageGroups, Stages
+
+        rr = Stages.objects.create(
+            event=self.event, stage_name="League Phase", start_date="2026-01-04",
+            end_date="2026-01-04", number_of_groups=1, stage_format="br - round robin",
+            teams_qualifying_from_stage=2, stage_status="upcoming", stage_order=5)
+        base = RoundRobinGroup.objects.create(stage=rr, label="A", order=0)
+        base.teams.add(self.tt["BRAVO"], self.tt["ALPHA"])
+        StageGroups.objects.create(
+            stage=rr, group_name="Day 1 Lobby", playing_date="2026-01-04", playing_time="18:00",
+            teams_qualifying=2, match_count=1, match_maps=["bermuda"], game_day=1)
+
+        stage = self._get("/results/")["stages"][2]
+        self.assertEqual(stage["structure"], "round_robin")
+        self.assertEqual(stage["round_robin_groups"], [{"label": "A", "teams": ["ALPHA", "BRAVO"]}])
+        self.assertEqual(stage["groups"][0]["game_day"], 1)
+
+    def test_seeded_teams_appear_at_zero_before_they_play(self):
+        from afc_tournament_and_scrims.models import StageGroupCompetitor
+
+        StageGroupCompetitor.objects.create(stage_group=self.final_lobby,
+                                            tournament_team=self.tt["CRUSHERS"])
+        lobby = self._get("/results/")["stages"][1]["groups"][0]
+        self.assertEqual([(r["rank"], r["team"], r["points"]) for r in lobby["standings"]],
+                         [(1, "ALPHA", 20), (2, "BRAVO", 15), (3, "CRUSHERS", 0)])
+
+    def test_stages_and_matches_are_in_running_order_with_their_place(self):
+        stages = self._get("/stages/")["results"]
+        self.assertEqual([(s["order"], s["stage_name"]) for s in stages],
+                         [(1, "Group Stage"), (2, "Grand Final")])
+        matches = self._get("/matches/")["results"]
+        self.assertEqual([(m["stage_name"], m["stage_order"], m["group_name"]) for m in matches],
+                         [("Group Stage", 1, "Group A"), ("Grand Final", 2, "Final Lobby")])
+
+    def test_an_admin_adjustment_is_flagged_and_every_row_adds_up(self):
+        # inbox #223. An admin docks BRAVO 6 points on the final map as a punishment (stored the
+        # way the results editor stores it: in penalty_points and out of the map total), and the
+        # final's ALPHA total carries 3 assist/damage points beyond placement and kills.
+        from afc_tournament_and_scrims.models import TournamentTeamMatchStats
+
+        final_rows = TournamentTeamMatchStats.objects.filter(match__group=self.final_lobby)
+        bravo = final_rows.get(tournament_team=self.tt["BRAVO"])
+        bravo.penalty_points = 6
+        bravo.total_points = 15 - 6
+        bravo.save()
+        alpha = final_rows.get(tournament_team=self.tt["ALPHA"])
+        alpha.total_points = 20 + 3
+        alpha.save()
+
+        doc = self._get("/results/")
+        final = {r["team"]: r for r in doc["final_standings"]}
+        self.assertEqual((final["BRAVO"]["points"], final["BRAVO"]["penalty_points"],
+                          final["BRAVO"]["adjusted"]), (9, 6, True))
+        self.assertIs(final["ALPHA"]["adjusted"], False)
+        self.assertEqual(final["ALPHA"]["other_points"], 3)
+
+        def adds_up(r):
+            return (r["placement_points"] + r["kill_points"] + r["other_points"]
+                    + r["bonus_points"] - r["penalty_points"] + r.get("carry_over_points", 0))
+
+        tables = [doc["final_standings"]]
+        for stage in doc["stages"]:
+            tables.append(stage["standings"])
+            for group in stage["groups"]:
+                tables.append(group["standings"])
+                tables.extend(m["results"] for m in group["matches"])
+        for table in tables:
+            for r in table:
+                self.assertEqual(adds_up(r), r["points"], r)
+
+        # The map the penalty was put on says so.
+        final_map = doc["stages"][1]["groups"][0]["matches"][0]["results"]
+        bravo_map = [r for r in final_map if r["team"] == "BRAVO"][0]
+        self.assertEqual((bravo_map["penalty_points"], bravo_map["adjusted"]), (6, True))
+
+    def test_a_final_with_no_results_is_said_plainly(self):
+        # Production 2026-10-10: events reach partners whose final was never entered. The final
+        # table then ranks the last stage WITH results, and the event card must say the final
+        # has none, or a partner takes that stage's leader for the champion.
+        from afc_tournament_and_scrims.models import TournamentTeamMatchStats
+
+        event = self._get("/")
+        self.assertEqual((event["final_stage"], event["final_stage_has_results"]), ("Grand Final", True))
+
+        TournamentTeamMatchStats.objects.filter(match__group=self.final_lobby).delete()
+        event = self._get("/")
+        self.assertEqual((event["final_stage"], event["final_stage_has_results"]), ("Grand Final", False))
+        rows = self._get("/standings/")["results"]
+        self.assertEqual([(r["team"], r["decided_in"], r["reached_final_stage"]) for r in rows],
+                         [("CRUSHERS", "Group Stage", False), ("ALPHA", "Group Stage", False),
+                          ("BRAVO", "Group Stage", False)])
+        self.assertEqual(self._get("/results/")["event"]["final_stage_has_results"], False)
+
+    def test_tables_carry_team_logos_behind_images_and_files(self):
+        # inbox #224. The logo was only on /teams/; now every table row and bracket side has it,
+        # so a leaderboard can be drawn from one response. A name, not a file: only .url is read.
+        from afc_tournament_and_scrims.models import HeadToHeadMatch, StageGroups, Stages
+
+        alpha = self.tt["ALPHA"].team
+        alpha.team_logo.name = "teams_logos/alpha.png"
+        alpha.save(update_fields=["team_logo"])
+        cs = Stages.objects.create(
+            event=self.event, stage_name="Showmatch", start_date="2026-01-02",
+            end_date="2026-01-02", number_of_groups=1, stage_format="cs",
+            teams_qualifying_from_stage=1, stage_status="completed", stage_order=3)
+        bracket = StageGroups.objects.create(
+            stage=cs, group_name="Bracket A", playing_date="2026-01-02", playing_time="20:00",
+            teams_qualifying=1, match_count=1, match_maps=[], bracket_format="single_elim")
+        HeadToHeadMatch.objects.create(
+            stage=cs, group=bracket, round_number=1, bracket="winners", position=0,
+            team_a=self.tt["ALPHA"], team_b=self.tt["BRAVO"], score_a=4, score_b=2,
+            winner=self.tt["ALPHA"], status="completed")
+
+        # Off: no logo key anywhere.
+        doc = self._get("/results/")
+        self.assertNotIn('"logo_url"', __import__("json").dumps(doc))
+
+        self.partner.include_media = True
+        self.partner.save()
+        doc = self._get("/results/")
+        logo = lambda rows: {r["team"]: r["logo_url"] for r in rows}  # noqa: E731
+        self.assertTrue(logo(doc["final_standings"])["ALPHA"].endswith("/media/teams_logos/alpha.png"))
+        self.assertIsNone(logo(doc["final_standings"])["BRAVO"])  # no logo uploaded: present, null
+        self.assertIn("ALPHA", logo(doc["stages"][0]["standings"]))
+        self.assertTrue(logo(doc["stages"][1]["groups"][0]["standings"])["ALPHA"])
+        side = doc["stages"][2]["groups"][0]["matches"][0]["team_a"]
+        self.assertTrue(side["logo_url"].endswith("/media/teams_logos/alpha.png"))
+        self.assertTrue(logo(doc["stages"][2]["groups"][0]["standings"])["ALPHA"])
+        self.assertTrue(logo(self._get("/standings/")["results"])["ALPHA"])
+        # Map result rows stay lean.
+        self.assertNotIn("logo_url", doc["stages"][0]["groups"][0]["matches"][0]["results"][0])

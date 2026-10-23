@@ -66,19 +66,19 @@ def get_team_role_permissions(request):
     team_id = request.GET.get("team_id")
     team_name = request.GET.get("team_name")
     if not team_id and not team_name:
-        return Response({"message": "team_id or team_name is required."},
+        return Response({"message": "team_id or team_name is required.", "code": "team_team_name_required"},
                         status=status.HTTP_400_BAD_REQUEST)
 
     try:
         team = (Team.objects.get(team_id=team_id) if team_id
                 else Team.objects.get(team_name=team_name))
     except (Team.DoesNotExist, ValueError):
-        return Response({"message": "Team not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "Team not found.", "code": "team_not_found"}, status=status.HTTP_404_NOT_FOUND)
 
     is_owner = team.team_owner_id == user.user_id
     is_member = TeamMembers.objects.filter(team=team, member=user).exists()
     if not (is_owner or is_member or _is_admin(user)):
-        return Response({"message": "You are not a member of this team."},
+        return Response({"message": "You are not a member of this team.", "code": "not_member_team"},
                         status=status.HTTP_403_FORBIDDEN)
 
     return Response({
@@ -127,7 +127,7 @@ def set_team_role_permissions(request):
     payload = request.data.get("permissions")
 
     if not team_id:
-        return Response({"message": "team_id is required."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "team_id is required.", "code": "team_required"}, status=status.HTTP_400_BAD_REQUEST)
     if not isinstance(payload, dict) or not payload:
         return Response({"message": "permissions must be an object of {role: {capability: bool}}."},
                         status=status.HTTP_400_BAD_REQUEST)
@@ -135,13 +135,13 @@ def set_team_role_permissions(request):
     try:
         team = Team.objects.get(team_id=team_id)
     except (Team.DoesNotExist, ValueError):
-        return Response({"message": "Team not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "Team not found.", "code": "team_not_found"}, status=status.HTTP_404_NOT_FOUND)
 
     # The single write gate. Not _is_admin: an AFC admin is never blocked BY this matrix, so they
     # have no reason to rewrite a team's own preferences, and letting them would put admin edits and
     # owner edits into the same audit field with no way to tell them apart.
     if team.team_owner_id != user.user_id:
-        return Response({"message": "Only the team owner can change role permissions."},
+        return Response({"message": "Only the team owner can change role permissions.", "code": "team_owner_change_role"},
                         status=status.HTTP_403_FORBIDDEN)
 
     # ── validate the whole body BEFORE writing anything ──

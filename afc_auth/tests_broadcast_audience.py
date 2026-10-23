@@ -60,9 +60,13 @@ class BroadcastAudienceTests(TestCase):
     # A deliberately small, hand-countable population so every expected number below is obvious:
     #
     #   admin        NG  en  role=admin            (owns no team)
-    #   ng_tier1_a   NG  en  Tier 1 team "Alpha"   (owner)
-    #   ng_tier1_b   NG  fr  Tier 1 team "Alpha"   (member)
-    #   gh_tier2     GH  en  Tier 2 team "Bravo"   (owner)
+    #   ng_tier1_a   NG  en  tier code 1 team "Alpha"   (owner)
+    #   ng_tier1_b   NG  fr  tier code 1 team "Alpha"   (member)
+    #   gh_tier2     GH  en  tier code 2 team "Bravo"   (owner)
+    #
+    # The tier is the team's PUBLISHED ranking tier (afc_rankings/public_tiers.py, inbox #165), set
+    # below in a published season; code 1 reads "Tier 2" on screen. The variable names keep their
+    # old spelling: they are only names.
     #   ng_teamless  NG  pt  no team
     #   suspended    NG  en  no team, status=suspended  -> excluded from every audience
     #   deactivated  NG  en  no team, is_active=False   -> excluded from every audience
@@ -101,9 +105,9 @@ class BroadcastAudienceTests(TestCase):
         self.deactivated.is_active = False
         self.deactivated.save(update_fields=["is_active"])
 
-        # Tier 1 team: owner ng_tier1_a + member ng_tier1_b.
+        # Tier code 1 team: owner ng_tier1_a + member ng_tier1_b.
         self.alpha = Team.objects.create(
-            team_name="Team Alpha", join_settings="open", team_tier="1",
+            team_name="Team Alpha", join_settings="open",
             team_creator=self.ng_tier1_a, team_owner=self.ng_tier1_a, country="Nigeria",
         )
         TeamMembers.objects.create(team=self.alpha, member=self.ng_tier1_a,
@@ -111,12 +115,35 @@ class BroadcastAudienceTests(TestCase):
         TeamMembers.objects.create(team=self.alpha, member=self.ng_tier1_b,
                                    management_role="member")
 
-        # Tier 2 team: owner gh_tier2 only, and deliberately NO TeamMembers row for the owner, so
-        # the "a picked team includes its owner even without a membership row" rule is exercised.
+        # Tier code 2 team: owner gh_tier2 only, and deliberately NO TeamMembers row for the owner,
+        # so the "a picked team includes its owner even without a membership row" rule is exercised.
         self.bravo = Team.objects.create(
-            team_name="Team Bravo", join_settings="open", team_tier="2",
+            team_name="Team Bravo", join_settings="open",
             team_creator=self.gh_tier2, team_owner=self.gh_tier2, country="Ghana",
         )
+
+        # The tiers come from a PUBLISHED season. A newer, UNPUBLISHED season swaps them round, and
+        # the hand-set Team.team_tier says "3" for both (its default): neither may decide anything.
+        from afc_rankings.models import Season, TeamQuarterlyScore
+
+        today = timezone.localdate()
+        published = Season.objects.create(
+            name="SEASON 2 2026", quarter=2, year=2026,
+            start_date=today - timedelta(days=120), end_date=today - timedelta(days=30),
+            transfer_window_open=today - timedelta(days=120),
+            transfer_window_close=today - timedelta(days=106),
+            rankings_published=True, tiers_published=True,
+        )
+        draft = Season.objects.create(
+            name="SEASON 4 2026", quarter=4, year=2026,
+            start_date=today - timedelta(days=20), end_date=today + timedelta(days=60),
+            transfer_window_open=today - timedelta(days=20),
+            transfer_window_close=today - timedelta(days=6), is_active=True,
+        )
+        TeamQuarterlyScore.objects.create(team=self.alpha, season=published, tier_assigned=1)
+        TeamQuarterlyScore.objects.create(team=self.bravo, season=published, tier_assigned=2)
+        TeamQuarterlyScore.objects.create(team=self.alpha, season=draft, tier_assigned=2)
+        TeamQuarterlyScore.objects.create(team=self.bravo, season=draft, tier_assigned=1)
 
     # ── helpers ──────────────────────────────────────────────────────────────
     def _preview(self, actor, spec):
@@ -162,10 +189,24 @@ class BroadcastAudienceTests(TestCase):
         self.assertEqual(self._count(team_ids=[self.bravo.team_id]), 1)
 
     def test_tier_filter(self):
-        # Tier 1 -> the two Alpha players. Tier 2 -> the Bravo owner.
+        # Code 1 -> the two Alpha players. Code 2 -> the Bravo owner. (Published season only.)
         self.assertEqual(self._count(tiers=["1"]), 2)
         self.assertEqual(self._count(tiers=["2"]), 1)
         self.assertEqual(self._count(tiers=["1", "2"]), 3)
+
+    def test_tier_filter_ignores_the_hand_set_tier_and_unpublished_drafts(self):
+        # Inbox #165: every team's hand-set Team.team_tier is "3", and code 3 is held by nobody in
+        # the published season, so it selects nobody. The draft season's swap is invisible too.
+        self.assertEqual(self._count(tiers=["3"]), 0)
+        self.assertEqual(self._count(tiers=["1"]), 2)
+        # A value that is not a tier code is dropped, never guessed at.
+        self.assertEqual(parse_audience_spec({"tiers": ["Tier 1", "x"]})["tiers"], [])
+
+    def test_tier_filter_with_no_published_season_selects_nobody(self):
+        from afc_rankings.models import Season
+
+        Season.objects.update(tiers_published=False)
+        self.assertEqual(self._count(tiers=["1", "2"]), 0)
 
     def test_country_filter(self):
         # Nigeria: admin, ng_tier1_a, ng_tier1_b, ng_teamless (suspended/deactivated excluded).
@@ -516,6 +557,8 @@ class BroadcastAudienceTests(TestCase):
 
         tiers = {row["value"]: row["count"] for row in body["tiers"]}
         self.assertEqual(tiers["1"], 2)          # both Alpha members
+        self.assertEqual(tiers["2"], 0)          # Bravo's owner has no membership row
+        self.assertNotIn("3", tiers)             # the hand-set "3" is not a published tier
 
         roles = {row["value"]: row["count"] for row in body["roles"]}
         self.assertEqual(roles["admin"], 1)

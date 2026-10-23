@@ -466,7 +466,7 @@ def scoring_config_version(request, version):
         return err
     cfg = ScoringConfig.objects.filter(version=version).first()
     if not cfg:
-        return Response({"message": "Scoring config version not found."},
+        return Response({"message": "Scoring config version not found.", "code": "scoring_config_version_not"},
                         status=status.HTTP_404_NOT_FOUND)
     body = serialize_scoring_config(cfg)
     body["field_meta"] = dict(FIELD_META)
@@ -558,7 +558,7 @@ def scoring_config_validate(request):
 
     config = request.data.get("config")
     if not isinstance(config, dict) or not config:
-        return Response({"message": "A 'config' object is required."},
+        return Response({"message": "A 'config' object is required.", "code": "config_object_required"},
                         status=status.HTTP_400_BAD_REQUEST)
 
     # Same completion the GET applies, so the dry run judges what a save would actually store.
@@ -634,7 +634,7 @@ def scoring_config_save(request):
 
     config = request.data.get("config")
     if not isinstance(config, dict) or not config:
-        return Response({"message": "A 'config' object is required."},
+        return Response({"message": "A 'config' object is required.", "code": "config_object_required"},
                         status=status.HTTP_400_BAD_REQUEST)
 
     # (3) refuse anything that would corrupt scoring. Contradictions are collected here too
@@ -650,7 +650,7 @@ def scoring_config_save(request):
                 "message": "These settings would break scoring, so nothing was saved.",
                 "errors": checked["errors"],
                 "contradictions": checked["contradictions"],
-            },
+             "code": "settings_break_scoring_nothing"},
             status=status.HTTP_400_BAD_REQUEST,
         )
 

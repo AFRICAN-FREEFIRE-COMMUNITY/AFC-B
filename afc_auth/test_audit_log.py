@@ -288,7 +288,7 @@ class AuditLogEndpointTests(TestCase):
         return self.client.get("/auth/get-audit-log/", params, **headers)
 
     def test_requires_head_admin(self):
-        self.assertEqual(self._get().status_code, 400)                    # no token
+        self.assertEqual(self._get().status_code, 401)                    # no token
         self.assertEqual(self._get(token="tok_player").status_code, 403)  # normal user
         self.assertEqual(self._get(token="tok_plain").status_code, 403)   # role==admin but NOT head_admin
         self.assertEqual(self._get(token="tok_admin").status_code, 200)   # head_admin

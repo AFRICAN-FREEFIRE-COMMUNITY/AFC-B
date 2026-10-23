@@ -264,16 +264,31 @@ def send_received(application, access_token):
     THE GUIDE IS LINKED, NOT ATTACHED. It is close to 2 MB, and a 2 MB attachment on a
     transactional email is what gets a sender's domain treated as spam, or gets stripped by a
     corporate mail gateway before it arrives. A link also always serves the CURRENT build.
+
+    WHAT THEY APPLIED FOR DECIDES THE MIDDLE (2026-10-09, inbox #199). The form asks again whether
+    they want Sign in with AFC, the Data API, or both, so the explanation and the guide link come
+    per product: the PDF for Sign in with AFC, the public /partners/api page for the Data API.
+    Telling a data-only applicant about client secrets would be telling them about the wrong thing.
     """
+    body_keys = ["intro", "next_steps"]
+    if application.wants_sso:
+        body_keys += ["what_it_is", "guide"]
+    if application.wants_data_api:
+        body_keys += ["what_it_is_data_api", "guide_data_api"]
+    body_keys.append("keep_link")
+
     _send(
         application,
         template="partner_apply_received",
         subject_key="partner_apply_received",
-        body_keys=("intro", "next_steps", "what_it_is", "guide", "keep_link"),
+        body_keys=tuple(body_keys),
         organisation=_text(application.organisation_name),
         reference=application.reference,
         link=_link(status_url(application, access_token), application.reference),
         guide=_link(guide_url(), "Sign in with AFC integration guide (PDF)"),
+        # The same link markup send_approved uses for the Data API reference, so the two emails
+        # point at it identically.
+        api_guide=_link(data_api_guide_url(), _code(data_api_guide_url(), inside_link=True)),
     )
 
 
@@ -380,6 +395,20 @@ AFC_NOTIFY_ADDRESS = getattr(
     settings, "PARTNER_APPLY_NOTIFY_EMAIL", "info@africanfreefirecommunity.com")
 
 
+def _products_in_words(application):
+    """What they applied for, in English, for AFC's own notice below (2026-10-09).
+
+    Two products since the Data API choice came back on the form, so the notice says which, and
+    the reviewer knows before opening the queue whether a data key is being asked for.
+    """
+    products = []
+    if application.wants_sso:
+        products.append("Sign in with AFC")
+    if application.wants_data_api:
+        products.append("the Data API")
+    return " and ".join(products) or "nothing"
+
+
 def send_internal_new_application(application):
     """Tell AFC that an application arrived (owner 2026-08-05).
 
@@ -424,8 +453,9 @@ def send_internal_new_application(application):
         f"An organisation has applied to be an AFC partner</div></td></tr>"
         f"{facts}"
         f'<tr><td style="padding:16px 44px 14px;font-size:15px;line-height:1.6;color:#aab5ae;">'
-        f"They applied for Sign in with AFC. What they are building and what they need is on the "
-        f"review screen: {_link(admin_link, 'open the application queue')}.</td></tr>"
+        f"They applied for {_products_in_words(application)}. What they are building and what "
+        f"they need is on the review screen: {_link(admin_link, 'open the application queue')}."
+        f"</td></tr>"
     )
 
     def _deliver():

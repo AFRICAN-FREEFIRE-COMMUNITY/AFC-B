@@ -367,6 +367,10 @@ class Roles(models.Model):
         ("teams_admin", "Teams Admin"),
         ("partner_admin", "Partner Admin"),
         ("sponsor_admin", "Sponsor Admin"),
+        # The support desk and nothing else (afc_support.views._SUPPORT_GRANULAR_ROLES). Used since
+        # 2026-09-14 but never listed here, so it could only exist if somebody typed it into the
+        # roles table by hand (inbox #56, 2026-09-27). ensure_role_rows() now creates it.
+        ("support_admin", "Support Admin"),
         ("organizer", "Organizer"),              # granted to any active OrganizationMember
         ("organizer_admin", "Organizer Admin"),  # AFC staff who oversee organizations
         # Wagers (owner 2026-09-18): markets and settlement / the money side. head_admin holds
@@ -474,7 +478,14 @@ class News(models.Model):
         # read as a group, while "bans" is the enforcement notice board and reads best last. The
         # picker, both public filters and the admin filter all follow this same order.
         ("education", "Education Updates"),
-        ("bans", "Banned Players/Teams"),
+        # Owner, 2026-10-05 (inbox #145): "separate these, banned players should be separated from
+        # team updates", with "All three" picked: one category for news about teams, and the old
+        # bans board split into players and teams. "team_updates" joins the informational group;
+        # "bans" keeps its key (every existing ban post stays where it is) and now means banned
+        # PLAYERS; "banned_teams" follows it, so the enforcement notices still read last.
+        ("team_updates", "Team Updates"),
+        ("bans", "Banned Players"),
+        ("banned_teams", "Banned Teams"),
     ]
 
     news_id = models.AutoField(primary_key=True)
@@ -482,6 +493,17 @@ class News(models.Model):
     news_title = models.CharField(max_length=255)
     content = models.TextField()
     category = models.CharField(max_length=20, choices=CATEGORY_CHOICES)
+    # ── categories: a post can sit in SEVERAL categories at once ─────────────────────────────────
+    # Owner, 2026-10-05 (inbox #160): "an article or post can be under several categories
+    # simultaneously". `categories` is the full list of keys in the order the admin picked them,
+    # each one of CATEGORY_CHOICES (create_news / edit_news validate every key through
+    # afc_auth.views._read_news_categories). `category` stays and is always the FIRST of them, so
+    # every older reader keeps getting one key: the Discord bot's news embed (afcbot/bot.py), the
+    # admin dashboard's recent-news table (views_dashboard.py), an older frontend. A post written
+    # before this field existed has an empty list, and category_keys() answers [category] for it,
+    # so no reader depends on a backfill. Read by get_all_news / get_news_detail /
+    # get_pinned_news as "categories"; the frontend filters /news by ANY of them.
+    categories = models.JSONField(default=list, blank=True)
     related_event = models.ForeignKey("afc_tournament_and_scrims.Event", on_delete=models.SET_NULL, null=True, blank=True)
     # ── related_events: NEW multi-event link (News overhaul) ─────────────────────────────────────
     # A news post can now reference MANY events (e.g. a recap that covers several tournaments).
@@ -555,6 +577,13 @@ class News(models.Model):
     #   - Unpinning DELETES NOTHING: clearing this field only removes the post from the homepage
     #     block. It stays published and readable at /news and /news/<slug> exactly as before.
     pinned_until = models.DateTimeField(null=True, blank=True)
+
+    def category_keys(self):
+        """Every category this post is in (inbox #160): the categories list, or [category] for a
+        post written before posts could have several."""
+        if self.categories:
+            return list(self.categories)
+        return [self.category] if self.category else []
 
     def is_pinned_now(self):
         """True when this post should appear in the homepage notices block right now.

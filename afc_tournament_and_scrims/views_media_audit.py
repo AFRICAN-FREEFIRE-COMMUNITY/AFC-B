@@ -157,22 +157,22 @@ def media_image_check_clear(request, event_id):
     try:
         profile = canonical_profile(request.data.get("user_id"), create=False)
     except (ValueError, TypeError):
-        return Response({"message": "Player not found."}, status=404)
+        return Response({"message": "Player not found.", "code": "player_not_found"}, status=404)
     if profile is None:
-        return Response({"message": "Player not found."}, status=404)
+        return Response({"message": "Player not found.", "code": "player_not_found"}, status=404)
     # Organizer scope: a non-staff caller may only clear a player who is IN this event, the same
     # rule media_upload applies to a replacement.
     from afc_auth.views import is_stats_admin, validate_token
     auth = request.headers.get("Authorization", "")
     viewer = validate_token(auth.split(" ")[1]) if " " in auth else None
     if viewer is None:
-        return Response({"message": "Invalid or expired session token."}, status=401)
+        return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
     if not is_stats_admin(viewer):
         from .models import RegisteredCompetitors, TournamentTeamMember
         uid = profile.user_id
         if not (RegisteredCompetitors.objects.filter(event=event, user_id=uid).exists()
                 or TournamentTeamMember.objects.filter(tournament_team__event=event, user_id=uid).exists()):
-            return Response({"message": "That player is not in this event."}, status=403)
+            return Response({"message": "That player is not in this event.", "code": "player_not_event"}, status=403)
     profile.esports_pic_check = "cleared"
     profile.esports_pic_checked_at = timezone.now()
     profile.save(update_fields=["esports_pic_check", "esports_pic_checked_at"])
@@ -190,7 +190,7 @@ def media_flag(request, event_id):
     from afc_team.models import Team
     kind = (request.data.get("kind") or "").strip()
     if kind not in ("team_logo", "esports_image"):
-        return Response({"message": "kind must be team_logo or esports_image."}, status=400)
+        return Response({"message": "kind must be team_logo or esports_image.", "code": "kind_team_logo_esports"}, status=400)
     reason = (request.data.get("reason") or "").strip()[:200]
 
     # Resolve the acting user for the flag's audit trail (the gate validates but doesn't stash it).
@@ -200,7 +200,7 @@ def media_flag(request, event_id):
     if kind == "team_logo":
         team = Team.objects.filter(team_id=request.data.get("team_id")).first()
         if not team:
-            return Response({"message": "Team not found."}, status=404)
+            return Response({"message": "Team not found.", "code": "team_not_found"}, status=404)
         flag, _ = MediaFlag.objects.get_or_create(
             event=event, kind=kind, team=team, resolved=False,
             defaults={"reason": reason, "flagged_by": flagger},
@@ -223,7 +223,7 @@ def media_flag(request, event_id):
     else:
         user = User.objects.filter(user_id=request.data.get("user_id")).first()
         if not user:
-            return Response({"message": "User not found."}, status=404)
+            return Response({"message": "User not found.", "code": "user_not_found"}, status=404)
         flag, _ = MediaFlag.objects.get_or_create(
             event=event, kind=kind, user=user, resolved=False,
             defaults={"reason": reason, "flagged_by": flagger},
@@ -250,7 +250,7 @@ def media_flag_resolve(request, event_id, flag_id):
         return err
     row = MediaFlag.objects.filter(event=event, id=flag_id).first()
     if not row:
-        return Response({"message": "Flag not found."}, status=404)
+        return Response({"message": "Flag not found.", "code": "flag_not_found"}, status=404)
     row.resolved = True
     row.save(update_fields=["resolved"])
     return Response({"message": "Flag resolved."}, status=200)
@@ -267,11 +267,11 @@ def media_opt_out(request, event_id):
     from afc_team.models import Team
     kind = (request.data.get("kind") or "").strip()
     if kind not in ("team_logo", "esports_image"):
-        return Response({"message": "kind must be team_logo or esports_image."}, status=400)
+        return Response({"message": "kind must be team_logo or esports_image.", "code": "kind_team_logo_esports"}, status=400)
     team = Team.objects.filter(team_id=request.data.get("team_id")).first() if kind == "team_logo" else None
     user = User.objects.filter(user_id=request.data.get("user_id")).first() if kind == "esports_image" else None
     if not team and not user:
-        return Response({"message": "Target not found."}, status=404)
+        return Response({"message": "Target not found.", "code": "target_not_found"}, status=404)
     if request.data.get("remove"):
         EventMediaOptOut.objects.filter(event=event, kind=kind, team=team, user=user).delete()
         return Response({"message": "Suppression removed - the media shows again."}, status=200)
@@ -298,7 +298,7 @@ def media_upload(request, event_id):
     auth = request.headers.get("Authorization", "")
     viewer = validate_token(auth.split(" ")[1]) if " " in auth else None
     if viewer is None:
-        return Response({"message": "Invalid or expired session token."}, status=401)
+        return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
     # Owner 2026-07-06: owning ORGANIZERS may now overwrite media for teams/players IN THEIR OWN event
     # (was AFC-admin-only). _broadcast_gate above already confirmed staff OR owning-org access to THIS
     # event. AFC staff (is_stats_admin) may overwrite ANY target; an organizer only a target that is
@@ -310,7 +310,7 @@ def media_upload(request, event_id):
     kind = (request.data.get("kind") or "").strip()
     upload = request.FILES.get("file")
     if kind not in ("team_logo", "player_image") or not upload:
-        return Response({"message": "kind (team_logo|player_image) and file are required."},
+        return Response({"message": "kind (team_logo|player_image) and file are required.", "code": "kind_team_logo_player"},
                         status=400)
 
     # The bytes decide what it is (owner rule R70). Until 2026-09-18 this called the normaliser
@@ -326,13 +326,13 @@ def media_upload(request, event_id):
         try:
             team = Team.objects.get(team_id=request.data.get("team_id"))
         except (Team.DoesNotExist, ValueError, TypeError):
-            return Response({"message": "Team not found."}, status=404)
+            return Response({"message": "Team not found.", "code": "team_not_found"}, status=404)
         # Organizer scope: a non-staff caller may only overwrite a team that is IN this event.
         if not is_staff:
             from .models import TournamentTeam, RegisteredCompetitors
             if not (TournamentTeam.objects.filter(event=event, team=team).exists()
                     or RegisteredCompetitors.objects.filter(event=event, team=team).exists()):
-                return Response({"message": "That team is not in this event."}, status=403)
+                return Response({"message": "That team is not in this event.", "code": "team_not_event"}, status=403)
         team.team_logo = upload
         team.save(update_fields=["team_logo"])
         url = request.build_absolute_uri(team.team_logo.url)
@@ -354,7 +354,7 @@ def media_upload(request, event_id):
             _uid = request.data.get("user_id")
             if not (RegisteredCompetitors.objects.filter(event=event, user_id=_uid).exists()
                     or TournamentTeamMember.objects.filter(tournament_team__event=event, user_id=_uid).exists()):
-                return Response({"message": "That player is not in this event."}, status=403)
+                return Response({"message": "That player is not in this event.", "code": "player_not_event"}, status=403)
         # The verdict is recorded either way (owner 2026-09-13) so a forced placeholder still
         # shows up in the review queue instead of looking clean.
         from afc_auth.face_check import check_esport_image
@@ -374,7 +374,7 @@ def media_upload(request, event_id):
             from afc_auth.models import canonical_profile
             profile = canonical_profile(request.data.get("user_id"), create=True)
         except (ValueError, TypeError):
-            return Response({"message": "Player not found."}, status=404)
+            return Response({"message": "Player not found.", "code": "player_not_found"}, status=404)
         profile.esports_pic = upload
         profile.esports_pic_check = check["verdict"]
         profile.esports_pic_checked_at = timezone.now()

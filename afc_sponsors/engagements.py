@@ -180,19 +180,19 @@ def configure_sponsorship(request, sponsor_id, event_id):
             sponsor_id=sponsor_id, event_id=event_id,
         )
     except EventSponsorship.DoesNotExist:
-        return Response({"message": "That sponsor is not attached to this event."}, status=404)
+        return Response({"message": "That sponsor is not attached to this event.", "code": "sponsor_not_attached_event"}, status=404)
 
     if not _is_sponsor_admin(user):
         # Lazy import (afc_organizers <-> afc_sponsors would otherwise risk a cycle).
         from afc_organizers.permissions import org_can_event
         if not org_can_event(user, "can_edit_events", sp.event):
-            return Response({"message": "You do not have permission to configure this sponsorship."}, status=403)
+            return Response({"message": "You do not have permission to configure this sponsorship.", "code": "not_permission_configure_sponsorship"}, status=403)
 
     if "engagements" in request.data:
         engagements = request.data.get("engagements")
         error = validate_engagements(engagements)
         if error:
-            return Response({"message": error}, status=400)
+            return Response({"message": error, "code": "configure_sponsorship_refused"}, status=400)
         sp.engagements = engagements
     if "requires_approval" in request.data:
         sp.requires_approval = bool(request.data.get("requires_approval"))
@@ -421,17 +421,17 @@ def sponsorship_submissions(request, sponsor_id, event_id):
     try:
         sponsor = Sponsor.objects.get(id=sponsor_id)
     except Sponsor.DoesNotExist:
-        return Response({"message": "Sponsor not found."}, status=404)
+        return Response({"message": "Sponsor not found.", "code": "sponsor_not_found"}, status=404)
     try:
         sp = EventSponsorship.objects.select_related("event", "sponsor").get(
             sponsor=sponsor, event_id=event_id,
         )
     except EventSponsorship.DoesNotExist:
-        return Response({"message": "That event is not attached to this sponsor."}, status=404)
+        return Response({"message": "That event is not attached to this sponsor.", "code": "event_not_attached_sponsor"}, status=404)
     # Gate on the SPONSORSHIP, not the sponsor, so the organizer running this event passes for
     # this event only (owner 2026-08-14). Sponsor members and sponsor-admins are unchanged.
     if not can_act_on_sponsorship(user, sp):
-        return Response({"message": "You do not have access to this sponsor."}, status=403)
+        return Response({"message": "You do not have access to this sponsor.", "code": "not_access_sponsor"}, status=403)
 
     qs = (
         SponsorEngagementSubmission.objects.filter(sponsorship=sp)
@@ -754,11 +754,11 @@ def decide_submission(request, submission_id):
             "sponsorship__sponsor", "sponsorship__event", "event", "user",
         ).get(id=submission_id)
     except SponsorEngagementSubmission.DoesNotExist:
-        return Response({"message": "Submission not found."}, status=404)
+        return Response({"message": "Submission not found.", "code": "submission_not_found"}, status=404)
     # Sponsor-admin, the sponsor's own members, or the organizer of THIS event (owner
     # 2026-08-14): a queue nobody can clear is worse than one cleared by the event's organizer.
     if not can_act_on_sponsorship(user, sub.sponsorship):
-        return Response({"message": "You do not have access to this sponsor."}, status=403)
+        return Response({"message": "You do not have access to this sponsor.", "code": "not_access_sponsor"}, status=403)
 
     code, body = _apply_decision(user, sub, request.data.get("action"), request.data.get("reason"))
     return Response(body, status=code)
@@ -795,17 +795,17 @@ def decide_submissions(request):
     action = request.data.get("action")
     reason = request.data.get("reason")
     if not isinstance(ids, list) or not ids:
-        return Response({"message": "ids must be a non-empty list."}, status=400)
+        return Response({"message": "ids must be a non-empty list.", "code": "ids_non_empty_list"}, status=400)
     if len(ids) > BULK_DECISION_MAX:
         return Response({"message": f"At most {BULK_DECISION_MAX} submissions per request."}, status=400)
     if action not in ("approve", "reject", "reject_final"):
-        return Response({"message": "action must be approve, reject or reject_final."}, status=400)
+        return Response({"message": "action must be approve, reject or reject_final.", "code": "action_approve_reject_reject"}, status=400)
     try:
         wanted = [int(i) for i in ids]
     except (TypeError, ValueError):
-        return Response({"message": "ids must be integers."}, status=400)
+        return Response({"message": "ids must be integers.", "code": "ids_integers"}, status=400)
     if action in ("reject", "reject_final") and not (reason or "").strip():
-        return Response({"message": "A rejection reason is required."}, status=400)
+        return Response({"message": "A rejection reason is required.", "code": "rejection_reason_required"}, status=400)
 
     subs = {
         s.id: s for s in SponsorEngagementSubmission.objects.select_related(
@@ -846,18 +846,18 @@ def resubmit_submission(request, submission_id):
     try:
         sub = SponsorEngagementSubmission.objects.select_related("sponsorship").get(id=submission_id)
     except SponsorEngagementSubmission.DoesNotExist:
-        return Response({"message": "Submission not found."}, status=404)
+        return Response({"message": "Submission not found.", "code": "submission_not_found"}, status=404)
     if sub.user_id != user.user_id:
-        return Response({"message": "You can only resubmit your own submission."}, status=403)
+        return Response({"message": "You can only resubmit your own submission.", "code": "resubmit_submission"}, status=403)
     if sub.approval_status != "rejected":
-        return Response({"message": "Only a rejected submission can be resubmitted."}, status=400)
+        return Response({"message": "Only a rejected submission can be resubmitted.", "code": "rejected_submission_resubmitted"}, status=400)
 
     engagements = sub.sponsorship.engagements or []
     engagement = engagements[sub.engagement_index] if sub.engagement_index < len(engagements) else {}
     payload = request.data.get("payload") or {}
     error = validate_payload(engagement, payload)
     if error:
-        return Response({"message": error}, status=400)
+        return Response({"message": error, "code": "resubmit_submission_refused"}, status=400)
 
     sub.prev_status, sub.prev_reason = sub.approval_status, sub.reason
     sub.payload = payload

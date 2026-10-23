@@ -70,7 +70,7 @@ class ShippingQuoteEndpointTests(TestCase):
 
     def test_quote_requires_auth(self):
         resp = self.client.post("/shop/shipping/quote/", {}, format="json")
-        self.assertEqual(resp.status_code, 400)  # no Bearer header
+        self.assertEqual(resp.status_code, 401)  # no Bearer header
 
     @override_settings(SHIPPING_PROVIDER="", SHIPPING_API_KEY=None)
     def test_quote_returns_disabled_when_unconfigured(self):

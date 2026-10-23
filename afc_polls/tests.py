@@ -147,17 +147,29 @@ class EligibilityRefusalTests(TestCase):
         self.assertTrue(requirement(allowed, "countries")["passed"])
 
     def test_team_tier_rule_refuses_and_names_your_tier(self):
+        # The tier is the PUBLISHED ranking tier (inbox #165): code 0 is "Tier 1", code 2 "Tier 3".
+        from afc_rankings.models import Season, TeamQuarterlyScore
+
         tier_one = Team.objects.create(
-            team_name="Tier one", join_settings="open", team_tier="1",
+            team_name="Tier one", join_settings="open",
             team_creator=self.nigerian, team_owner=self.nigerian,
         )
         tier_three = Team.objects.create(
-            team_name="Tier three", join_settings="open", team_tier="3",
+            team_name="Tier three", join_settings="open",
             team_creator=self.ghanaian, team_owner=self.ghanaian,
         )
         TeamMembers.objects.create(team=tier_one, member=self.nigerian)
         TeamMembers.objects.create(team=tier_three, member=self.ghanaian)
-        set_audience(self.poll, {"tiers": ["1"]})
+        today = timezone.localdate()
+        season = Season.objects.create(
+            name="SEASON 2 2026", quarter=2, year=2026,
+            start_date=today - timedelta(days=120), end_date=today - timedelta(days=30),
+            transfer_window_open=today - timedelta(days=120),
+            transfer_window_close=today - timedelta(days=106), tiers_published=True,
+        )
+        TeamQuarterlyScore.objects.create(team=tier_one, season=season, tier_assigned=0)
+        TeamQuarterlyScore.objects.create(team=tier_three, season=season, tier_assigned=2)
+        set_audience(self.poll, {"tiers": ["0"]})
 
         refused = check_eligibility(self.poll, self.ghanaian)
         self.assertFalse(refused["eligible"])
@@ -301,6 +313,7 @@ class RankingEligibilityTests(TestCase):
             name="Season Q3 2026", quarter=3, year=2026,
             start_date=today - timedelta(days=10), end_date=today + timedelta(days=10),
             transfer_window_open=today, transfer_window_close=today, is_active=True,
+            tiers_published=True,
         )
         TeamQuarterlyScore.objects.create(
             team=self.top_team, season=self.season, rank=3, tier_assigned=0
@@ -326,11 +339,34 @@ class RankingEligibilityTests(TestCase):
         refused = check_eligibility(self.poll, self.bottom)
         line = requirement(refused, "season_tiers")
         self.assertFalse(refused["eligible"])
-        self.assertIn("Rising", line["your_value"])
-        self.assertIn("Elite", line["requirement_text"])
-        # The numbers run opposite ways (season 0 is best, hand-set tier 1 is best), so a raw
-        # integer in this copy would be read backwards by half the admins who see it.
+        # Named the way the Rankings page names them (inbox #165): code 2 is "Tier 3", 0 "Tier 1".
+        self.assertIn("Tier 3", line["your_value"])
+        self.assertIn("Tier 1", line["requirement_text"])
+        # A raw code in this copy would be read off by one by everybody who sees it.
         self.assertNotIn("0", line["requirement_text"])
+
+    def test_season_tier_ignores_an_unpublished_season(self):
+        """The active quarter's tiers are a draft until published, and nobody can see a draft. A
+        poll gated on season tier reads the latest PUBLISHED tiers (inbox #165)."""
+        self.season.tiers_published = False
+        self.season.save(update_fields=["tiers_published"])
+        set_audience(self.poll, {"season_tiers": {"scope": "team", "values": [0]}})
+
+        refused = check_eligibility(self.poll, self.top)
+        self.assertFalse(refused["eligible"])
+        self.assertEqual(requirement(refused, "season_tiers")["your_value"],
+                         "No season has published tiers yet")
+
+    def test_a_team_tier_pick_is_saved_as_a_frozen_season_tier(self):
+        """One tier rule on a poll: the old team-tier chips fold into season_tiers, which freezes."""
+        from .views import _save_eligibility
+
+        _save_eligibility(self.poll, {"tiers": ["0"]})
+        spec = PollEligibilityRule.objects.get(poll=self.poll).spec
+        self.assertEqual(spec["tiers"], [])
+        self.assertEqual(spec["season_tiers"]["scope"], "team")
+        self.assertEqual(spec["season_tiers"]["values"], [0])
+        self.assertEqual(spec["season_tiers"]["frozen_team_ids"], [self.top_team.team_id])
 
     def test_freezing_pins_the_audience_against_a_later_recalculation(self):
         """A team promoted after the poll opened does not join an open poll, and a team that drops

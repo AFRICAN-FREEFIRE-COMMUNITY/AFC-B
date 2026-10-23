@@ -278,7 +278,12 @@ class PlayerTargetBlacklistApiTests(TestCase):
             content_type="application/json",
             **self._auth(self.bystander),
         )
-        self.assertEqual(resp.status_code, 403, resp.content)
+        # 404, not 403, since the R88 hardening (72f9894d, 2026-09-30): a bystander is told
+        # nothing about a blacklist they are not party to, the same answer as for one that does
+        # not exist (the old 403 confirmed that this player is on someone's blacklist). And no
+        # lift request is filed.
+        self.assertEqual(resp.status_code, 404, resp.content)
+        self.assertFalse(BlacklistLiftRequest.objects.filter(blacklist=blacklist).exists())
 
     # ── §5 the organizer list shows the player row with its target ────────────
     def test_list_includes_player_target(self):

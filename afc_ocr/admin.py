@@ -10,7 +10,8 @@ class OCRSessionAdmin(admin.ModelAdmin):
 
 @admin.register(OCRNameAlias)
 class OCRNameAliasAdmin(admin.ModelAdmin):
-    list_display = ("raw_name", "user", "match_count", "updated_at")
+    list_display = ("raw_name", "user", "organization", "match_count", "rejected_count", "updated_at")
+    list_filter = ("organization",)
     search_fields = ("raw_name", "user__username")
 
 @admin.register(OCRTeamNote)

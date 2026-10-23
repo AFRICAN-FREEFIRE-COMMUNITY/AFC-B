@@ -29,6 +29,7 @@ Frontend routes these paths map to (see frontend/app/(user)/...):
 """
 
 from typing import Optional
+from afc_auth.site_paths import player_path, team_path
 
 
 def _slug_for_event(target_id: str) -> str:
@@ -122,9 +123,9 @@ def build_notification_link(target_type: str, target_id: str) -> Optional[str]:
     if target_type == "news":
         return f"/news/{_slug_for_news(target_id)}"
     if target_type == "team":
-        return f"/teams/{target_id}"
+        return team_path(target_id)
     if target_type == "player":
-        return f"/players/{target_id}"
+        return player_path(target_id)
     if target_type == "organizer":
         return f"/organizations/{_slug_for_organizer(target_id)}"
     # poll -> Poll.slug, written by afc_polls.views.admin_announce (and by the Phase 3 close-soon

@@ -22,7 +22,7 @@
 #   restart celery-* and afc-bot           workers stop after the task in flight (TimeoutStopSec
 #                                          300); queued tasks wait in Redis; the bot reconnects to
 #                                          Discord in a couple of seconds. Nothing user-visible.
-#   health probe                           an auth-required endpoint must answer 400 (Django is
+#   health probe                           an auth-required endpoint must answer 401 (Django is
 #                                          up and routing) within 30 s or the run goes red
 #
 # The trampoline is re-installed from this checkout at the end so the reviewed copy in git is
@@ -47,10 +47,10 @@ sudo systemctl restart celery-worker celery-beat celery-rankings afc-bot
 code=""
 for i in $(seq 1 30); do
   code=$(curl -s -o /dev/null -m 5 -w '%{http_code}' -H 'Host: api.africanfreefirecommunity.com' http://127.0.0.1:8000/auth/connections/ || true)
-  [ "$code" = "400" ] && break
+  [ "$code" = "401" ] && break
   sleep 1
 done
-if [ "$code" != "400" ]; then
+if [ "$code" != "401" ]; then
   echo "API health probe failed after 30 s (got '$code'); last gunicorn log lines:"
   sudo journalctl -u django_app -n 20 --no-pager -o cat
   exit 1

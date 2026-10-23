@@ -86,6 +86,8 @@ INSTALLED_APPS = [
     # its replies in both directions and its own audit. Replaces a contact form that stored
     # nothing and emailed the words "Valid email." See afc_support/models.py.
     'afc_support',
+    # Bulk marketing email through Amazon SES, consent + tracker (owner 2026-10-16, inbox #259).
+    'afc_mail',
     'afc_partner_api',
     'afc_sponsors',
     # Group draw (owner 2026-09-12): teams turn over a sealed card to pick their own group for a
@@ -113,10 +115,17 @@ INSTALLED_APPS = [
     # replaced rather than extended. afc_awards stays installed until its historical Vote rows
     # have been migrated in a later phase. See afc_polls/models.py.
     'afc_polls',
+    # Short, counted QR links for events, teams, players and news (inbox #46). See afc_qr/models.py.
+    'afc_qr',
+    # Referral programs: admin-run programs, personal links and codes, counting and prizes (inbox #47).
+    'afc_referrals',
     # The AFC admin's Bot page (backlog item 31). Holds no models: it is a permission gate plus a
     # proxy to the Discord bot's own control API, which runs in a separate process and repo
     # (AFC/AFCBot). See afc_bot/views.py for why the browser must not call that API directly.
     'afc_bot',
+    # The website's Help panel (inbox #109, owner approved 2026-10-04): the gate in front of the
+    # Discord bot's brain, its conversations and the "Talk to a person" ticket. See afc_helpbot/views.py.
+    'afc_helpbot',
 ]
 
 # ── Discord bot control API (backlog item 31) ─────────────────────────────────────────────────
@@ -129,6 +138,22 @@ INSTALLED_APPS = [
 # and BOT_CONTROL_TOKEN must be the SAME value the bot has.
 BOT_CONTROL_URL = os.getenv("BOT_CONTROL_URL", "")
 BOT_CONTROL_TOKEN = os.getenv("BOT_CONTROL_TOKEN", "")
+
+# ── The website Help panel (afc_helpbot, inbox #109) ──────────────────────────────────────────
+# It asks the same bot process through BOT_CONTROL_URL above, so with those blank the panel shows
+# "offline" and still opens tickets. HELP_BOT_ENABLED=False turns the assistant off without a deploy.
+# The allowances are questions per day (UTC), checked before the model is called (owner rule R75);
+# HELP_BOT_MAX_INFLIGHT caps the questions with the model at once across all gunicorn workers.
+HELP_BOT_ENABLED = os.getenv("HELP_BOT_ENABLED", "True").strip().lower() == "true"
+HELP_BOT_DAILY_SIGNED_IN = int(os.getenv("HELP_BOT_DAILY_SIGNED_IN", "30"))
+HELP_BOT_DAILY_SIGNED_OUT = int(os.getenv("HELP_BOT_DAILY_SIGNED_OUT", "10"))
+HELP_BOT_DAILY_PER_NETWORK = int(os.getenv("HELP_BOT_DAILY_PER_NETWORK", "60"))
+HELP_BOT_BURST_PER_MINUTE = int(os.getenv("HELP_BOT_BURST_PER_MINUTE", "6"))
+HELP_BOT_MAX_INFLIGHT = int(os.getenv("HELP_BOT_MAX_INFLIGHT", "2"))
+HELP_BOT_RETENTION_DAYS = int(os.getenv("HELP_BOT_RETENTION_DAYS", "30"))
+# Every input to the panel, answered or refused, is kept this long for staff (inbox #156,
+# afc_helpbot.models.HelpInputLog), longer than the chats themselves so a review can look back.
+HELP_BOT_LOG_RETENTION_DAYS = int(os.getenv("HELP_BOT_LOG_RETENTION_DAYS", "90"))
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 # Which Gemini model the OCR teacher calls. Flash is ~2x faster than Pro (≈12s vs ≈26s on a FF
@@ -235,7 +260,7 @@ OAUTH2_PROVIDER = {
         # These strings are the PROMISE shown to the player on the consent screen, so each one
         # has to match what afc_sso/claims.py actually releases. History carries event name and
         # slug only (no placement), and ranking carries points, rank and month (tier is a TEAM
-        # attribute, team_tier, so it is not in a player claim). Change a resolver, change these.
+        # attribute, the team's ranking tier, so it is not in a player claim). Change a resolver, change these.
         "afc.history": _("Tournaments you have played"),
         "afc.stats": _("Your match statistics"),
         "afc.ranking": _("Your AFC rank and ranking points"),
@@ -524,6 +549,10 @@ OCR_GEMINI_FALLBACK = os.getenv("OCR_GEMINI_FALLBACK", "True").strip().lower() =
 OCR_GATE_MIN_MEAN_SCORE = float(os.getenv("OCR_GATE_MIN_MEAN_SCORE", "0.80"))
 OCR_GATE_MIN_NAMED_FRAC = float(os.getenv("OCR_GATE_MIN_NAMED_FRAC", "0.70"))
 OCR_GATE_MAX_OVERSIZED_FRAC = float(os.getenv("OCR_GATE_MAX_OVERSIZED_FRAC", "0.15"))
+# Screenshot reads of the standalone leaderboard batch that run at once, handed out in turn between
+# organizers (afc_leaderboard/ocr_queue.py, owner 2026-10-22 #334). Two, because each read uses two
+# CPU threads and the API box has four cores that gunicorn also needs.
+OCR_QUEUE_SLOTS = int(os.getenv("OCR_QUEUE_SLOTS", "2"))
 
 # OCR upload image guards (A8). Read by afc_ocr.services.image_validate.validate_ocr_images,
 # which the OCR upload views (afc_ocr.views.upload_ocr_session, afc_leaderboard.views.ocr_extract
@@ -721,6 +750,24 @@ WHATSAPP_BUSINESS_ACCOUNT_ID = os.getenv("WHATSAPP_BUSINESS_ACCOUNT_ID", "")
 WHATSAPP_API_VERSION = os.getenv("WHATSAPP_API_VERSION", "v21.0")
 WHATSAPP_WEBHOOK_VERIFY_TOKEN = os.getenv("WHATSAPP_WEBHOOK_VERIFY_TOKEN", "")
 
+# ── Email news (afc_mail): Amazon SES and the addresses an email carries ──────────────────────
+# Every value comes from the box's .env (the owner's steps: tasks/ses-bulk-email-plan-2026-10-13.md);
+# nothing secret is written here. Unset, afc_mail.transport refuses to send and says SES is not set up.
+# MAIL_PUBLIC_API_BASE and MAIL_FRONTEND_BASE are for a local walk only (tracking, media and the
+# unsubscribe page pointing at local servers); production leaves them unset and gets the API host and
+# the site (afc_mail/addresses.py).
+SES_SMTP_HOST = os.getenv("SES_SMTP_HOST", "")
+SES_SMTP_PORT = os.getenv("SES_SMTP_PORT", "")
+SES_SMTP_USER = os.getenv("SES_SMTP_USER", "")
+SES_SMTP_PASSWORD = os.getenv("SES_SMTP_PASSWORD", "")
+SES_CONFIGURATION_SET = os.getenv("SES_CONFIGURATION_SET", "")
+SES_SNS_TOPIC_ARN = os.getenv("SES_SNS_TOPIC_ARN", "")
+SES_MAX_SEND_RATE = os.getenv("SES_MAX_SEND_RATE", "")
+MAIL_FROM = os.getenv("MAIL_FROM", "")
+MAIL_REPLY_TO = os.getenv("MAIL_REPLY_TO", "")
+MAIL_PUBLIC_API_BASE = os.getenv("MAIL_PUBLIC_API_BASE", "")
+MAIL_FRONTEND_BASE = os.getenv("MAIL_FRONTEND_BASE", "")
+
 # ── Outbound messages: live, or held in an outbox ─────────────────────────────────────────────
 # "live" hands email, WhatsApp and Discord DMs to real people. "outbox" records them in
 # afc_auth.outbox instead (and to OUTBOUND_OUTBOX_FILE when set) and reports them sent.
@@ -735,6 +782,12 @@ OUTBOUND_DELIVERY = os.getenv("OUTBOUND_DELIVERY", "live").strip().lower()
 OUTBOUND_OUTBOX_FILE = os.getenv("OUTBOUND_OUTBOX_FILE", "")
 if len(sys.argv) > 1 and sys.argv[1] == "test":
     OUTBOUND_DELIVERY = "outbox"
+    # The test runner never holds a DeepL key either (inbox #210, 2026-10-09). On 2026-10-08 a local
+    # run logged "DeepL translate failed with HTTP 456: Quota exceeded": a test had reached the live
+    # API with the real key from .env and spent the free quota the site lives on. Without a key,
+    # afc_auth.translation falls back to the English text and makes no call. A test of the engine
+    # sets its own fake key and stubs the call (afc_auth/tests_translation_breaker_log.py).
+    DEEPL_API_KEY = ""
 
 # ── The room template ─────────────────────────────────────────────────────────────────────────
 # WHATSAPP_ROOM_TEMPLATE -> the room id and password message, and the ONLY thing AFC sends a player

@@ -128,10 +128,10 @@ def capture_releases(request):
     auth = request.headers.get("Authorization") or ""
     user = validate_token(auth.split(" ")[1]) if auth.startswith("Bearer ") else None
     if not user:
-        return Response({"message": "Invalid or expired session token."},
+        return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"},
                         status=status.HTTP_401_UNAUTHORIZED)
     if not _is_head_or_super_admin(user):
-        return Response({"message": "Only a super admin or head admin may publish a capture release."},
+        return Response({"message": "Only a super admin or head admin may publish a capture release.", "code": "super_admin_head_admin"},
                         status=status.HTTP_403_FORBIDDEN)
 
     # ── Validate the payload (minimal: version + installer_url are the load-bearing fields) ──
@@ -142,14 +142,14 @@ def capture_releases(request):
     min_supported = str(data.get("min_supported_version") or "").strip()
 
     if not version:
-        return Response({"message": "version is required (e.g. \"1.3.0\")."},
+        return Response({"message": "version is required (e.g. \"1.3.0\").", "code": "version_required"},
                         status=status.HTTP_400_BAD_REQUEST)
     if not installer_url:
-        return Response({"message": "installer_url is required (where the installer .exe is hosted)."},
+        return Response({"message": "installer_url is required (where the installer .exe is hosted).", "code": "installer_url_required_where"},
                         status=status.HTTP_400_BAD_REQUEST)
     # Guard against a fat-fingered URL (the client will try to download this). Accept only http(s).
     if not (installer_url.startswith("http://") or installer_url.startswith("https://")):
-        return Response({"message": "installer_url must be an http(s) URL."},
+        return Response({"message": "installer_url must be an http(s) URL.", "code": "installer_url_http_url"},
                         status=status.HTTP_400_BAD_REQUEST)
 
     # ── Publish atomically: create the row, make it the ONLY latest ──

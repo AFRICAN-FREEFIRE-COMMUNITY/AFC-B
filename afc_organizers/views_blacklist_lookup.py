@@ -174,7 +174,7 @@ def blacklist_lookup(request):
         user=user, status="active"
     ).exists():
         return Response(
-            {"message": "Only organizers and AFC admins can look up blacklists."},
+            {"message": "Only organizers and AFC admins can look up blacklists.", "code": "organizers_afc_admins_look"},
             status=status.HTTP_403_FORBIDDEN,
         )
 
@@ -183,7 +183,7 @@ def blacklist_lookup(request):
     user_id = request.GET.get("user_id")
     if bool(team_id) == bool(user_id):  # both set or both missing
         return Response(
-            {"message": "Provide exactly one of team_id or user_id."},
+            {"message": "Provide exactly one of team_id or user_id.", "code": "provide_exactly_team_user"},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
@@ -194,7 +194,7 @@ def blacklist_lookup(request):
     window_end = _parse_day(raw_end, end_of_day=True)
     if (raw_start and window_start is None) or (raw_end and window_end is None):
         return Response(
-            {"message": "start and end must be valid ISO dates (YYYY-MM-DD)."},
+            {"message": "start and end must be valid ISO dates (YYYY-MM-DD).", "code": "start_end_valid_iso"},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
@@ -206,7 +206,7 @@ def blacklist_lookup(request):
         # ── TEAM lookup: every blacklist row that names this team, across all orgs ──
         team = Team.objects.filter(pk=team_id).first()
         if not team:
-            return Response({"message": "Team not found."}, status=status.HTTP_404_NOT_FOUND)
+            return Response({"message": "Team not found.", "code": "team_not_found"}, status=status.HTTP_404_NOT_FOUND)
         target = {"type": "team", "team_id": team.team_id, "team_name": team.team_name}
         qs = OrganizerBlacklist.objects.filter(team=team)
     else:
@@ -216,7 +216,7 @@ def blacklist_lookup(request):
         # individually-lifted player. ──
         target_user = User.objects.filter(pk=user_id).first()
         if not target_user:
-            return Response({"message": "User not found."}, status=status.HTTP_404_NOT_FOUND)
+            return Response({"message": "User not found.", "code": "user_not_found"}, status=status.HTTP_404_NOT_FOUND)
         target = {"type": "player", "user_id": target_user.user_id,
                   "username": target_user.username}
         row_active_by_bl = dict(
@@ -339,7 +339,7 @@ def admin_list_blacklists(request):
     # ── platform-admin gate: this is the oversight surface, reasons included ──
     if not is_platform_org_admin(user):
         return Response(
-            {"message": "You do not have permission to view the blacklist dashboard."},
+            {"message": "You do not have permission to view the blacklist dashboard.", "code": "not_permission_view_blacklist"},
             status=status.HTTP_403_FORBIDDEN,
         )
 
@@ -414,7 +414,7 @@ def admin_list_blacklists(request):
     window_end = _parse_day(raw_end, end_of_day=True)
     if (raw_start and window_start is None) or (raw_end and window_end is None):
         return Response(
-            {"message": "start and end must be valid ISO dates (YYYY-MM-DD)."},
+            {"message": "start and end must be valid ISO dates (YYYY-MM-DD).", "code": "start_end_valid_iso"},
             status=status.HTTP_400_BAD_REQUEST,
         )
     if window_start:
@@ -589,7 +589,7 @@ def admin_blacklist_counts(request):
     # ── platform-admin gate (same rule as admin_list_blacklists above) ──
     if not is_platform_org_admin(user):
         return Response(
-            {"message": "You do not have permission to view blacklist counts."},
+            {"message": "You do not have permission to view blacklist counts.", "code": "not_permission_view_blacklist"},
             status=status.HTTP_403_FORBIDDEN,
         )
 
@@ -598,7 +598,7 @@ def admin_blacklist_counts(request):
     raw_user_ids = request.GET.get("user_ids")
     if bool(raw_team_ids) == bool(raw_user_ids):  # both set or both missing
         return Response(
-            {"message": "Provide exactly one of team_ids or user_ids."},
+            {"message": "Provide exactly one of team_ids or user_ids.", "code": "provide_exactly_team_ids"},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
@@ -609,17 +609,17 @@ def admin_blacklist_counts(request):
         ids = [int(tok) for tok in str(raw_team_ids or raw_user_ids).split(",") if tok.strip()]
     except (TypeError, ValueError):
         return Response(
-            {"message": "team_ids / user_ids must be a comma-separated list of integers."},
+            {"message": "team_ids / user_ids must be a comma-separated list of integers.", "code": "team_ids_user_ids"},
             status=status.HTTP_400_BAD_REQUEST,
         )
     if not ids:
         return Response(
-            {"message": "team_ids / user_ids must contain at least one id."},
+            {"message": "team_ids / user_ids must contain at least one id.", "code": "team_ids_user_ids"},
             status=status.HTTP_400_BAD_REQUEST,
         )
     if len(ids) > 200:  # callers send one table page; anything bigger is a misuse
         return Response(
-            {"message": "At most 200 ids per call."},
+            {"message": "At most 200 ids per call.", "code": "ids_per_call"},
             status=status.HTTP_400_BAD_REQUEST,
         )
 

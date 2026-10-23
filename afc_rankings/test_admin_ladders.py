@@ -134,7 +134,7 @@ class AdminMonthlyLadderTests(TestCase):
     # ── auth gate: same as every other admin ranking route ──
     def test_requires_a_bearer_token(self):
         for name in ("rankings_admin_teams_monthly", "rankings_admin_players_monthly"):
-            self.assertEqual(self._get(name).status_code, 400, name)
+            self.assertEqual(self._get(name).status_code, 401, name)
 
     def test_non_admin_is_forbidden(self):
         plain = User.objects.create(username="plain", email="plain@example.com")

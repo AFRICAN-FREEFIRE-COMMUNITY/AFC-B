@@ -1022,4 +1022,4 @@ class PlayerStatEntryTests(H2HBase):
         self._generate(self._ids(2))
         final = self._m("winners", 1, 0)
         self.assertEqual(
-            self.client.get(f"/events/h2h-matches/{final.h2h_match_id}/rosters/").status_code, 400)
+            self.client.get(f"/events/h2h-matches/{final.h2h_match_id}/rosters/").status_code, 401)

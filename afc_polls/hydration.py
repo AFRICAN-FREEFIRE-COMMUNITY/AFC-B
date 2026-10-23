@@ -33,6 +33,7 @@ HOW THIS CONNECTS
     surfaces under app/(user)/awards/.
 """
 from .models import PollOption
+from afc_auth.site_paths import player_path, team_path
 
 
 def _absolute(request, image_field):
@@ -86,7 +87,7 @@ def hydrate_options(options, request=None):
                 ),
                 "team_name": "",
                 "team_logo_url": None,
-                "profile_url": f"/players/{user.username}",
+                "profile_url": player_path(user.username),
             }
         _attach_teams(users, request)
 
@@ -104,7 +105,7 @@ def hydrate_options(options, request=None):
                 # The team route takes the NAME, not the id. Getting this wrong ships a 404 deep
                 # link that looks fine in a test that asserts the same mistake, which has already
                 # happened once on this project (team invites, 2026-08-08).
-                "profile_url": f"/teams/{team.team_name}",
+                "profile_url": team_path(team.team_name),
             }
 
     hydrated = {}
@@ -119,21 +120,26 @@ def hydrate_options(options, request=None):
 
 
 def _attach_teams(users, request=None):
-    """Fill in the team chip on every hydrated PLAYER, in one query.
+    """Fill in the team chip on every hydrated PLAYER, in two queries (rosters, then their tiers).
 
-    A nominee card shows a team chip under the name where the person has one. Best tier first, so
-    somebody on two rosters is shown under their strongest team rather than whichever row came
-    back first, which would flip between page loads for no reason the reader could see.
+    A nominee card shows a team chip under the name where the person has one. Best published
+    ranking tier first, unranked last, then the oldest membership, so somebody on two rosters is
+    shown under their strongest team rather than whichever row came back first, which would flip
+    between page loads for no reason the reader could see. (The order used to be the hand-set
+    Team.team_tier, "3" for every team, so it decided nothing: inbox #165.)
     """
     if not users:
         return
+    from afc_rankings.public_tiers import published_team_tiers
     from afc_team.models import TeamMembers
 
-    rows = (
+    rows = list(
         TeamMembers.objects.filter(member_id__in=users.keys())
         .select_related("team")
-        .order_by("team__team_tier", "id")
+        .order_by("id")
     )
+    tiers = published_team_tiers({row.team_id for row in rows})
+    rows.sort(key=lambda row: (tiers.get(row.team_id) is None, tiers.get(row.team_id) or 0, row.id))
     for row in rows:
         entry = users.get(row.member_id)
         if entry is None or entry["team_name"]:

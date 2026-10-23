@@ -147,7 +147,7 @@ class DashboardStatsTests(TestCase):
         # The exact failure that made the dashboard print 0 records with 2,982 in the table. The
         # endpoint must refuse loudly; it is the CALLER's job not to hide it.
         res = self.client.get(SUMMARY_URL)
-        self.assertEqual(res.status_code, 400, res.content)
+        self.assertEqual(res.status_code, 401, res.content)
 
     def test_a_non_admin_is_refused(self):
         res = self.client.get(SUMMARY_URL, **self._auth(self.player))
@@ -239,7 +239,7 @@ class DashboardStatsTests(TestCase):
         self.assertIn("members", res.json()["available"])
 
     def test_a_detail_view_is_admin_only_too(self):
-        self.assertEqual(self.client.get(_detail_url("members")).status_code, 400)
+        self.assertEqual(self.client.get(_detail_url("members")).status_code, 401)
         self.assertEqual(
             self.client.get(_detail_url("members"), **self._auth(self.player)).status_code, 403)
 

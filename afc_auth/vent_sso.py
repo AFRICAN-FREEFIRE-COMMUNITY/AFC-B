@@ -273,12 +273,12 @@ def vent_sso_exchange(request):
     """Swap the one-time handoff code for the real login result. Single use."""
     code = (request.data or {}).get("code") or ""
     if not code:
-        return Response({"message": "code is required."}, status=400)
+        return Response({"message": "code is required.", "code": "code_required"}, status=400)
 
     key = f"vent_sso_handoff:{code}"
     stashed = cache.get(key)
     if stashed is None:
-        return Response({"message": "That sign-in link has expired. Try again."}, status=400)
+        return Response({"message": "That sign-in link has expired. Try again.", "code": "sign_link_expired"}, status=400)
     cache.delete(key)  # single use, so a code left in history cannot be replayed
 
     payload, http_status = stashed

@@ -38,6 +38,12 @@ HOW THIS CONNECTS
     frontend/app/(user)/polls/[slug]/_components/RequirementsPanel.tsx.
 """
 from afc_auth.audience import parse_audience_spec, resolve_audience, spec_is_empty
+from afc_rankings.public_tiers import (
+    published_player_tier,
+    published_team_tiers,
+    published_tier_season,
+    tier_label,
+)
 
 # ── the profile fields an admin may require, and how each one is explained ────────────────────
 # Real columns on afc_auth.User. Each carries the sentence the voter reads and a link that fixes
@@ -57,9 +63,10 @@ PROFILE_FIELDS = {
     },
 }
 
-# Season tier is 0-based and 0 is the BEST, the opposite way round from the hand-set team tier
-# where 1 is best. The raw integer is NEVER shown to anybody; these names are what the UI reads.
-SEASON_TIER_NAMES = {0: "Elite", 1: "Competitive", 2: "Rising", 3: "Entry"}
+# Tiers: there is ONE tier on the site, the published ranking tier (afc_rankings/public_tiers.py,
+# inbox #165), named with tier_label (code 0 -> "Tier 1"), the label the Rankings page uses. The
+# raw integer is NEVER shown to anybody. (These lines used to name codes Elite .. Entry, the names
+# the owner retired on 2026-07-04, and a second "team tier" read the hand-set Team.team_tier.)
 
 TEAM_ROLE_NAMES = {
     "team_captain": "Team captain",
@@ -111,44 +118,47 @@ def _probe(spec, key, user, value=None):
 
 
 def _user_teams(user):
-    """Every team this user is on or owns, best-tier first. The team-based requirements all read
-    this, so a person on two teams is judged by their strongest one rather than by whichever row
-    the database happened to return."""
+    """Every team this user is on or owns, best published tier first, unranked last. Each team
+    carries its published ranking tier code as `team.ranking_tier` (None = unranked), read in one
+    query. The team-based requirements all read this, so a person on two teams is judged by their
+    strongest one rather than by whichever row the database happened to return."""
     from afc_team.models import Team, TeamMembers
 
     team_ids = set(
         TeamMembers.objects.filter(member=user).values_list("team_id", flat=True)
     ) | set(Team.objects.filter(team_owner=user).values_list("team_id", flat=True))
-    return list(Team.objects.filter(team_id__in=team_ids).order_by("team_tier"))
+    teams = list(Team.objects.filter(team_id__in=team_ids))
+    tiers = published_team_tiers([team.team_id for team in teams])
+    for team in teams:
+        team.ranking_tier = tiers.get(team.team_id)
+    teams.sort(key=lambda team: (team.ranking_tier is None, team.ranking_tier or 0, team.team_id))
+    return teams
 
 
 def _your_team_tier(teams):
     if not teams:
         return "You are not on a team"
-    return ", ".join(sorted({f"Tier {team.team_tier}" for team in teams}))
+    codes = sorted({team.ranking_tier for team in teams if team.ranking_tier is not None})
+    if not codes:
+        return tier_label(None)
+    return ", ".join(tier_label(code) for code in codes)
 
 
 def _your_season_tier(user, teams, scope):
     """The viewer's computed season tier, named and dated. The date matters: the panel has to be
     able to say WHICH quarter a frozen tier came from, or a person promoted last week cannot tell
     why they are being refused."""
-    from afc_auth.audience import _quarterly_season
-    from afc_rankings.models import PlayerQuarterlyScore, TeamQuarterlyScore
-
-    season = _quarterly_season()
+    season = published_tier_season()
     if not season:
-        return "No season has been scored yet"
+        return "No season has published tiers yet"
     if scope == "player":
-        row = PlayerQuarterlyScore.objects.filter(player=user, season=season).first()
-        tier = row.tier_assigned if row else None
+        tier = published_player_tier(user, season=season)
     else:
-        rows = TeamQuarterlyScore.objects.filter(
-            team__in=[team.team_id for team in teams], season=season, tier_assigned__isnull=False
-        ).order_by("tier_assigned")
-        tier = rows[0].tier_assigned if rows else None
+        # _user_teams already put the best published tier first.
+        tier = next((team.ranking_tier for team in teams if team.ranking_tier is not None), None)
     if tier is None:
         return f"Not tiered in {season.name}"
-    return f"{SEASON_TIER_NAMES.get(tier, tier)}, from {season.name}"
+    return f"{tier_label(tier)}, from {season.name}"
 
 
 def _your_rank(user, teams, scope):
@@ -307,7 +317,7 @@ def check_eligibility(poll, user):
         requirements.append(_requirement(
             key="tiers",
             label="Team tier",
-            requirement_text=f"Your team must be {_name_list(spec['tiers'], lambda t: f'Tier {t}')}",
+            requirement_text=f"Your team must be {_name_list(spec['tiers'], lambda t: tier_label(int(t)))}",
             passed=_probe(spec, "tiers", user) if signed_in else None,
             your_value=_your_team_tier(teams) if signed_in else "",
             fix_hint="See how tiers are set" if signed_in else "",
@@ -322,7 +332,7 @@ def check_eligibility(poll, user):
             label="Season tier",
             requirement_text=(
                 f"{scope_word.capitalize()} season tier must be "
-                f"{_name_list(block['values'], lambda v: SEASON_TIER_NAMES.get(v, v))}"
+                f"{_name_list(block['values'], tier_label)}"
             ),
             passed=_probe(spec, "season_tiers", user) if signed_in else None,
             your_value=_your_season_tier(user, teams, block["scope"]) if signed_in else "",
@@ -430,7 +440,9 @@ def _snapshot(poll, user):
     bucket = {
         "country": user.country or user.ip_country or "",
         "role": user.role or "",
-        "team_tier": sorted({team.team_tier for team in teams}),
+        # Published ranking tier codes of the voter's teams on the day (inbox #165); this key held
+        # the hand-set Team.team_tier ("3" for everybody) on snapshots written before 8 Oct 2026.
+        "ranking_tier": sorted({team.ranking_tier for team in teams if team.ranking_tier is not None}),
     }
     if poll.anonymous:
         return bucket

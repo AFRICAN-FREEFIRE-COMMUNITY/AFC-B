@@ -134,11 +134,20 @@ def validate_ocr_images(files):
                     "Only PNG, JPG or WEBP screenshots are accepted. Please share the image "
                     "as a PNG or JPG."
                 )
-
             # .size can be absent on exotic file-likes; only enforce when we actually know it.
             size = getattr(f, "size", 0) or 0
             if size > max_bytes:
                 return f"Each screenshot must be {max_mb} MB or smaller."
+
+            # R87 (2026-09-30): the declared type and size above are the cheap first refusals. The
+            # BYTES must agree: a script sent as image/png used to pass this validator, and the
+            # per-match OCR path stores what passes (MatchResultImage).
+            from afc_auth.upload_safety import sniff_upload
+            if sniff_upload(f, {"image"})[1] not in (".png", ".jpg", ".webp"):
+                return (
+                    "Only PNG, JPG or WEBP screenshots are accepted. Please share the image "
+                    "as a PNG or JPG."
+                )
 
         return None
 

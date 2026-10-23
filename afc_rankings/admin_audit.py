@@ -210,11 +210,11 @@ def team_raw(request, team_id):
 
     team = Team.objects.filter(pk=team_id).first()
     if not team:
-        return Response({"message": "Team not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "Team not found.", "code": "team_not_found"}, status=status.HTTP_404_NOT_FOUND)
 
     season = views._resolve_season(request)
     if not season:
-        return Response({"message": "No active season."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "No active season.", "code": "no_active_season"}, status=status.HTTP_404_NOT_FOUND)
 
     agg = aggregation.compute_team_quarterly(team, season)
     return Response({
@@ -239,11 +239,11 @@ def player_raw(request, player_id):
 
     player = User.objects.filter(pk=player_id).first()
     if not player:
-        return Response({"message": "Player not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "Player not found.", "code": "player_not_found"}, status=status.HTTP_404_NOT_FOUND)
 
     season = views._resolve_season(request)
     if not season:
-        return Response({"message": "No active season."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "No active season.", "code": "no_active_season"}, status=status.HTTP_404_NOT_FOUND)
 
     agg = aggregation.compute_player_quarterly(player, season)
     return Response({

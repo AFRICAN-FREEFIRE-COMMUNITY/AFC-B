@@ -145,11 +145,11 @@ def _verify_handshake(request):
             "whatsapp webhook: WHATSAPP_WEBHOOK_VERIFY_TOKEN is not set, refusing the "
             "verification handshake."
         )
-        return Response({"message": "Webhook verification is not configured."}, status=403)
+        return Response({"message": "Webhook verification is not configured.", "code": "webhook_verification_not_configured"}, status=403)
 
     if request.GET.get("hub.verify_token") != expected:
         logger.warning("whatsapp webhook: verification token mismatch.")
-        return Response({"message": "Verification token mismatch."}, status=403)
+        return Response({"message": "Verification token mismatch.", "code": "verification_token_mismatch"}, status=403)
 
     challenge = request.GET.get("hub.challenge", "")
     if request.GET.get("hub.mode") == "subscribe" and challenge:
@@ -157,7 +157,7 @@ def _verify_handshake(request):
         # challenge with no JSON wrapper and no trailing whitespace.
         return HttpResponse(challenge, content_type="text/plain", status=200)
 
-    return Response({"message": "Missing handshake parameters."}, status=400)
+    return Response({"message": "Missing handshake parameters.", "code": "missing_handshake_parameters"}, status=400)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -460,7 +460,7 @@ def whatsapp_webhook(request):
 
     # Signature FIRST, before anything parses or trusts the body.
     if not verify_signature(request):
-        return Response({"message": "Invalid webhook signature."}, status=403)
+        return Response({"message": "Invalid webhook signature.", "code": "invalid_webhook_signature"}, status=403)
 
     try:
         payload = json.loads(request.body.decode() or "{}")

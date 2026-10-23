@@ -10,6 +10,7 @@ from afc_tournament_and_scrims.models import Event, Match, MatchResultImage
 from .models import OCRSession
 from .services.gemini import call_gemini, get_prompt_context
 from .services.matching import get_registered_players, match_name, detect_team_mismatches
+from .services.name_memory import NameMemory
 # A8/A5 per-request image cap. Shared server-side validator (mime + per-file size + count)
 # used by the OCR upload views ONLY (upload_ocr_session below). Returns a client-safe error
 # string or None; rejecting garbage/oversize/HEIC uploads BEFORE any Gemini call keeps the
@@ -78,10 +79,10 @@ def _auth(request):
     """Returns (user, error_response). If error_response is not None, return it immediately."""
     auth = request.headers.get("Authorization")
     if not auth or not auth.startswith("Bearer "):
-        return None, Response({"message": "Invalid token."}, status=400)
+        return None, Response({"message": "Please sign in to continue.", "code": "invalid_token"}, status=401)
     user = validate_token(auth.split(" ")[1])
     if not user:
-        return None, Response({"message": "Invalid session."}, status=401)
+        return None, Response({"message": "Invalid session.", "code": "invalid_session"}, status=401)
     return user, None
 
 
@@ -97,7 +98,7 @@ def _require_admin(user):
             role__role_name__in=["event_admin", "head_admin"]
         ).exists())
     ):
-        return Response({"message": "Unauthorized. Admins only."}, status=403)
+        return Response({"message": "Unauthorized. Admins only.", "code": "unauthorized_admins"}, status=403)
     return None
 
 
@@ -123,7 +124,7 @@ def _require_results_access(user, match):
     event = _get_event(match)
     if event and org_can_event(user, "can_upload_results", event):
         return None
-    return Response({"message": "Unauthorized. Admins only."}, status=403)
+    return Response({"message": "Unauthorized. Admins only.", "code": "unauthorized_admins"}, status=403)
 
 
 @api_view(["POST"])
@@ -158,7 +159,7 @@ def upload_ocr_session(request):
 
     if not match_id or not map_index or not screenshots:
         return Response(
-            {"message": "match_id, map_index, and at least one screenshot are required."},
+            {"message": "match_id, map_index, and at least one screenshot are required.", "code": "match_map_index_least"},
             status=400,
         )
 
@@ -167,7 +168,7 @@ def upload_ocr_session(request):
     # client-safe message. Bounding the file count keeps the synchronous multi-image read
     # under the ~30s prod gateway budget (the Gemini socket timeout does the rest, see A5).
     if (image_err := validate_ocr_images(screenshots)):
-        return Response({"message": image_err}, status=400)
+        return Response({"message": image_err, "code": "upload_ocr_session_refused"}, status=400)
 
     # A5 (sync path stays under the ~30s prod gateway budget): the synchronous per-map read fans
     # a SEPARATE Gemini call out per screenshot (ThreadPoolExecutor with max_workers=min(4, N)
@@ -177,7 +178,7 @@ def upload_ocr_session(request):
     # validate_ocr_images already bounded mime/size/count above; this bounds the wall-time.
     if len(screenshots) > 4:
         return Response(
-            {"message": "You can upload up to 4 screenshots per map at once. Add the rest as a second read."},
+            {"message": "You can upload up to 4 screenshots per map at once. Add the rest as a second read.", "code": "upload_screenshots_per_map"},
             status=400,
         )
 
@@ -187,7 +188,7 @@ def upload_ocr_session(request):
             "group__stage__event",
         ).get(match_id=match_id)
     except Match.DoesNotExist:
-        return Response({"message": "Match not found."}, status=404)
+        return Response({"message": "Match not found.", "code": "match_not_found"}, status=404)
 
     # Event-scoped access check (admins, or org members with can_upload_results on this match).
     if (deny := _require_results_access(user, match)):
@@ -195,7 +196,7 @@ def upload_ocr_session(request):
 
     event = _get_event(match)
     if not event:
-        return Response({"message": "Cannot determine event for this match."}, status=400)
+        return Response({"message": "Cannot determine event for this match.", "code": "cannot_determine_event_match"}, status=400)
 
     event_type = "solo" if event.participant_type == "solo" else "team"
 
@@ -215,15 +216,23 @@ def upload_ocr_session(request):
     # file (.seek(0)) before create() because .read() above consumed it (image= re-reads from 0).
     payloads = []            # (image_bytes, mime_type) per screenshot, in upload order
     first_result_image = None
+    # R87 (2026-09-30): the reader gets the ORIGINAL bytes (re-encoding could cost OCR accuracy),
+    # typed by what the bytes are rather than what the browser declared; what is STORED is the
+    # re-encoded copy under an opaque name (require_image_upload), never the client's file.
+    from afc_auth.image_utils import require_image_upload
+    from afc_auth.upload_safety import sniff_upload
     for shot in screenshots:
         data = shot.read()
-        mime = shot.content_type or "image/jpeg"
+        mime = sniff_upload(shot, {"image"})[2] or "image/jpeg"
         payloads.append((data, mime))
         try:
             shot.seek(0)
+            stored, bad = require_image_upload(shot)
+            if bad:
+                continue
             img = MatchResultImage.objects.create(
                 match=match,
-                image=shot,
+                image=stored,
                 uploaded_by=user,
                 note="OCR upload",
             )
@@ -284,8 +293,10 @@ def upload_ocr_session(request):
         return Response({"message": "Could not read that screenshot. Please try again."}, status=503)
 
     placement_lists = [(raw.get("placements", []) or []) for raw, _eng in outputs]
-    # Record the last non-empty engine for the FE "which engine" badge (mirrors process_job).
-    engine = next((eng for _raw, eng in reversed(outputs) if eng), "")
+    # One engine label for the FE "which engine" badge: an unsure on-site draft on ANY screenshot
+    # wins, else the last engine that answered (extract.summary_engine, shared with process_job).
+    from .services.extract import summary_engine
+    engine = summary_engine(eng for _raw, eng in outputs)
     # Whose key paid (own-key OCR, owner 2026-09-12): "org" / "afc_free" / "afc" / "" (local read).
     # The FE tells the organizer when a read was AFC's free one, so the next refusal is no surprise.
     paid_by = next((raw.get("_paid_by") for raw, _eng in outputs if raw.get("_paid_by")), "")
@@ -296,7 +307,9 @@ def upload_ocr_session(request):
     # path below is byte-for-byte unchanged whether one or many screenshots were uploaded.
     raw_output = {"placements": merged, "_engine": engine}
 
-    # Build draft rows from the extracted output (same shape whether local student or Gemini)
+    # Build draft rows from the extracted output (same shape whether local student or Gemini).
+    # The event organization's name memory decides first (services/name_memory, #334 #335).
+    memory = NameMemory(_org_for_key)
     draft_rows = []
     for placement_entry in raw_output.get("placements", []):
         # A7: _safe_int guards raw Gemini output (null / "" / "3 kills" / a float) so a garbage
@@ -305,7 +318,7 @@ def upload_ocr_session(request):
         for player_data in placement_entry.get("players", []):
             raw_name = player_data.get("name", "").strip()
             kills    = _safe_int(player_data.get("kills", 0))
-            row = match_name(raw_name, registered)
+            row = match_name(raw_name, registered, memory=memory)
             row["placement"] = placement
             row["kills"]     = kills
             draft_rows.append(row)
@@ -378,7 +391,7 @@ def ocr_session_detail(request, session_id):
             "match__group__stage__event",
         ).get(session_id=session_id)
     except OCRSession.DoesNotExist:
-        return Response({"message": "Session not found."}, status=404)
+        return Response({"message": "Session not found.", "code": "session_not_found"}, status=404)
 
     # Event-scoped access check, resolving the event via the session's match.
     if (deny := _require_results_access(user, session.match)):
@@ -393,6 +406,11 @@ def ocr_session_detail(request, session_id):
             "match_id":   session.match_id,
             "map_index":  session.map_index,
             "draft_rows": session.draft_rows,
+            # Which reader produced the draft, stored at upload (raw_output["_engine"]). The review
+            # dialog shows it in words and, for an unsure on-site draft ("local_best_effort_*"),
+            # asks for a full check (AFC_Frontend OcrEngineNote). Missing before 2026-10-22, so a
+            # session reopened from the list never said who read it.
+            "engine":     (session.raw_output or {}).get("_engine", ""),
             "created_at": session.created_at,
             "updated_at": session.updated_at,
         })
@@ -404,7 +422,7 @@ def ocr_session_detail(request, session_id):
 
         row_id = request.data.get("row_id")
         if not row_id:
-            return Response({"message": "row_id is required."}, status=400)
+            return Response({"message": "row_id is required.", "code": "row_required"}, status=400)
 
         rows = session.draft_rows
         for row in rows:
@@ -427,7 +445,7 @@ def ocr_session_detail(request, session_id):
                     row["corrected_text"] = request.data["corrected_text"]
                 break
         else:
-            return Response({"message": "Row not found."}, status=404)
+            return Response({"message": "Row not found.", "code": "row_not_found"}, status=404)
 
         session.draft_rows = rows
         session.save(update_fields=["draft_rows", "updated_at"])
@@ -461,7 +479,7 @@ def commit_ocr_session(request, session_id):
             "match__group__stage__event",
         ).get(session_id=session_id)
     except OCRSession.DoesNotExist:
-        return Response({"message": "Session not found."}, status=404)
+        return Response({"message": "Session not found.", "code": "session_not_found"}, status=404)
 
     # Event-scoped access check, resolving the event via the session's match.
     if (deny := _require_results_access(user, session.match)):
@@ -483,7 +501,7 @@ def commit_ocr_session(request, session_id):
         return Response({
             "message": "Some rows have no matched player. Resolve or remove them before committing.",
             "unresolved": unresolved,
-        }, status=400)
+         "code": "rows_no_matched_player"}, status=400)
 
     unacknowledged = [
         r.get("raw_name", "") for r in final_rows
@@ -493,7 +511,7 @@ def commit_ocr_session(request, session_id):
         return Response({
             "message": "Some team mismatches have not been acknowledged. Confirm or reassign before committing.",
             "unacknowledged": unacknowledged,
-        }, status=400)
+         "code": "team_mismatches_not_acknowledged"}, status=400)
 
     try:
         from .services.commit import (
@@ -503,7 +521,6 @@ def commit_ocr_session(request, session_id):
             save_team_notes,
         )
 
-        save_name_corrections(final_rows, session.draft_rows)
         save_team_notes(final_rows, session.match, user)
 
         # #14: commit_team_result returns (lb, unmatched_blocks) so unmatched OCR team blocks
@@ -526,6 +543,11 @@ def commit_ocr_session(request, session_id):
         session.status = "committed"
         session.draft_rows = final_rows  # persist final state
         session.save(update_fields=["status", "draft_rows"])
+
+        # Teach the event organization's name memory from this review (#334 #335): every committed
+        # row confirms its spelling, every suggestion that was not kept is remembered as wrong for
+        # it. After the write, so a failed commit teaches nothing; learn() never raises.
+        save_name_corrections(final_rows, original_draft, getattr(_get_event(session.match), "organization", None))
 
         # ── OCR learning loop (Phase 1): capture this committed review as training
         # data. The leaderboard write above already succeeded and is committed; this
@@ -614,7 +636,7 @@ def ocr_session_roster(request, session_id):
             "match__group__stage__event",
         ).get(session_id=session_id)
     except OCRSession.DoesNotExist:
-        return Response({"message": "Session not found."}, status=404)
+        return Response({"message": "Session not found.", "code": "session_not_found"}, status=404)
 
     # Event-scoped access check, resolving the event via the session's match (identical gate
     # to the sibling session views, so admin AND organizer parity is preserved here).
@@ -625,7 +647,7 @@ def ocr_session_roster(request, session_id):
     # a standalone leaderboard or a stage group). A session with no resolvable event is a 404.
     event = _get_event(session.match)
     if not event:
-        return Response({"message": "Cannot determine event for this session."}, status=404)
+        return Response({"message": "Cannot determine event for this session.", "code": "cannot_determine_event_session"}, status=404)
 
     # solo events carry no team context (team_id/team_name come back null from the resolver);
     # anything else is a team event. Same derivation the upload/commit paths use.
@@ -662,12 +684,12 @@ def ocr_from_stored_image(request):
     map_index = request.data.get("map_index", 1)
 
     if not image_id or not match_id:
-        return Response({"message": "image_id and match_id are required."}, status=400)
+        return Response({"message": "image_id and match_id are required.", "code": "image_match_required"}, status=400)
 
     try:
         stored = MatchResultImage.objects.get(image_id=image_id)
     except MatchResultImage.DoesNotExist:
-        return Response({"message": "Image not found."}, status=404)
+        return Response({"message": "Image not found.", "code": "image_not_found"}, status=404)
 
     try:
         match = Match.objects.select_related(
@@ -675,7 +697,7 @@ def ocr_from_stored_image(request):
             "group__stage__event",
         ).get(match_id=match_id)
     except Match.DoesNotExist:
-        return Response({"message": "Match not found."}, status=404)
+        return Response({"message": "Match not found.", "code": "match_not_found"}, status=404)
 
     # Event-scoped access check (admins, or org members with can_upload_results on this match).
     if (deny := _require_results_access(user, match)):
@@ -685,11 +707,11 @@ def ocr_from_stored_image(request):
     # match_id, but image_id was fetched independently, so without this an organizer with results access
     # on match A could OCR a screenshot belonging to another event's match by passing a foreign image_id.
     if getattr(stored, "match_id", None) and stored.match_id != match.match_id:
-        return Response({"message": "That image does not belong to this match."}, status=400)
+        return Response({"message": "That image does not belong to this match.", "code": "image_not_belong_match"}, status=400)
 
     event = _get_event(match)
     if not event:
-        return Response({"message": "Cannot determine event for this match."}, status=400)
+        return Response({"message": "Cannot determine event for this match.", "code": "cannot_determine_event_match"}, status=400)
 
     event_type = "solo" if event.participant_type == "solo" else "team"
 
@@ -734,6 +756,7 @@ def ocr_from_stored_image(request):
         return Response({"message": "Could not read that screenshot. Please try again."}, status=503)
     raw_output.setdefault("_engine", engine)  # persisted for the FE badge + training corpus
 
+    memory = NameMemory(getattr(event, "organization", None))  # services/name_memory, #334 #335
     draft_rows = []
     for placement_entry in raw_output.get("placements", []):
         # A7: _safe_int guards raw Gemini output so a null/blank/garbage cell yields 0, not a 500.
@@ -741,7 +764,7 @@ def ocr_from_stored_image(request):
         for player_data in placement_entry.get("players", []):
             raw_name = player_data.get("name", "").strip()
             kills    = _safe_int(player_data.get("kills", 0))
-            row = match_name(raw_name, registered)
+            row = match_name(raw_name, registered, memory=memory)
             row["placement"] = placement
             row["kills"]     = kills
             draft_rows.append(row)
@@ -807,13 +830,13 @@ def list_ocr_sessions(request):
         # as _get_event above), so the event scope filter must cover both FKs.
         event_id = request.query_params.get("event_id")
         if not event_id:
-            return Response({"message": "event_id is required."}, status=400)
+            return Response({"message": "event_id is required.", "code": "event_required"}, status=400)
         try:
             event = Event.objects.get(event_id=event_id)
         except Event.DoesNotExist:
-            return Response({"message": "Event not found."}, status=404)
+            return Response({"message": "Event not found.", "code": "event_not_found"}, status=404)
         if not org_can_event(user, "can_upload_results", event):
-            return Response({"message": "Unauthorized. Admins only."}, status=403)
+            return Response({"message": "Unauthorized. Admins only.", "code": "unauthorized_admins"}, status=403)
         qs = qs.filter(
             Q(match__leaderboard__event=event) | Q(match__group__stage__event=event)
         )
@@ -828,7 +851,7 @@ def list_ocr_sessions(request):
             try:
                 event = Event.objects.get(event_id=admin_event_id)
             except Event.DoesNotExist:
-                return Response({"message": "Event not found."}, status=404)
+                return Response({"message": "Event not found.", "code": "event_not_found"}, status=404)
             qs = qs.filter(
                 Q(match__leaderboard__event=event) | Q(match__group__stage__event=event)
             )
@@ -956,7 +979,7 @@ def _require_ocr_admin(request):
         return None, err
     if not _is_ocr_admin(user):
         return None, Response(
-            {"message": "You do not have permission to manage the OCR model."},
+            {"message": "You do not have permission to manage the OCR model.", "code": "not_permission_manage_ocr"},
             status=403,
         )
     return user, None
@@ -1503,7 +1526,7 @@ def ocr_upload_model(request):
 
     upload = request.FILES.get("file")
     if not upload:
-        return Response({"message": "A bundle zip file is required (field 'file')."}, status=400)
+        return Response({"message": "A bundle zip file is required (field 'file').", "code": "bundle_zip_file_required"}, status=400)
 
     # ?promote may arrive as a query param OR a form field; accept either, default false.
     promote_raw = (
@@ -1523,7 +1546,7 @@ def ocr_upload_model(request):
         try:
             zf = zipfile.ZipFile(io.BytesIO(data))
         except zipfile.BadZipFile:
-            return Response({"message": "Uploaded file is not a valid zip bundle."}, status=400)
+            return Response({"message": "Uploaded file is not a valid zip bundle.", "code": "uploaded_file_not_valid"}, status=400)
 
         with zf:
             # Map basename -> entry so the bundle may be zipped flat OR inside a top folder.
@@ -1552,19 +1575,19 @@ def ocr_upload_model(request):
             # ── read VERSION (decides the target dir name) ─────────────────────
             version = zf.read(by_base["VERSION"]).decode("utf-8", "replace").strip()
             if not version:
-                return Response({"message": "Bundle VERSION file is empty."}, status=400)
+                return Response({"message": "Bundle VERSION file is empty.", "code": "bundle_version_file_empty"}, status=400)
             # Keep the version filesystem-safe (it becomes a dir name student_v<version>).
             safe_version = "".join(
                 c for c in version if c.isalnum() or c in ("_", "-", ".")
             )
             if not safe_version:
-                return Response({"message": "Bundle VERSION is not a usable version string."}, status=400)
+                return Response({"message": "Bundle VERSION is not a usable version string.", "code": "bundle_version_not_usable"}, status=400)
 
             # ── eval-gate verdict MUST be ship==true ───────────────────────────
             try:
                 report = _json.loads(zf.read(by_base["eval_report.json"]).decode("utf-8", "replace"))
             except ValueError:
-                return Response({"message": "eval_report.json in bundle is not valid JSON."}, status=400)
+                return Response({"message": "eval_report.json in bundle is not valid JSON.", "code": "eval_report_json_bundle"}, status=400)
             gate_passed = bool(report.get("ship", False))
             if not gate_passed:
                 # We never store/serve a model the gate did not clear (the safety spine).
@@ -1573,7 +1596,7 @@ def ocr_upload_model(request):
                         "message": "Bundle rejected: eval_report.json ship is not true "
                                    "(the eval gate did not clear this model).",
                         "gate_passed": False,
-                    },
+                     "code": "bundle_rejected_eval_report"},
                     status=400,
                 )
 
@@ -1638,7 +1661,7 @@ def ocr_promote_model(request):
 
     version = request.data.get("version")
     if version in (None, ""):
-        return Response({"message": "version is required."}, status=400)
+        return Response({"message": "version is required.", "code": "version_required"}, status=400)
 
     try:
         model_registry.promote(version)
@@ -1648,7 +1671,7 @@ def ocr_promote_model(request):
         )
     except FileNotFoundError as exc:
         # Bundle not deployed at media/models/student_v<version>/ - caller error, not a 500.
-        return Response({"message": str(exc)}, status=400)
+        return Response({"message": str(exc), "code": "ocr_promote_model_refused"}, status=400)
     except Exception as exc:  # noqa: BLE001
         logger.exception("ocr_promote_model failed: %s", exc)
         return Response(

@@ -13,6 +13,11 @@ THE ENDPOINTS, AND WHO OPENS EACH
                                           in their email (R22). Consumed by app/(root)/support/t/[token].
     POST support/t/<token>/reply/         they answer, with files. Same page.
 
+  SIGNED IN (Bearer SessionToken; the player's own tickets only, 28 Sep 2026)
+    GET  support/mine/                    My tickets on the /support page, and the menu's count of
+                                          tickets waiting on the player. Consumed by the frontend's
+                                          components/support/MyTickets.tsx and hooks/useSupportWaiting.ts.
+
   STAFF (Bearer SessionToken; support role, see _is_support_staff)
     GET  support/tickets/                 the queue, filterable, paginated with the house envelope.
     GET  support/tickets/<number>/        one conversation in full.
@@ -38,12 +43,16 @@ afc_auth.middleware.AuditLogMiddleware and lands on the sitewide History page, w
 import mimetypes
 import os
 
+from urllib.parse import quote
+
+from django.core import signing
 from django.db.models import Count, Max, Q
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.decorators import api_view, parser_classes
 from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.response import Response
+from afc_auth.bot_protection import require_human
 from django.http import FileResponse, Http404
 
 from afc_auth.models import User
@@ -113,6 +122,54 @@ def _is_head_admin(user) -> bool:
         return False
 
 
+def _ticket_for(request, number):
+    """(user, ticket, None) when the caller may work this one ticket, else (None, None, Response).
+
+    AFC tickets: AFC support staff. Tickets addressed to an organization (inbox #175): that
+    organization's answerers and AFC head / super admins only (afc_support.org_scope). A ticket
+    the caller may not work answers exactly like one that does not exist."""
+    from afc_support.org_scope import ticket_access, works_any_desk
+
+    user = _actor(request)
+    if not user:
+        return None, None, Response({"message": "Authorization header is required.",
+                                     "code": "auth_required"},
+                                    status=status.HTTP_401_UNAUTHORIZED)
+    if not works_any_desk(user, _is_support_staff):
+        # The refusal the desk has always given somebody with no desk at all, before any lookup.
+        return None, None, Response({"message": "You do not have access to the support desk.",
+                                     "code": "support_forbidden"},
+                                    status=status.HTTP_403_FORBIDDEN)
+    ticket = (SupportTicket.objects.filter(ticket_number=number)
+              .select_related("user", "assigned_to", "organization", "event").first())
+    if not ticket:
+        return None, None, Response({"message": "We could not find that ticket.", "code": "ticket_not_found"},
+                                    status=status.HTTP_404_NOT_FOUND)
+    err = ticket_access(user, ticket, _is_support_staff)
+    if err:
+        return None, None, err
+    return user, ticket, None
+
+
+def _desk_ticket(ticket, user, with_messages=False):
+    """The staff shape of one ticket for `user`. An organization's own members are not shown the
+    player's email address (inbox #175, R71); AFC staff and head / super admins are."""
+    from afc_support.org_scope import is_head_or_super
+
+    data = _ticket_dict(ticket, for_staff=True, with_messages=with_messages)
+    if ticket.organization_id and not is_head_or_super(user):
+        data["email"] = ""
+    return data
+
+
+def _change_refusal(user, ticket):
+    """AFC head / super admins read an organizer's questions but never answer or re-label them
+    (inbox #175); org_scope.reply_refusal says so with a code. None on AFC's own tickets."""
+    from afc_support.org_scope import reply_refusal
+
+    return reply_refusal(user, ticket.organization if ticket.organization_id else None)
+
+
 def _require_staff(request):
     """(user, None) when they may work the desk, else (None, Response)."""
     user = _actor(request)
@@ -131,14 +188,48 @@ def _require_staff(request):
 # §2  Shapes (one serializer per shape, R24: the dashboard, the public thread and the audit all
 #     read the SAME dicts, so a field added here appears everywhere the same day)
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
-def _attachment_dict(att):
+# ── Signed links for staff (inbox #168, owner 2026-10-08: "support admins and any admin cant view
+# attachments sent to them via the support section") ──────────────────────────────────────────────
+# The desk showed each file as a plain link to support/attachments/<id>/. A browser following a link
+# sends NO Authorization header (the session token lives in JavaScript), so support_attachment saw a
+# stranger and answered 404 for every staff click (production: every staff request since the desk
+# shipped was a 404; only the requester's links, which carry ?t=<ticket token>, ever worked).
+#
+# So a STAFF reader of a ticket gets each file's url with a short-lived signature: `?s=` is
+# django.core.signing over "the attachment id", salted for this purpose and valid for a working
+# shift. It names one file, carries no identity and no session token, and stops working by itself,
+# which is why it may sit in a URL where the session token may not. The same link works as an <a>,
+# in a new tab and as an <img> preview.
+ATTACHMENT_LINK_SALT = "afc_support.attachment-link"
+ATTACHMENT_LINK_MAX_AGE = 6 * 60 * 60   # seconds; a desk left open longer is reloaded
+
+
+def _signed_attachment_url(att):
+    signature = signing.TimestampSigner(salt=ATTACHMENT_LINK_SALT).sign(str(att.id))
+    return f"/support/attachments/{att.id}/?s={quote(signature, safe='')}"
+
+
+def _signature_opens(att, signature):
+    """True when `signature` was made by _signed_attachment_url for THIS attachment and is fresh."""
+    if not signature:
+        return False
+    try:
+        value = signing.TimestampSigner(salt=ATTACHMENT_LINK_SALT).unsign(
+            signature, max_age=ATTACHMENT_LINK_MAX_AGE)
+    except signing.BadSignature:   # covers SignatureExpired too
+        return False
+    return value == str(att.id)
+
+
+def _attachment_dict(att, for_staff=False):
     return {
         "id": att.id,
         "name": att.original_name,
         "content_type": att.content_type,
         "size_bytes": att.size_bytes,
-        # Always through the view, never the raw media path: these files are private.
-        "url": f"/support/attachments/{att.id}/",
+        # Always through the view, never the raw media path: these files are private. Staff get a
+        # signed link (above); the requester's page appends its own ?t=<ticket token>.
+        "url": _signed_attachment_url(att) if for_staff else f"/support/attachments/{att.id}/",
     }
 
 
@@ -148,14 +239,31 @@ def _message_dict(msg, for_staff=False):
         "direction": msg.direction,
         "channel": msg.channel,
         "body": msg.body,
-        "author_name": msg.author_name or ("AFC Support" if msg.direction == "out" else ""),
+        "author_name": msg.author_name or (_signer(msg.ticket) if msg.direction == "out" else ""),
         "created_at": msg.created_at.isoformat(),
-        "attachments": [_attachment_dict(a) for a in msg.attachments.all()],
+        "attachments": [_attachment_dict(a, for_staff=for_staff) for a in msg.attachments.all()],
     }
     if for_staff:
         # Who on the team wrote it. Never sent to the requester: they see "AFC Support".
         data["author_username"] = msg.author.username if msg.author_id else ""
     return data
+
+
+def _org_ref(ticket):
+    if not ticket.organization_id:
+        return None
+    return {"name": ticket.organization.name, "slug": ticket.organization.slug}
+
+
+def _event_ref(ticket):
+    if not ticket.event_id:
+        return None
+    return {"name": ticket.event.event_name, "slug": ticket.event.slug}
+
+
+def _signer(ticket):
+    """Who signs a reply on this ticket: the organization it was addressed to, or AFC Support."""
+    return ticket.organization.name if ticket.organization_id else "AFC Support"
 
 
 def _ticket_dict(ticket, for_staff=False, with_messages=False):
@@ -168,6 +276,11 @@ def _ticket_dict(ticket, for_staff=False, with_messages=False):
         "source": ticket.source,
         "created_at": ticket.created_at.isoformat(),
         "last_message_at": (ticket.last_message_at or ticket.created_at).isoformat(),
+        # Inbox #175: a question asked of an ORGANIZER names it (and the event, when one was
+        # picked), so the requester's page says who they are talking to and the desk says which
+        # event it is about. Null on every ticket addressed to AFC.
+        "organization": _org_ref(ticket),
+        "event": _event_ref(ticket),
     }
     if for_staff:
         data.update({
@@ -191,9 +304,16 @@ def _save_attachments(message, files):
     """Store the uploaded files on `message`. Returns (saved, rejected) where rejected names the
     files we refused and why, so the caller can tell the person instead of silently dropping them.
 
-    A file is refused for its EXTENSION, not its declared content type: a browser will happily send
-    application/octet-stream for a video, and the type a client claims is not evidence anyway.
+    What a file IS comes from its BYTES (owner rule R87, 2026-09-30): the extension was checked
+    before, but a script renamed "notes.txt" or "x.pdf" passed that, and the stored copy kept the
+    client's name. Now the extension must be on the list AND the bytes must agree with a kind we
+    accept (afc_auth.upload_safety.sniff_upload); the file is stored under an opaque name with the
+    sniffed extension and labelled with the sniffed type. Pictures are decoded and re-encoded
+    (require_image_upload). original_name is kept only as the label shown to people.
     """
+    from afc_auth.image_utils import require_image_upload
+    from afc_auth.upload_safety import opaque_name, sniff_upload
+
     saved, rejected = [], []
     for f in files[:MAX_FILES_PER_MESSAGE]:
         name = getattr(f, "name", "") or "file"
@@ -204,12 +324,23 @@ def _save_attachments(message, files):
         if getattr(f, "size", 0) > MAX_FILE_BYTES:
             rejected.append({"name": name, "reason": "size"})
             continue
+        kind, sniffed_ext, mime = sniff_upload(f, {"image", "video", "pdf", "office", "text"})
+        if kind is None:
+            rejected.append({"name": name, "reason": "type"})
+            continue
+        if kind == "image":
+            f, bad = require_image_upload(f, max_bytes=MAX_FILE_BYTES)
+            if bad:
+                rejected.append({"name": name, "reason": "type"})
+                continue
+            mime = "image/png" if f.name.endswith(".png") else "image/jpeg"
+        else:
+            f.name = opaque_name(sniffed_ext)
         att = SupportAttachment.objects.create(
             message=message,
             file=f,
             original_name=name[:255],
-            content_type=(getattr(f, "content_type", "") or
-                          mimetypes.guess_type(name)[0] or "")[:120],
+            content_type=mime[:120],
             size_bytes=getattr(f, "size", 0) or 0,
         )
         saved.append(att)
@@ -224,11 +355,14 @@ def _touch(ticket, when=None):
     ticket.save(update_fields=["last_message_at", "updated_at"])
 
 
-def create_ticket_from_contact(name, email, body, files=None, request_user=None):
+def create_ticket_from_contact(name, email, body, files=None, request_user=None,
+                               source=SupportTicket.SOURCE_CONTACT_FORM, subject=None):
     """The one place a contact-form ticket is born.
 
-    Called by support_contact below AND by the legacy afc_auth.contact_us, so a post to either
-    address is stored the same way. Returns (ticket, message, rejected_files).
+    Called by support_contact below, by the legacy afc_auth.contact_us, and by the website Help
+    panel's "Talk to a person" (afc_helpbot.views.help_handoff, source=help_bot, with the person's
+    own question as the subject so the queue does not fill with identical subjects). So a post to
+    any of them is stored the same way. Returns (ticket, message, rejected_files).
 
     Matching an account: by EMAIL, case-insensitively, preferring the canonical profile's user. That
     is what lets the acknowledgement go out in their language and the Discord DM find them.
@@ -248,8 +382,8 @@ def create_ticket_from_contact(name, email, body, files=None, request_user=None)
         email=email,
         user=account,
         discord_id=discord_id,
-        subject=header_safe(body, limit=80),
-        source=SupportTicket.SOURCE_CONTACT_FORM,
+        subject=header_safe(subject if subject else body, limit=80),
+        source=source,
     )
     message = SupportMessage.objects.create(
         ticket=ticket,
@@ -262,6 +396,29 @@ def create_ticket_from_contact(name, email, body, files=None, request_user=None)
     _saved, rejected = _save_attachments(message, files or [])
     _touch(ticket, message.created_at)
     return ticket, message, rejected
+
+
+def acknowledge_new_ticket(ticket, message):
+    """Tell the person and the team that a new ticket exists. Never fails the caller.
+
+    The acknowledgement email (in the person's language when we matched an account), the Discord DM,
+    and the support inbox email. Both results are recorded as an automatic OUT message so the audit
+    shows what left the building. Called by support_contact and by afc_helpbot.views.help_handoff.
+    """
+    lang = (getattr(ticket.user, "language", "") or "en") if ticket.user_id else "en"
+    emailed = notify.email_ticket_received(ticket, lang=lang)
+    dmed = notify.dm_ticket_received(ticket)
+    # And the support inbox, where the team already looks.
+    notify.email_staff_new_ticket(ticket, message, attachment_count=message.attachments.count())
+    SupportMessage.objects.create(
+        ticket=ticket,
+        direction=SupportMessage.DIRECTION_OUT,
+        channel=SupportMessage.CHANNEL_AUTO,
+        author_name="AFC",
+        body=("Acknowledgement sent: "
+              f"email {'delivered' if emailed else 'not delivered'}, "
+              f"Discord DM {'delivered' if dmed else ('not delivered' if ticket.discord_id else 'no Discord on file')}."),
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
@@ -282,6 +439,14 @@ def support_contact(request):
     both allowed to fail without losing what the person wrote. That is the whole reason this app
     exists (see afc_support/models.py).
     """
+    # Bot protection (owner 2026-09-22). FIRST, before anything is written or emailed:
+    # this form is open to the whole internet and a script filling it costs a queue, a
+    # database row and mail quota. Verified server side against Cloudflare Turnstile; with
+    # no key configured it allows the request and the checker counts that as debt.
+    refused = require_human(request, where="support_contact")
+    if refused is not None:
+        return refused
+
     import re
 
     name = (request.data.get("name") or "").strip()
@@ -300,23 +465,7 @@ def support_contact(request):
     files = request.FILES.getlist("files")
     ticket, message, rejected = create_ticket_from_contact(
         name, email, body, files, request_user=_actor(request))
-
-    # Notify, never fail. Both results are recorded as an automatic OUT message so the audit shows
-    # what left the building.
-    lang = (getattr(ticket.user, "language", "") or "en") if ticket.user_id else "en"
-    emailed = notify.email_ticket_received(ticket, lang=lang)
-    dmed = notify.dm_ticket_received(ticket)
-    # And the support inbox, where the team already looks.
-    notify.email_staff_new_ticket(ticket, message, attachment_count=message.attachments.count())
-    SupportMessage.objects.create(
-        ticket=ticket,
-        direction=SupportMessage.DIRECTION_OUT,
-        channel=SupportMessage.CHANNEL_AUTO,
-        author_name="AFC",
-        body=("Acknowledgement sent: "
-              f"email {'delivered' if emailed else 'not delivered'}, "
-              f"Discord DM {'delivered' if dmed else ('not delivered' if ticket.discord_id else 'no Discord on file')}."),
-    )
+    acknowledge_new_ticket(ticket, message)
 
     return Response(
         {
@@ -394,6 +543,83 @@ def support_thread_reply(request, token):
 
 
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
+# §5b  A signed-in player's own tickets (inbox #71, 28 Sep 2026)
+# ─────────────────────────────────────────────────────────────────────────────────────────────────
+MINE_DEFAULT_LIMIT = 20
+MINE_MAX_LIMIT = 50
+
+
+def _mine_queryset(user):
+    """The tickets that are this player's: linked to the account, or sent signed out from the
+    account's email address and not linked to ANY account (owner's answer: "Account + same email").
+    A ticket linked to another account is never theirs, even when it carries their address: the
+    link is the stronger fact (an email can be typed by anybody; R58)."""
+    mine = Q(user=user)
+    if user.email:
+        mine |= Q(user__isnull=True, email__iexact=user.email)
+    return SupportTicket.objects.filter(mine)
+
+
+def _mine_row(ticket):
+    """Only what the list shows (R71). The token is the ticket page's address, which the player
+    already holds in their email; the list is signed in, so handing it back adds no new access."""
+    subject = ticket.subject.strip()
+    if not subject:
+        first = ticket.messages.filter(direction="in").order_by("created_at").values_list("body", flat=True).first()
+        lines = (first or "").strip().splitlines()
+        subject = lines[0][:120] if lines else ""
+    return {
+        "ticket_number": ticket.ticket_number,
+        "token": ticket.public_token,
+        # Inbox #175: "" for AFC, else the organization the player asked.
+        "organization_name": ticket.organization.name if ticket.organization_id else "",
+        "subject": subject,
+        "status": ticket.status,
+        "created_at": ticket.created_at.isoformat(),
+        "last_message_at": (ticket.last_message_at or ticket.created_at).isoformat(),
+    }
+
+
+@api_view(["GET"])
+def support_mine(request):
+    """GET support/mine/?limit=&offset= - the signed-in player's own tickets.
+
+    Auth: Bearer SessionToken (validate_token via _actor), else 401 code auth_required.
+    Returns the house envelope {results, has_more, next_offset, total_count} plus waiting_count,
+    the tickets AFC has answered that wait on the player (status "waiting"), which the site menu
+    shows as a count. Newest activity first; limit defaults to 20, at most 50.
+    Consumed by the frontend's /support page (components/support/MyTickets.tsx) and the menu count
+    (hooks/useSupportWaiting.ts). A row opens app/(user)/support/t/[token], served by
+    support_thread above.
+    """
+    user = _actor(request)
+    if not user:
+        return Response({"message": "Log in to see your tickets.", "code": "auth_required"},
+                        status=status.HTTP_401_UNAUTHORIZED)
+    qs = _mine_queryset(user)
+    try:
+        limit = max(1, min(int(request.GET.get("limit", MINE_DEFAULT_LIMIT)), MINE_MAX_LIMIT))
+    except (TypeError, ValueError):
+        limit = MINE_DEFAULT_LIMIT
+    try:
+        offset = max(0, int(request.GET.get("offset", 0)))
+    except (TypeError, ValueError):
+        offset = 0
+    total = qs.count()
+    rows = list(qs.select_related("organization").order_by("-last_message_at", "-created_at")[offset:offset + limit])
+    return Response(
+        {
+            "results": [_mine_row(t) for t in rows],
+            "has_more": offset + len(rows) < total,
+            "next_offset": offset + len(rows),
+            "total_count": total,
+            "waiting_count": qs.filter(status=SupportTicket.STATUS_WAITING).count(),
+        },
+        status=status.HTTP_200_OK,
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────────────────────────
 # §6  Staff: the queue and one conversation
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
 @api_view(["GET"])
@@ -408,7 +634,8 @@ def support_tickets(request):
     if err:
         return err
 
-    qs = SupportTicket.objects.all().select_related("user", "assigned_to")
+    # AFC's own tickets only: a question asked of an organizer is never on this queue (inbox #175).
+    qs = SupportTicket.objects.filter(organization__isnull=True).select_related("user", "assigned_to")
     q = (request.GET.get("q") or "").strip()
     if q:
         qs = qs.filter(
@@ -433,7 +660,7 @@ def support_tickets(request):
     total = qs.count()
     rows = list(qs[offset:offset + limit])
     counts = dict(
-        SupportTicket.objects.values_list("status").annotate(n=Count("id"))
+        SupportTicket.objects.filter(organization__isnull=True).values_list("status").annotate(n=Count("id"))
     )
     return Response(
         {
@@ -450,16 +677,12 @@ def support_tickets(request):
 
 @api_view(["GET"])
 def support_ticket_detail(request, number):
-    """GET support/tickets/<ticket_number>/ - one conversation in full, for staff."""
-    user, err = _require_staff(request)
+    """GET support/tickets/<ticket_number>/ - one conversation in full, for whoever works it
+    (_ticket_for: AFC support staff, or for an organizer's ticket its answerers)."""
+    user, ticket, err = _ticket_for(request, number)
     if err:
         return err
-    ticket = SupportTicket.objects.filter(ticket_number=number).select_related(
-        "user", "assigned_to").first()
-    if not ticket:
-        return Response({"message": "We could not find that ticket.", "code": "ticket_not_found"},
-                        status=status.HTTP_404_NOT_FOUND)
-    data = _ticket_dict(ticket, for_staff=True, with_messages=True)
+    data = _desk_ticket(ticket, user, with_messages=True)
     data["ticket_url"] = notify.ticket_url(ticket)
     return Response(data, status=status.HTTP_200_OK)
 
@@ -472,14 +695,16 @@ def support_ticket_reply(request, number):
     Emails the person and DMs them on Discord when we have it. The ticket moves to "waiting on the
     sender" unless the caller says otherwise, because a queue where everything stays open is a queue
     nobody can read.
+
+    On a ticket addressed to an organization (inbox #175) the reply is signed by the organization
+    and the email says the organization answered.
     """
-    user, err = _require_staff(request)
+    user, ticket, err = _ticket_for(request, number)
     if err:
         return err
-    ticket = SupportTicket.objects.filter(ticket_number=number).first()
-    if not ticket:
-        return Response({"message": "We could not find that ticket.", "code": "ticket_not_found"},
-                        status=status.HTTP_404_NOT_FOUND)
+    err = _change_refusal(user, ticket)
+    if err:
+        return err
 
     body = (request.data.get("message") or "").strip()
     if not body:
@@ -491,7 +716,7 @@ def support_ticket_reply(request, number):
         direction=SupportMessage.DIRECTION_OUT,
         channel=SupportMessage.CHANNEL_WEB,
         author=user,
-        author_name="AFC Support",
+        author_name=_signer(ticket),
         body=body,
     )
     _saved, rejected = _save_attachments(message, request.FILES.getlist("files"))
@@ -512,20 +737,20 @@ def support_ticket_reply(request, number):
                      "emailed": bool(emailed),
                      "discord_dm": bool(dmed),
                      "rejected_files": rejected,
-                     "ticket": _ticket_dict(ticket, for_staff=True, with_messages=True)},
+                     "ticket": _desk_ticket(ticket, user, with_messages=True)},
                     status=status.HTTP_200_OK)
 
 
 @api_view(["POST"])
 def support_ticket_status(request, number):
-    """POST support/tickets/<ticket_number>/status/ - { status?, assign_to_me? }."""
-    user, err = _require_staff(request)
+    """POST support/tickets/<ticket_number>/status/ - { status?, assign_to_me? }. Same gate as
+    the detail (_ticket_for). AFC oversight of an organizer's question may not change it."""
+    user, ticket, err = _ticket_for(request, number)
     if err:
         return err
-    ticket = SupportTicket.objects.filter(ticket_number=number).first()
-    if not ticket:
-        return Response({"message": "We could not find that ticket.", "code": "ticket_not_found"},
-                        status=status.HTTP_404_NOT_FOUND)
+    err = _change_refusal(user, ticket)
+    if err:
+        return err
 
     changed = []
     new_status = (request.data.get("status") or "").strip()
@@ -543,7 +768,7 @@ def support_ticket_status(request, number):
                         status=status.HTTP_400_BAD_REQUEST)
     ticket.save(update_fields=changed + ["updated_at"])
     return Response({"message": "Ticket updated.",
-                     "ticket": _ticket_dict(ticket, for_staff=True)},
+                     "ticket": _desk_ticket(ticket, user)},
                     status=status.HTTP_200_OK)
 
 
@@ -554,8 +779,11 @@ def support_ticket_status(request, number):
 def support_attachment(request, attachment_id):
     """GET support/attachments/<id>/ - stream one file.
 
-    Two ways in, and no third: a support-role session, or the ticket's own opaque token passed as
-    ?t=<token> (the requester's thread page appends it). Everything else is a 404, not a 403: a
+    Three ways in: a session allowed to work this ticket (an API call with the Authorization
+    header; for an organizer's ticket that is its answerers and head / super admins, inbox #175), a staff
+    signed link ?s=<signature> made by _signed_attachment_url (what the desk's links carry, because a
+    browser following a link sends no header: inbox #168), or the ticket's own opaque token passed
+    as ?t=<token> (the requester's thread page appends it). Everything else is a 404, not a 403: a
     stranger should not even learn that the id exists.
     """
     att = SupportAttachment.objects.filter(id=attachment_id).select_related(
@@ -563,18 +791,31 @@ def support_attachment(request, attachment_id):
     if not att:
         raise Http404
 
+    from afc_support.org_scope import ticket_access
+
     ticket = att.message.ticket
     token = (request.GET.get("t") or "").strip()
-    if not (_is_support_staff(_actor(request)) or (token and token == ticket.public_token)):
+    actor = _actor(request)
+    if not (_signature_opens(att, (request.GET.get("s") or "").strip())
+            or (token and token == ticket.public_token)
+            or (actor and ticket_access(actor, ticket, _is_support_staff) is None)):
         raise Http404
 
     try:
         handle = att.file.open("rb")
     except Exception:
         raise Http404
-    response = FileResponse(handle, content_type=att.content_type or "application/octet-stream")
-    # inline so a picture opens in the tab and a document offers itself, with the ORIGINAL name.
-    response["Content-Disposition"] = f'inline; filename="{header_safe(att.original_name, 200)}"'
+    # R87 (2026-09-30): only a picture opens in the tab. Everything else is a DOWNLOAD typed as a
+    # plain binary, whatever content_type the row holds: rows written before 2026-09-30 carry the
+    # type the uploader's browser DECLARED, and "text/html" served inline from the API origin is a
+    # page running under our name. nosniff stops a browser second-guessing either answer.
+    inline_types = {"image/jpeg", "image/png", "image/gif", "image/webp"}
+    stored_type = (att.content_type or "").lower()
+    inline = stored_type in inline_types
+    response = FileResponse(handle, content_type=stored_type if inline else "application/octet-stream")
+    disposition = "inline" if inline else "attachment"
+    response["Content-Disposition"] = f'{disposition}; filename="{header_safe(att.original_name, 200)}"'
+    response["X-Content-Type-Options"] = "nosniff"
     return response
 
 
@@ -602,7 +843,7 @@ def support_audit(request):
                         status=status.HTTP_403_FORBIDDEN)
 
     qs = (SupportMessage.objects.all()
-          .select_related("ticket", "author")
+          .select_related("ticket", "ticket__organization", "author")
           .prefetch_related("attachments")
           .order_by("-created_at", "-id"))
 
@@ -639,11 +880,14 @@ def support_audit(request):
             "ticket_status": m.ticket.status,
             "from_name": m.ticket.name,
             "from_email": m.ticket.email,
+            # Inbox #175: head admins see organizer conversations too, labelled with whose they are.
+            "organization": m.ticket.organization.name if m.ticket.organization_id else "",
             "direction": m.direction,
             "channel": m.channel,
             "author_username": m.author.username if m.author_id else "",
             "body": m.body,
-            "attachments": [_attachment_dict(a) for a in m.attachments.all()],
+            # Head admins only (the audit gate above), so these are staff links too (inbox #168).
+            "attachments": [_attachment_dict(a, for_staff=True) for a in m.attachments.all()],
             "created_at": m.created_at.isoformat(),
         })
     return Response(
@@ -666,12 +910,22 @@ def support_access(request):
     The frontend asks this once to decide whether to draw the Support item in the admin sidebar and
     whether to offer the audit tab, instead of guessing from role names it would have to keep in
     step with this file (R26: never draw a control somebody cannot use).
+
+    `organizer_desks` (inbox #175): the organizations whose questions the caller may read, each
+    with how many wait on an answer. For an organizer that is their own organization(s) where they
+    are owner or hold Answer support; for an AFC head / super admin it is every organization that
+    has been asked anything ("Only head admin and super admins can see stuff of organizer").
+    Ordinary support staff get an empty list. Consumed by the admin desk's desk picker and the
+    organizer portal's Support page (app/(organizer)/organizer/support).
     """
+    from afc_support.org_scope import organizer_desks
+
     user = _actor(request)
     return Response(
         {
             "can_work_tickets": _is_support_staff(user),
             "can_read_audit": _is_head_admin(user),
+            "organizer_desks": organizer_desks(user),
         },
         status=status.HTTP_200_OK,
     )

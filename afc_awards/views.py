@@ -24,7 +24,7 @@ def add_new_category(request):
         # --- Authenticate user ---
         session_token = request.headers.get("Authorization")
         if not session_token or not session_token.startswith("Bearer "):
-            return Response({"error": "Invalid or missing Authorization header"}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"error": "Invalid or missing Authorization header", "code": "add_new_category_refused"}, status=status.HTTP_400_BAD_REQUEST)
 
         session_token = session_token.split(" ")[1]
         # Prevents FieldError 500: resolve the bearer token via the SessionToken table
@@ -32,18 +32,18 @@ def add_new_category(request):
         # None on an invalid/expired token, which we surface as a clean 401.
         user = validate_token(session_token)
         if not user:
-            return Response({"error": "Invalid session token"}, status=status.HTTP_401_UNAUTHORIZED)
+            return Response({"error": "Invalid session token", "code": "add_new_category_refused"}, status=status.HTTP_401_UNAUTHORIZED)
 
         name = request.data.get('name')
         section_id = request.data.get('section_id')
     
         if not name or not section_id:
-            return Response({"error": "Name and section_id are required"}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"error": "Name and section_id are required", "code": "add_new_category_refused"}, status=status.HTTP_400_BAD_REQUEST)
 
         try:
             section = Section.objects.get(id=section_id)
         except Section.DoesNotExist:
-            return Response({"error": "Section not found"}, status=status.HTTP_404_NOT_FOUND)
+            return Response({"error": "Section not found", "code": "add_new_category_refused"}, status=status.HTTP_404_NOT_FOUND)
 
         category = Category.objects.create(name=name, section=section)
 
@@ -69,7 +69,7 @@ def delete_category(request):
     session_token = request.headers.get("Authorization")
     if not session_token or not session_token.startswith("Bearer "):
         return Response(
-            {"error": "Invalid or missing Authorization header"},
+            {"error": "Invalid or missing Authorization header", "code": "delete_category_refused"},
             status=status.HTTP_400_BAD_REQUEST
         )
 
@@ -79,17 +79,17 @@ def delete_category(request):
     # None on an invalid/expired token, which we surface as a clean 401.
     user = validate_token(session_token)
     if not user:
-        return Response({"error": "Invalid session token"}, status=status.HTTP_401_UNAUTHORIZED)
+        return Response({"error": "Invalid session token", "code": "delete_category_refused"}, status=status.HTTP_401_UNAUTHORIZED)
 
     # --- Validate category_id ---
     category_id = request.data.get("category_id")
     if not category_id:
-        return Response({"error": "category_id is required"}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"error": "category_id is required", "code": "delete_category_refused"}, status=status.HTTP_400_BAD_REQUEST)
 
     try:
         category = Category.objects.get(category_id=category_id)
     except Category.DoesNotExist:
-        return Response({"error": "Category not found"}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"error": "Category not found", "code": "delete_category_refused"}, status=status.HTTP_404_NOT_FOUND)
 
     # --- Delete the category ---
     category_name = category.name  # store name BEFORE deleting
@@ -111,7 +111,7 @@ def add_new_nominee(request):
         # --- Authenticate user ---
         session_token = request.headers.get("Authorization")
         if not session_token or not session_token.startswith("Bearer "):
-            return Response({"error": "Invalid or missing Authorization header"}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"error": "Invalid or missing Authorization header", "code": "add_new_nominee_refused"}, status=status.HTTP_400_BAD_REQUEST)
 
         session_token = session_token.split(" ")[1]
         # Prevents FieldError 500: resolve the bearer token via the SessionToken table
@@ -119,13 +119,13 @@ def add_new_nominee(request):
         # None on an invalid/expired token, which we surface as a clean 401.
         user = validate_token(session_token)
         if not user:
-            return Response({"error": "Invalid session token"}, status=status.HTTP_401_UNAUTHORIZED)
+            return Response({"error": "Invalid session token", "code": "add_new_nominee_refused"}, status=status.HTTP_401_UNAUTHORIZED)
 
         name = request.data.get('name')
         video_url = request.data.get('video_url')
 
         if not name:
-            return Response({"error": "Name is required"}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"error": "Name is required", "code": "add_new_nominee_refused"}, status=status.HTTP_400_BAD_REQUEST)
 
         nominee = Nominee.objects.create(name=name, video_url=video_url)
 
@@ -163,7 +163,7 @@ def delete_nominee(request):
     # --- Authenticate user ---
     session_token = request.headers.get("Authorization")
     if not session_token or not session_token.startswith("Bearer "):
-        return Response({"error": "Invalid or missing Authorization header"}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"error": "Invalid or missing Authorization header", "code": "delete_nominee_refused"}, status=status.HTTP_400_BAD_REQUEST)
 
     session_token = session_token.split(" ")[1]
     # Prevents FieldError 500: resolve the bearer token via the SessionToken table
@@ -171,16 +171,16 @@ def delete_nominee(request):
     # None on an invalid/expired token, which we surface as a clean 401.
     user = validate_token(session_token)
     if not user:
-        return Response({"error": "Invalid session token"}, status=status.HTTP_401_UNAUTHORIZED)
+        return Response({"error": "Invalid session token", "code": "delete_nominee_refused"}, status=status.HTTP_401_UNAUTHORIZED)
 
     nominee_id = request.data.get('nominee_id')
     if not nominee_id:
-        return Response({"error": "nominee_id is required"}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"error": "nominee_id is required", "code": "delete_nominee_refused"}, status=status.HTTP_400_BAD_REQUEST)
 
     try:
         nominee = Nominee.objects.get(nominee_id=nominee_id)
     except Nominee.DoesNotExist:
-        return Response({"error": "Nominee not found"}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"error": "Nominee not found", "code": "delete_nominee_refused"}, status=status.HTTP_404_NOT_FOUND)
 
     nominee_name = nominee.name
     nominee.delete()
@@ -201,7 +201,7 @@ def add_nominee_to_category(request):
         # --- Authenticate user ---
         session_token = request.headers.get("Authorization")
         if not session_token or not session_token.startswith("Bearer "):
-            return Response({"error": "Invalid or missing Authorization header"}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"error": "Invalid or missing Authorization header", "code": "add_nominee_to_category_refused"}, status=status.HTTP_400_BAD_REQUEST)
 
         session_token = session_token.split(" ")[1]
         # Prevents FieldError 500: resolve the bearer token via the SessionToken table
@@ -209,13 +209,13 @@ def add_nominee_to_category(request):
         # None on an invalid/expired token, which we surface as a clean 401.
         user = validate_token(session_token)
         if not user:
-            return Response({"error": "Invalid session token"}, status=status.HTTP_401_UNAUTHORIZED)
+            return Response({"error": "Invalid session token", "code": "add_nominee_to_category_refused"}, status=status.HTTP_401_UNAUTHORIZED)
 
         category_id = request.data.get('category_id')
         nominee_id = request.data.get('nominee_id')
 
         if not category_id or not nominee_id:
-            return Response({"error": "Category ID and Nominee ID are required"}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"error": "Category ID and Nominee ID are required", "code": "add_nominee_to_category_refused"}, status=status.HTTP_400_BAD_REQUEST)
 
         try:
             category = Category.objects.get(category_id=category_id)
@@ -229,7 +229,7 @@ def add_nominee_to_category(request):
             )
             return Response({"message": "Nominee added to category successfully"}, status=status.HTTP_201_CREATED)
         except (Category.DoesNotExist, Nominee.DoesNotExist):
-            return Response({"error": "Category or Nominee not found"}, status=status.HTTP_404_NOT_FOUND)
+            return Response({"error": "Category or Nominee not found", "code": "add_nominee_to_category_refused"}, status=status.HTTP_404_NOT_FOUND)
 
 
 @api_view(['DELETE'])
@@ -238,7 +238,7 @@ def remove_nominee_from_category(request):
         # --- Authenticate user ---
         session_token = request.headers.get("Authorization")
         if not session_token or not session_token.startswith("Bearer "):
-            return Response({"error": "Invalid or missing Authorization header"}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"error": "Invalid or missing Authorization header", "code": "remove_nominee_from_category_refused"}, status=status.HTTP_400_BAD_REQUEST)
 
         session_token = session_token.split(" ")[1]
         # Prevents FieldError 500: resolve the bearer token via the SessionToken table
@@ -246,13 +246,13 @@ def remove_nominee_from_category(request):
         # None on an invalid/expired token, which we surface as a clean 401.
         user = validate_token(session_token)
         if not user:
-            return Response({"error": "Invalid session token"}, status=status.HTTP_401_UNAUTHORIZED)
+            return Response({"error": "Invalid session token", "code": "remove_nominee_from_category_refused"}, status=status.HTTP_401_UNAUTHORIZED)
 
         category_id = request.data.get('category_id')
         nominee_id = request.data.get('nominee_id')
 
         if not category_id or not nominee_id:
-            return Response({"error": "Category ID and Nominee ID are required"}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"error": "Category ID and Nominee ID are required", "code": "remove_nominee_from_category_refused"}, status=status.HTTP_400_BAD_REQUEST)
 
         try:
             category = Category.objects.get(category_id=category_id)
@@ -268,7 +268,7 @@ def remove_nominee_from_category(request):
 
             return Response({"message": "Nominee removed from category successfully"}, status=status.HTTP_204_NO_CONTENT)
         except (Category.DoesNotExist, Nominee.DoesNotExist, CategoryNominee.DoesNotExist):
-            return Response({"error": "Category or Nominee not found"}, status=status.HTTP_404_NOT_FOUND)
+            return Response({"error": "Category or Nominee not found", "code": "remove_nominee_from_category_refused"}, status=status.HTTP_404_NOT_FOUND)
         
 
 @api_view(['POST'])
@@ -277,7 +277,7 @@ def add_section(request):
         # --- Authenticate user ---
         session_token = request.headers.get("Authorization")
         if not session_token or not session_token.startswith("Bearer "):
-            return Response({"error": "Invalid or missing Authorization header"}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"error": "Invalid or missing Authorization header", "code": "add_section_refused"}, status=status.HTTP_400_BAD_REQUEST)
 
         session_token = session_token.split(" ")[1]
         # Prevents FieldError 500: resolve the bearer token via the SessionToken table
@@ -285,13 +285,13 @@ def add_section(request):
         # None on an invalid/expired token, which we surface as a clean 401.
         user = validate_token(session_token)
         if not user:
-            return Response({"error": "Invalid session token"}, status=status.HTTP_401_UNAUTHORIZED)
+            return Response({"error": "Invalid session token", "code": "add_section_refused"}, status=status.HTTP_401_UNAUTHORIZED)
 
         name = request.data.get('name')
         max_votes = request.data.get('max_votes')
 
         if not name or not max_votes:
-            return Response({"error": "Name and max_votes are required"}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"error": "Name and max_votes are required", "code": "add_section_refused"}, status=status.HTTP_400_BAD_REQUEST)
 
         section = Section.objects.create(name=name, max_votes=max_votes)
 
@@ -357,7 +357,7 @@ def edit_category(request):
         # --- Authenticate user ---
         session_token = request.headers.get("Authorization")
         if not session_token or not session_token.startswith("Bearer "):
-            return Response({"error": "Invalid or missing Authorization header"}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"error": "Invalid or missing Authorization header", "code": "edit_category_refused"}, status=status.HTTP_400_BAD_REQUEST)
 
         session_token = session_token.split(" ")[1]
         # Prevents FieldError 500: resolve the bearer token via the SessionToken table
@@ -365,19 +365,19 @@ def edit_category(request):
         # None on an invalid/expired token, which we surface as a clean 401.
         user = validate_token(session_token)
         if not user:
-            return Response({"error": "Invalid session token"}, status=status.HTTP_401_UNAUTHORIZED)
+            return Response({"error": "Invalid session token", "code": "edit_category_refused"}, status=status.HTTP_401_UNAUTHORIZED)
 
         category_id = request.data.get('category_id')
         new_name = request.data.get('name')
         new_section_id = request.data.get('section_id')
 
         if not category_id:
-            return Response({"error": "Category ID is required"}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"error": "Category ID is required", "code": "edit_category_refused"}, status=status.HTTP_400_BAD_REQUEST)
 
         try:
             category = Category.objects.get(category_id=category_id)
         except Category.DoesNotExist:
-            return Response({"error": "Category not found"}, status=status.HTTP_404_NOT_FOUND)
+            return Response({"error": "Category not found", "code": "edit_category_refused"}, status=status.HTTP_404_NOT_FOUND)
 
         if new_name:
             category.name = new_name
@@ -387,7 +387,7 @@ def edit_category(request):
                 new_section = Section.objects.get(id=new_section_id)
                 category.section = new_section
             except Section.DoesNotExist:
-                return Response({"error": "New section not found"}, status=status.HTTP_404_NOT_FOUND)
+                return Response({"error": "New section not found", "code": "edit_category_refused"}, status=status.HTTP_404_NOT_FOUND)
 
         category.save()
 
@@ -405,7 +405,7 @@ def edit_nominee(request):
         # --- Authenticate user ---
         session_token = request.headers.get("Authorization")
         if not session_token or not session_token.startswith("Bearer "):
-            return Response({"error": "Invalid or missing Authorization header"}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"error": "Invalid or missing Authorization header", "code": "edit_nominee_refused"}, status=status.HTTP_400_BAD_REQUEST)
 
         session_token = session_token.split(" ")[1]
         # Prevents FieldError 500: resolve the bearer token via the SessionToken table
@@ -413,19 +413,19 @@ def edit_nominee(request):
         # None on an invalid/expired token, which we surface as a clean 401.
         user = validate_token(session_token)
         if not user:
-            return Response({"error": "Invalid session token"}, status=status.HTTP_401_UNAUTHORIZED)
+            return Response({"error": "Invalid session token", "code": "edit_nominee_refused"}, status=status.HTTP_401_UNAUTHORIZED)
 
         nominee_id = request.data.get('nominee_id')
         new_name = request.data.get('name')
         new_video_url = request.data.get('video_url')
 
         if not nominee_id:
-            return Response({"error": "Nominee ID is required"}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"error": "Nominee ID is required", "code": "edit_nominee_refused"}, status=status.HTTP_400_BAD_REQUEST)
 
         try:
             nominee = Nominee.objects.get(nominee_id=nominee_id)
         except Nominee.DoesNotExist:
-            return Response({"error": "Nominee not found"}, status=status.HTTP_404_NOT_FOUND)
+            return Response({"error": "Nominee not found", "code": "edit_nominee_refused"}, status=status.HTTP_404_NOT_FOUND)
 
         if new_name:
             nominee.name = new_name

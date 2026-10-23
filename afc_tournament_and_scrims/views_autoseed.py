@@ -208,15 +208,15 @@ def auto_seed_now(request):
     auth = request.headers.get("Authorization", "")
     user = validate_token(auth.split(" ")[1]) if auth.startswith("Bearer ") else None
     if not user:
-        return Response({"message": "Invalid or missing session token."}, status=401)
+        return Response({"message": "Invalid or missing session token.", "code": "invalid_missing_session_token"}, status=401)
     event = get_object_or_404(Event, event_id=request.data.get("event_id"))
     if not _is_event_admin(user) and not org_can_event(user, "can_manage_registrations", event):
-        return Response({"message": "You do not have permission."}, status=403)
+        return Response({"message": "You do not have permission.", "code": "not_permission"}, status=403)
     res = run_auto_seed(event)
     if res["skipped"] == "already_seeded":
-        return Response({"message": "The entry stage is already seeded.", **res}, status=400)
+        return Response({"message": "The entry stage is already seeded.", **res, "code": "entry_stage_already_seeded"}, status=400)
     if res["skipped"] in ("no_stage", "no_groups"):
-        return Response({"message": "Create a stage with groups before auto-seeding.", **res}, status=400)
+        return Response({"message": "Create a stage with groups before auto-seeding.", **res, "code": "create_stage_groups_before"}, status=400)
     if res["skipped"] == "no_available_teams":
-        return Response({"message": "No available teams to seed (check registrations / check-in).", **res}, status=400)
+        return Response({"message": "No available teams to seed (check registrations / check-in).", **res, "code": "no_available_teams_seed"}, status=400)
     return Response({"message": f"Seeded {res['seeded']} team(s) across {res['groups']} group(s).", **res})

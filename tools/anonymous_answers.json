@@ -177,6 +177,18 @@
       "status": 200,
       "reason": "public content, decided 2026-09-13"
     },
+    "GET help-bot/conversations/": {
+      "status": 200,
+      "reason": "the website Help panel's History: a signed-out caller with no browser id gets an empty list; with one, only that browser's own signed-out chats (the same ownership as continuing a chat), AFC-B help bot history (inbox #147, 2026-10-05)"
+    },
+    "GET help-bot/status/": {
+      "status": 200,
+      "reason": "the website Help panel asks whether the assistant is on and how many questions are left today: answers {online, signed_in, limit, remaining, bot_check} and holds nothing private, opened by AFC-B feature/help-bot (inbox #109, 2026-10-04)"
+    },
+    "GET mail/o/<str:token>.gif": {
+      "status": 200,
+      "reason": "bulk-email open pixel: a mail client fetches it with no session to count an open; it returns a 1x1 GIF for any token and reveals nothing (afc_mail, v7.1.128, written here 2026-10-23)"
+    },
     "GET organizers/events/<int:event_id>/rating/": {
       "status": 200,
       "reason": "public content, decided 2026-09-13"
@@ -204,6 +216,10 @@
     "GET player-market/view-team-recruitment-posts/": {
       "status": 200,
       "reason": "public content, decided 2026-09-13"
+    },
+    "GET player/directory/": {
+      "status": 200,
+      "reason": "the Players tab of Teams & Players: paged, searchable, lists only players already public via a team roster or a scored match, named fields only (no uid, email, role, status), AFC-B teams-players-transfers (inbox #161, 2026-10-05)"
     },
     "GET polls/": {
       "status": 200,
@@ -288,6 +304,14 @@
     "GET team/transfers/": {
       "status": 200,
       "reason": "public content, decided 2026-09-13"
+    },
+    "GET wagers/markets/": {
+      "status": 200,
+      "reason": "wager markets list (afc_wager views_public.list_markets): a stranger sees PUBLIC markets only (visibility filter when no session); placing a stake needs a session (R25 public by default, gate the action). Written 2026-10-23 when feature/wager-2 was brought up to main"
+    },
+    "GET wagers/settings/": {
+      "status": 200,
+      "reason": "wager rules for everyone to read before signing in (on/off, maintenance line, fees, stake and withdrawal limits, minimum age); no person's data. Written 2026-10-23"
     },
     "POST auth/check-discord-membership-v2/": {
       "status": 200,

@@ -133,4 +133,4 @@ class SeedNextStageByStandingsTests(APITestCase):
 
     def test_missing_auth_rejected(self):
         res = self._post({"stage_id": self.rr.stage_id}, auth=False)
-        self.assertEqual(res.status_code, 400)
+        self.assertEqual(res.status_code, 401)

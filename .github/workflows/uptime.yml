@@ -9,8 +9,11 @@
 # What counts as up:
 #   site   200 from https://africanfreefirecommunity.com/ AND the X-AFC-Host: vps header,
 #          which only the VPS nginx sets (so a stale DNS or a wrong box fails too)
-#   api    400 from /auth/connections/ (an auth-required endpoint answering means Django is up
-#          and routing; 502/504 would be nginx with no gunicorn behind it)
+#   api    401 from /auth/connections/ (an auth-required endpoint answering means Django is up
+#          and routing; 502/504 would be nginx with no gunicorn behind it). It answered 400
+#          until 2026-10-01, when every no-session refusal became 401 (AFC-B #98); the deploy
+#          probe moved to 401 that day (af9ce5d8) and this one did not, so it reported the API
+#          down on every run from 1 to 9 October while the API was up.
 # Each probe retries three times over ~30 s before it counts as down, so a single slow response
 # does not page anyone. Schedules on GitHub can drift by a few minutes under load.
 
@@ -42,8 +45,8 @@ jobs:
         run: |
           for i in 1 2 3; do
             code=$(curl -s -o /dev/null -m 20 -w '%{http_code}' https://api.africanfreefirecommunity.com/auth/connections/)
-            echo "attempt $i: HTTP $code (400 = up)"
-            [ "$code" = "400" ] && exit 0
+            echo "attempt $i: HTTP $code (401 = up)"
+            [ "$code" = "401" ] && exit 0
             sleep 10
           done
           echo "API DOWN"; exit 1

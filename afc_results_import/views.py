@@ -44,18 +44,18 @@ def _gate(request, event):
     """(user, error_response). One place decides both identity and permission."""
     header = request.headers.get("Authorization") or ""
     if not header.startswith("Bearer "):
-        return None, Response({"message": "You need to be signed in to do this."},
+        return None, Response({"message": "You need to be signed in to do this.", "code": "need_signed"},
                               status=status.HTTP_401_UNAUTHORIZED)
     user = validate_token(header.split(" ", 1)[1])
     if not user:
-        return None, Response({"message": "Invalid or expired session token."},
+        return None, Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"},
                               status=status.HTTP_401_UNAUTHORIZED)
 
     # Lazy: seeding_management imports afc_auth.views, so a module-level import cycles.
     from afc_tournament_and_scrims.seeding_management import _seeding_gate
     if not _seeding_gate(user, event):
         return None, Response(
-            {"message": "You do not have permission to import results for this event."},
+            {"message": "You do not have permission to import results for this event.", "code": "not_permission_import_results"},
             status=status.HTTP_403_FORBIDDEN)
     return user, None
 
@@ -81,7 +81,7 @@ def _reject_per_player(request):
         return Response(
             {"message": "Per-player results cannot be imported. A player row needs a real AFC "
                         "account, and an external tournament has none, so an import records team "
-                        "scores only. Leave team_scores_only unset or true."},
+                        "scores only. Leave team_scores_only unset or true.", "code": "per_player_results_cannot"},
             status=status.HTTP_400_BAD_REQUEST)
     return None
 
@@ -104,7 +104,7 @@ def _read_upload(request):
     f = request.FILES.get("file")
     if f is None:
         return None, Response(
-            {"message": "Attach the results workbook as the 'file' field."},
+            {"message": "Attach the results workbook as the 'file' field.", "code": "attach_results_workbook_file"},
             status=status.HTTP_400_BAD_REQUEST)
     if f.size and f.size > MAX_UPLOAD_BYTES:
         return None, Response(
@@ -151,7 +151,7 @@ def preview_results_import(request):
         imp.status = "failed"
         imp.preview = {"problems": [str(exc)]}
         imp.save(update_fields=["status", "preview"])
-        return Response({"message": str(exc), "import_id": imp.pk},
+        return Response({"message": str(exc), "import_id": imp.pk, "code": "preview_results_import_refused"},
                         status=status.HTTP_400_BAD_REQUEST)
 
     imp.preview = preview
@@ -202,7 +202,7 @@ def commit_results_import(request):
         imp.status = "failed"
         imp.preview = {"problems": [str(exc)]}
         imp.save(update_fields=["status", "preview"])
-        return Response({"message": str(exc), "import_id": imp.pk},
+        return Response({"message": str(exc), "import_id": imp.pk, "code": "commit_results_import_refused"},
                         status=status.HTTP_400_BAD_REQUEST)
 
     return Response({"import_id": imp.pk, "summary": summary})
@@ -242,7 +242,7 @@ def pair_result_team(request):
     team_id = request.data.get("team_id")
     if not source_name or not (tt_id or team_id):
         return Response(
-            {"message": "source_name and one of tournament_team_id or team_id are required."},
+            {"message": "source_name and one of tournament_team_id or team_id are required.", "code": "source_name_tournament_team"},
             status=status.HTTP_400_BAD_REQUEST)
 
     from afc_tournament_and_scrims.models import TournamentTeam
@@ -250,13 +250,13 @@ def pair_result_team(request):
         tt = TournamentTeam.objects.filter(pk=tt_id, event=event).first()
         if tt is None:
             return Response(
-                {"message": "That competitor is not registered to this event."},
+                {"message": "That competitor is not registered to this event.", "code": "competitor_not_registered_event"},
                 status=status.HTTP_400_BAD_REQUEST)
     else:
         from afc_team.models import Team
         team = Team.objects.filter(pk=team_id).first()
         if team is None:
-            return Response({"message": "No team with that id."},
+            return Response({"message": "No team with that id.", "code": "no_team"},
                             status=status.HTTP_400_BAD_REQUEST)
         # get_or_create, never create: the team may already be registered, and a second row would
         # violate the uniq_event_team_registration constraint.
@@ -441,7 +441,7 @@ def results_import_settings(request):
     """
     slug = request.data.get("slug") or request.query_params.get("slug")
     if not slug:
-        return Response({"message": "slug is required."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"message": "slug is required.", "code": "slug_required"}, status=status.HTTP_400_BAD_REQUEST)
     event = get_object_or_404(Event, slug=slug)
     user, err = _gate(request, event)
     if err:
@@ -466,7 +466,7 @@ def results_import_settings(request):
     if (rankings is not None or tier) and not _is_event_admin(user):
         return Response(
             {"message": "Only an AFC event admin can change what an event contributes to the "
-                        "rankings, or its tier."},
+                        "rankings, or its tier.", "code": "afc_event_admin_change"},
             status=status.HTTP_403_FORBIDDEN)
     if tier and tier not in _TIERS:
         return Response({"message": f"tournament_tier must be one of {sorted(_TIERS)}."},

@@ -189,13 +189,13 @@ def event_stage_graphic(request, event_id, stage_id):
 
     event = Event.objects.select_related("organization").filter(event_id=event_id).first()
     if not event:
-        return Response({"message": "Event not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "Event not found.", "code": "event_not_found"}, status=status.HTTP_404_NOT_FOUND)
     stage = Stages.objects.filter(stage_id=stage_id, event=event).first()
     if not stage:
-        return Response({"message": "Stage not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"message": "Stage not found.", "code": "stage_not_found"}, status=status.HTTP_404_NOT_FOUND)
     # Gate: AFC event admin, or an organizer who can edit this event's org.
     if not (_is_event_admin(user) or org_can_event(user, "can_edit_events", event)):
-        return Response({"message": "You do not have permission to export this event."},
+        return Response({"message": "You do not have permission to export this event.", "code": "not_permission_export_event"},
                         status=status.HTTP_403_FORBIDDEN)
 
     # ── COMBINE selection (owner 2026-07-05, complaint B) ──────────────────────────────────────────
@@ -210,12 +210,12 @@ def event_stage_graphic(request, event_id, stage_id):
     # export IS supported through _solo_combined_standings, so only 400 for solo when this is NOT a
     # combine request (owner 2026-07-05: combined solo boards download too).
     if event.participant_type == "solo" and not is_combined:
-        return Response({"message": "Graphic export for solo stages is not available yet."},
+        return Response({"message": "Graphic export for solo stages is not available yet.", "code": "graphic_export_solo_stages"},
                         status=status.HTTP_400_BAD_REQUEST)
     # Combine params sent but nothing valid resolved (all cross-event / malformed) => clear 400.
     if is_combined and not combine_group_ids:
         return Response(
-            {"message": "No valid groups or stages were selected for the combined export."},
+            {"message": "No valid groups or stages were selected for the combined export.", "code": "no_valid_groups_stages"},
             status=status.HTTP_400_BAD_REQUEST)
 
     size = (request.query_params.get("size") or "youtube").lower()

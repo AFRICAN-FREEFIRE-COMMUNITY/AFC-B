@@ -1,0 +1,8 @@
+{
+  "$comment": "Rule R89: AFC has one version number across this repo and AFC_Frontend. The versioning skill's release.mjs counts the next number across both and its push hook checks a version tag before it leaves this machine.",
+  "product": "AFC",
+  "shareVersionWith": [
+    "https://github.com/AFRICAN-FREEFIRE-COMMUNITY/AFC_Frontend.git"
+  ],
+  "changelog": "CHANGELOG.md"
+}

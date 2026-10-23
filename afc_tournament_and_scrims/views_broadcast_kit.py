@@ -52,8 +52,20 @@ def broadcast_kit_download(request, event_id):
     stage = _resolve_stage(event, request.data.get("stage_id"))
     caster_name = (request.data.get("caster_name") or "").strip()
     caster_uid = (request.data.get("caster_uid") or "").strip() or None
+    # The caster's Free Fire UID goes into the observer config, so digits only (inbox #89).
+    from afc_auth.identifiers import uid_format_error
+    uid_error, uid_code = uid_format_error(caster_uid)
+    if uid_error:
+        return Response({"message": uid_error, "code": uid_code}, status=400)
 
     billboard = request.FILES.get("billboard")
+    # Broadcast art is rendered into the stream overlay, so decode the bytes (R70, 2026-09-22).
+    if billboard is not None:
+        from afc_auth.image_utils import require_image_upload
+        billboard, bad_image = require_image_upload(billboard)
+        if bad_image:
+            return Response({"message": "The billboard must be a JPEG, PNG, WEBP or GIF under 10 MB.",
+                             "code": bad_image}, status=400)
     skybox = request.FILES.get("skybox")
     billboard_bytes = billboard.read() if billboard else None
     skybox_bytes = skybox.read() if skybox else None

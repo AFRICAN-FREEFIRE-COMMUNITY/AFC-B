@@ -226,8 +226,9 @@ CALLER_PLACEHOLDERS = {
     # allowance here is per template rather than per sentence. "heading" is rendered unformatted
     # but is covered by the same bag, which is harmless.
     "partner_apply_received": dict.fromkeys(
-        ("heading", "intro", "next_steps", "what_it_is", "guide", "keep_link"),
-        {"organisation", "reference", "link", "guide"},
+        ("heading", "intro", "next_steps", "what_it_is", "guide", "what_it_is_data_api",
+         "guide_data_api", "keep_link"),
+        {"organisation", "reference", "link", "guide", "api_guide"},
     ),
     "partner_apply_changes": dict.fromkeys(
         ("heading", "intro", "note", "how_to_fix"),
@@ -267,7 +268,17 @@ CALLER_PLACEHOLDERS = {
         "disclaimer": set(),
     },
     "support_reply": {
-        "heading": set(), "intro": {"ticket"}, "thread": set(), "cta": set(), "disclaimer": set(),
+        "heading": set(), "intro": {"ticket"}, "thread": set(), "also": {"tickets"}, "cta": set(),
+        "disclaimer": set(),
+    },
+    # Questions asked of an organizer (inbox #175): the organization's name where it reads.
+    "support_org_reply": {
+        "heading": {"org"}, "intro": {"org", "ticket"}, "note": set(), "thread": set(),
+        "also": {"tickets"}, "cta": set(), "disclaimer": set(),
+    },
+    "support_org_question": {
+        "heading": {"org"}, "intro": {"name", "org", "ticket"}, "about": {"event"}, "cta": set(),
+        "disclaimer": {"org"},
     },
     # Account deletion and restore (afc_auth.account_deletion, 2026-09-17). The deleted mail names
     # nobody (the address it goes to is the released one); the restore mail greets by name.
@@ -279,6 +290,9 @@ CALLER_PLACEHOLDERS = {
     "wager_adjustment": dict.fromkeys(("heading", "intro", "next", "cta"), {"amount", "reason"}),
     "wager_frozen": dict.fromkeys(("heading", "intro", "next", "cta"), {"reason"}),
     "account_deleted": dict.fromkeys(("heading", "intro", "restore", "reuse", "cta", "disclaimer"), set()),
+    # Added with the head-admin "delete on request" email (27 Sep 2026) without its row, so these
+    # three contract tests had failed since; found by the full run on 2026-09-30.
+    "account_deleted_on_request": dict.fromkeys(("heading", "intro", "restore", "reuse", "cta", "disclaimer"), set()),
     "account_restored": {
         "heading": set(), "intro": {"username"}, "password": set(), "cta": set(), "disclaimer": set(),
     },
@@ -341,6 +355,8 @@ CALLER_SUBJECT_PLACEHOLDERS = {
     "wager_withdrawal_rejected": {"amount"},
     "wager_adjustment": {"amount"},
     "wager_frozen": set(),
+    "support_org_reply": {"org", "ticket"},
+    "support_org_question": {"org", "ticket"},
     "account_deleted": set(),
     "account_restored": set(),
 }

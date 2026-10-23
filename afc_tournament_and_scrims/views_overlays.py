@@ -89,7 +89,7 @@ def update_overlay(request, event_id, overlay_id):
         return err
     row = _get_row(event, overlay_id)
     if not row:
-        return Response({"message": "Overlay not found."}, status=404)
+        return Response({"message": "Overlay not found.", "code": "overlay_not_found"}, status=404)
     if "name" in request.data:
         name = (request.data.get("name") or "").strip()[:80]
         if name:
@@ -111,7 +111,7 @@ def duplicate_overlay(request, event_id, overlay_id):
         return err
     row = _get_row(event, overlay_id)
     if not row:
-        return Response({"message": "Overlay not found."}, status=404)
+        return Response({"message": "Overlay not found.", "code": "overlay_not_found"}, status=404)
     copy = EventOverlay.objects.create(
         event=event, name=f"{row.name} copy"[:80], kind=row.kind,
         config=dict(row.config or {}),
@@ -130,7 +130,7 @@ def delete_overlay(request, event_id, overlay_id):
         return err
     row = _get_row(event, overlay_id)
     if not row:
-        return Response({"message": "Overlay not found."}, status=404)
+        return Response({"message": "Overlay not found.", "code": "overlay_not_found"}, status=404)
     row.delete()
     return Response({"message": "Overlay deleted."}, status=200)
 
@@ -146,13 +146,13 @@ def overlay_config(request):
     except (TypeError, ValueError):
         overlay_id = 0
     if not token or not overlay_id:
-        return Response({"message": "token and overlay are required."}, status=400)
+        return Response({"message": "token and overlay are required.", "code": "token_overlay_required"}, status=400)
     event = Event.objects.select_related("organization").filter(overlay_token=token).first()
     if not event or _org_hidden(event):
-        return Response({"message": "Not found."}, status=404)
+        return Response({"message": "Not found.", "code": "not_found"}, status=404)
     row = _get_row(event, overlay_id)
     if not row:
-        return Response({"message": "Not found."}, status=404)
+        return Response({"message": "Not found.", "code": "not_found"}, status=404)
     payload = {
         "kind": row.kind,
         "name": row.name,
@@ -889,9 +889,18 @@ def _booyah_player_rows(event, win, team_row, request):
             # (rich_stats_filled), 0 otherwise - the same contract the leaderboard columns carry.
             "deaths": getattr(stats, "deaths", 0),
             "knockdowns": getattr(stats, "knockdowns", 0),
+            "knocked": getattr(stats, "knocked", 0),
             "headshots": getattr(stats, "headshots", 0),
             "revives_received": getattr(stats, "revives_received", 0),
+            "revives": getattr(stats, "revives_received", 0),
             "survival_time": getattr(stats, "survival_seconds", 0),
+            # AFC Capture 1.4.0 additions (owner 2026-09-22): thrown / grenade kills / items / weapon.
+            "grenades_used": getattr(stats, "grenades_used", 0),
+            "grenade_kills": getattr(stats, "grenade_kills", 0),
+            "gloowall_used": getattr(stats, "gloowall_used", 0),
+            "medkit_used": getattr(stats, "medkit_used", 0),
+            "most_used_weapon": getattr(stats, "most_used_weapon", "") or "",
+            "rich_stats_filled": bool(getattr(stats, "rich_stats_filled", False)),
         }
 
     played = list(
@@ -954,7 +963,7 @@ def capture_version(request):
     release has been published yet). The launcher compares `version` to its local payload."""
     path = _os.path.join(_settings.MEDIA_ROOT, "capture", "capture_release.json")
     if not _os.path.exists(path):
-        return Response({"message": "No capture release published."}, status=404)
+        return Response({"message": "No capture release published.", "code": "no_capture_release_published"}, status=404)
     try:
         with open(path, encoding="utf-8") as f:
             data = _json.load(f)

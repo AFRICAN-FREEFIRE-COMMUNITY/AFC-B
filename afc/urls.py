@@ -37,6 +37,9 @@ urlpatterns = [
     # The support desk: the public contact form + ticket thread, the staff dashboard, and the
     # head-admin audit (owner 2026-09-14). afc_support/urls.py lists every address.
     path("support/", include('afc_support.urls')),
+    # Bulk marketing email (owner 2026-10-16, inbox #259): consent, unsubscribe, tracker, SES events.
+    # afc_mail/views.py lists every address.
+    path("mail/", include('afc_mail.urls')),
     # Sponsor-system redesign P1 (afc_sponsors): sponsor ENTITIES + admin-assigned members +
     # the member-scoped sponsor portal (a ydpay member sees only ydpay). Spec:
     # WEBSITE/tasks/sponsors-redesign-design.md; replaces the user-keyed SponsorEvent dashboard
@@ -91,7 +94,15 @@ urlpatterns = [
     # the awards/ routes above, which stay mounted until the historical votes are migrated.
     # See afc_polls/views.py.
     path("polls/", include('afc_polls.urls')),
+    # QR codes for events, teams, players and news: get-or-create a short link, the counted scan behind
+    # /q/<token>, and the owner-only scan count. See afc_qr/views.py.
+    path("qr/", include('afc_qr.urls')),
+    # Referral programs: the /r/<code> landing, the claim after signup, the profile card and the admin
+    # pages. See afc_referrals/views.py.
+    path("referrals/", include('afc_referrals.urls')),
     path('bot/', include('afc_bot.urls')),
+    # The website's Help panel: status, ask, and "Talk to a person". See afc_helpbot/views.py.
+    path("help-bot/", include('afc_helpbot.urls')),
 
 ]
 

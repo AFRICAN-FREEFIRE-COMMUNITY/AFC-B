@@ -21,7 +21,8 @@ from django.conf.urls.static import static
 # afc_player_market moderation split. Imported explicitly so the route names are clear.
 from django.views.decorators.csrf import csrf_exempt
 from .views_account_deletion import (
-    admin_list_deleted_accounts, admin_restore_account, delete_account, delete_account_preflight,
+    admin_delete_account, admin_list_deleted_accounts, admin_restore_account, delete_account,
+    delete_account_preflight,
 )
 
 
@@ -61,6 +62,8 @@ from .views_broadcast_audience import (
 # Admin dashboard aggregate (owner audit 2026-09-02). One request for every number /a/dashboard
 # shows, replacing thirteen, three of which downloaded a whole table to call .length on it.
 from .views_dashboard import admin_dashboard_detail, admin_dashboard_stats
+# Waiting counts on the admin menu (inbox #57): components/nav-main.tsx
+from .views_admin_nav import admin_nav_counts
 # Two-factor authentication (owner 2026-08-06, authenticator apps added 2026-08-07). Opt-in codes
 # as a second sign-in step, by email or from an authenticator app; see views_two_factor.py for the
 # endpoint docs and two_factor.py for the rules they enforce.
@@ -72,8 +75,10 @@ from .views_two_factor import (
     two_factor_enable,
     two_factor_disable,
     two_factor_regenerate_backup_codes,
+    two_factor_switch_method,
     totp_setup,
     totp_confirm,
+    totp_remove,
 )
 # Admin identity repair (owner 2026-08-07): head_admin/super_admin fixing a user's Free Fire UID or
 # their account email when the user cannot. See views_admin_identity.py for the gate, the audit
@@ -153,6 +158,9 @@ urlpatterns = [
     # changes nothing; confirm/ proves it and only then switches the account over.
     path('two-factor/totp/setup/', totp_setup, name='totp_setup'),
     path('two-factor/totp/confirm/', totp_confirm, name='totp_confirm'),
+    # Both ways on at once (inbox #61): pick one at sign-in, or take the app off and keep email
+    path('two-factor/switch-method/', two_factor_switch_method, name='two_factor_switch_method'),
+    path('two-factor/totp/remove/', totp_remove, name='totp_remove'),
     # ── Account recovery by WhatsApp (owner 2026-08-08) ─────────────────────────
     # ALL OF THESE ARE PUBLIC, by definition: the caller cannot sign in, which is
     # why they are here. Each step is gated by what the step before it handed out
@@ -209,6 +217,7 @@ urlpatterns = [
     path('report-team/', file_team_report, name='file_team_report'),
     path('my-player-reports/', my_player_reports, name='my_player_reports'),
     path('admin/player-reports/', admin_list_player_reports, name='admin_list_player_reports'),
+    path('admin/nav-counts/', admin_nav_counts, name='admin_nav_counts'),
     path('admin/player-reports/<int:report_id>/', admin_respond_player_report, name='admin_respond_player_report'),
 
     # ── Per-event Discord bot (owner 2026-06-22): invite the AFC bot to an organizer's server +
@@ -300,6 +309,9 @@ urlpatterns = [
     path('admin/deleted-accounts/', admin_list_deleted_accounts, name='admin_list_deleted_accounts'),
     path('admin/deleted-accounts/<int:user_id>/restore/', admin_restore_account,
          name='admin_restore_account'),
+    # A head admin deletes an account for a person who asked (inbox #59)
+    path('admin/users/<int:user_id>/delete-account/', admin_delete_account,
+         name='admin_delete_account'),
     path('suspend-user/', suspend_user, name='suspend_user'),
     path('activate-user/', activate_user, name='activate_user'),
     path('assign-roles-to-user/', assign_roles_to_user, name='assign_roles_to_user'),
