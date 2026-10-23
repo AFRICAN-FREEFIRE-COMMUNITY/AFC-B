@@ -20,6 +20,14 @@ number is blocked before the push.
 
 ## Unreleased
 
+### Added
+- Kill feed for the sniper award and team head to head (NFL Season 2): every kill and knock of a map is stored
+  (`MatchKillEvent`, from the debugger-log backfill for now), with the roster team of each UID. New
+  `GET events/kill-stats/?event=<slug>[&stage=][&export=csv]`: "sniper kills recorded" (bolt-action weapons in
+  the new `GameWeapon` table, kills with a known weapon only) and head to head (fights grouped by the owner's
+  rules: a third team joins the same fight, finished kills only, 30 s of game time ends a fight). Three
+  per-event switches, off by default: `kill_feed_tab`, `kill_feed_overlay`, `kill_feed_export`.
+
 ## v7.3.0 - 2026-10-22
 
 ### Added
