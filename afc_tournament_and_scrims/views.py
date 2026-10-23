@@ -22361,6 +22361,31 @@ def upload_team_match_result(request):
             elif _rich_reason != "absent":
                 rich_stats_error = _rich_reason
 
+        # ── AFC Capture kill events (owner 2026-10-23, inbox #350 / #376): an optional `kill_events` JSON
+        # list beside the file, every kill and knock of the map as AFC Capture saw it live (afc-capture
+        # tailer.py). Stored per map for the kill feed (kill_feed.py: sniper kills recorded, head to head);
+        # teams come from this event's roster, never from the payload. Best-effort like rich_stats: a bad
+        # payload is reported in the answer and never fails the upload.
+        kill_events_stored = 0
+        kill_events_error = ""
+        _raw_kills = request.data.get("kill_events")
+        if not dry_run and _raw_kills not in (None, ""):
+            from . import kill_feed
+            try:
+                _kills = kill_feed.clean_events(json.loads(_raw_kills) if isinstance(_raw_kills, str) else _raw_kills)
+            except (TypeError, ValueError):
+                _kills = None
+            if _kills is None:
+                kill_events_error = "bad_shape"
+            else:
+                try:
+                    kill_events_stored = kill_feed.store_events(match, match.group.stage.event, _kills, "capture")
+                except Exception:
+                    import logging
+                    logging.getLogger("afc_tournament_and_scrims").exception(
+                        "capture kill events failed for match %s", match.match_id)
+                    kill_events_error = "store_failed"
+
         # AUDIT TRAIL (owner 2026-07-07 "store the match files so they can be checked later if needed"):
         # keep the exact .log that produced this result. Append a MatchResultLog per real upload (not on
         # dry_run), mirroring how OCR screenshots are retained as MatchResultImage (which also feed the
@@ -22473,6 +22498,8 @@ def upload_team_match_result(request):
         "saved_players": len(credited_player_rows),    # on dry_run: players that WOULD be credited
         "rich_stats_applied": rich_stats_applied,      # player rows filled from the capture client's `rich_stats`
         "rich_stats_error": rich_stats_error,          # "" | not_json | bad_shape | apply_failed (never fatal)
+        "kill_events_stored": kill_events_stored,      # kill feed rows stored from the capture client's `kill_events`
+        "kill_events_error": kill_events_error,        # "" | bad_shape | store_failed (never fatal)
         "missing_teams": missing_teams[:20],          # team blocks where NO player UID matched + name unknown
         # Every team registered for this event (id + name) so the FE missing-teams resolver can offer an
         # "attribute these points to..." dropdown (owner 2026-06-30). Re-uploading with the chosen ids in

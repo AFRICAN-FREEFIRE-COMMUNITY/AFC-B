@@ -188,3 +188,46 @@ class KillStatsEndpointTests(TestCase):
         resp = self.client.get(self.URL, {"event": "no-such-event"})
         self.assertEqual(resp.status_code, 404)
         self.assertEqual(resp.json()["code"], "event_not_found")
+
+
+class CaptureKillEventsUploadTests(TestCase):
+    """AFC Capture sends `kill_events` beside the MatchResult file (inbox #376): stored for the map with the
+    roster teams; a bad payload never fails the upload. Same fixture as tests_capture_rich_stats."""
+
+    def setUp(self):
+        from afc_tournament_and_scrims.tests_capture_rich_stats import _Fixture
+
+        self.fx = _Fixture(methodName="setUp")
+        self.fx.setUp()
+
+    def _upload(self, kill_events):
+        import json as _json
+
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
+        from afc_tournament_and_scrims.tests_capture_rich_stats import LOG as RICH_LOG
+
+        f = SimpleUploadedFile("match.log", RICH_LOG.encode("utf-8"), content_type="text/plain")
+        data = {"match_id": self.fx.match.match_id, "file": f,
+                "kill_events": kill_events if isinstance(kill_events, str) else _json.dumps(kill_events)}
+        return self.fx.client.post("/events/upload-team-match-result/", data=data,
+                                   HTTP_AUTHORIZATION=f"Bearer {self.fx.token.token}")
+
+    def test_the_capture_upload_stores_the_maps_kill_events(self):
+        resp = self._upload([
+            {"t": 12.5, "kind": "knock", "killer_uid": "1001", "victim_uid": "300", "headshot": True, "weapon": None},
+            {"t": 13.0, "kind": "kill", "killer_uid": "1001", "victim_uid": "300", "headshot": None, "weapon": 113},
+        ])
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertEqual(resp.json()["kill_events_stored"], 2)
+        rows = list(MatchKillEvent.objects.filter(match=self.fx.match).order_by("seq"))
+        self.assertEqual([r.kind for r in rows], ["knock", "kill"])
+        self.assertEqual(rows[1].killer_team_id, self.fx.tt["TRG ESPORT"].pk)
+        self.assertEqual(rows[1].victim_team_id, self.fx.tt["KOCC"].pk)
+        self.assertEqual(rows[1].source, "capture")
+
+    def test_a_bad_kill_events_payload_never_fails_the_upload(self):
+        resp = self._upload("{not json")
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertEqual(resp.json()["kill_events_error"], "bad_shape")
+        self.assertFalse(MatchKillEvent.objects.exists())
