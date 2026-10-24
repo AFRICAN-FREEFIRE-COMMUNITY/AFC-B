@@ -12,6 +12,7 @@ WHY IT IS BUILT THIS WAY: see the TeamMapResultSubmission docstring in models.py
 machine, why a team submits only its OWN row, and what stays auditable.
 
 WHO CALLS WHAT
+    GET    events/team-map-results/open/?event=<slug>    team member       -> maps open to claim now
     POST   events/team-map-results/submit/               team member       -> submit or replace
     GET    events/team-map-results/mine/?match_id=       team member       -> my team's rows
     GET    events/team-map-results/queue/?match_id=      organizer / admin -> the review queue
@@ -29,6 +30,8 @@ validate_token preamble, the house idiom in views.py and afc_sso/admin_api.py. A
 role__role_name__in through the existing _is_event_admin / org_can_event helpers, never the buggy
 role_name__in (UserRoles has no such column, it lives on Roles).
 """
+import datetime
+
 from django.db import transaction
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
@@ -130,6 +133,62 @@ def _teams_in_match(match, event):
             return ids
     return set(
         TournamentTeam.objects.filter(event=event).values_list("tournament_team_id", flat=True))
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Claims open only while the map's group is playing (owner 2026-10-23, inbox #379)
+# ──────────────────────────────────────────────────────────────────────────────
+# Owner, with a phone screenshot of the form offering "GROUP STAGE / Group A / 1": "it should only
+# open for matches, stages or groups that are actively playing." Before this, a team could file a
+# claim for any map of the event, days before it was played or weeks after, and the event page
+# listed every map, including groups the team was not in.
+#
+# THE RULE, decided once here and read by both the submit refusal and the open-maps list, so the
+# page can never offer a map the server would then refuse:
+#   opens   at the GROUP's start: playing_date + playing_time, read in the EVENT's own time zone
+#           (_event_zone, the same reading registration windows and status updates use);
+#   closes  CLAIM_MINUTES_PER_MAP for each of the group's maps after that, plus CLAIM_GRACE, so
+#           the team that played the last map still has time to send it.
+# Timing is per GROUP, not per map: a group's maps are played back to back from one start time
+# and the schedule holds no per-map start, so a group is "actively playing" as a whole.
+# A map with no group has no schedule to read and is never open.
+CLAIM_MINUTES_PER_MAP = 30
+CLAIM_GRACE = datetime.timedelta(hours=3)
+
+# Refusal codes, translated on the website by serverMessages.json (lib/i18n/serverMessage.ts).
+CLAIM_NOT_OPEN_YET = "claims_not_open_yet"
+CLAIM_CLOSED = "claims_closed"
+
+
+def claim_window(group, event):
+    """(opens_at, closes_at) for team claims on this group's maps, as aware datetimes."""
+    from .views import _event_zone
+
+    opens = timezone.make_aware(
+        datetime.datetime.combine(group.playing_date, group.playing_time), _event_zone(event))
+    maps = max(int(group.match_count or 0), 1)
+    closes = opens + datetime.timedelta(minutes=CLAIM_MINUTES_PER_MAP * maps) + CLAIM_GRACE
+    return opens, closes
+
+
+def claim_state(match, event, now=None):
+    """None when claims are open for this match right now, else the refusal code."""
+    group = getattr(match, "group", None)
+    if group is None or not group.playing_date or group.playing_time is None:
+        return CLAIM_CLOSED
+    opens, closes = claim_window(group, event)
+    now = now or timezone.now()
+    if now < opens:
+        return CLAIM_NOT_OPEN_YET
+    if now > closes:
+        return CLAIM_CLOSED
+    return None
+
+
+CLAIM_REFUSALS = {
+    CLAIM_NOT_OPEN_YET: "Results for this map open when its group starts playing.",
+    CLAIM_CLOSED: "Results for this map are closed: its group has finished playing.",
+}
 
 
 # How many players may be marked as having played ONE map, by event format. AFC runs duo events
@@ -334,6 +393,13 @@ def submit_team_map_result(request):
     if not team:
         return Response({"message": reason}, status=http.HTTP_403_FORBIDDEN)
 
+    # Only while the map's group is playing (inbox #379). After the team check, so a stranger
+    # learns nothing about the schedule from the refusal they get.
+    shut = claim_state(match, event)
+    if shut:
+        return Response({"message": CLAIM_REFUSALS[shut], "code": shut},
+                        status=http.HTTP_403_FORBIDDEN)
+
     payload, err_msg = _clean_payload(
         request.data.get("results"), tournament_team=team, event=event)
     if err_msg:
@@ -401,6 +467,72 @@ def my_team_map_results(request):
             .filter(match=match, tournament_team=team)
             .select_related("submitted_by", "reviewed_by", "tournament_team__team"))
     return Response({"submissions": [_serialize(r) for r in rows]}, status=http.HTTP_200_OK)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 2b) open_team_map_results  (GET events/team-map-results/open/?event=<slug>)
+# ──────────────────────────────────────────────────────────────────────────────
+@api_view(["GET"])
+def open_team_map_results(request):
+    """The maps the caller's team may send a result for RIGHT NOW (inbox #379).
+
+    PURPOSE: the event page's "which map are you sending?" picker. It used to list every map of
+    the event; it now lists only the maps of groups the caller's team is in whose group is playing
+    (claim_window above), so the form appears while a team is playing and goes away after.
+
+    REQUEST: ?event=<event slug>.
+    RESPONSE 200: {"maps": [{match_id, match_number, match_map, stage_name, group_name,
+    closes_at}]}, soonest group first. Empty when the event does not take team results, the
+    caller is on no team here, or nothing of theirs is playing: the page then shows no form.
+    404 {code: event_not_found} for an unknown slug.
+    AUTH: Bearer SessionToken. Only the caller's own team's groups are ever listed.
+
+    CONSUMED BY: app/(user)/tournaments/[slug]/_components/EventDetailsWrapper.tsx through
+    lib/teamMapResults.ts teamMapResultsApi.openMaps.
+    """
+    from .models import Event
+
+    user, err = _require_user(request)
+    if err:
+        return err
+
+    slug = (request.GET.get("event") or "").strip()
+    event = Event.objects.filter(slug=slug).first() if slug else None
+    if event is None:
+        return Response({"message": "Event not found.", "code": "event_not_found"},
+                        status=http.HTTP_404_NOT_FOUND)
+    if not event.allow_team_result_submissions or event.participant_type == "solo":
+        return Response({"maps": []}, status=http.HTTP_200_OK)
+
+    member_team_ids = set(
+        TournamentTeamMember.objects
+        .filter(user=user, tournament_team__event=event, status__in=["active", "approved"])
+        .values_list("tournament_team_id", flat=True))
+    if not member_team_ids:
+        return Response({"maps": []}, status=http.HTTP_200_OK)
+
+    now = timezone.now()
+    out, playing = [], {}
+    matches = (Match.objects.filter(group__stage__event=event)
+               .select_related("group__stage")
+               .order_by("group__playing_date", "group__playing_time", "group_id", "match_number"))
+    for match in matches:
+        group = match.group
+        if group.group_id not in playing:
+            # One window and one roster read per group, not per map.
+            open_now = claim_state(match, event, now) is None
+            playing[group.group_id] = open_now and bool(member_team_ids & _teams_in_match(match, event))
+        if not playing[group.group_id]:
+            continue
+        out.append({
+            "match_id": match.match_id,
+            "match_number": match.match_number,
+            "match_map": match.match_map or None,
+            "stage_name": group.stage.stage_name,
+            "group_name": group.group_name,
+            "closes_at": claim_window(group, event)[1].isoformat(),
+        })
+    return Response({"maps": out}, status=http.HTTP_200_OK)
 
 
 # ──────────────────────────────────────────────────────────────────────────────

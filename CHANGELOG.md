@@ -20,6 +20,13 @@ number is blocked before the push.
 
 ## Unreleased
 
+### Changed
+- A team can send its own map result only while its group is playing: from the group's start
+  time (in the event's time zone) until its maps are done, 30 minutes a map, plus 3 hours. Outside
+  that the server refuses with `claims_not_open_yet` or `claims_closed`. Reading what the team sent
+  stays open. New `GET events/team-map-results/open/?event=<slug>` lists the maps a team may claim
+  right now, only from its own groups; the event page builds its picker from it.
+
 ### Security
 - `afc/settings.py` no longer carries a commented-out database block for the old AWS RDS host,
   which held that database's password in plain text. The database is gone (owner, 23 Oct 2026),
