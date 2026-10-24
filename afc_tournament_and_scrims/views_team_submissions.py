@@ -148,17 +148,22 @@ def _teams_in_match(match, event):
 # has happened, just not before it has happened." So there is no closing time any more: a team that
 # finds its result missing a week later can still send it, and the organizer still decides.
 #
+# And the same day (#393): "admins or organizers can set when it closes". The event's
+# team_result_claims_close_hours, set beside "Let teams submit their own map results" on both edit
+# pages, closes them that many hours after each group's start; empty keeps them open for good.
+#
 # THE RULE, decided once here and read by both the submit refusal and the open-maps list, so the
 # page can never offer a map the server would then refuse:
 #   opens   at the GROUP's start: playing_date + playing_time, read in the EVENT's own time zone
 #           (_event_zone, the same reading registration windows and status updates use);
-#   closes  never.
+#   closes  team_result_claims_close_hours after that start, or never when it is empty.
 # Timing is per GROUP, not per map: a group's maps are played back to back from one start time
 # and the schedule holds no per-map start. A map whose group has no start time has not started as
 # far as anyone can tell, so it is refused the same way as one that starts later.
 
-# Refusal code, translated on the website by serverMessages.json (lib/i18n/serverMessage.ts).
+# Refusal codes, translated on the website by serverMessages.json (lib/i18n/serverMessage.ts).
 CLAIM_NOT_OPEN_YET = "claims_not_open_yet"
+CLAIM_CLOSED = "claims_closed"
 
 
 def claim_opens_at(group, event):
@@ -169,18 +174,29 @@ def claim_opens_at(group, event):
         datetime.datetime.combine(group.playing_date, group.playing_time), _event_zone(event))
 
 
+def claim_closes_at(group, event):
+    """When claims for this group close (an aware datetime), or None when the event keeps them open."""
+    hours = getattr(event, "team_result_claims_close_hours", None)
+    return claim_opens_at(group, event) + datetime.timedelta(hours=hours) if hours else None
+
+
 def claim_state(match, event, now=None):
-    """None when claims are open for this match (its group has started), else the refusal code."""
+    """None when claims are open for this match, else the refusal code."""
     group = getattr(match, "group", None)
     if group is None or not group.playing_date or group.playing_time is None:
         return CLAIM_NOT_OPEN_YET
-    if (now or timezone.now()) < claim_opens_at(group, event):
+    now = now or timezone.now()
+    if now < claim_opens_at(group, event):
         return CLAIM_NOT_OPEN_YET
+    closes = claim_closes_at(group, event)
+    if closes is not None and now > closes:
+        return CLAIM_CLOSED
     return None
 
 
 CLAIM_REFUSALS = {
     CLAIM_NOT_OPEN_YET: "Results for this map open when its group starts playing.",
+    CLAIM_CLOSED: "Results for this map are closed: the organizer's time for sending them has passed.",
 }
 
 
@@ -475,7 +491,8 @@ def open_team_map_results(request):
 
     REQUEST: ?event=<event slug>.
     RESPONSE 200: {"maps": [{match_id, match_number, match_map, stage_name, group_name,
-    opens_at}]}, the group that started last first (the map a team just played is on top).
+    opens_at, closes_at}]}, the group that started last first (the map a team just played is on top);
+    closes_at is null when the event keeps claims open (#393).
     Empty when the event does not take team results, the caller is on no team here, or none of
     their groups has started yet: the page then shows no form.
     404 {code: event_not_found} for an unknown slug.
@@ -526,6 +543,7 @@ def open_team_map_results(request):
             "stage_name": group.stage.stage_name,
             "group_name": group.group_name,
             "opens_at": claim_opens_at(group, event).isoformat(),
+            "closes_at": (lambda c: c.isoformat() if c else None)(claim_closes_at(group, event)),
         })
     return Response({"maps": out}, status=http.HTTP_200_OK)
 

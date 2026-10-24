@@ -610,6 +610,38 @@ class ClaimWindowTests(TestCase):
         self.assertEqual(resp.status_code, 201, resp.content)
         self.assertTrue(TeamMapResultSubmission.objects.exists())
 
+    # ── the closing time an admin or organizer sets (#393) ──
+    def test_claims_close_the_set_hours_after_the_group_started(self):
+        self.event.team_result_claims_close_hours = 24
+        self.event.save(update_fields=["team_result_claims_close_hours"])
+        self._start_group_at(timezone.now() - datetime.timedelta(hours=23))
+        self.assertEqual(self._submit().status_code, 201)
+        self._start_group_at(timezone.now() - datetime.timedelta(hours=25))
+        resp = self._submit()
+        self.assertEqual(resp.status_code, 403, resp.content)
+        self.assertEqual(resp.json()["code"], "claims_closed")
+
+    def test_the_open_list_names_the_closing_time_and_drops_closed_groups(self):
+        self.event.team_result_claims_close_hours = 24
+        self.event.save(update_fields=["team_result_claims_close_hours"])
+        self._start_group_at(timezone.now() - datetime.timedelta(hours=2))
+        maps = self._open().json()["maps"]
+        self.assertEqual(len(maps), 1)
+        self.assertTrue(maps[0]["closes_at"])
+        self._start_group_at(timezone.now() - datetime.timedelta(hours=30))
+        self.assertEqual(self._open().json()["maps"], [])
+
+    def test_the_closing_setting_takes_empty_for_never_and_refuses_nonsense(self):
+        from afc_tournament_and_scrims.event_contract import _clean_claims_close_hours
+
+        for empty in ("", None, "null", "  "):
+            self.assertIsNone(_clean_claims_close_hours(empty))
+        self.assertEqual(_clean_claims_close_hours("48"), 48)
+        self.assertEqual(_clean_claims_close_hours(6), 6)
+        for bad in ("0", "-3", "abc", "2000", "1.5"):
+            with self.assertRaises(ValueError):
+                _clean_claims_close_hours(bad)
+
     def test_a_map_with_no_group_is_not_open(self):
         """A map outside any group has no start time: it has not started as far as anyone can tell."""
         from afc_tournament_and_scrims.models import Match
@@ -651,7 +683,7 @@ class ClaimWindowTests(TestCase):
         self.assertEqual(maps[0]["group_name"], "Group A")
         self.assertEqual(maps[0]["stage_name"], "Group Stage")
         self.assertTrue(maps[0]["opens_at"])
-        self.assertNotIn("closes_at", maps[0])
+        self.assertIsNone(maps[0]["closes_at"], "no closing time set: open for good (#389)")
 
     def test_the_open_list_is_empty_before_the_group_plays_and_keeps_it_after(self):
         self._start_group_at(timezone.now() + datetime.timedelta(hours=2))
