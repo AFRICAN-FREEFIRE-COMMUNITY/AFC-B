@@ -503,6 +503,11 @@ class Event(models.Model):
     # Read by views_team_submissions on every submit, so switching it off stops new
     # submissions immediately while leaving already-approved results alone.
     allow_team_result_submissions = models.BooleanField(default=False)
+    # When team claims close (owner 2026-10-24, inbox #393: "admins or organizers can set when it
+    # closes"): this many hours after each group's start. Empty (the default) = they never close,
+    # the rule of #389 ("and also after it has happened, just not before it has happened"). Read by
+    # views_team_submissions.claim_state; declared in event_contract.EVENT_FIELDS (write=ORGANIZER).
+    team_result_claims_close_hours = models.PositiveIntegerField(null=True, blank=True)
 
     # Kill feed (owner 2026-10-23, inbox #350: "all three, but an admin or organizer can decide to
     # put it off or on"): where this event's kill stats (sniper kills recorded, head to head) show.

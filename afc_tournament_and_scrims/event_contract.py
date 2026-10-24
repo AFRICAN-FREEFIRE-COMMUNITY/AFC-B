@@ -153,6 +153,24 @@ def _clean_int(raw):
         raise ValueError("must be a whole number.")
 
 
+# Hours after a group's start when team result claims close (inbox #393). Empty is a real answer:
+# it means "never close" (#389), so "", None and "null" all clear it; anything else must be a whole
+# number of hours from 1 to CLAIMS_CLOSE_MAX_HOURS (60 days, far beyond any event).
+CLAIMS_CLOSE_MAX_HOURS = 1440
+
+
+def _clean_claims_close_hours(raw):
+    if raw is None or (isinstance(raw, str) and raw.strip().lower() in ("", "null", "none")):
+        return None
+    try:
+        hours = int(str(raw).strip())
+    except (TypeError, ValueError):
+        raise ValueError(f"must be a whole number of hours from 1 to {CLAIMS_CLOSE_MAX_HOURS}, or empty for never.")
+    if not 1 <= hours <= CLAIMS_CLOSE_MAX_HOURS:
+        raise ValueError(f"must be a whole number of hours from 1 to {CLAIMS_CLOSE_MAX_HOURS}, or empty for never.")
+    return hours
+
+
 def _clean_waitlist_capacity(raw):
     try:
         return int(raw)
@@ -428,6 +446,8 @@ EVENT_FIELDS = [
     Field("required_connections", read=PUBLIC, write=ORGANIZER, clean=_clean_connections,
           get=lambda e, ctx: list(e.required_connections or [])),
     Field("allow_team_result_submissions", read=PUBLIC, write=ORGANIZER, clean=_clean_bool),
+    # When those claims close: hours after each group's start, empty = never (inbox #393).
+    Field("team_result_claims_close_hours", read=PUBLIC, write=ORGANIZER, clean=_clean_claims_close_hours),
     # Kill feed switches (inbox #350): where the event's kill stats show. See kill_feed.py.
     Field("kill_feed_tab", read=PUBLIC, write=ORGANIZER, clean=_clean_bool),
     Field("kill_feed_overlay", read=PUBLIC, write=ORGANIZER, clean=_clean_bool),
@@ -509,6 +529,7 @@ ADMIN_OVERVIEW_FIELDS = [
     "sponsor_requirement_description", "sponsors", "is_waitlist_enabled", "require_team_logo",
     "require_esport_images", "require_player_uid", "require_player_profile_image",
     "require_whatsapp", "required_connections", "allow_team_result_submissions",
+    "team_result_claims_close_hours",
     "waitlist_capacity", "waitlist_discord_role_id", "waitlist_mode", "event_start_time",
     "event_end_time", "timezone",
 ]
