@@ -27,6 +27,11 @@ number is blocked before the push.
   stays open. New `GET events/team-map-results/open/?event=<slug>` lists the maps a team may claim
   right now, only from its own groups; the event page builds its picker from it.
 
+### Security
+- `afc/settings.py` no longer carries a commented-out database block for the old AWS RDS host,
+  which held that database's password in plain text. The database is gone (owner, 23 Oct 2026),
+  so the value is dead; removing the history copy is a separate step that rewrites every branch.
+
 ## v7.3.0 - 2026-10-22
 
 ### Added
