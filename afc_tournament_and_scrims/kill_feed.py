@@ -180,7 +180,9 @@ def fights_of_match(events, team_sizes, gap=FIGHT_GAP_SECONDS):
     team_sizes: {team_id: players who started the map}. Players left = team size minus the team's
     FINISHED deaths so far (a knock lowers nothing). Returns a list of fights:
     {"teams": [ids, in the order they joined], "started_by": [a, b], "start": t, "end": t,
-     "pairs": {(a, b): {"winner": id | None}}, "left": {team: players left at the end}}.
+     "pairs": {(a, b): {"winner": id | None}}, "left": {team: players left at the end},
+     "events": [the fight's own kills and knocks, in game order]} (events: the event tab lists them,
+     inbox #392).
     A pair is two teams that knocked or killed each other inside the fight; its winner is the one with
     more players left when the fight ended (equal = None, a draw)."""
     alive = {team: int(n) for team, n in team_sizes.items()}
@@ -212,15 +214,18 @@ def fights_of_match(events, team_sizes, gap=FIGHT_GAP_SECONDS):
                     if team not in f["teams"]:
                         f["teams"].append(team)
                 f["pairs"].update(other["pairs"])
+                f["events"] = sorted(f["events"] + other["events"], key=lambda e: e["t"])
                 f["start"] = min(f["start"], other["start"])
                 open_fights.remove(other)
             for team in (a, b):
                 if team not in f["teams"]:
                     f["teams"].append(team)      # the third party, in the order it came in
         else:
-            f = {"teams": [a, b], "started_by": [a, b], "start": ev["t"], "end": ev["t"], "pairs": {}}
+            f = {"teams": [a, b], "started_by": [a, b], "start": ev["t"], "end": ev["t"], "pairs": {},
+                 "events": []}
             open_fights.append(f)
         f["end"] = ev["t"]
+        f["events"].append(ev)
         f["pairs"].setdefault(tuple(sorted((a, b))), None)
     for f in open_fights:
         close(f)

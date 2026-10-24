@@ -20,6 +20,14 @@ number is blocked before the push.
 
 ## Unreleased
 
+### Added
+- `GET events/kill-stats/` answers what the event page's Kill stats tab shows: the event's stages, team
+  and player names, in how many of a pair's fights a third team came in, and who killed and knocked who
+  (every two players who met in a fight, kills and knocks each way). `?pair=<a>-<b>` gives one team
+  pair's fights (stage, group, match, who started it, who came in as the third party, players left, the
+  winner) with every kill and knock in order, and the two teams' players against each other; a bad
+  value is `bad_pair`. The CSV gains a "who killed and knocked who" block.
+
 ## v7.4.0 - 2026-10-24
 
 ### Added
