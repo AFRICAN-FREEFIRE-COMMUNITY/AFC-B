@@ -185,6 +185,10 @@
       "status": 200,
       "reason": "the website Help panel asks whether the assistant is on and how many questions are left today: answers {online, signed_in, limit, remaining, bot_check} and holds nothing private, opened by AFC-B feature/help-bot (inbox #109, 2026-10-04)"
     },
+    "GET mail/o/<str:token>.gif": {
+      "status": 200,
+      "reason": "bulk-email open pixel: a mail client fetches it with no session to count an open; it returns a 1x1 GIF for any token and reveals nothing (afc_mail, v7.1.128, written here 2026-10-23)"
+    },
     "GET organizers/events/<int:event_id>/rating/": {
       "status": 200,
       "reason": "public content, decided 2026-09-13"

@@ -28,6 +28,7 @@ from .views_kill_feed import kill_stats
 from .views_team_submissions import (
     approve_team_map_submission,
     my_team_map_results,
+    open_team_map_results,
     reject_team_map_submission,
     submit_team_map_result,
     team_map_result_queue,
@@ -570,6 +571,8 @@ urlpatterns = [
     path("kill-stats/", kill_stats, name="kill_stats"),
     path("team-map-results/submit/", submit_team_map_result, name="submit_team_map_result"),
     path("team-map-results/mine/", my_team_map_results, name="my_team_map_results"),
+    # The maps a team may claim right now: only its own groups, only while they play (#379).
+    path("team-map-results/open/", open_team_map_results, name="open_team_map_results"),
     path("team-map-results/queue/", team_map_result_queue, name="team_map_result_queue"),
     path("team-map-results/<int:submission_id>/approve/", approve_team_map_submission,
          name="approve_team_map_submission"),

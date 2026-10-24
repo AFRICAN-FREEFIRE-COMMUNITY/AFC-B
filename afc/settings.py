@@ -387,17 +387,6 @@ WSGI_APPLICATION = 'afc.wsgi.application'
 #     }
 # }
 
-# DATABASES = {
-#     'default': {
-#         'ENGINE': 'django.db.backends.mysql',
-#         'NAME': 'database-1',
-#         'USER': 'admin',
-#         'PASSWORD': 'YellowMonkey69.',
-#         'HOST': 'database-1.c0t8i0cyoxuq.us-east-1.rds.amazonaws.com',  # Or your remote host
-#         'PORT': '3306',       # Or your custom port if different
-#     }
-# }
-
 # Env-driven DB config. The defaults are the LOCAL dev values, so local keeps working with
 # no env set. PRODUCTION MUST set DB_USER/DB_PASSWORD/DB_HOST (and DB_NAME) to a DEDICATED
 # app user on the real DB host, NOT root@localhost. Deploying these root@localhost defaults
