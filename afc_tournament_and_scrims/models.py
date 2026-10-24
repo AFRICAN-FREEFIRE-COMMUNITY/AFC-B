@@ -504,6 +504,14 @@ class Event(models.Model):
     # submissions immediately while leaving already-approved results alone.
     allow_team_result_submissions = models.BooleanField(default=False)
 
+    # Kill feed (owner 2026-10-23, inbox #350: "all three, but an admin or organizer can decide to
+    # put it off or on"): where this event's kill stats (sniper kills recorded, head to head) show.
+    # Each is its own switch, off by default. Read by views_kill_feed.kill_stats; declared in
+    # event_contract.EVENT_FIELDS (write=ORGANIZER). See kill_feed.py.
+    kill_feed_tab = models.BooleanField(default=False)       # the event page tab
+    kill_feed_overlay = models.BooleanField(default=False)   # AFC LIVE / OBS overlays may read it
+    kill_feed_export = models.BooleanField(default=False)    # the CSV export for the GFX team
+
 
     def save(self, *args, **kwargs):
         # The slug follows the name, and every slug the event ever had keeps working (owner rule
@@ -1774,6 +1782,46 @@ class TournamentPlayerMatchStats(models.Model):
         if self.is_ghost:
             return self.ghost_player.ign
         return self.player.username if self.player_id else ""
+
+
+class GameWeapon(models.Model):
+    """A Free Fire weapon id as the debugger log reports it (`OnGameAchievementNotify ... weapon:<id>`),
+    with its name and whether it counts as a SNIPER for the kill-feed award (owner 2026-10-23, inbox #350:
+    bolt action only, AWM / M82B / Kar98k / M24). Filled by an admin as ids are matched to the gun seen on
+    stream; only 601 (grenade) is known today. An id not in this table is simply not a sniper.
+    Read by views_kill_feed (kill_feed.sniper_counts)."""
+    weapon_id = models.IntegerField(unique=True)
+    name = models.CharField(max_length=60)
+    is_sniper = models.BooleanField(default=False)
+    notes = models.CharField(max_length=200, blank=True, default="")
+
+    def __str__(self):
+        return f"{self.weapon_id} {self.name}"
+
+
+class MatchKillEvent(models.Model):
+    """One kill or knock on one map, in game order (inbox #326 / #350 / #376). Written by
+    kill_feed.store_events from the debugger-log backfill (and, later, AFC Capture's `kill_events`).
+    UIDs are the game's; the teams are this event's roster teams for those UIDs, null when the UID is
+    not on the roster. Replaced wholesale on a re-upload of the same map. Read by views_kill_feed."""
+    KINDS = [("kill", "Kill"), ("knock", "Knock")]
+    match = models.ForeignKey(Match, on_delete=models.CASCADE, related_name="kill_events")
+    seq = models.PositiveIntegerField()
+    t = models.FloatField(help_text="seconds since the map started")
+    kind = models.CharField(max_length=8, choices=KINDS)
+    killer_uid = models.CharField(max_length=32)
+    victim_uid = models.CharField(max_length=32)
+    killer_team = models.ForeignKey(TournamentTeam, null=True, blank=True, on_delete=models.SET_NULL,
+                                    related_name="kill_events_made")
+    victim_team = models.ForeignKey(TournamentTeam, null=True, blank=True, on_delete=models.SET_NULL,
+                                    related_name="kill_events_taken")
+    headshot = models.BooleanField(null=True, blank=True)
+    weapon_id = models.IntegerField(null=True, blank=True)
+    source = models.CharField(max_length=16, default="backfill")
+
+    class Meta:
+        ordering = ["match_id", "seq"]
+        constraints = [models.UniqueConstraint(fields=["match", "seq"], name="kill_event_match_seq")]
 
 
 class MatchKillFlag(models.Model):

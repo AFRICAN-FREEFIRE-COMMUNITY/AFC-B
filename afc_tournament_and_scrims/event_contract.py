@@ -428,6 +428,10 @@ EVENT_FIELDS = [
     Field("required_connections", read=PUBLIC, write=ORGANIZER, clean=_clean_connections,
           get=lambda e, ctx: list(e.required_connections or [])),
     Field("allow_team_result_submissions", read=PUBLIC, write=ORGANIZER, clean=_clean_bool),
+    # Kill feed switches (inbox #350): where the event's kill stats show. See kill_feed.py.
+    Field("kill_feed_tab", read=PUBLIC, write=ORGANIZER, clean=_clean_bool),
+    Field("kill_feed_overlay", read=PUBLIC, write=ORGANIZER, clean=_clean_bool),
+    Field("kill_feed_export", read=PUBLIC, write=ORGANIZER, clean=_clean_bool),
 
     # ── capacity snapshot, counted by the endpoint with the same rule register_for_event uses ──
     Field("waitlist_capacity", read=PUBLIC, write=ORGANIZER, clean=_clean_waitlist_capacity),
