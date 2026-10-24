@@ -20,18 +20,26 @@ number is blocked before the push.
 
 ## Unreleased
 
-### Changed
-- A team can send its own map result from the moment its group starts, and still after the group has
-  played (owner, 24 Oct: "and also after it has happened, just not before it has happened"). Before the
-  start the server still refuses with `claims_not_open_yet`; `claims_closed` is gone. `GET
-  events/team-map-results/open/` lists every started group's maps, the latest group first, with
-  `opens_at` in place of `closes_at`.
+## v7.5.0 - 2026-10-24
 
 ### Added
-- Admins and organizers can set when those claims close (owner, 24 Oct: "admins or organizers can set
+- `GET events/kill-stats/` answers what the event page's Kill stats tab shows: the event's stages, team
+  and player names, in how many of a pair's fights a third team came in, and who killed and knocked who
+  (every two players who met in a fight, kills and knocks each way). `?pair=<a>-<b>` gives one team
+  pair's fights (stage, group, match, who started it, who came in as the third party, players left, the
+  winner) with every kill and knock in order, and the two teams' players against each other; a bad
+  value is `bad_pair`. The CSV gains a "who killed and knocked who" block.
+- Admins and organizers can set when team result claims close (owner, 24 Oct: "admins or organizers can set
   when it closes"): the event's new `team_result_claims_close_hours`, hours after each group's start,
   empty for never (1 to 1440). After it the server refuses with `claims_closed`, and the open-maps list
   drops that group and gives `closes_at` while it is open.
+
+### Changed
+- A team can send its own map result from the moment its group starts, and still after the group has
+  played (owner, 24 Oct: "and also after it has happened, just not before it has happened"). Before the
+  start the server still refuses with `claims_not_open_yet`. With no closing time set (below) they
+  stay open for good. `GET events/team-map-results/open/` lists every open group's maps, the latest
+  group first, with `opens_at`.
 
 ## v7.4.0 - 2026-10-24
 

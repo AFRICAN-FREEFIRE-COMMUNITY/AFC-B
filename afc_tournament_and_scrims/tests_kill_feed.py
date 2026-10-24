@@ -81,6 +81,8 @@ class FightTests(TestCase):
         self.assertEqual(fights[0]["pairs"][(1, 2)]["winner"], 2)    # 2 has 3 left against 1's 2
         self.assertEqual(fights[0]["pairs"][(1, 3)]["winner"], 3)
         self.assertNotIn((2, 3), fights[0]["pairs"], "2 and 3 never fought each other")
+        self.assertEqual([(e["t"], e["kind"]) for e in fights[0]["events"]],
+                         [(0, "knock"), (5, "kill"), (12, "kill"), (20, "kill")], "the fight keeps its own events")
 
     def test_a_knock_does_not_lower_players_left(self):
         events = [ev(0, "knock", 1, 2), ev(2, "knock", 1, 2), ev(4, "knock", 1, 2), ev(6, "kill", 2, 1)]
@@ -183,6 +185,61 @@ class KillStatsEndpointTests(TestCase):
         text = resp.content.decode("utf-8")
         self.assertIn("sniper kills recorded", text)
         self.assertIn("p2222222222", text)
+
+    # ── the event tab's answer (inbox #392) ──
+    def _ids(self):
+        tt = {t.team.team_name: t.tournament_team_id for t in TournamentTeam.objects.filter(event=self.event)}
+        return tt["CREED"], tt["SAINT"]
+
+    def test_the_answer_carries_stages_names_and_who_killed_and_knocked_who(self):
+        self.event.kill_feed_tab = True
+        self.event.save(update_fields=["kill_feed_tab"])
+        body = self.client.get(self.URL, {"event": self.event.slug}).json()
+        self.assertEqual([s["name"] for s in body["stages"]], ["Groups"])
+        self.assertEqual(body["head_to_head"][0]["third_party"], 0)
+        self.assertEqual(body["players"]["1111111111"]["name"], "p1111111111")
+        creed, saint = self._ids()
+        self.assertEqual(body["players"]["1111111111"]["team_id"], saint)
+        self.assertEqual(body["teams"][str(creed)], "CREED")
+        # RAGE knocked and killed HANZO; WARD7 knocked and killed RAGE; VOID knocked and killed WARD7.
+        pairs = {(r[0], r[1]): r[2:] for r in body["player_pairs"]}
+        self.assertEqual(pairs[("1111111111", "6643413913")], [1, 0, 1, 0])
+        self.assertEqual(pairs[("1111111111", "6152193352")], [0, 1, 0, 1])
+        self.assertEqual(pairs[("2222222222", "6152193352")], [1, 0, 1, 0])
+        self.assertEqual(len(pairs), 3)
+
+    def test_a_pair_answers_its_fights_in_order_and_its_players_duels(self):
+        self.event.kill_feed_tab = True
+        self.event.save(update_fields=["kill_feed_tab"])
+        creed, saint = self._ids()
+        body = self.client.get(self.URL, {"event": self.event.slug, "pair": f"{saint}-{creed}"}).json()
+        self.assertEqual(body["pair"], sorted([creed, saint]))
+        self.assertEqual(len(body["fights"]), 1)
+        fight = body["fights"][0]
+        self.assertEqual((fight["match_number"], fight["stage"], fight["group"]), (1, "Groups", "A"))
+        self.assertEqual(fight["third_parties"], [])
+        self.assertEqual(fight["left"], {str(creed): 0, str(saint): 1})
+        self.assertEqual(fight["winner"], saint)
+        self.assertEqual([e[1] for e in fight["events"]], ["knock", "kill", "knock", "kill", "knock", "kill"])
+        self.assertEqual(len(body["duels"]), 3)
+
+    def test_a_bad_pair_is_a_coded_400_and_a_switched_off_pair_is_refused(self):
+        self.event.kill_feed_tab = True
+        self.event.save(update_fields=["kill_feed_tab"])
+        resp = self.client.get(self.URL, {"event": self.event.slug, "pair": "12"})
+        self.assertEqual((resp.status_code, resp.json()["code"]), (400, "bad_pair"))
+        self.event.kill_feed_tab = False
+        self.event.save(update_fields=["kill_feed_tab"])
+        creed, saint = self._ids()
+        resp = self.client.get(self.URL, {"event": self.event.slug, "pair": f"{creed}-{saint}"})
+        self.assertEqual((resp.status_code, resp.json()["code"]), (403, "kill_stats_off"))
+
+    def test_the_csv_lists_who_killed_and_knocked_who(self):
+        self.event.kill_feed_export = True
+        self.event.save(update_fields=["kill_feed_export"])
+        text = self.client.get(self.URL, {"event": self.event.slug, "export": "csv"}).content.decode("utf-8")
+        self.assertIn("who killed and knocked who", text)
+        self.assertIn("p1111111111,p6643413913,1,0,1,0", text)
 
     def test_an_unknown_event_is_a_coded_404(self):
         resp = self.client.get(self.URL, {"event": "no-such-event"})
