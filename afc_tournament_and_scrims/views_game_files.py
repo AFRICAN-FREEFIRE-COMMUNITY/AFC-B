@@ -132,7 +132,7 @@ def game_files_games(request, event_id):
             "gaps": d["gaps"] if d else [], "ended": bool(d and d["match_id"]),
             "has_result": bool(r), "result_file": r["file_name"] if r else None,
             "players": it["players"], "on_roster": it["on_roster"], "checks": it["checks"],
-            "state": it["state"], "match_id": it["match_id"],
+            "state": it["state"], "match_id": it["match_id"], "saved_before": it["saved_before"],
             "diffs": diffs, "why": why, "kills": kills,
             "teams": gf.game_teams(event, it) if (d and not r) else [],
         })

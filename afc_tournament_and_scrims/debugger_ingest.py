@@ -61,8 +61,20 @@ def parse_debugger_log(text):
 def apply_rich_stats(match, by_uid):
     """Write one game's rich stats onto the match's player rows, matched by UID (the rows come from the
     result upload). Shared by this panel and the Game files box (views_game_files). Returns rows updated."""
+    from django.db import transaction
+
+    # one transaction, and the match and team loaded up front: every row save sets off the rankings
+    # signal (afc_rankings/signals.py), which otherwise loads both again per row (7 to 9 s per game)
+    rows = (TournamentPlayerMatchStats.objects.filter(team_stats__match=match)
+            .select_related("player", "team_stats__match", "team_stats__tournament_team"))
+    with transaction.atomic():
+        updated = _fill_rows(rows, by_uid)
+    return updated
+
+
+def _fill_rows(rows, by_uid):
     updated = 0
-    for row in TournamentPlayerMatchStats.objects.filter(team_stats__match=match).select_related("player"):
+    for row in rows:
         stats = by_uid.get(str(getattr(row.player, "uid", "") or ""))
         if not stats:
             continue

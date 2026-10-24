@@ -245,6 +245,17 @@ class EndpointTests(TestCase):
         self.assertEqual((a1.knockdowns, a1.deaths, a1.revives_received, a1.rich_stats_filled), (2, 2, 1, True))
         self.assertEqual(MatchKillEvent.objects.filter(match=self.matches[0], kind="knock").count(), 3)
 
+    def test_the_same_game_uploaded_again_goes_back_to_its_match(self):
+        from afc_tournament_and_scrims.models import MatchResultLog
+        from django.core.files.base import ContentFile
+
+        log = MatchResultLog(match=self.matches[1], file_name=RESULT_NAME)
+        log.file.save(RESULT_NAME, ContentFile(RESULT.encode("utf-8")), save=True)
+        Match.objects.filter(pk=self.matches[1].pk).update(result_inputted=True)
+        dbg = self.read("debugger-2026-10-20T18-59-00.log", GAME.encode("utf-8"))
+        g = self.client.post(self.url("games"), {"file_ids": [dbg["file_id"]]}, format="json").json()["games"][0]
+        self.assertEqual((g["match_id"], g["saved_before"]), (self.matches[1].match_id, True))
+
     def test_a_game_before_the_event_is_set_to_dont_use(self):
         early = GAME.replace("2026-10-20", "2026-09-17")
         dbg = self.read("debugger-2026-09-17T18-00-00.log", early.encode("utf-8"))

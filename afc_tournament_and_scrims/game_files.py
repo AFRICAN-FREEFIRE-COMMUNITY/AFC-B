@@ -58,6 +58,8 @@ _RE_RESPAWN = re.compile(r"Revive Player (\d+)")
 _RE_OUT = re.compile(r"Player quit revive, (\d+)")
 _RE_END = re.compile(r"matchend matchid = (\d+)")
 _RE_RESULT_NAME = re.compile(r"MatchResult_(\d+)_(\d{4})-(\d{2})-(\d{2})-(\d{2})-(\d{2})-(\d{2})")
+# the game a stored upload came from (MatchResultLog.file_name): a result file, or one this box wrote
+_RE_SAVED_GAME = re.compile(r"MatchResult_(?:from_debugger_)?(\d{6,})")
 TRACE_WINDOW = 1.0   # a gun trace and its knock or kill land in the same frame or the next
 
 # Event codes kept per piece: [t, code, victim, killer, extra]
@@ -374,11 +376,18 @@ def compare(item):
 
 def event_slots(event):
     """Every match of the event in play order, with what the suggestion needs."""
-    from .models import Match, StageGroupCompetitor
+    from .models import Match, MatchResultLog, StageGroupCompetitor
 
     groups = {}
     for c in StageGroupCompetitor.objects.filter(stage_group__stage__event=event).exclude(tournament_team=None):
         groups.setdefault(c.stage_group_id, set()).add(c.tournament_team_id)
+    # which game each match was last scored from (the newest stored upload names it), so uploading the
+    # same evening again sends every game back to its own match
+    saved_game = {}
+    for match_id, name in (MatchResultLog.objects.filter(match__group__stage__event=event)
+                           .order_by("uploaded_at", "log_id").values_list("match_id", "file_name")):
+        m = _RE_SAVED_GAME.search(name or "")
+        saved_game[match_id] = m.group(1) if m else None
     slots = []
     for m in (Match.objects.filter(group__stage__event=event)
               .select_related("group", "group__stage").order_by("group__stage_id", "group_id", "match_number")):
@@ -386,7 +395,8 @@ def event_slots(event):
         slots.append({"match_id": m.match_id, "match_number": m.match_number, "map": m.match_map or "",
                       "stage": g.stage.stage_name, "group": g.group_name, "group_id": g.group_id,
                       "playing_date": g.playing_date.isoformat() if g.playing_date else None,
-                      "teams": groups.get(g.group_id, set()), "filled": bool(m.result_inputted)})
+                      "teams": groups.get(g.group_id, set()), "filled": bool(m.result_inputted),
+                      "game": saved_game.get(m.match_id)})
     return slots
 
 
@@ -397,7 +407,8 @@ def suggest(event, items):
 
     roster = kill_feed.roster_teams(event)
     slots = event_slots(event)
-    taken = set()
+    # games already saved on a match keep it, so they are placed first; the rest fill free matches in order
+    taken = {s["match_id"] for s in slots if s["game"] and any(i["key"] == s["game"] for i in items)}
     for item in items:
         d, r = item["debugger"], item["result"]
         uids = ({v[0] for v in d["players"].values()} if d
@@ -424,7 +435,11 @@ def suggest(event, items):
             if score > best_score:
                 best, best_score = s["group_id"], score
         pick = None
-        if not reasons and best is not None:
+        again = next((s for s in slots if s["game"] == item["key"]), None)
+        item["saved_before"] = bool(again)
+        if again:
+            pick = again          # this very game is already on that match: same place again
+        elif not reasons and best is not None:
             group_slots = [s for s in slots if s["group_id"] == best and s["match_id"] not in taken]
             free = [s for s in group_slots if not s["filled"]]
             pick = (free or group_slots or [None])[0]
@@ -432,7 +447,7 @@ def suggest(event, items):
         if pick:
             taken.add(pick["match_id"])
         item["state"] = "skip" if not pick else ("ok" if r else "look")
-    return [{k: v for k, v in s.items() if k != "teams"} for s in slots]
+    return [{k: v for k, v in s.items() if k not in ("teams", "game")} for s in slots]
 
 
 # ── 6. the text that goes through the normal result upload ────────────────────────────────────────────
