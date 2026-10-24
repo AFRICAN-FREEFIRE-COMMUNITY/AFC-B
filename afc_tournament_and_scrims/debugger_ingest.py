@@ -4,7 +4,9 @@
 # Free Fire_64_Data/Debugger/debugger-*.log PERSISTS per session and carries, per round:
 #   • the identity mapping  "Player Join, <UID>, <slotId>, <IGN>"        (UID ↔ in-match slot)
 #   • kills/deaths          "Player <slot> Dead, killed by <slot>"
-#   • knockdowns+headshots  "PlayKnockDownGunTrace killer=<s> victim=<s> headshot=True|False"
+#   • knockdowns           "Player '<v>' Knock Down, by '<k>'"  (inbox #396; the gun trace below also
+#                           fires on direct kills, so it only says whether a hit was a headshot)
+#   • headshots            "PlayKnockDownGunTrace killer=<s> victim=<s> headshot=True|False"
 #   • revives received      "Revive Player <slot>"
 #   • round boundaries      "EventTypeEnterGame"  (same token afc-capture's live tailer resets on)
 # One log spans a whole client session = MULTIPLE rounds, so ingest is two-step, mirroring the
@@ -19,7 +21,6 @@
 # CONSUMED BY: the "Debugger log" panel on the leaderboard edit Upload tab (DebuggerBackfillPanel).
 
 import json
-import re
 from datetime import datetime
 
 from rest_framework.decorators import api_view
@@ -30,108 +31,54 @@ from .views import _broadcast_gate
 
 MAX_LOG_BYTES = 25 * 1024 * 1024  # a debugger .log is text; the cap only stops a mistake
 
-# Tokens verified against real logs (mirrors afc-capture/afc_capture/tailer.py).
-_RE_TS = re.compile(r"^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3})\]")
-_RE_JOIN = re.compile(r"Player Join, (\d+), (\d+), (.+?),")
-_RE_KILL = re.compile(r"Player (\d+) Dead, killed by (\d+)")
-_RE_KNOCK = re.compile(r"PlayKnockDownGunTrace killer=(\d+) victim=(\d+) headshot=(True|False)")
-_RE_REVIVE = re.compile(r"Revive Player (\d+)")
-_ROUND_TOKEN = "EventTypeEnterGame"
-
-
-def _ts(line):
-    m = _RE_TS.match(line)
-    if not m:
-        return None
-    try:
-        return datetime.strptime(m.group(1), "%Y-%m-%d %H:%M:%S.%f")
-    except ValueError:
-        return None
-
 
 class _Round:
-    """Accumulators for ONE round of the log (between EventTypeEnterGame boundaries)."""
+    """One round of the log, as game_files.read_debugger splits it (inbox #396: ONE parser for this panel,
+    the kill feed and the Game files box, so knocks come from "Knock Down" lines and a bleed-out after
+    the knocker left for good earns nobody a kill, the rule that makes the debugger agree with the
+    result file)."""
 
-    def __init__(self, start_ts):
-        self.start_ts = start_ts
-        self.end_ts = start_ts
-        self.uid_by_slot = {}   # slot -> uid
-        self.ign_by_slot = {}   # slot -> ign
-        self.kills = {}
-        self.deaths = {}
-        self.knockdowns = {}
-        self.headshots = {}
-        self.revives = {}
-        self.death_ts = {}      # slot -> last death timestamp (drives survival)
+    def __init__(self, piece):
+        from . import game_files
 
-    def bump(self, d, slot):
-        d[slot] = d.get(slot, 0) + 1
+        self.start_ts = datetime.fromisoformat(piece["start"]) if piece["start"] else None
+        self._stats, self.kill_events = game_files.game_stats(piece["players"], piece["events"])
 
     def players(self):
-        """Per-player rich stats, UID-attributed. Slots with no Join line (spectator noise) drop."""
-        out = []
-        for slot, uid in self.uid_by_slot.items():
-            died = self.death_ts.get(slot)
-            # Survival: own death minus round start; still alive at round end = full round length.
-            end = died or self.end_ts
-            survival = int(max(0, (end - self.start_ts).total_seconds())) if (end and self.start_ts) else 0
-            out.append({
-                "uid": str(uid),
-                "ign": self.ign_by_slot.get(slot, ""),
-                "kills": self.kills.get(slot, 0),
-                "deaths": self.deaths.get(slot, 0),
-                "knockdowns": self.knockdowns.get(slot, 0),
-                "headshots": self.headshots.get(slot, 0),
-                "revives_received": self.revives.get(slot, 0),
-                "survival_seconds": survival,
-            })
-        return out
+        """Per-player rich stats, UID-attributed."""
+        return [{k: (str(v) if k == "uid" else v) for k, v in s.items() if k != "team"}
+                for s in self._stats.values()]
 
 
 def parse_debugger_log(text):
     """Split a whole-session debugger log into rounds of UID-attributed rich stats.
     Rounds with no joined players (menu/lobby segments) are dropped."""
-    rounds = []
-    cur = None
-    for line in text.splitlines():
-        ts = _ts(line)
-        if _ROUND_TOKEN in line:
-            if cur and cur.uid_by_slot:
-                rounds.append(cur)
-            cur = _Round(ts)
+    from . import game_files
+
+    return [_Round(p) for p in game_files.read_debugger(text)]
+
+
+def apply_rich_stats(match, by_uid):
+    """Write one game's rich stats onto the match's player rows, matched by UID (the rows come from the
+    result upload). Shared by this panel and the Game files box (views_game_files). Returns rows updated."""
+    updated = 0
+    for row in TournamentPlayerMatchStats.objects.filter(team_stats__match=match).select_related("player"):
+        stats = by_uid.get(str(getattr(row.player, "uid", "") or ""))
+        if not stats:
             continue
-        if cur is None:
-            # Tolerate logs that open mid-round (client restarted): start an implicit round.
-            cur = _Round(ts)
-        if ts:
-            cur.end_ts = ts
-        m = _RE_JOIN.search(line)
-        if m:
-            uid, slot, ign = m.group(1), int(m.group(2)), m.group(3).strip()
-            cur.uid_by_slot[slot] = uid
-            cur.ign_by_slot[slot] = ign
-            continue
-        m = _RE_KILL.search(line)
-        if m:
-            victim, killer = int(m.group(1)), int(m.group(2))
-            cur.bump(cur.kills, killer)
-            cur.bump(cur.deaths, victim)
-            if ts:
-                cur.death_ts[victim] = ts
-            continue
-        m = _RE_KNOCK.search(line)
-        if m:
-            killer = int(m.group(1))
-            cur.bump(cur.knockdowns, killer)
-            if m.group(3) == "True":
-                cur.bump(cur.headshots, killer)
-            continue
-        m = _RE_REVIVE.search(line)
-        if m:
-            cur.bump(cur.revives, int(m.group(1)))
-    if cur and cur.uid_by_slot:
-        rounds.append(cur)
-    return rounds
+        row.deaths = stats["deaths"]
+        row.knockdowns = stats["knockdowns"]
+        row.headshots = stats["headshots"]
+        row.revives_received = stats["revives_received"]
+        row.survival_seconds = stats["survival_seconds"]
+        row.rich_stats_filled = True
+        row.rich_stats_source = "backfill"   # a capture upload of the same map overwrites this
+        row.save(update_fields=[
+            "deaths", "knockdowns", "headshots",
+            "revives_received", "survival_seconds", "rich_stats_filled", "rich_stats_source",
+        ])
+        updated += 1
+    return updated
 
 
 @api_view(["POST"])
@@ -182,7 +129,6 @@ def debugger_backfill(request, event_id):
     # ── APPLY: fill the mapped matches' player rows. ──
     raw_apply = request.data.get("apply")
     applied = []
-    kill_rounds = None   # parsed once, only when something is applied (inbox #350, kill_feed.py)
     if raw_apply:
         try:
             mapping = json.loads(raw_apply) if isinstance(raw_apply, str) else raw_apply
@@ -204,36 +150,13 @@ def debugger_backfill(request, event_id):
                 applied.append({"round_index": ri, "match_id": match_id,
                                 "error": "Match not found on this event."})
                 continue
-            by_uid = {p["uid"]: p for p in rounds[ri].players()}
-            updated = 0
-            # Update the match's existing player rows by UID (rows come from the MatchResult upload).
-            for row in TournamentPlayerMatchStats.objects.filter(
-                team_stats__match=match
-            ).select_related("player"):
-                stats = by_uid.get(str(getattr(row.player, "uid", "") or ""))
-                if not stats:
-                    continue
-                row.deaths = stats["deaths"]
-                row.knockdowns = stats["knockdowns"]
-                row.headshots = stats["headshots"]
-                row.revives_received = stats["revives_received"]
-                row.survival_seconds = stats["survival_seconds"]
-                row.rich_stats_filled = True
-                row.rich_stats_source = "backfill"   # a capture upload of the same map overwrites this
-                row.save(update_fields=[
-                    "deaths", "knockdowns", "headshots",
-                    "revives_received", "survival_seconds", "rich_stats_filled", "rich_stats_source",
-                ])
-                updated += 1
+            updated = apply_rich_stats(match, {p["uid"]: p for p in rounds[ri].players()})
             # Every kill and knock of the round, for the kill feed (sniper kills recorded, head to head;
             # inbox #350, kill_feed.py). Replaces the map's earlier events; never fails the backfill.
             stored_events = 0
             try:
                 from . import kill_feed
-                if kill_rounds is None:
-                    kill_rounds = kill_feed.parse_kill_events(text)
-                if ri < len(kill_rounds):
-                    stored_events = kill_feed.store_events(match, event, kill_rounds[ri], "backfill")
+                stored_events = kill_feed.store_events(match, event, rounds[ri].kill_events, "backfill")
             except Exception:
                 import logging
                 logging.getLogger("afc_tournament_and_scrims").exception(

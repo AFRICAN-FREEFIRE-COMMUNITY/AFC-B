@@ -20,6 +20,24 @@ number is blocked before the push.
 
 ## Unreleased
 
+### Added
+- Game files (owner, 24 Oct: "upload both debugger ... and match result files simultaneously at once"):
+  `POST events/<id>/game-files/read/` takes one debugger or result file at a time (gzip or plain),
+  `game-files/games/` reads them as games (a game split by a client restart is joined, each game is paired
+  with its result file by the game's own match id, a match is suggested, a game from before the event or
+  mostly off the rosters is set aside, and the two files are compared), `game-files/result-text/` gives
+  the text to upload through the normal result upload (with kills the organizer chose from the debugger,
+  or, with no result file, the organizer's placements), and `game-files/debugger/` fills knocks, deaths,
+  revives, headshots, survival and the kill feed.
+
+### Fixed
+- Knocks are counted from the game's knock line. The gun trace line used before also fires on direct
+  kills, so knocks were counted too high (189 for 122 in one real game), in the kill feed and the
+  debugger log panel.
+- A knocked player who bleeds out after the knocker has left the game for good earns nobody a kill, as
+  the game counts it. With this the debugger agrees with the result file for every player of 19 real
+  games.
+
 ## v7.5.0 - 2026-10-24
 
 ### Added

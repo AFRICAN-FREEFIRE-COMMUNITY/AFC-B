@@ -145,6 +145,8 @@ from .views_mvp import (event_mvp, event_tie_breakers,
 # Debugger-log backfill (owner 2026-07-02): post-hoc rich stats (deaths/knockdowns/headshots/
 # revives/survival) from the 3D-room client's persisted debugger-*.log. See debugger_ingest.py.
 from .debugger_ingest import debugger_backfill
+# Game files upload (inbox #386 #396): many debugger + result files, read as games. See views_game_files.py.
+from .views_game_files import game_files_read, game_files_games, game_files_result_text, game_files_debugger
 # Media audit/flags/opt-outs (owner 2026-07-02): broadcast-media hygiene. See views_media_audit.py.
 from .views_media_audit import media_audit, media_flag, media_flag_resolve, media_image_check_clear, media_opt_out, media_upload
 from .views_broadcast_kit import broadcast_kit_summary, broadcast_kit_download
@@ -248,6 +250,10 @@ urlpatterns = [
     path('<int:event_id>/tie-breakers/', event_tie_breakers, name='event_tie_breakers'),
     # Debugger-log backfill: dry-run parse + apply (round->match mapping). See debugger_ingest.py.
     path('<int:event_id>/debugger-backfill/', debugger_backfill, name='debugger_backfill'),
+    path('<int:event_id>/game-files/read/', game_files_read, name='game_files_read'),
+    path('<int:event_id>/game-files/games/', game_files_games, name='game_files_games'),
+    path('<int:event_id>/game-files/result-text/', game_files_result_text, name='game_files_result_text'),
+    path('<int:event_id>/game-files/debugger/', game_files_debugger, name='game_files_debugger'),
     # Media hygiene (owner 2026-07-02): audit + flag-and-notify + per-event logo/image opt-outs.
     path('<int:event_id>/media-audit/', media_audit, name='media_audit'),
     # Admin media upload (owner 2026-07-02): set a team's logo / a player's esport image in place.

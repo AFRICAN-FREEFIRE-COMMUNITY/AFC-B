@@ -24,9 +24,7 @@
 # roster's team for that UID (TournamentTeamMember), never the game's entity or room numbering.
 #
 # CONSUMED BY: views_kill_feed.py (GET events/<slug>/kill-stats/), debugger_ingest.py, tests_kill_feed.py.
-import re
 from collections import defaultdict
-from datetime import datetime
 
 FIGHT_GAP_SECONDS = 30.0
 
@@ -56,66 +54,16 @@ KNOWN_WEAPONS = {
 def default_sniper_ids():
     return {wid for wid, (_, sniper) in KNOWN_WEAPONS.items() if sniper}
 
-_RE_TS = re.compile(r"^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3})\]")
-_RE_ENTER = re.compile(r"EventTypeEnterGame")
-# Same join pattern and round rules as debugger_ingest.parse_debugger_log, so round i here is round i there.
-_RE_JOIN = re.compile(r"Player Join, (\d+), (\d+), (.+?),")
-_RE_KILL = re.compile(r"Player (\d+) Dead, killed by (\d+)")
-_RE_GUN_TRACE = re.compile(r"PlayKnockDownGunTrace killer=(\d+) victim=(\d+) headshot=(True|False)")
-_RE_WEAPON = re.compile(r"OnGameAchievementNotify killerId:(\d+) beKilled:(\d+) weapon:(-?\d+)")
-
-
-def _ts(line):
-    m = _RE_TS.match(line)
-    return datetime.strptime(m.group(1), "%Y-%m-%d %H:%M:%S.%f") if m else None
-
-
 def parse_kill_events(text):
     """Every round of a debugger log -> a list of rounds, each a list of events in game order:
     {"t": seconds since the round started, "kind": "kill" | "knock", "killer_uid", "victim_uid",
-     "headshot": bool | None, "weapon": int | None}. A weapon id below 0 (zone, fall, bleed out) is kept
-    as None: it is not a gun. Self kills and players with no UID line are dropped."""
-    rounds, start, uid_of, events = [], None, {}, None
-    for line in (text or "").splitlines():
-        ts = _ts(line)
-        if _RE_ENTER.search(line):
-            if events is not None and uid_of:   # a round with nobody joined (menu, lobby) is dropped
-                rounds.append(events)
-            start, uid_of, events = ts, {}, []
-            continue
-        if events is None:                      # a log that opens mid-round: an implicit round
-            start, uid_of, events = ts, {}, []
-        t = round((ts - start).total_seconds(), 3) if ts and start else 0.0
-        m = _RE_JOIN.search(line)
-        if m:
-            uid_of[m.group(2)] = m.group(1)
-            continue
-        m = _RE_GUN_TRACE.search(line)
-        if m:
-            killer, victim = uid_of.get(m.group(1)), uid_of.get(m.group(2))
-            if killer and victim and killer != victim:
-                events.append({"t": t, "kind": "knock", "killer_uid": killer, "victim_uid": victim,
-                               "headshot": m.group(3) == "True", "weapon": None})
-            continue
-        m = _RE_KILL.search(line)
-        if m:
-            victim, killer = uid_of.get(m.group(1)), uid_of.get(m.group(2))
-            if killer and victim and killer != victim:
-                events.append({"t": t, "kind": "kill", "killer_uid": killer, "victim_uid": victim,
-                               "headshot": None, "weapon": None})
-            continue
-        m = _RE_WEAPON.search(line)
-        if m:
-            killer, victim, weapon = uid_of.get(m.group(1)), uid_of.get(m.group(2)), int(m.group(3))
-            # the weapon line follows its kill line in the same frame: give it to the latest matching kill
-            for ev in reversed(events):
-                if ev["kind"] == "kill" and ev["killer_uid"] == killer and ev["victim_uid"] == victim:
-                    if ev["weapon"] is None and weapon >= 0:
-                        ev["weapon"] = weapon
-                    break
-    if events is not None and uid_of:
-        rounds.append(events)
-    return rounds
+     "headshot": bool | None, "weapon": int | None}. Read by game_files (inbox #396), the one parser:
+    knocks are the game's "Knock Down" lines (the gun trace also fires on direct kills and only says
+    headshot), and a bleed-out after the knocker left for good is nobody's kill, as the game counts it.
+    A weapon id below 0 (zone, fall, bleed out) is kept as None. Self kills are dropped."""
+    from . import game_files
+
+    return [game_files.game_stats(p["players"], p["events"])[1] for p in game_files.read_debugger(text)]
 
 
 def clean_events(raw):
