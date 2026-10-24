@@ -20390,6 +20390,64 @@ def capture_context(request):
     }, status=status.HTTP_200_OK)
 
 
+# ── Wrong-data guard for AUTOMATIC capture uploads (owner 2026-10-23, inbox #353: "go") ─────────────
+# Second sighting of "wrong data scored as a map" (first: complaint D, 2026-07-05; second: 19 Oct 2026,
+# when a read of the game folder made AFC Capture re-send 38 old files and a 17 Sept VENT x GROW game was
+# SCORED as event 383 Group B map 5, with 29 of its 44 players not on that event's roster). The client
+# now ignores files that were already in the folder when it started (afc-capture watcher.py), and this
+# guard is the server's own check, so a bad file is parked even from an old client:
+#   * off_roster          more than half of the file's known UIDs (ID 0 is the game's "unknown" sentinel
+#                         and does not count) are not on this event's roster, with at least
+#                         CAPTURE_GUARD_MIN_UIDS known UIDs to judge by;
+#   * older_than_event    the date in the file NAME (MatchResult_<id>_YYYY-MM-DD-hh-mm-ss.log) is before
+#                         the event's start date.
+# A parked file goes to the PendingCaptureUpload bucket ("decide later") with the reason in its
+# parsed_summary, so nothing is lost: an organizer can still score it from the website. Only the
+# AUTOMATIC paths are guarded (no match_id; attribution absent or "new"): an explicit match_id or
+# "replace:" is a person choosing the slot, and "pending" parks anyway.
+CAPTURE_GUARD_MIN_UIDS = 4
+_CAPTURE_FILE_DATE_RE = re.compile(r"_(\d{4})-(\d{2})-(\d{2})-\d{2}-\d{2}-\d{2}\.log$", re.IGNORECASE)
+
+
+def _capture_park_reason(event, file_text, file_name):
+    """The reason this automatic upload must be parked, or None when it may be scored."""
+    m = _CAPTURE_FILE_DATE_RE.search(file_name or "")
+    if m and event.start_date:
+        try:
+            played = date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+        except ValueError:
+            played = None
+        if played is not None and played < event.start_date:
+            return "older_than_event"
+
+    uids = set()
+    for block in TEAM_BLOCK_RE.finditer(file_text or ""):
+        for p in PLAYER_RE.finditer(block.group("players_block")):
+            uid = p.group("uid").strip().lstrip("0")
+            if uid:
+                uids.add(uid)
+    if len(uids) < CAPTURE_GUARD_MIN_UIDS:
+        return None
+    roster = set(
+        str(u).strip().lstrip("0") for u in
+        TournamentTeamMember.objects.filter(tournament_team__event=event)
+        .exclude(user__uid__isnull=True).values_list("user__uid", flat=True)
+        if u
+    )
+    on_roster = len(uids & roster)
+    if on_roster * 2 < len(uids):
+        return "off_roster"
+    return None
+
+
+CAPTURE_PARK_MESSAGES = {
+    "off_roster": "Most players in this file are not on this event's roster, so it was not scored. "
+                  "It is waiting in the event's pending uploads.",
+    "older_than_event": "This file is from a game played before the event started, so it was not scored. "
+                        "It is waiting in the event's pending uploads.",
+}
+
+
 def _capture_expected_teams(event, stage, group):
     """Resolve the teams DUE to play in (group ‖ stage ‖ event) plus each team's players (IGN + Free
     Fire UID), for the capture client's expected-vs-collected check (complaint F).
@@ -21469,6 +21527,31 @@ def upload_team_match_result(request):
                 "pending_id": pending.id,
                 "message": "Saved to the website pending bucket. Resolve it from the event leaderboard.",
             }, status=202)
+
+        # Wrong-data guard (inbox #353, see _capture_park_reason): before an AUTOMATIC slot is filled or
+        # created, a file that is plainly not this event's game is parked, never scored.
+        _guard_file = request.FILES.get("file")
+        if _guard_file is not None:
+            _guard_text = _guard_file.read().decode("utf-8", errors="ignore")
+            _guard_file.seek(0)   # the scoring path below reads the same upload again
+            _guard_name = getattr(_guard_file, "name", "") or ""
+            _why = _capture_park_reason(_event, _guard_text, _guard_name)
+            if _why:
+                from .views_capture_pending import _create_pending_capture
+                pending = _create_pending_capture(
+                    event=_event, stage=_grp.stage, group=_grp, upload_token=upload_token,
+                    uploaded_by=admin, file_text=_guard_text, file_name=_guard_name,
+                    file_type=str(request.data.get("file_type") or ""),
+                )
+                pending.parsed_summary = {**(pending.parsed_summary or {}), "parked_reason": _why}
+                pending.save(update_fields=["parsed_summary"])
+                return Response({
+                    "pending": True,
+                    "pending_id": pending.id,
+                    "parked_reason": _why,
+                    "message": CAPTURE_PARK_MESSAGES[_why],
+                    "code": "capture_parked_" + _why,
+                }, status=202)
 
         if attribution == "new":
             # The ONLY path that auto-creates a slot now: the operator explicitly chose "new extra map".

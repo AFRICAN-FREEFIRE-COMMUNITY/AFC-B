@@ -27,10 +27,21 @@ number is blocked before the push.
   stays open. New `GET events/team-map-results/open/?event=<slug>` lists the maps a team may claim
   right now, only from its own groups; the event page builds its picker from it.
 
+### Fixed
+- An automatic AFC Capture upload of a game that is plainly not the event's (most of its players are not on the
+  event's roster, or the date in its file name is before the event) is parked in the event's pending uploads
+  instead of being scored as a map. On 19 Oct a re-sent 17 Sept game was scored as event 383 Group B map 5.
+  Answers 202 with `capture_parked_off_roster` / `capture_parked_older_than_event`. A slot a person picks
+  (match_id, replace) is not second-guessed.
+
 ### Security
 - `afc/settings.py` no longer carries a commented-out database block for the old AWS RDS host,
   which held that database's password in plain text. The database is gone (owner, 23 Oct 2026),
   so the value is dead; removing the history copy is a separate step that rewrites every branch.
+
+### Internal
+- New known-bug kind `function-must-call` and entry `be-capture-wrong-game-scored` (upload_team_match_result
+  must call `_capture_park_reason`); `tests_capture_guard.py` pins the behaviour (3 of its 6 fail on main).
 
 ## v7.3.0 - 2026-10-22
 
