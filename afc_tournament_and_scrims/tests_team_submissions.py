@@ -560,11 +560,12 @@ class TeamMapSubmissionTests(TestCase):
 
 
 class ClaimWindowTests(TestCase):
-    """Claims open only while the map's group is playing (owner 2026-10-23, inbox #379).
+    """Claims open once the map's group has started, and stay open (owner 2026-10-23, inbox #379;
+    2026-10-24, #389: "and also after it has happened, just not before it has happened").
 
     Uses the fixture above (a squad event, Group A with one map, the captain's team in it)
-    and moves the group's start time around. The window is the GROUP's start, read in the
-    EVENT's time zone, to CLAIM_MINUTES_PER_MAP per map plus CLAIM_GRACE after it.
+    and moves the group's start time around. Claims open at the GROUP's start, read in the
+    EVENT's time zone, and never close.
     """
     OPEN_URL = "/events/team-map-results/open/"
 
@@ -602,25 +603,19 @@ class ClaimWindowTests(TestCase):
         self.assertEqual(resp.json()["code"], "claims_not_open_yet")
         self.assertFalse(TeamMapResultSubmission.objects.exists())
 
-    def test_a_map_whose_group_finished_long_ago_is_refused_with_a_code(self):
-        self._start_group_at(timezone.now() - datetime.timedelta(days=2))
+    def test_a_map_whose_group_played_long_ago_can_still_be_claimed(self):
+        """#389: after the group has played, a team may still send its result, days later."""
+        self._start_group_at(timezone.now() - datetime.timedelta(days=9))
         resp = self._submit()
-        self.assertEqual(resp.status_code, 403, resp.content)
-        self.assertEqual(resp.json()["code"], "claims_closed")
+        self.assertEqual(resp.status_code, 201, resp.content)
+        self.assertTrue(TeamMapResultSubmission.objects.exists())
 
-    def test_the_last_map_of_a_group_can_still_be_claimed_inside_the_grace(self):
-        """Six maps from 18:00 run to about 21:00; a team that played the last one may still send
-        it at 23:30, inside the grace, and not after."""
-        from afc_tournament_and_scrims.views_team_submissions import (
-            CLAIM_GRACE, CLAIM_MINUTES_PER_MAP)
+    def test_a_map_with_no_group_is_not_open(self):
+        """A map outside any group has no start time: it has not started as far as anyone can tell."""
+        from afc_tournament_and_scrims.models import Match
+        from afc_tournament_and_scrims.views_team_submissions import claim_state
 
-        self.group.match_count = 6
-        self.group.save(update_fields=["match_count"])
-        span = datetime.timedelta(minutes=CLAIM_MINUTES_PER_MAP * 6) + CLAIM_GRACE
-        self._start_group_at(timezone.now() - span + datetime.timedelta(minutes=5))
-        self.assertEqual(self._submit().status_code, 201)
-        self._start_group_at(timezone.now() - span - datetime.timedelta(minutes=5))
-        self.assertEqual(self._submit().json().get("code"), "claims_closed")
+        self.assertEqual(claim_state(Match(group=None), self.event), "claims_not_open_yet")
 
     def test_the_start_time_is_read_in_the_events_own_time_zone(self):
         """Group A says 18:00 in Lagos (UTC+1). At 17:30 UTC that is 18:30 in Lagos: open. Read as
@@ -639,8 +634,8 @@ class ClaimWindowTests(TestCase):
         early = datetime.datetime(2026, 11, 2, 16, 30, tzinfo=ZoneInfo("UTC"))
         self.assertEqual(claim_state(self.match, self.event, now=early), "claims_not_open_yet")
 
-    def test_reading_what_the_team_sent_stays_open_after_the_window(self):
-        """Only SENDING is gated. A team must still be able to read a rejection note later."""
+    def test_reading_what_the_team_sent_stays_open_later(self):
+        """Reading is never gated. A team must still be able to read a rejection note later."""
         self.assertEqual(self._submit().status_code, 201)
         self._start_group_at(timezone.now() - datetime.timedelta(days=2))
         resp = self.client.get(MINE_URL, {"match_id": self.match.match_id}, **self._auth("captain"))
@@ -655,13 +650,14 @@ class ClaimWindowTests(TestCase):
         self.assertEqual([m["match_id"] for m in maps], [self.match.match_id])
         self.assertEqual(maps[0]["group_name"], "Group A")
         self.assertEqual(maps[0]["stage_name"], "Group Stage")
-        self.assertTrue(maps[0]["closes_at"])
+        self.assertTrue(maps[0]["opens_at"])
+        self.assertNotIn("closes_at", maps[0])
 
-    def test_the_open_list_is_empty_before_and_after_the_group_plays(self):
+    def test_the_open_list_is_empty_before_the_group_plays_and_keeps_it_after(self):
         self._start_group_at(timezone.now() + datetime.timedelta(hours=2))
         self.assertEqual(self._open().json()["maps"], [])
-        self._start_group_at(timezone.now() - datetime.timedelta(days=2))
-        self.assertEqual(self._open().json()["maps"], [])
+        self._start_group_at(timezone.now() - datetime.timedelta(days=9))
+        self.assertEqual([m["match_id"] for m in self._open().json()["maps"]], [self.match.match_id])
 
     def test_the_open_list_leaves_out_groups_the_team_is_not_in(self):
         """Group B plays now too, but only the rival is seeded into it."""

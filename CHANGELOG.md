@@ -20,6 +20,13 @@ number is blocked before the push.
 
 ## Unreleased
 
+### Changed
+- A team can send its own map result from the moment its group starts, and still after the group has
+  played (owner, 24 Oct: "and also after it has happened, just not before it has happened"). Before the
+  start the server still refuses with `claims_not_open_yet`; `claims_closed` is gone. `GET
+  events/team-map-results/open/` lists every started group's maps, the latest group first, with
+  `opens_at` in place of `closes_at`.
+
 ## v7.4.0 - 2026-10-24
 
 ### Added
