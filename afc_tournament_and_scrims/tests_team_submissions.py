@@ -17,6 +17,7 @@ import json
 
 from django.contrib.auth import get_user_model
 from django.test import Client, TestCase
+from django.utils import timezone
 
 from afc_auth.models import Roles, SessionToken, UserRoles
 from afc_team.models import Team
@@ -90,9 +91,13 @@ class TeamMapSubmissionTests(TestCase):
             event=self.event, stage_name="Group Stage", start_date=today, end_date=today,
             number_of_groups=1, stage_format="br - normal", teams_qualifying_from_stage=1,
         )
+        # The group started ten minutes ago, so claims are OPEN for every test in this class
+        # (inbox #379: a team may claim only while its group is playing). A fixed 18:00 here
+        # would make the whole class pass or fail by the time of day it runs.
+        started = timezone.localtime() - datetime.timedelta(minutes=10)
         self.group = StageGroups.objects.create(
-            stage=self.stage, group_name="Group A", playing_date=today,
-            playing_time=datetime.time(18, 0), teams_qualifying=1, match_count=1,
+            stage=self.stage, group_name="Group A", playing_date=started.date(),
+            playing_time=started.time().replace(microsecond=0), teams_qualifying=1, match_count=1,
         )
         self.leaderboard = Leaderboard.objects.create(
             leaderboard_name="Group A LB", event=self.event, stage=self.stage,
@@ -552,3 +557,141 @@ class TeamMapSubmissionTests(TestCase):
         self.assertEqual(
             TournamentTeamMatchStats.objects.get(
                 match=self.match, tournament_team=self.team).placement, 1)
+
+
+class ClaimWindowTests(TestCase):
+    """Claims open only while the map's group is playing (owner 2026-10-23, inbox #379).
+
+    Uses the fixture above (a squad event, Group A with one map, the captain's team in it)
+    and moves the group's start time around. The window is the GROUP's start, read in the
+    EVENT's time zone, to CLAIM_MINUTES_PER_MAP per map plus CLAIM_GRACE after it.
+    """
+    OPEN_URL = "/events/team-map-results/open/"
+
+    # The same fixture and helpers as TeamMapSubmissionTests, borrowed rather than inherited so
+    # that class's tests do not all run a second time under this name.
+    setUp = TeamMapSubmissionTests.setUp
+    _user = TeamMapSubmissionTests._user
+    _tournament_team = TeamMapSubmissionTests._tournament_team
+    _auth = TeamMapSubmissionTests._auth
+    _payload = TeamMapSubmissionTests._payload
+    _submit = TeamMapSubmissionTests._submit
+
+    def _start_group_at(self, moment, zone=None):
+        """Set Group A's start to `moment` (aware), written as the wall clock of `zone`."""
+        from zoneinfo import ZoneInfo
+
+        if zone:
+            self.event.timezone = zone
+            self.event.save(update_fields=["timezone"])
+            wall = moment.astimezone(ZoneInfo(zone))
+        else:
+            wall = timezone.localtime(moment)
+        self.group.playing_date = wall.date()
+        self.group.playing_time = wall.time().replace(microsecond=0)
+        self.group.save(update_fields=["playing_date", "playing_time"])
+
+    def _open(self, who="captain", slug=None):
+        return self.client.get(self.OPEN_URL, {"event": slug or self.event.slug}, **self._auth(who))
+
+    # ── the submit refusal ──
+    def test_a_map_whose_group_has_not_started_is_refused_with_a_code(self):
+        self._start_group_at(timezone.now() + datetime.timedelta(hours=2))
+        resp = self._submit()
+        self.assertEqual(resp.status_code, 403, resp.content)
+        self.assertEqual(resp.json()["code"], "claims_not_open_yet")
+        self.assertFalse(TeamMapResultSubmission.objects.exists())
+
+    def test_a_map_whose_group_finished_long_ago_is_refused_with_a_code(self):
+        self._start_group_at(timezone.now() - datetime.timedelta(days=2))
+        resp = self._submit()
+        self.assertEqual(resp.status_code, 403, resp.content)
+        self.assertEqual(resp.json()["code"], "claims_closed")
+
+    def test_the_last_map_of_a_group_can_still_be_claimed_inside_the_grace(self):
+        """Six maps from 18:00 run to about 21:00; a team that played the last one may still send
+        it at 23:30, inside the grace, and not after."""
+        from afc_tournament_and_scrims.views_team_submissions import (
+            CLAIM_GRACE, CLAIM_MINUTES_PER_MAP)
+
+        self.group.match_count = 6
+        self.group.save(update_fields=["match_count"])
+        span = datetime.timedelta(minutes=CLAIM_MINUTES_PER_MAP * 6) + CLAIM_GRACE
+        self._start_group_at(timezone.now() - span + datetime.timedelta(minutes=5))
+        self.assertEqual(self._submit().status_code, 201)
+        self._start_group_at(timezone.now() - span - datetime.timedelta(minutes=5))
+        self.assertEqual(self._submit().json().get("code"), "claims_closed")
+
+    def test_the_start_time_is_read_in_the_events_own_time_zone(self):
+        """Group A says 18:00 in Lagos (UTC+1). At 17:30 UTC that is 18:30 in Lagos: open. Read as
+        UTC it would still be half an hour away, which is the bug this guards."""
+        from zoneinfo import ZoneInfo
+
+        from afc_tournament_and_scrims.views_team_submissions import claim_state
+
+        self.event.timezone = "Africa/Lagos"
+        self.event.save(update_fields=["timezone"])
+        self.group.playing_date = datetime.date(2026, 11, 2)
+        self.group.playing_time = datetime.time(18, 0)
+        self.group.save(update_fields=["playing_date", "playing_time"])
+        at = datetime.datetime(2026, 11, 2, 17, 30, tzinfo=ZoneInfo("UTC"))
+        self.assertIsNone(claim_state(self.match, self.event, now=at))
+        early = datetime.datetime(2026, 11, 2, 16, 30, tzinfo=ZoneInfo("UTC"))
+        self.assertEqual(claim_state(self.match, self.event, now=early), "claims_not_open_yet")
+
+    def test_reading_what_the_team_sent_stays_open_after_the_window(self):
+        """Only SENDING is gated. A team must still be able to read a rejection note later."""
+        self.assertEqual(self._submit().status_code, 201)
+        self._start_group_at(timezone.now() - datetime.timedelta(days=2))
+        resp = self.client.get(MINE_URL, {"match_id": self.match.match_id}, **self._auth("captain"))
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(len(resp.json()["submissions"]), 1)
+
+    # ── the open-maps list the event page reads ──
+    def test_the_open_list_names_the_teams_playing_map(self):
+        resp = self._open()
+        self.assertEqual(resp.status_code, 200, resp.content)
+        maps = resp.json()["maps"]
+        self.assertEqual([m["match_id"] for m in maps], [self.match.match_id])
+        self.assertEqual(maps[0]["group_name"], "Group A")
+        self.assertEqual(maps[0]["stage_name"], "Group Stage")
+        self.assertTrue(maps[0]["closes_at"])
+
+    def test_the_open_list_is_empty_before_and_after_the_group_plays(self):
+        self._start_group_at(timezone.now() + datetime.timedelta(hours=2))
+        self.assertEqual(self._open().json()["maps"], [])
+        self._start_group_at(timezone.now() - datetime.timedelta(days=2))
+        self.assertEqual(self._open().json()["maps"], [])
+
+    def test_the_open_list_leaves_out_groups_the_team_is_not_in(self):
+        """Group B plays now too, but only the rival is seeded into it."""
+        from afc_tournament_and_scrims.models import StageGroupCompetitor
+
+        group_b = StageGroups.objects.create(
+            stage=self.stage, group_name="Group B", playing_date=self.group.playing_date,
+            playing_time=self.group.playing_time, teams_qualifying=1, match_count=1)
+        Match.objects.create(leaderboard=self.leaderboard, group=group_b, match_number=1,
+                             match_map="purgatory", scoring_settings=SCORING)
+        StageGroupCompetitor.objects.create(stage_group=group_b, tournament_team=self.rival)
+        StageGroupCompetitor.objects.create(stage_group=self.group, tournament_team=self.team)
+
+        names = [m["group_name"] for m in self._open().json()["maps"]]
+        self.assertEqual(names, ["Group A"])
+        rival_names = [m["group_name"] for m in self._open(who="rival").json()["maps"]]
+        self.assertEqual(rival_names, ["Group B"])
+
+    def test_the_open_list_is_empty_for_someone_on_no_team(self):
+        resp = self._open(who="outsider")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["maps"], [])
+
+    def test_the_open_list_is_empty_when_the_event_takes_no_team_results(self):
+        self.event.allow_team_result_submissions = False
+        self.event.save(update_fields=["allow_team_result_submissions"])
+        self.assertEqual(self._open().json()["maps"], [])
+
+    def test_the_open_list_needs_a_session_and_a_real_event(self):
+        self.assertEqual(self.client.get(self.OPEN_URL, {"event": self.event.slug}).status_code, 400)
+        resp = self._open(slug="no-such-event")
+        self.assertEqual(resp.status_code, 404)
+        self.assertEqual(resp.json()["code"], "event_not_found")
