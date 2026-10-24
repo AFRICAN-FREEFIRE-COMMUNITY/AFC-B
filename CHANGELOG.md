@@ -20,6 +20,8 @@ number is blocked before the push.
 
 ## Unreleased
 
+## v7.5.0 - 2026-10-24
+
 ### Added
 - `GET events/kill-stats/` answers what the event page's Kill stats tab shows: the event's stages, team
   and player names, in how many of a pair's fights a third team came in, and who killed and knocked who
