@@ -86,7 +86,9 @@ def kill_stats(request):
         fights.append(kill_feed.fights_of_match(events, size))
     h2h = kill_feed.head_to_head(fights)
 
-    sniper_ids = set(GameWeapon.objects.filter(is_sniper=True).values_list("weapon_id", flat=True))
+    # The admin's table when it has rows, else the proven defaults (kill_feed.KNOWN_WEAPONS).
+    sniper_ids = (set(GameWeapon.objects.filter(is_sniper=True).values_list("weapon_id", flat=True))
+                  if GameWeapon.objects.exists() else kill_feed.default_sniper_ids())
     counts = kill_feed.sniper_counts([e for evs in by_match.values() for e in evs], sniper_ids)
     from afc_auth.models import User
 
@@ -129,5 +131,6 @@ def kill_stats(request):
                      "kills_with_weapon": sum(1 for e in kills if e["weapon"] is not None)},
         "sniper": sniper,
         "head_to_head": pairs,
-        "sniper_weapons": list(GameWeapon.objects.filter(is_sniper=True).values("weapon_id", "name")),
+        "sniper_weapons": ([{"weapon_id": w, "name": kill_feed.KNOWN_WEAPONS.get(w, (str(w), True))[0]}
+                            for w in sorted(sniper_ids)]),
     })

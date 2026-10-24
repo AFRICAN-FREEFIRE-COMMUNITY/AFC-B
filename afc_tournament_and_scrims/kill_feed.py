@@ -30,6 +30,32 @@ from datetime import datetime
 
 FIGHT_GAP_SECONDS = 30.0
 
+# ── Weapon ids (24 Oct 2026, inbox #350) ──────────────────────────────────────────────────────────────
+# The debugger log's `weapon:<id>` uses the same numbers as Craftland's ItemGoodsIDType enum. Proven by joining the
+# enum (FREEFIRE/CRAFTLAND-RESEARCH/_work/js/D5v4pxjR.js) with the 2,705 weapon ids of 22 debugger logs on the
+# observer PC: 601 comes out as Grenade (independently known: every 601 kill followed the killer's grenade counter
+# dropping), 41 M1887, 50 MAG7, 9 EAGLE, 18 SKS, 58 UZI, 8 MP5, 15 MP40. Evidence and scripts:
+# WEBSITE/tasks/kill-feed-weapon-ids-2026-10-24/. The owner's sniper set is bolt action only (AWM, M82B, Kar98k,
+# M24): every enum entry of those, gold variants included. The enum has no "M82B"; XM82 (159) is most likely it,
+# so it is listed but NOT counted until someone confirms it on stream and ticks it in /admin/.
+# Used two ways: `manage.py seed_game_weapons` fills the GameWeapon table from it (never overwriting an admin's
+# edit), and the kill-stats view falls back to it while that table is still empty.
+KNOWN_WEAPONS = {
+    4: ("AWM", True), 172: ("AWM (variant 2)", True), 65: ("Gold AWM", True),
+    21: ("Kar98k", True), 64: ("Gold Kar98k", True), 128: ("Gold Kar98k (2)", True),
+    129: ("Gold Kar98k (3)", True), 175: ("Gold Kar98k (3, 2)", True),
+    75: ("M24", True),
+    159: ("XM82, most likely the M82B: confirm on stream before counting", False),
+    26: ("SVD (marksman, not counted)", False), 170: ("SVD (variant 2)", False), 72: ("Gold SVD", False),
+    89: ("AC80 (marksman, not counted)", False), 197: ("VSK94 (marksman, not counted)", False),
+    18: ("SKS (marksman, not counted)", False), 11: ("M14 (marksman, not counted)", False),
+    13: ("VSS (marksman, not counted)", False), 601: ("Grenade", False),
+}
+
+
+def default_sniper_ids():
+    return {wid for wid, (_, sniper) in KNOWN_WEAPONS.items() if sniper}
+
 _RE_TS = re.compile(r"^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3})\]")
 _RE_ENTER = re.compile(r"EventTypeEnterGame")
 # Same join pattern and round rules as debugger_ingest.parse_debugger_log, so round i here is round i there.

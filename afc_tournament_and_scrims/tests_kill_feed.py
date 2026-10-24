@@ -231,3 +231,28 @@ class CaptureKillEventsUploadTests(TestCase):
         self.assertEqual(resp.status_code, 200, resp.content)
         self.assertEqual(resp.json()["kill_events_error"], "bad_shape")
         self.assertFalse(MatchKillEvent.objects.exists())
+
+
+class WeaponTableTests(TestCase):
+    """The proven weapon ids (kill_feed.KNOWN_WEAPONS) and the seed command (inbox #350)."""
+
+    def test_the_defaults_count_bolt_action_only(self):
+        ids = kill_feed.default_sniper_ids()
+        for bolt in (4, 172, 65, 21, 64, 128, 129, 175, 75):
+            self.assertIn(bolt, ids)
+        for marksman_or_other in (26, 89, 197, 18, 11, 13, 601, 159):   # 159 waits for a stream check
+            self.assertNotIn(marksman_or_other, ids)
+
+    def test_the_seed_fills_once_and_never_overwrites_an_admin_edit(self):
+        from io import StringIO
+
+        from django.core.management import call_command
+
+        GameWeapon.objects.create(weapon_id=159, name="M82B (checked on stream)", is_sniper=True)
+        call_command("seed_game_weapons", stdout=StringIO())
+        self.assertEqual(GameWeapon.objects.count(), len(kill_feed.KNOWN_WEAPONS))
+        self.assertTrue(GameWeapon.objects.get(weapon_id=159).is_sniper, "the admin's tick stays")
+        self.assertEqual(GameWeapon.objects.get(weapon_id=21).name, "Kar98k")
+        out = StringIO()
+        call_command("seed_game_weapons", stdout=out)
+        self.assertIn("0 new", out.getvalue())
