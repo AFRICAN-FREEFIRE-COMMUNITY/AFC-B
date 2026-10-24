@@ -136,58 +136,67 @@ def _teams_in_match(match, event):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Claims open only while the map's group is playing (owner 2026-10-23, inbox #379)
+# Claims open once the map's group has started (owner 2026-10-23, inbox #379; 2026-10-24, #389)
 # ──────────────────────────────────────────────────────────────────────────────
 # Owner, with a phone screenshot of the form offering "GROUP STAGE / Group A / 1": "it should only
 # open for matches, stages or groups that are actively playing." Before this, a team could file a
 # claim for any map of the event, days before it was played or weeks after, and the event page
 # listed every map, including groups the team was not in.
 #
+#
+# Then, the next day (#389), on "only accepted while their group is playing": "and also after it
+# has happened, just not before it has happened." So there is no closing time any more: a team that
+# finds its result missing a week later can still send it, and the organizer still decides.
+#
+# And the same day (#393): "admins or organizers can set when it closes". The event's
+# team_result_claims_close_hours, set beside "Let teams submit their own map results" on both edit
+# pages, closes them that many hours after each group's start; empty keeps them open for good.
+#
 # THE RULE, decided once here and read by both the submit refusal and the open-maps list, so the
 # page can never offer a map the server would then refuse:
 #   opens   at the GROUP's start: playing_date + playing_time, read in the EVENT's own time zone
 #           (_event_zone, the same reading registration windows and status updates use);
-#   closes  CLAIM_MINUTES_PER_MAP for each of the group's maps after that, plus CLAIM_GRACE, so
-#           the team that played the last map still has time to send it.
+#   closes  team_result_claims_close_hours after that start, or never when it is empty.
 # Timing is per GROUP, not per map: a group's maps are played back to back from one start time
-# and the schedule holds no per-map start, so a group is "actively playing" as a whole.
-# A map with no group has no schedule to read and is never open.
-CLAIM_MINUTES_PER_MAP = 30
-CLAIM_GRACE = datetime.timedelta(hours=3)
+# and the schedule holds no per-map start. A map whose group has no start time has not started as
+# far as anyone can tell, so it is refused the same way as one that starts later.
 
 # Refusal codes, translated on the website by serverMessages.json (lib/i18n/serverMessage.ts).
 CLAIM_NOT_OPEN_YET = "claims_not_open_yet"
 CLAIM_CLOSED = "claims_closed"
 
 
-def claim_window(group, event):
-    """(opens_at, closes_at) for team claims on this group's maps, as aware datetimes."""
+def claim_opens_at(group, event):
+    """When team claims open for this group's maps (its start), as an aware datetime."""
     from .views import _event_zone
 
-    opens = timezone.make_aware(
+    return timezone.make_aware(
         datetime.datetime.combine(group.playing_date, group.playing_time), _event_zone(event))
-    maps = max(int(group.match_count or 0), 1)
-    closes = opens + datetime.timedelta(minutes=CLAIM_MINUTES_PER_MAP * maps) + CLAIM_GRACE
-    return opens, closes
+
+
+def claim_closes_at(group, event):
+    """When claims for this group close (an aware datetime), or None when the event keeps them open."""
+    hours = getattr(event, "team_result_claims_close_hours", None)
+    return claim_opens_at(group, event) + datetime.timedelta(hours=hours) if hours else None
 
 
 def claim_state(match, event, now=None):
-    """None when claims are open for this match right now, else the refusal code."""
+    """None when claims are open for this match, else the refusal code."""
     group = getattr(match, "group", None)
     if group is None or not group.playing_date or group.playing_time is None:
-        return CLAIM_CLOSED
-    opens, closes = claim_window(group, event)
-    now = now or timezone.now()
-    if now < opens:
         return CLAIM_NOT_OPEN_YET
-    if now > closes:
+    now = now or timezone.now()
+    if now < claim_opens_at(group, event):
+        return CLAIM_NOT_OPEN_YET
+    closes = claim_closes_at(group, event)
+    if closes is not None and now > closes:
         return CLAIM_CLOSED
     return None
 
 
 CLAIM_REFUSALS = {
     CLAIM_NOT_OPEN_YET: "Results for this map open when its group starts playing.",
-    CLAIM_CLOSED: "Results for this map are closed: its group has finished playing.",
+    CLAIM_CLOSED: "Results for this map are closed: the organizer's time for sending them has passed.",
 }
 
 
@@ -477,13 +486,15 @@ def open_team_map_results(request):
     """The maps the caller's team may send a result for RIGHT NOW (inbox #379).
 
     PURPOSE: the event page's "which map are you sending?" picker. It used to list every map of
-    the event; it now lists only the maps of groups the caller's team is in whose group is playing
-    (claim_window above), so the form appears while a team is playing and goes away after.
+    the event; it lists only the maps of groups the caller's team is in that have started
+    (claim_state above): open from the group's start, and still open after it (#389).
 
     REQUEST: ?event=<event slug>.
     RESPONSE 200: {"maps": [{match_id, match_number, match_map, stage_name, group_name,
-    closes_at}]}, soonest group first. Empty when the event does not take team results, the
-    caller is on no team here, or nothing of theirs is playing: the page then shows no form.
+    opens_at, closes_at}]}, the group that started last first (the map a team just played is on top);
+    closes_at is null when the event keeps claims open (#393).
+    Empty when the event does not take team results, the caller is on no team here, or none of
+    their groups has started yet: the page then shows no form.
     404 {code: event_not_found} for an unknown slug.
     AUTH: Bearer SessionToken. Only the caller's own team's groups are ever listed.
 
@@ -513,13 +524,14 @@ def open_team_map_results(request):
 
     now = timezone.now()
     out, playing = [], {}
+    # Latest group first, its maps in play order: the map a team just played is at the top.
     matches = (Match.objects.filter(group__stage__event=event)
                .select_related("group__stage")
-               .order_by("group__playing_date", "group__playing_time", "group_id", "match_number"))
+               .order_by("-group__playing_date", "-group__playing_time", "-group_id", "match_number"))
     for match in matches:
         group = match.group
         if group.group_id not in playing:
-            # One window and one roster read per group, not per map.
+            # One start check and one roster read per group, not per map.
             open_now = claim_state(match, event, now) is None
             playing[group.group_id] = open_now and bool(member_team_ids & _teams_in_match(match, event))
         if not playing[group.group_id]:
@@ -530,7 +542,8 @@ def open_team_map_results(request):
             "match_map": match.match_map or None,
             "stage_name": group.stage.stage_name,
             "group_name": group.group_name,
-            "closes_at": claim_window(group, event)[1].isoformat(),
+            "opens_at": claim_opens_at(group, event).isoformat(),
+            "closes_at": (lambda c: c.isoformat() if c else None)(claim_closes_at(group, event)),
         })
     return Response({"maps": out}, status=http.HTTP_200_OK)
 
