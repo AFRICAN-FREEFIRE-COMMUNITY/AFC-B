@@ -182,6 +182,26 @@ def check_call_outside_with(bug: dict, hits: list) -> None:
         walk(tree, None, False, p)
 
 
+def check_function_must_call(bug: dict, hits: list) -> None:
+    """A function that must call a guard (inbox #353, 2026-10-23: upload_team_match_result must call
+    _capture_park_reason, or a capture file that is not the event's game is scored as a map again).
+    `function` is the function's name, `call` the dotted call it must make. A file in `globs` that
+    defines no such function is a hit too: a rename must take the entry with it."""
+    for p in files_for(bug["globs"], bug.get("except")):
+        try:
+            tree = ast.parse(p.read_text(encoding="utf-8"))
+        except SyntaxError:
+            continue
+        funcs = [n for n in ast.walk(tree)
+                 if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == bug["function"]]
+        if not funcs:
+            hits.append((bug, rel(p), 1, f"no function {bug['function']} in this file"))
+            continue
+        for fn in funcs:
+            if not any(isinstance(c, ast.Call) and _dotted(c.func) == bug["call"] for c in ast.walk(fn)):
+                hits.append((bug, rel(p), fn.lineno, f"{bug['function']} never calls {bug['call']}"))
+
+
 def main() -> int:
     # Windows consoles default to cp1252 and choke on the very characters some checks look for.
     try:
@@ -204,6 +224,8 @@ def main() -> int:
             check_prod_imports(bug, hits)
         elif kind == "call-outside-with":
             check_call_outside_with(bug, hits)
+        elif kind == "function-must-call":
+            check_function_must_call(bug, hits)
         else:
             print(f"unknown check kind {kind!r} for {bug.get('id')}")
             return 2

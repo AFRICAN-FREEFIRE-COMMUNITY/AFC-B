@@ -16,5 +16,6 @@
   "mail/c/<token>/<int:index>/": "Bulk email tracked link: only ever opened from inside a sent email (afc_mail.content.tracked_link)",
   "mail/ses-events/": "Amazon SNS posts SES delivery, bounce and complaint events here (afc_mail.sns)",
   "sso/": "the OAuth2 provider tree (oauth2_provider): relying parties such as v-ent.co, and the browser during Sign in with AFC",
-  "support/attachments/<attachment_id>/": "Support attachments: the frontend never builds this path itself. Every payload carries the ready-made url (afc_support.views._attachment_dict) and lib/api/support.ts attachmentUrl() only appends the ticket token, so the address exists once, on the server."
+  "support/attachments/<attachment_id>/": "Support attachments: the frontend never builds this path itself. Every payload carries the ready-made url (afc_support.views._attachment_dict) and lib/api/support.ts attachmentUrl() only appends the ticket token, so the address exists once, on the server.",
+  "events/kill-stats/": "kill feed (inbox #350, #376): the GFX team downloads ?export=csv by link and AFC LIVE overlays read the json (both outside this repo); the website's event tab waits on approval of mockups/kill-feed-tab/ and will be the frontend caller"
 }

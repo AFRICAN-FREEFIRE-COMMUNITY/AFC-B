@@ -235,6 +235,22 @@
       "globs": [
         "afc_team/views.py"
       ]
+    },
+    {
+      "id": "be-capture-wrong-game-scored",
+      "title": "An automatic capture upload of another event's (or an old) game is scored as a map",
+      "why": "AFC Capture sends whatever MatchResult file it sees. A game that is plainly not this event's (most of its players are not on the roster, or its file date is before the event) must be parked in the pending uploads for a person, never scored into a slot. _capture_park_reason decides; upload_team_match_result calls it before an automatic slot is filled or made.",
+      "seen": [
+        "2026-07-05 complaint D: an extra game silently became a phantom map (fixed by the 409 needs_attribution gate)",
+        "2026-10-19 event 383 Group B: a 17 Sept VENT x GROW game re-sent by AFC Capture was scored as map 5, 29 of 44 players off the roster (inbox #323, #324); guard added 2026-10-23 (inbox #353)"
+      ],
+      "fix": "keep the _capture_park_reason call in upload_team_match_result's no-match_id branch, before the next-slot fill and the 'new' slot; behaviour pinned by afc_tournament_and_scrims/tests_capture_guard.py",
+      "kind": "function-must-call",
+      "function": "upload_team_match_result",
+      "call": "_capture_park_reason",
+      "globs": [
+        "afc_tournament_and_scrims/views.py"
+      ]
     }
   ]
 }

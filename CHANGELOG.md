@@ -20,6 +20,60 @@ number is blocked before the push.
 
 ## Unreleased
 
+## v7.5.0 - 2026-10-24
+
+### Added
+- `GET events/kill-stats/` answers what the event page's Kill stats tab shows: the event's stages, team
+  and player names, in how many of a pair's fights a third team came in, and who killed and knocked who
+  (every two players who met in a fight, kills and knocks each way). `?pair=<a>-<b>` gives one team
+  pair's fights (stage, group, match, who started it, who came in as the third party, players left, the
+  winner) with every kill and knock in order, and the two teams' players against each other; a bad
+  value is `bad_pair`. The CSV gains a "who killed and knocked who" block.
+- Admins and organizers can set when team result claims close (owner, 24 Oct: "admins or organizers can set
+  when it closes"): the event's new `team_result_claims_close_hours`, hours after each group's start,
+  empty for never (1 to 1440). After it the server refuses with `claims_closed`, and the open-maps list
+  drops that group and gives `closes_at` while it is open.
+
+### Changed
+- A team can send its own map result from the moment its group starts, and still after the group has
+  played (owner, 24 Oct: "and also after it has happened, just not before it has happened"). Before the
+  start the server still refuses with `claims_not_open_yet`. With no closing time set (below) they
+  stay open for good. `GET events/team-map-results/open/` lists every open group's maps, the latest
+  group first, with `opens_at`.
+
+## v7.4.0 - 2026-10-24
+
+### Added
+- Kill feed for the sniper award and team head to head (NFL Season 2): every kill and knock of a map is stored
+  (`MatchKillEvent`, from the debugger-log upload and from AFC Capture's map upload), with the roster team of each UID. New
+  `GET events/kill-stats/?event=<slug>[&stage=][&export=csv]`: "sniper kills recorded" (bolt-action weapons in
+  the new `GameWeapon` table, kills with a known weapon only) and head to head (fights grouped by the owner's
+  rules: a third team joins the same fight, finished kills only, 30 s of game time ends a fight). Three
+  per-event switches, off by default: `kill_feed_tab`, `kill_feed_overlay`, `kill_feed_export`.
+
+### Changed
+- A team can send its own map result only while its group is playing: from the group's start
+  time (in the event's time zone) until its maps are done, 30 minutes a map, plus 3 hours. Outside
+  that the server refuses with `claims_not_open_yet` or `claims_closed`. Reading what the team sent
+  stays open. New `GET events/team-map-results/open/?event=<slug>` lists the maps a team may claim
+  right now, only from its own groups; the event page builds its picker from it.
+
+### Fixed
+- An automatic AFC Capture upload of a game that is plainly not the event's (most of its players are not on the
+  event's roster, or the date in its file name is before the event) is parked in the event's pending uploads
+  instead of being scored as a map. On 19 Oct a re-sent 17 Sept game was scored as event 383 Group B map 5.
+  Answers 202 with `capture_parked_off_roster` / `capture_parked_older_than_event`. A slot a person picks
+  (match_id, replace) is not second-guessed.
+
+### Security
+- `afc/settings.py` no longer carries a commented-out database block for the old AWS RDS host,
+  which held that database's password in plain text. The database is gone (owner, 23 Oct 2026),
+  so the value is dead; removing the history copy is a separate step that rewrites every branch.
+
+### Internal
+- New known-bug kind `function-must-call` and entry `be-capture-wrong-game-scored` (upload_team_match_result
+  must call `_capture_park_reason`); `tests_capture_guard.py` pins the behaviour (3 of its 6 fail on main).
+
 ## v7.3.0 - 2026-10-22
 
 ### Added

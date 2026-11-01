@@ -182,6 +182,7 @@ def debugger_backfill(request, event_id):
     # ── APPLY: fill the mapped matches' player rows. ──
     raw_apply = request.data.get("apply")
     applied = []
+    kill_rounds = None   # parsed once, only when something is applied (inbox #350, kill_feed.py)
     if raw_apply:
         try:
             mapping = json.loads(raw_apply) if isinstance(raw_apply, str) else raw_apply
@@ -224,7 +225,21 @@ def debugger_backfill(request, event_id):
                     "revives_received", "survival_seconds", "rich_stats_filled", "rich_stats_source",
                 ])
                 updated += 1
-            applied.append({"round_index": ri, "match_id": match_id, "updated_rows": updated})
+            # Every kill and knock of the round, for the kill feed (sniper kills recorded, head to head;
+            # inbox #350, kill_feed.py). Replaces the map's earlier events; never fails the backfill.
+            stored_events = 0
+            try:
+                from . import kill_feed
+                if kill_rounds is None:
+                    kill_rounds = kill_feed.parse_kill_events(text)
+                if ri < len(kill_rounds):
+                    stored_events = kill_feed.store_events(match, event, kill_rounds[ri], "backfill")
+            except Exception:
+                import logging
+                logging.getLogger("afc_tournament_and_scrims").exception(
+                    "kill feed store failed for match %s", match.match_id)
+            applied.append({"round_index": ri, "match_id": match_id, "updated_rows": updated,
+                            "kill_events": stored_events})
 
     return Response({
         "rounds": rounds_out,
