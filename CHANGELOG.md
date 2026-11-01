@@ -20,6 +20,18 @@ number is blocked before the push.
 
 ## Unreleased
 
+### Added
+- Awards editions can be drawn as the Detty Royale KOL Awards: a new `theme` on an edition (set in the
+  admin editions form) switches `/awards/<edition>` to the themed pages. Same edition, same polls and same
+  votes, only the drawing changes.
+- Nominees have an address of their own (`slug` on every poll option, unique inside its award) and an
+  uploaded film (`film_url`, set by an admin: MP4 or WebM, 25 MB at most, type read from the file's bytes,
+  stored under an opaque name). New admin address `polls/admin/polls/<slug>/options/<id>/film/` (POST,
+  DELETE). `python manage.py backfill_option_slugs` fills the slug of nominees created before this release.
+- Voting one award at a time: `polls/<slug>/responses/` accepts `"merge": true`, which replaces only the
+  awards named in the request and keeps the picks in the others. `polls/editions/<slug>/` now also answers
+  `your_answers` (which nominee the signed-in caller picked in each award).
+
 ## v7.5.0 - 2026-10-24
 
 ### Added
