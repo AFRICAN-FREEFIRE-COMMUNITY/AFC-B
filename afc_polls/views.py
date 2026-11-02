@@ -1859,3 +1859,148 @@ def admin_announce(request, slug):
          "audience_count": recipients.count()},
         status=status.HTTP_200_OK,
     )
+
+
+# ── ADMIN: detailed metrics of any awards edition, open or past (inbox #432) ─────────────────
+
+
+@api_view(["GET"])
+def admin_edition_metrics(request, slug):
+    """GET polls/admin/editions/<slug>/metrics/ - the detailed numbers of one awards edition.
+
+    Response: {edition, totals: {polls, questions, responses}, polls: [{slug, title, opens_at,
+               closes_at, is_closed, responses, participants, questions: [{question_id, prompt,
+               total_votes, published_winner_option_id, published_winner_votes,
+               options: [{option_id, label, votes, percent}]}]}]}
+    Auth: AFC poll admin only (is_polls_admin, the gate the Editions tab already uses). A player or
+    a signed-out caller is refused, and so is an organizer, because an edition is site-wide.
+
+    WHY IT HAS NO PHASE FILTER: the point (owner, 2 Nov 2026) is that a season which is over, an
+    ARCHIVED edition and a poll whose closes_at has passed keep every breakdown they had while open.
+    Nothing here looks at the edition's phase or the poll's dates, so a closed ballot answers the
+    same way an open one does. An imported season (the NFCA 2025 winners-only polls) has no
+    responses, so its options carry no tally and the published winner claim is returned beside
+    them, never mixed into `votes`.
+    Consumed by frontend app/(a)/a/polls/_components/AwardsMetrics.tsx (lib/polls.ts adminEditionMetrics).
+    """
+    user, error = _require_user(request)
+    if error:
+        return error
+    if not is_polls_admin(user):
+        return Response({"message": "You do not have permission to see awards metrics", "code": "not_permission_see_results"},
+                        status=status.HTTP_403_FORBIDDEN)
+
+    edition = AwardsEdition.objects.filter(slug=slug).first()
+    if not edition:
+        return Response({"message": "Awards edition not found", "code": "awards_edition_not_found"},
+                        status=status.HTTP_404_NOT_FOUND)
+
+    locale = get_locale(request)
+    now = timezone.now()
+    polls_payload, total_questions, total_responses = [], 0, 0
+    for poll in edition.polls.prefetch_related("questions__options").order_by("poll_id"):
+        tally = _tally_for_poll(poll)
+        responses = PollResponse.objects.filter(poll=poll, status=PollResponse.SUBMITTED).count()
+        total_responses += responses
+        questions = []
+        for question in poll.questions.all():
+            counts = {option.option_id: tally.get(option.option_id, 0) for option in question.options.all()}
+            question_total = sum(counts.values())
+            prompt = {}
+            localize_field(prompt, "prompt", question.prompt, locale)
+            questions.append({
+                "question_id": question.question_id,
+                "prompt": prompt.get("prompt", question.prompt),
+                "total_votes": question_total,
+                "published_winner_option_id": question.published_winner_option_id,
+                "published_winner_votes": question.published_winner_votes,
+                "options": sorted(
+                    [{
+                        "option_id": option.option_id,
+                        "label": option.label,
+                        "votes": counts[option.option_id],
+                        "percent": round(counts[option.option_id] * 100.0 / question_total, 1)
+                        if question_total else 0,
+                    } for option in question.options.all()],
+                    key=lambda row: (-row["votes"], row["label"]),
+                ),
+            })
+        total_questions += len(questions)
+        polls_payload.append({
+            "slug": poll.slug,
+            "title": poll.title,
+            "opens_at": poll.opens_at,
+            "closes_at": poll.closes_at,
+            "is_closed": bool(poll.closes_at and poll.closes_at <= now),
+            "responses": responses,
+            "participants": PollParticipation.objects.filter(poll=poll).count(),
+            "questions": questions,
+        })
+
+    return Response({
+        "edition": _serialize_edition(edition),
+        "totals": {"polls": len(polls_payload), "questions": total_questions, "responses": total_responses},
+        "polls": polls_payload,
+    }, status=status.HTTP_200_OK)
+
+
+@api_view(["GET"])
+def admin_legacy_ballot_metrics(request):
+    """GET polls/admin/legacy-ballot-metrics/ - the original awards ballot, read from afc_awards.Vote.
+
+    Response: {totals: {votes, voters}, sections: [{section, votes}], categories: [{category,
+               section, votes, nominees: [{nominee, votes, percent}]}], timeline: [{date, votes}]}
+    Auth: AFC poll admin only.
+
+    WHY THIS EXISTS: the 2025 season was voted on the OLD awards tables (afc_awards.Vote), and the
+    poll engine that replaced the /a/votes dashboard holds only the published winners of that season,
+    not its ballot. The per-nominee, per-section and per-day numbers therefore live nowhere else, and
+    with /a/votes gone from the menu no admin screen reached them. This is the same aggregate the
+    old dashboard drew, behind the admin gate and grouped so one request fills the whole screen.
+    Consumed by frontend app/(a)/a/polls/_components/AwardsMetrics.tsx (lib/polls.ts adminLegacyBallotMetrics).
+    """
+    user, error = _require_user(request)
+    if error:
+        return error
+    if not is_polls_admin(user):
+        return Response({"message": "You do not have permission to see awards metrics", "code": "not_permission_see_results"},
+                        status=status.HTTP_403_FORBIDDEN)
+
+    from django.db.models.functions import TruncDate
+    from afc_auth.models import User
+    from afc_awards.models import Vote
+
+    per_nominee = (
+        Vote.objects.values("category_id", "category__name", "section__name", "nominee__name")
+        .annotate(votes=Count("id")).order_by("category__name", "-votes", "nominee__name")
+    )
+    categories, by_id = [], {}
+    for row in per_nominee:
+        entry = by_id.get(row["category_id"])
+        if entry is None:
+            entry = {"category": row["category__name"], "section": row["section__name"],
+                     "votes": 0, "nominees": []}
+            by_id[row["category_id"]] = entry
+            categories.append(entry)
+        entry["votes"] += row["votes"]
+        entry["nominees"].append({"nominee": row["nominee__name"], "votes": row["votes"]})
+    for entry in categories:
+        for nominee in entry["nominees"]:
+            nominee["percent"] = round(nominee["votes"] * 100.0 / entry["votes"], 1) if entry["votes"] else 0
+
+    return Response({
+        "totals": {
+            "votes": Vote.objects.count(),
+            "voters": User.objects.filter(vote__isnull=False).distinct().count(),
+        },
+        "sections": [
+            {"section": row["section__name"], "votes": row["votes"]}
+            for row in Vote.objects.values("section__name").annotate(votes=Count("id")).order_by("-votes")
+        ],
+        "categories": categories,
+        "timeline": [
+            {"date": row["date"], "votes": row["votes"]}
+            for row in Vote.objects.annotate(date=TruncDate("created_at"))
+            .values("date").annotate(votes=Count("id")).order_by("date")
+        ],
+    }, status=status.HTTP_200_OK)

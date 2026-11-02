@@ -20,6 +20,13 @@ number is blocked before the push.
 
 ## Unreleased
 
+### Added
+- `GET polls/admin/editions/<slug>/metrics/` gives AFC poll admins the detailed numbers of any awards season,
+  open or past: per ballot, per category, per nominee, with votes and share. It has no phase or date gate,
+  so an archived season and a closed ballot answer exactly as an open one does (inbox #432).
+- `GET polls/admin/legacy-ballot-metrics/` gives the same admins the original 2025 ballot still stored in the
+  original awards tables: totals, votes per section, per category and nominee, and per day.
+
 ## v7.5.0 - 2026-10-24
 
 ### Added
