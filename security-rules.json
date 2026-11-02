@@ -138,6 +138,11 @@
       "reason": "the file is decoded as text in memory and parsed line by line, never stored; capped at MAX_LOG_BYTES (25 MB) since 2026-09-18; no content type is trustworthy for a game client's .log"
     },
     {
+      "rule": "R70",
+      "path": "afc_tournament_and_scrims/views_game_files.py",
+      "reason": "game files (#396, 2 Nov 2026): each upload is capped at MAX_UPLOAD_BYTES (24 MB), unpacked in memory (the browser gzips it, so no content type or magic number is trustworthy), and refused with a code unless game_files.looks_like() finds a real debugger log or match result in the TEXT; nothing is written to disk or served, only the parsed games go to the cache for BATCH_TTL; same shape as debugger_ingest.py"
+    },
+    {
       "rule": "R74",
       "path": "afcbot/bot.py",
       "reason": "the system f-string interpolates a staff-maintained knowledge file (load_knowledge) and a constant invite link; the admin's text goes in the user message"
