@@ -18,7 +18,7 @@ At release time `node ~/.claude/skills/versioning/scripts/release.mjs next` prin
 rename `## Unreleased` to it, merge, then tag the merge commit. A version tag pushed with the wrong
 number is blocked before the push.
 
-## Unreleased
+## v7.6.0 - 2026-11-02
 
 ### Added
 - Leaderboard design columns Knocks recorded, Sniper kills recorded and Head to head record (field types `knocks_recorded`, `sniper_kills`, `h2h_record`). They are read from the stored kill events of the maps in scope, on the overlay feed rows and on the event stage graphic export, and show "-" where nothing was recorded.
