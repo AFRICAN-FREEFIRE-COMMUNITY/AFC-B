@@ -18,6 +18,11 @@ At release time `node ~/.claude/skills/versioning/scripts/release.mjs next` prin
 rename `## Unreleased` to it, merge, then tag the merge commit. A version tag pushed with the wrong
 number is blocked before the push.
 
+## Unreleased
+
+### Internal
+- The event contract goldens now include the fields added since v7.4.0 (kill_feed_tab, kill_feed_export, kill_feed_overlay, team_result_claims_close_hours). Five golden tests had been failing on main since those releases because CI runs no Django tests; only additions, no key removed or renamed.
+
 ## v7.9.0 - 2026-11-02
 
 ### Added

@@ -71,6 +71,10 @@
     "google"
   ],
   "allow_team_result_submissions": false,
+  "team_result_claims_close_hours": null,
+  "kill_feed_tab": false,
+  "kill_feed_overlay": false,
+  "kill_feed_export": false,
   "waitlist_capacity": 8,
   "registered_count": 0,
   "is_full": false,
