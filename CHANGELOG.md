@@ -38,6 +38,18 @@ number is blocked before the push.
   the game counts it. With this the debugger agrees with the result file for every player of 19 real
   games.
 
+### Internal
+- The event contract goldens now include the fields added since v7.4.0 (kill_feed_tab, kill_feed_export, kill_feed_overlay, team_result_claims_close_hours). Five golden tests had been failing on main since those releases because CI runs no Django tests; only additions, no key removed or renamed.
+
+## v7.9.0 - 2026-11-02
+
+### Added
+- `GET polls/admin/editions/<slug>/metrics/` gives AFC poll admins the detailed numbers of any awards season,
+  open or past: per ballot, per category, per nominee, with votes and share. It has no phase or date gate,
+  so an archived season and a closed ballot answer exactly as an open one does (inbox #432).
+- `GET polls/admin/legacy-ballot-metrics/` gives the same admins the original 2025 ballot still stored in the
+  original awards tables: totals, votes per section, per category and nominee, and per day.
+
 ## v7.8.0 - 2026-11-02
 
 ### Added
