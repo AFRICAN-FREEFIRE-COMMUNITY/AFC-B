@@ -4178,6 +4178,10 @@
           405
         ]
       }
-    }
+    },
+    {"name": "B cannot use the Game files box of an event B does not organize (events/<event_id>/game-files/read/, inbox #396). Staff and the event's organizers only (_broadcast_gate)", "route": "events/<int:event_id>/game-files/read/", "attempt": {"as": "b", "method": "POST", "path": "/events/2/game-files/read/", "expect": [401, 403, 404]}},
+    {"name": "B cannot use the Game files box of an event B does not organize (events/<event_id>/game-files/games/, inbox #396). Staff and the event's organizers only (_broadcast_gate)", "route": "events/<int:event_id>/game-files/games/", "attempt": {"as": "b", "method": "POST", "path": "/events/2/game-files/games/", "expect": [401, 403, 404], "body": {"file_ids": []}}},
+    {"name": "B cannot use the Game files box of an event B does not organize (events/<event_id>/game-files/result-text/, inbox #396). Staff and the event's organizers only (_broadcast_gate)", "route": "events/<int:event_id>/game-files/result-text/", "attempt": {"as": "b", "method": "POST", "path": "/events/2/game-files/result-text/", "expect": [401, 403, 404], "body": {"file_ids": [], "key": "x"}}},
+    {"name": "B cannot use the Game files box of an event B does not organize (events/<event_id>/game-files/debugger/, inbox #396). Staff and the event's organizers only (_broadcast_gate)", "route": "events/<int:event_id>/game-files/debugger/", "attempt": {"as": "b", "method": "POST", "path": "/events/2/game-files/debugger/", "expect": [401, 403, 404], "body": {"file_ids": [], "key": "x", "match_id": 1}}}
   ]
 }
