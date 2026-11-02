@@ -154,6 +154,8 @@ def recompute_team_result(poll, team, question, actor=None):
             response__status=PollResponse.SUBMITTED,
             option__isnull=False,
         )
+        # A ballot an admin removed after review counts nowhere (afc_polls.vote_tracking).
+        .exclude(response__review_state=PollResponse.REVIEW_REMOVED)
         .values("option_id")
         .annotate(votes=Count("answer_id"))
     )
@@ -266,7 +268,7 @@ def set_captain_override(poll, team, question, option, captain):
         PollAnswer.objects.filter(
             question=question, response__poll=poll, response__team=team,
             response__status=PollResponse.SUBMITTED, option__isnull=False,
-        ).values("option_id").annotate(votes=Count("answer_id"))
+        ).exclude(response__review_state=PollResponse.REVIEW_REMOVED).values("option_id").annotate(votes=Count("answer_id"))
     )
     tally = {str(row["option_id"]): row["votes"] for row in rows}
     answered = _answered_playing_members(poll, team, question)

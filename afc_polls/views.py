@@ -38,9 +38,12 @@ CONSUMED BY
 """
 import hashlib
 import hmac
+import re
+import secrets
+from datetime import timedelta
 
 from django.db import transaction
-from django.db.models import Count, Q
+from django.db.models import Count, F, Q
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 from django.utils.text import slugify
@@ -50,6 +53,7 @@ from rest_framework.decorators import api_view
 from rest_framework.response import Response
 
 from afc_auth.audience import freeze_ranking_filters, parse_audience_spec
+from afc_auth.country_grouping import country_code
 from afc_auth.locale_middleware import get_locale
 from afc_auth.translation import localize_field
 from afc_auth.views import validate_token
@@ -65,11 +69,16 @@ from .models import (
     PollEligibilityRule,
     PollOption,
     PollParticipation,
+    PollPickSwitch,
     PollQuestion,
+    PollReviewLog,
+    PollSheetOpen,
     PollWatch,
 )
 from .models import FILM_MAX_BYTES, PollResponse, option_slug
 from .permissions import can_manage_poll, is_polls_admin
+from . import vote_tracking
+from .vote_tracking import COUNTED, COUNTED_ANSWER
 from .team_voting import (
     recompute_team_result,
     rollup_for,
@@ -276,7 +285,8 @@ def _tally_for_poll(poll):
     counting it would make the totals move as people browse."""
     rows = (
         PollAnswer.objects.filter(
-            response__poll=poll, response__status=PollResponse.SUBMITTED, option__isnull=False
+            COUNTED_ANSWER, response__poll=poll, response__status=PollResponse.SUBMITTED,
+            option__isnull=False,
         )
         .values("option_id")
         .annotate(votes=Count("answer_id"))
@@ -335,7 +345,10 @@ def list_polls(request):
         .annotate(
             question_count=Count("questions", distinct=True),
             response_count=Count(
-                "responses", filter=Q(responses__status=PollResponse.SUBMITTED), distinct=True
+                "responses",
+                filter=Q(responses__status=PollResponse.SUBMITTED)
+                & ~Q(responses__review_state=PollResponse.REVIEW_REMOVED),
+                distinct=True,
             ),
         )
         .order_by("-created_at", "-poll_id")
@@ -359,10 +372,15 @@ def list_polls(request):
         queryset = queryset.filter(closes_at__isnull=False, closes_at__lte=now)
 
     rows, page = _paginate(request, queryset)
-    return Response(
-        {"results": [_serialize_poll_card(poll, locale) for poll in rows], **page},
-        status=status.HTTP_200_OK,
-    )
+    results = []
+    for poll in rows:
+        card = _serialize_poll_card(poll, locale)
+        # The ballot count is a number about the vote, so it follows the results rule (inbox #454:
+        # nothing about an award's votes is public while it runs). Null means "not shown".
+        if not poll.results_are_public():
+            card["response_count"] = None
+        results.append(card)
+    return Response({"results": results, **page}, status=status.HTTP_200_OK)
 
 
 # ── PUBLIC: one poll ──────────────────────────────────────────────────────────────────────────
@@ -475,9 +493,11 @@ def poll_detail(request, slug):
             "team": team_block,
             "results_visible": show_results,
             "results_suppressed_small_cell": suppressed,
+            # Null unless this viewer may see results (inbox #454): a running ballot count on an
+            # open award is a number about the vote, and it was answered to anyone until 2 Nov 2026.
             "response_count": PollResponse.objects.filter(
-                poll=poll, status=PollResponse.SUBMITTED
-            ).count(),
+                COUNTED, poll=poll, status=PollResponse.SUBMITTED
+            ).count() if show_results else None,
         },
         status=status.HTTP_200_OK,
     )
@@ -537,7 +557,11 @@ def _find_response(poll, user):
 def submit_response(request, slug):
     """POST polls/<slug>/responses/ - answer a poll.
 
-    Body: {"answers": [{"question_id": 1, "option_ids": [4]}, ...]}
+    Body: {"answers": [{"question_id": 1, "option_ids": [4]}, ...], "merge": true,
+           "device_key": "<the browser's own random id>", "ref_option_id": 12}
+      merge, device_key and ref_option_id are optional. device_key and ref_option_id feed the vote
+      tracking (inbox #453, afc_polls.vote_tracking.capture): the KOL pages send them
+      (frontend app/(user)/awards/_kol/KolContext.tsx castVote).
     Auth: REQUIRED (decision 4).
 
     Returns 201 on a first submission, 200 on an edit, and 403 with the FULL eligibility verdict
@@ -570,6 +594,9 @@ def submit_response(request, slug):
     # THE ONLY REAL GATE. Anything the client did is a courtesy.
     verdict = check_eligibility(poll, user)
     if not verdict["eligible"]:
+        # A refusal is one of the safety signals (inbox #453): it adds a failed check to this
+        # voter's started-ballot row, which the Metrics tab's flags read (vote_tracking).
+        vote_tracking.record_sheet_open(poll, user, failed_check=True)
         return Response(
             {"message": "You are not eligible to vote in this poll", "eligibility": verdict, "code": "not_eligible_vote_poll"},
             status=status.HTTP_403_FORBIDDEN,
@@ -656,7 +683,20 @@ def submit_response(request, slug):
         response.eligibility_snapshot = verdict.get("snapshot") or {}
         response.path_snapshot = sorted(set(response.path_snapshot or []) | set(path)) if merge else path
         response.team = team
+        # Where the vote came from, the device, the account age and the referring nominee
+        # (inbox #453). Never the raw IP: see afc_polls.vote_tracking.
+        vote_tracking.capture(poll, request, user, response, now)
         response.save()
+        # A finished ballot is also a started one, even if the sheet-opened call never arrived.
+        vote_tracking.record_sheet_open(poll, user)
+
+        # The picks as they were BEFORE this save, with their times: an unchanged pick keeps its
+        # original time (votes per hour and day), and a changed one is a pick switch.
+        previous = {}
+        if existing is not None:
+            for question_id, option_id, at in response.answers.values_list("question_id", "option_id", "created_at"):
+                previous.setdefault(question_id, {})[option_id] = at
+        pick_time = _anonymous_submit_time(now) if poll.anonymous else now
 
         # An edit REPLACES the sheet. Merging would leave an answer to a question the person has
         # since cleared, which is the same class of bug as keeping an off-path branch answer.
@@ -670,10 +710,32 @@ def submit_response(request, slug):
             PollAnswer(
                 response=response, question_id=question_id,
                 option_id=row["option_id"], value=row["value"],
+                created_at=previous.get(question_id, {}).get(row["option_id"]) or pick_time,
             )
             for question_id, rows in cleaned.items()
             for row in rows
         ])
+
+        # ── pick switches (inbox #453): only questions answered in THIS request, and only when the
+        #    voter had a pick there before. A one-for-one change is one row; anything else on a
+        #    multiple-choice question is a row per pick dropped and a row per pick added. ──
+        switches = []
+        for question_id, rows in cleaned.items():
+            before = {option_id for option_id in previous.get(question_id, {}) if option_id}
+            after = {row["option_id"] for row in rows if row["option_id"]}
+            if not before or before == after:
+                continue
+            gone, came = sorted(before - after), sorted(after - before)
+            if len(gone) == 1 and len(came) == 1:
+                pairs = [(gone[0], came[0])]
+            else:
+                pairs = [(option_id, None) for option_id in gone] + [(None, option_id) for option_id in came]
+            switches.extend(
+                PollPickSwitch(poll=poll, question_id=question_id, from_option_id=old, to_option_id=new, at=pick_time)
+                for old, new in pairs
+            )
+        if switches:
+            PollPickSwitch.objects.bulk_create(switches)
 
         # The roll. Separate from the sheet on every poll, not only anonymous ones, so that the
         # two never accidentally share a code path (see models.py).
@@ -860,7 +922,10 @@ def admin_polls(request):
         queryset = _manageable_polls(user).annotate(
             question_count=Count("questions", distinct=True),
             response_count=Count(
-                "responses", filter=Q(responses__status=PollResponse.SUBMITTED), distinct=True
+                "responses",
+                filter=Q(responses__status=PollResponse.SUBMITTED)
+                & ~Q(responses__review_state=PollResponse.REVIEW_REMOVED),
+                distinct=True,
             ),
         ).order_by("-created_at", "-poll_id")
         rows, page = _paginate(request, queryset)
@@ -1982,7 +2047,12 @@ def admin_edition_metrics(request, slug):
     Response: {edition, totals: {polls, questions, responses}, polls: [{slug, title, opens_at,
                closes_at, is_closed, responses, participants, questions: [{question_id, prompt,
                total_votes, published_winner_option_id, published_winner_votes,
-               options: [{option_id, label, votes, percent}]}]}]}
+               options: [{option_id, label, votes, percent, countries, ip_countries, regions,
+               by_day, by_hour, switched_away, switched_to, referred_ballots, referred_votes}]}],
+               tracking: {started, finished, removed, awards_per_ballot, devices, account_ages,
+               flags}}], live_view_token}
+      The tracking keys (inbox #453, 2 Nov 2026) are built by _tracking_for_poll from what
+      submit_response stores (afc_polls.vote_tracking). Removed ballots are left out of every count.
     Auth: AFC poll admin only (is_polls_admin, the gate the Editions tab already uses). A player or
     a signed-out caller is refused, and so is an organizer, because an edition is site-wide.
 
@@ -2011,8 +2081,10 @@ def admin_edition_metrics(request, slug):
     polls_payload, total_questions, total_responses = [], 0, 0
     for poll in edition.polls.prefetch_related("questions__options").order_by("poll_id"):
         tally = _tally_for_poll(poll)
-        responses = PollResponse.objects.filter(poll=poll, status=PollResponse.SUBMITTED).count()
+        responses = PollResponse.objects.filter(COUNTED, poll=poll, status=PollResponse.SUBMITTED).count()
         total_responses += responses
+        # Where the votes came from, when, switches, referrals, devices, ages, flags (inbox #453).
+        per_option, tracking = _tracking_for_poll(poll, now)
         questions = []
         for question in poll.questions.all():
             counts = {option.option_id: tally.get(option.option_id, 0) for option in question.options.all()}
@@ -2032,6 +2104,7 @@ def admin_edition_metrics(request, slug):
                         "votes": counts[option.option_id],
                         "percent": round(counts[option.option_id] * 100.0 / question_total, 1)
                         if question_total else 0,
+                        **per_option.get(option.option_id, _EMPTY_OPTION_TRACKING),
                     } for option in question.options.all()],
                     key=lambda row: (-row["votes"], row["label"]),
                 ),
@@ -2045,11 +2118,14 @@ def admin_edition_metrics(request, slug):
             "is_closed": bool(poll.closes_at and poll.closes_at <= now),
             "responses": responses,
             "participants": PollParticipation.objects.filter(poll=poll).count(),
+            "tracking": tracking,
             "questions": questions,
         })
 
     return Response({
         "edition": _serialize_edition(edition),
+        # Garena's private live link (admin_edition_live_link); "" when it is off.
+        "live_view_token": edition.live_view_token,
         "totals": {"polls": len(polls_payload), "questions": total_questions, "responses": total_responses},
         "polls": polls_payload,
     }, status=status.HTTP_200_OK)
@@ -2114,4 +2190,420 @@ def admin_legacy_ballot_metrics(request):
             for row in Vote.objects.annotate(date=TruncDate("created_at"))
             .values("date").annotate(votes=Count("id")).order_by("date")
         ],
+    }, status=status.HTTP_200_OK)
+
+
+# ── VOTE TRACKING: started ballots, metrics, flags, review, Garena's live link ───────────────────
+# Inbox #453 and #457 (owner, 2 Nov 2026). What is captured at submit and why is in
+# afc_polls.vote_tracking; the endpoints below read it. Frontend callers:
+#   sheet_opened              app/(user)/awards/_kol/KolContext.tsx (when the vote sheet opens) and
+#                             KolVoteSheet.tsx (a failed UID link)
+#   admin_edition_metrics     app/(a)/a/polls/_components/AwardsMetrics.tsx (the tracking blocks)
+#   admin_poll_flags          app/(a)/a/polls/_components/VoteFlags.tsx
+#   admin_review_response     app/(a)/a/polls/_components/VoteFlags.tsx
+#   admin_edition_live_link   app/(a)/a/polls/_components/GarenaLiveLink.tsx
+#   live_view                 app/(user)/awards/live/[token]/page.tsx (Garena's private page)
+
+# The live-view hourly series covers this many hours back. Bounded so a fortnight of voting on
+# 140 nominees stays one small answer; the daily series covers the whole vote.
+HOURLY_WINDOW_HOURS = 48
+
+# What an option with no counted vote carries in the metrics answer, so every option has every key.
+_EMPTY_OPTION_TRACKING = {
+    "countries": [], "ip_countries": [], "regions": [], "by_day": [], "by_hour": [],
+    "switched_away": 0, "switched_to": 0, "referred_ballots": 0, "referred_votes": 0,
+}
+
+# A Garena live link: "lv_" + 32 hex. Anything else is not looked up at all.
+_LIVE_TOKEN_RE = re.compile(r"^lv_[0-9a-f]{32}$")
+
+REVIEW_REASON_MIN = 5
+REVIEW_REASON_MAX = 1000
+
+
+@api_view(["POST"])
+def sheet_opened(request, slug):
+    """POST polls/<slug>/sheet-opened/ - this voter opened the vote sheet (a started ballot).
+
+    Body: {"failed_check": "uid"}  optional; the vote sheet sends it when linking a UID failed.
+    Response 200: {"recorded": true}
+    Auth: REQUIRED (a started ballot is counted once per voter, which needs to know who). Signed
+    out answers 401 coded, a missing poll 404 coded.
+    Writes PollSheetOpen through afc_polls.vote_tracking.record_sheet_open. Read by
+    admin_edition_metrics (started vs finished) and compute_flags (failed checks).
+    Consumed by frontend app/(user)/awards/_kol/KolContext.tsx and KolVoteSheet.tsx.
+    """
+    user, error = _require_user(request)
+    if error:
+        return error
+    poll = Poll.objects.filter(slug=slug).first()
+    if not poll or (poll.visibility == Poll.DRAFT and not can_manage_poll(user, poll)):
+        return Response({"message": "Poll not found", "code": "poll_not_found"}, status=status.HTTP_404_NOT_FOUND)
+    failed_check = request.data.get("failed_check")
+    if failed_check not in (None, "", "uid"):
+        return Response({"message": "Unknown check", "code": "sheet_open_check_unknown"},
+                        status=status.HTTP_400_BAD_REQUEST)
+    vote_tracking.record_sheet_open(poll, user, failed_check=failed_check == "uid")
+    return Response({"recorded": True}, status=status.HTTP_200_OK)
+
+
+def _counted_answers(poll):
+    """The answers that count on this poll: submitted ballots, not removed, with an option."""
+    return PollAnswer.objects.filter(
+        COUNTED_ANSWER, response__poll=poll, response__status=PollResponse.SUBMITTED, option__isnull=False,
+    )
+
+
+def _country_rows(raw_counts):
+    """[{code, votes}] from {raw country value: votes}, spellings merged by ISO code, biggest first.
+
+    The profile country is free text ("Nigeria", "nigeria", "NG"); afc_auth.country_grouping turns
+    each into one code. An unreadable value is grouped under "" (shown as Unknown)."""
+    merged = {}
+    for raw, votes in raw_counts.items():
+        code = country_code(raw) or ""
+        merged[code] = merged.get(code, 0) + votes
+    return sorted(({"code": code, "votes": votes} for code, votes in merged.items()),
+                  key=lambda row: (-row["votes"], row["code"]))
+
+
+def _tracking_for_poll(poll, now, include_poll_block=True):
+    """The tracking numbers of one poll: (per_option, poll_block).
+
+    per_option[option_id] = {countries, ip_countries, regions, by_day, by_hour, switched_away,
+    switched_to, referred_ballots, referred_votes}; poll_block = {started, finished, removed,
+    awards_per_ballot, devices, account_ages, flags}. Every query is grouped, so the cost is a
+    fixed handful of reads per poll whatever the number of ballots.
+    """
+    from django.db.models.functions import TruncDate, TruncHour
+
+    answers = _counted_answers(poll)
+    per_option = {}
+
+    def slot(option_id):
+        return per_option.setdefault(option_id, {
+            "countries": {}, "ip_countries": [], "regions": [], "by_day": [], "by_hour": [],
+            "switched_away": 0, "switched_to": 0, "referred_ballots": 0, "referred_votes": 0,
+        })
+
+    # Profile country per nominee (the eligibility snapshot taken at submit).
+    for row in answers.values("option_id", "response__eligibility_snapshot__country").annotate(votes=Count("answer_id")):
+        raw = row["response__eligibility_snapshot__country"] or ""
+        bucket = slot(row["option_id"])["countries"]
+        bucket[raw] = bucket.get(raw, 0) + row["votes"]
+    # Where the vote came from (the IP at submit, resolved to country and region).
+    for row in answers.values("option_id", "response__ip_country").annotate(votes=Count("answer_id")):
+        slot(row["option_id"])["ip_countries"].append({"code": row["response__ip_country"], "votes": row["votes"]})
+    for row in answers.exclude(response__ip_region="").values(
+            "option_id", "response__ip_country", "response__ip_region").annotate(votes=Count("answer_id")):
+        slot(row["option_id"])["regions"].append({
+            "country": row["response__ip_country"], "region": row["response__ip_region"], "votes": row["votes"],
+        })
+    # Votes per day (whole vote) and per hour (the last HOURLY_WINDOW_HOURS hours).
+    for row in answers.annotate(day=TruncDate("created_at")).values("option_id", "day").annotate(votes=Count("answer_id")).order_by("day"):
+        slot(row["option_id"])["by_day"].append({"date": row["day"], "votes": row["votes"]})
+    since = now - timedelta(hours=HOURLY_WINDOW_HOURS)
+    for row in answers.filter(created_at__gte=since).annotate(hour=TruncHour("created_at")).values(
+            "option_id", "hour").annotate(votes=Count("answer_id")).order_by("hour"):
+        slot(row["option_id"])["by_hour"].append({"hour": row["hour"], "votes": row["votes"]})
+    # Pick switches.
+    switches = PollPickSwitch.objects.filter(poll=poll)
+    for row in switches.exclude(from_option__isnull=True).values("from_option_id").annotate(n=Count("switch_id")):
+        slot(row["from_option_id"])["switched_away"] = row["n"]
+    for row in switches.exclude(to_option__isnull=True).values("to_option_id").annotate(n=Count("switch_id")):
+        slot(row["to_option_id"])["switched_to"] = row["n"]
+    # Which nominee's link brought the voter, and how many of them then voted for that nominee.
+    counted = PollResponse.objects.filter(COUNTED, poll=poll, status=PollResponse.SUBMITTED)
+    for row in counted.exclude(referrer_option__isnull=True).values("referrer_option_id").annotate(n=Count("response_id")):
+        slot(row["referrer_option_id"])["referred_ballots"] = row["n"]
+    for row in answers.filter(response__referrer_option_id=F("option_id")).values("option_id").annotate(n=Count("answer_id")):
+        slot(row["option_id"])["referred_votes"] = row["n"]
+
+    for data in per_option.values():
+        data["countries"] = _country_rows(data["countries"])
+        data["ip_countries"].sort(key=lambda row: (-row["votes"], row["code"]))
+        data["regions"].sort(key=lambda row: (-row["votes"], row["country"], row["region"]))
+
+    if not include_poll_block:
+        return per_option, None
+
+    # ── the poll as a whole ──
+    awards_per_ballot = {}
+    for row in answers.values("response_id").annotate(n=Count("question_id", distinct=True)):
+        awards_per_ballot[row["n"]] = awards_per_ballot.get(row["n"], 0) + 1
+    ages = {}
+    for days in counted.values_list("account_age_days", flat=True):
+        bucket = vote_tracking.age_bucket(days)
+        key = "unknown" if bucket is None else str(bucket)
+        ages[key] = ages.get(key, 0) + 1
+    flagged = vote_tracking.compute_flags(poll)
+    states = dict(
+        PollResponse.objects.filter(response_id__in=list(flagged)).values_list("response_id", "review_state")
+    )
+    flag_counts = {key: 0 for key in vote_tracking.FLAG_KEYS}
+    for entry in flagged.values():
+        for key in entry["flags"]:
+            flag_counts[key] += 1
+    poll_block = {
+        "started": PollSheetOpen.objects.filter(poll=poll).count(),
+        "finished": counted.count(),
+        "removed": PollResponse.objects.filter(
+            poll=poll, status=PollResponse.SUBMITTED, review_state=PollResponse.REVIEW_REMOVED).count(),
+        "awards_per_ballot": [{"awards": n, "ballots": b} for n, b in sorted(awards_per_ballot.items())],
+        "devices": [
+            {"device": row["device_type"], "ballots": row["n"]}
+            for row in counted.values("device_type").annotate(n=Count("response_id")).order_by("-n")
+        ],
+        "account_ages": [
+            {"bucket": key, "ballots": ages[key]}
+            for key in [str(b) for b in vote_tracking.ACCOUNT_AGE_BUCKETS] + ["unknown"] if key in ages
+        ],
+        "flags": {
+            "by_flag": flag_counts,
+            "flagged": len(flagged),
+            "to_review": sum(1 for rid in flagged if not states.get(rid)),
+            "cleared": sum(1 for rid in flagged if states.get(rid) == PollResponse.REVIEW_CLEARED),
+            "removed": sum(1 for rid in flagged if states.get(rid) == PollResponse.REVIEW_REMOVED),
+            "thresholds": {
+                "shared_connection": vote_tracking.SHARED_CONNECTION_MIN,
+                "shared_device": vote_tracking.SHARED_DEVICE_MIN,
+                "new_account_days": vote_tracking.NEW_ACCOUNT_DAYS,
+            },
+        },
+    }
+    return per_option, poll_block
+
+
+@api_view(["GET"])
+def admin_poll_flags(request, slug):
+    """GET polls/admin/polls/<slug>/flags/ - the flagged ballots of one poll, for review.
+
+    Query: ?state=to_review|cleared|removed|all (default to_review)  ?limit= ?offset=
+    Response: {thresholds, results: [{response_id, voter, flags: [key], details: {profile_country,
+               ip_country, ip_region, connection_ballots, device_ballots, account_age_days,
+               failed_checks}, picks: [{award, nominee}], submitted_at, review_state, review_reason,
+               reviewed_by, reviewed_at, log: [{action, reason, reviewed_by, at}]}], has_more,
+               next_offset, total_count}
+    `voter` is the username on a named poll and null on an anonymous one (the review works the same
+    without it). Auth: AFC poll admin only (is_polls_admin), 401 signed out, 403 otherwise.
+    Consumed by frontend app/(a)/a/polls/_components/VoteFlags.tsx.
+    """
+    user, error = _require_user(request)
+    if error:
+        return error
+    if not is_polls_admin(user):
+        return Response({"message": "You do not have permission to see awards metrics", "code": "not_permission_see_results"},
+                        status=status.HTTP_403_FORBIDDEN)
+    poll = Poll.objects.filter(slug=slug).first()
+    if not poll:
+        return Response({"message": "Poll not found", "code": "poll_not_found"}, status=status.HTTP_404_NOT_FOUND)
+
+    state = (request.GET.get("state") or "to_review").strip()
+    if state not in ("to_review", "cleared", "removed", "all"):
+        return Response({"message": "Unknown review state", "code": "flags_state_unknown"},
+                        status=status.HTTP_400_BAD_REQUEST)
+    flagged = vote_tracking.compute_flags(poll)
+    queryset = PollResponse.objects.filter(poll=poll, response_id__in=list(flagged)).select_related(
+        "respondent", "reviewed_by").prefetch_related("answers__option", "answers__question", "review_log__reviewed_by")
+    if state == "to_review":
+        queryset = queryset.filter(review_state="")
+    elif state in (PollResponse.REVIEW_CLEARED, PollResponse.REVIEW_REMOVED):
+        queryset = queryset.filter(review_state=state)
+    rows, page = _paginate(request, queryset.order_by("-submitted_at", "-response_id"))
+    locale = get_locale(request)
+
+    results = []
+    for response in rows:
+        picks = []
+        for answer in response.answers.all():
+            if answer.option_id:
+                prompt = {}
+                localize_field(prompt, "prompt", answer.question.prompt, locale)
+                picks.append({"award": prompt.get("prompt", answer.question.prompt), "nominee": answer.option.label})
+        results.append({
+            "response_id": response.response_id,
+            "voter": None if poll.anonymous or not response.respondent else response.respondent.username,
+            "flags": flagged[response.response_id]["flags"],
+            "details": flagged[response.response_id]["details"],
+            "picks": picks,
+            "submitted_at": response.submitted_at,
+            "review_state": response.review_state,
+            "review_reason": response.review_reason,
+            "reviewed_by": response.reviewed_by.username if response.reviewed_by else None,
+            "reviewed_at": response.reviewed_at,
+            "log": [
+                {"action": entry.action, "reason": entry.reason,
+                 "reviewed_by": entry.reviewed_by.username if entry.reviewed_by else None, "at": entry.at}
+                for entry in response.review_log.all()
+            ],
+        })
+    return Response({
+        "thresholds": {
+            "shared_connection": vote_tracking.SHARED_CONNECTION_MIN,
+            "shared_device": vote_tracking.SHARED_DEVICE_MIN,
+            "new_account_days": vote_tracking.NEW_ACCOUNT_DAYS,
+        },
+        "results": results,
+        **page,
+    }, status=status.HTTP_200_OK)
+
+
+@api_view(["POST"])
+def admin_review_response(request, slug, response_id):
+    """POST polls/admin/polls/<slug>/responses/<response_id>/review/ - decide on one flagged ballot.
+
+    Body: {"action": "clear" | "remove" | "restore", "reason": "..."}  reason REQUIRED for remove
+    (5 to 1000 characters), optional otherwise.
+    Response 200: {"response_id", "review_state", "review_reason", "reviewed_by", "reviewed_at"}
+    "remove" takes the ballot out of every tally (vote_tracking.COUNTED); "restore" puts it back;
+    "clear" marks it reviewed and fine. Every call appends a PollReviewLog row, so the record of
+    why survives a later restore. The ballot must belong to THIS poll (404 otherwise, the same as a
+    ballot that does not exist). Auth: AFC poll admin only.
+    Consumed by frontend app/(a)/a/polls/_components/VoteFlags.tsx.
+    """
+    user, error = _require_user(request)
+    if error:
+        return error
+    if not is_polls_admin(user):
+        return Response({"message": "You do not have permission to review ballots", "code": "not_permission_review_ballots"},
+                        status=status.HTTP_403_FORBIDDEN)
+    response = PollResponse.objects.filter(
+        response_id=response_id, poll__slug=slug, status=PollResponse.SUBMITTED).first()
+    if not response:
+        return Response({"message": "Ballot not found", "code": "ballot_not_found"}, status=status.HTTP_404_NOT_FOUND)
+
+    action = request.data.get("action")
+    reason = str(request.data.get("reason") or "").strip()
+    if action not in (PollReviewLog.ACTION_CLEAR, PollReviewLog.ACTION_REMOVE, PollReviewLog.ACTION_RESTORE):
+        return Response({"message": "Choose clear, remove or restore", "code": "review_action_unknown"},
+                        status=status.HTTP_400_BAD_REQUEST)
+    if len(reason) > REVIEW_REASON_MAX:
+        return Response({"message": "The reason is too long", "code": "review_reason_too_long"},
+                        status=status.HTTP_400_BAD_REQUEST)
+    if action == PollReviewLog.ACTION_REMOVE and len(reason) < REVIEW_REASON_MIN:
+        return Response({"message": "Write why this ballot is removed", "code": "review_reason_required"},
+                        status=status.HTTP_400_BAD_REQUEST)
+
+    now = timezone.now()
+    with transaction.atomic():
+        response.review_state = {
+            PollReviewLog.ACTION_CLEAR: PollResponse.REVIEW_CLEARED,
+            PollReviewLog.ACTION_REMOVE: PollResponse.REVIEW_REMOVED,
+            PollReviewLog.ACTION_RESTORE: "",
+        }[action]
+        response.review_reason = reason
+        response.reviewed_by = user
+        response.reviewed_at = now
+        response.save(update_fields=["review_state", "review_reason", "reviewed_by", "reviewed_at"])
+        PollReviewLog.objects.create(response=response, action=action, reason=reason, reviewed_by=user, at=now)
+        # A team poll's stored standing is recomputed so a removal reaches it too.
+        if response.team_id:
+            for question in response.poll.questions.all():
+                recompute_team_result(response.poll, response.team, question)
+    return Response({
+        "response_id": response.response_id,
+        "review_state": response.review_state,
+        "review_reason": response.review_reason,
+        "reviewed_by": user.username,
+        "reviewed_at": now,
+    }, status=status.HTTP_200_OK)
+
+
+@api_view(["POST", "DELETE"])
+def admin_edition_live_link(request, slug):
+    """POST / DELETE polls/admin/editions/<slug>/live-link/ - Garena's private live link.
+
+    POST creates the link, or REPLACES it with a new one (the old address stops working at once).
+    DELETE turns it off. Response 200: {"live_view_token": "lv_..." | ""}
+    The page it opens is /awards/live/<token> (live_view below): votes per nominee with country and
+    region, no voter data. Owner's choice, 2 Nov 2026 (inbox #457): "Private link, no sign-in".
+    Auth: AFC poll admin only. Consumed by frontend app/(a)/a/polls/_components/GarenaLiveLink.tsx.
+    """
+    user, error = _require_user(request)
+    if error:
+        return error
+    if not is_polls_admin(user):
+        return Response({"message": "You do not have permission to manage this link", "code": "not_permission_live_link"},
+                        status=status.HTTP_403_FORBIDDEN)
+    edition = AwardsEdition.objects.filter(slug=slug).first()
+    if not edition:
+        return Response({"message": "Awards edition not found", "code": "awards_edition_not_found"},
+                        status=status.HTTP_404_NOT_FOUND)
+    edition.live_view_token = "" if request.method == "DELETE" else f"lv_{secrets.token_hex(16)}"
+    edition.save(update_fields=["live_view_token"])
+    return Response({"live_view_token": edition.live_view_token}, status=status.HTTP_200_OK)
+
+
+def _fold_small(rows, key_fields):
+    """Rows under SMALL_CELL_FLOOR folded into one "other" row (Garena's page shows no small cell)."""
+    kept = [row for row in rows if row["votes"] >= SMALL_CELL_FLOOR]
+    rest = sum(row["votes"] for row in rows if row["votes"] < SMALL_CELL_FLOOR)
+    if rest:
+        other = {field: "" for field in key_fields}
+        other.update({"other": True, "votes": rest})
+        kept.append(other)
+    return kept
+
+
+@api_view(["GET"])
+def live_view(request, token):
+    """GET polls/live/<token>/ - Garena's live view of one awards edition, by its private link.
+
+    Response: {edition: {title, phase, voting_opens_at, voting_closes_at}, updated_at,
+               polls: [{title, ballots, questions: [{prompt, total_votes, options: [{label, votes,
+               percent, countries: [{code, votes} | {other, votes}], regions: [{country, region,
+               votes} | {other, votes}], by_day: [{date, votes}]}]}]}]}
+    No voter data, no flags, no removed ballots. A country or region with fewer than five votes is
+    folded into "other" (SMALL_CELL_FLOOR), because a small cell next to a nominee can name a voter.
+    Auth: the token IS the access (owner, 2 Nov 2026, inbox #457). A malformed, unknown or turned-off
+    token answers 404 with code live_view_not_found, the same for all three.
+    Consumed by frontend app/(user)/awards/live/[token]/page.tsx.
+    """
+    token = (token or "").strip()
+    edition = AwardsEdition.objects.filter(live_view_token=token).first() if _LIVE_TOKEN_RE.match(token) else None
+    if not edition:
+        return Response({"message": "This link is not active", "code": "live_view_not_found"},
+                        status=status.HTTP_404_NOT_FOUND)
+    locale = get_locale(request)
+    now = timezone.now()
+    polls_payload = []
+    for poll in edition.polls.exclude(visibility=Poll.DRAFT).prefetch_related("questions__options").order_by("poll_id"):
+        tally = _tally_for_poll(poll)
+        per_option, _ = _tracking_for_poll(poll, now, include_poll_block=False)
+        questions = []
+        for question in poll.questions.all():
+            counts = {option.option_id: tally.get(option.option_id, 0) for option in question.options.all()}
+            question_total = sum(counts.values())
+            prompt = {}
+            localize_field(prompt, "prompt", question.prompt, locale)
+            options = []
+            for option in question.options.all():
+                extra = per_option.get(option.option_id, {})
+                options.append({
+                    "label": option.label,
+                    "votes": counts[option.option_id],
+                    "percent": round(counts[option.option_id] * 100.0 / question_total, 1) if question_total else 0,
+                    "countries": _fold_small(extra.get("ip_countries", []), ["code"]),
+                    "regions": _fold_small(extra.get("regions", []), ["country", "region"]),
+                    "by_day": extra.get("by_day", []),
+                })
+            options.sort(key=lambda row: (-row["votes"], row["label"]))
+            questions.append({"prompt": prompt.get("prompt", question.prompt), "total_votes": question_total,
+                              "options": options})
+        title = {}
+        localize_field(title, "title", poll.title, locale)
+        polls_payload.append({
+            "title": title.get("title", poll.title),
+            "ballots": PollResponse.objects.filter(COUNTED, poll=poll, status=PollResponse.SUBMITTED).count(),
+            "questions": questions,
+        })
+    return Response({
+        "edition": {
+            "title": edition.title,
+            "phase": edition.phase(),
+            "voting_opens_at": edition.voting_opens_at,
+            "voting_closes_at": edition.voting_closes_at,
+        },
+        "updated_at": now,
+        "polls": polls_payload,
     }, status=status.HTTP_200_OK)

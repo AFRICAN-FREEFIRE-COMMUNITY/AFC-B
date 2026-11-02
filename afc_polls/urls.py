@@ -29,6 +29,13 @@ urlpatterns = [
          name="polls_admin_announce"),                                                      # POST
     path("admin/editions/<slug:slug>/metrics/", views.admin_edition_metrics,
          name="polls_admin_edition_metrics"),                                        # GET
+    # ── vote tracking (inbox #453 / #457): flags, review, Garena's live link ──
+    path("admin/polls/<slug:slug>/flags/", views.admin_poll_flags,
+         name="polls_admin_flags"),                                                          # GET
+    path("admin/polls/<slug:slug>/responses/<int:response_id>/review/", views.admin_review_response,
+         name="polls_admin_review_response"),                                               # POST
+    path("admin/editions/<slug:slug>/live-link/", views.admin_edition_live_link,
+         name="polls_admin_edition_live_link"),                                     # POST, DELETE
     path("admin/legacy-ballot-metrics/", views.admin_legacy_ballot_metrics,
          name="polls_admin_legacy_ballot_metrics"),                                  # GET
     path("admin/editions/", views.admin_editions, name="polls_admin_editions"),        # GET, POST
@@ -40,10 +47,14 @@ urlpatterns = [
     path("editions/", views.list_editions, name="polls_editions"),                           # GET
     path("editions/<slug:slug>/", views.edition_detail, name="polls_edition_detail"),        # GET
     path("watch/", views.watch, name="polls_watch"),                                # POST, DELETE
+    # Garena's private live page reads by its token (live_view). Two segments, so it could never be
+    # a poll slug, but it sits with the other literal prefixes all the same.
+    path("live/<str:token>/", views.live_view, name="polls_live_view"),                      # GET
 
     # ── public ──
     path("", views.list_polls, name="polls_list"),                                           # GET
     path("<slug:slug>/", views.poll_detail, name="polls_detail"),                            # GET
     path("<slug:slug>/responses/", views.submit_response, name="polls_submit"),             # POST
     path("<slug:slug>/team-answer/", views.captain_override, name="polls_captain_override"),
+    path("<slug:slug>/sheet-opened/", views.sheet_opened, name="polls_sheet_opened"),        # POST
 ]

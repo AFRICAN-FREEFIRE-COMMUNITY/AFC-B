@@ -114,6 +114,13 @@ app.conf.beat_schedule = {
         'task': 'afc_helpbot.tasks.purge_old_help_chats',
         'schedule': crontab(minute=20, hour=3),    # 03:20 every day
     },
+    # ── The awards vote tracking's location file (inbox #453) ─────────────────────────────────
+    # DB-IP publishes a free city database monthly. Weekly check, downloads only when the file is
+    # over 25 days old. Default queue. See afc_polls/tasks.py.
+    'refresh_geoip_db_weekly': {
+        'task': 'afc_polls.tasks.refresh_geoip_db',
+        'schedule': crontab(minute=40, hour=4, day_of_week=2),   # Tuesdays 04:40
+    },
 }
 
 @app.task(bind=True)

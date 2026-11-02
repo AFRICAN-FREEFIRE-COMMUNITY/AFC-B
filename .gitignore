@@ -13,11 +13,11 @@ __pycache__/
 
 
 
-# Postman: local env holds a real token/key — never commit
+# Postman: local env holds a real token/key, never commit
 postman/.local.env.json
 postman/smoke_results.json
 
-# Local-only: production DB dump (real user PII) + dev server logs — never commit
+# Local-only: production DB dump (real user PII) + dev server logs, never commit
 _prod_import/
 _runserver.log
 _verify_bugfix.py
@@ -91,3 +91,5 @@ afcbot/bot_config.json
 *.pem
 *.key
 *.p12
+# the awards vote tracking's DB-IP city database, downloaded on the server (afc_polls.geo)
+geoip/

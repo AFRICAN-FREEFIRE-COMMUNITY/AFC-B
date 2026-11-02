@@ -62,6 +62,7 @@ import secrets
 
 from django.conf import settings
 from django.db import models
+from django.utils import timezone
 from django.core.exceptions import ValidationError
 from django.core.validators import FileExtensionValidator
 from django.utils.text import slugify
@@ -158,6 +159,13 @@ class AwardsEdition(models.Model):
         (THEME_DETTY_ROYALE, "Detty Royale KOL Awards"),
     ]
     theme = models.CharField(max_length=24, choices=THEME_CHOICES, default=THEME_DEFAULT)
+    # GARENA'S LIVE LINK (inbox #453 / #457, owner 2 Nov 2026: "Private link, no sign-in"). An opaque
+    # token ("lv_" + 32 hex) behind the read-only page /awards/live/<token>, which shows votes per
+    # nominee with country and region while voting runs. Empty means the link is OFF. Rotating writes
+    # a new token, so a forwarded old link stops working at once. Never serialised to the public
+    # edition answers; only the admin metrics endpoint (afc_polls.views.admin_edition_metrics) and
+    # admin_edition_live_link return it, and afc_polls.views.live_view reads by it.
+    live_view_token = models.CharField(max_length=40, blank=True, default="", db_index=True)
     # Display order on /awards. Newest edition first by default, but an owner running two at once
     # needs to say which leads.
     order = models.IntegerField(default=0)
@@ -318,6 +326,12 @@ class Poll(models.Model):
     # cryptographic sense: it lives in the same database as the responses, which is exactly the
     # limit spec 1.7 states out loud rather than papering over.
     pseudonym_key = models.CharField(max_length=64, blank=True, default="")
+    # Per-poll HMAC key behind the vote tracking hashes (inbox #453): PollResponse.connection_hash,
+    # PollResponse.device_hash and the voter_key that joins a ballot to its PollSheetOpen row. One
+    # key per poll so a hash on one poll cannot be matched against another poll's. Generated in
+    # save() for every poll (and by ensure_tracking_key for polls saved before it existed), never
+    # serialised out of this app. Same limit as pseudonym_key: it lives in the same database.
+    tracking_key = models.CharField(max_length=64, blank=True, default="")
     # Publish usernames under each option. MUTUALLY EXCLUSIVE with `anonymous` (decision 9 keeps
     # this per poll, not per question, so the voter can hold "my name is on this" as ONE fact).
     show_voter_list = models.BooleanField(default=False)
@@ -402,7 +416,16 @@ class Poll(models.Model):
         clock: voting closing and the winners being announced are different events, and the days
         between them are the "we are counting" state that an awards night needs and a plain poll
         does not. An after_announcement poll with no edition row falls back to after_close, because
-        the alternative is results that can never be published by any route the admin can see."""
+        the alternative is results that can never be published by any route the admin can see.
+
+        AN AWARD BALLOT NEVER SHOWS ITS NUMBERS WHILE IT IS OPEN (owner, 2 Nov 2026, inbox #454: "the
+        votes shouldn't be made public, as it's happening"). That holds even when an admin picked
+        ALWAYS, because a running count on an awards ballot changes how the rest of the public
+        votes. A closed award ballot with ALWAYS (the imported NFCA 2025 ballots, which have no
+        dates and so are never open) keeps showing its numbers as before."""
+        is_award = self.kind == self.AWARD or bool(self.edition_id)
+        if is_award and self.is_open(now):
+            return False
         if self.results_visibility == self.ALWAYS:
             return True
         if self.results_visibility == self.AFTER_CLOSE:
@@ -420,7 +443,17 @@ class Poll(models.Model):
         # own answer any more.
         if self.anonymous and not self.pseudonym_key:
             self.pseudonym_key = secrets.token_hex(32)
+        if not self.tracking_key:
+            self.tracking_key = secrets.token_hex(32)
         super().save(*args, **kwargs)
+
+    def ensure_tracking_key(self):
+        """The tracking key, created and saved on the spot for a poll that predates the field."""
+        if not self.tracking_key:
+            self.tracking_key = secrets.token_hex(32)
+            Poll.objects.filter(pk=self.pk, tracking_key="").update(tracking_key=self.tracking_key)
+            self.refresh_from_db(fields=["tracking_key"])
+        return self.tracking_key
 
 
 class PollSection(models.Model):
@@ -989,6 +1022,48 @@ class PollResponse(models.Model):
     # Which questions the SERVER decided were on this person's path (Phase 2 branching).
     path_snapshot = models.JSONField(default=list, blank=True)
 
+    # ── VOTE TRACKING (inbox #453 / #457, owner 2 Nov 2026) ────────────────────────────────────────
+    # Written by afc_polls.views.submit_response through afc_polls.vote_tracking.capture, read by the
+    # awards Metrics tab (admin_edition_metrics, admin_poll_flags) and Garena's live link (live_view).
+    # Where the vote came FROM, at the moment it was cast. The raw IP address is NEVER stored: only
+    # the country code and region the local DB-IP file resolves it to (afc_polls.geo), and a keyed
+    # hash that can say "these ballots came over the same connection" and nothing else.
+    ip_country = models.CharField(max_length=2, blank=True, default="")
+    ip_region = models.CharField(max_length=100, blank=True, default="")
+    # HMAC(Poll.tracking_key, ip) and HMAC(Poll.tracking_key, device key). The device key is a random
+    # id the browser keeps for itself (frontend lib/voteDevice.ts); clearing site data resets it,
+    # so a shared device hash is a signal for review, never proof.
+    connection_hash = models.CharField(max_length=64, blank=True, default="", db_index=True)
+    device_hash = models.CharField(max_length=64, blank=True, default="", db_index=True)
+    # "phone", "tablet", "computer" or "" (no User-Agent), from afc_polls.vote_tracking.device_type.
+    device_type = models.CharField(max_length=10, blank=True, default="")
+    # Days between the account's creation and this vote. On an ANONYMOUS poll it is the lower
+    # bound of a bucket (0, 1, 3, 7, 30, 365), the same bucket-only rule as eligibility_snapshot.
+    account_age_days = models.IntegerField(null=True, blank=True)
+    # The nominee whose page this visit started on (the voter followed that nominee's link), sent
+    # by the KOL pages and checked against this poll's own options. Null when the visit started
+    # anywhere else.
+    referrer_option = models.ForeignKey(
+        "PollOption", on_delete=models.SET_NULL, null=True, blank=True, related_name="+",
+    )
+    # HMAC(Poll.tracking_key, user id): joins this ballot to its PollSheetOpen row (started vs
+    # finished, failed checks) without storing a user id on an anonymous poll.
+    voter_key = models.CharField(max_length=64, blank=True, default="", db_index=True)
+
+    # ── REVIEW (the safety flags) ─────────────────────────────────────────────────────────────────
+    # "" = never reviewed, "cleared" = an admin looked and it is fine, "removed" = taken out of every
+    # count. A removed ballot stays in the table (so the voter cannot simply vote again) and every
+    # review is also written to PollReviewLog, which is the record of why.
+    REVIEW_CLEARED = "cleared"
+    REVIEW_REMOVED = "removed"
+    REVIEW_CHOICES = [("", "Not reviewed"), (REVIEW_CLEARED, "Looks fine"), (REVIEW_REMOVED, "Removed from the count")]
+    review_state = models.CharField(max_length=10, choices=REVIEW_CHOICES, blank=True, default="")
+    review_reason = models.TextField(blank=True, default="")
+    reviewed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name="+",
+    )
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+
     class Meta:
         # MySQL treats NULLs as distinct in a unique index, so this constrains named respondents
         # (one sheet each) and simply does not apply on an anonymous poll, where every respondent
@@ -1017,7 +1092,11 @@ class PollAnswer(models.Model):
         PollOption, on_delete=models.CASCADE, null=True, blank=True, related_name="answers",
     )
     value = models.JSONField(default=dict, blank=True)
-    created_at = models.DateTimeField(auto_now_add=True)
+    # WHEN THIS PICK WAS MADE (votes per hour and per day, inbox #453). A plain default rather than
+    # auto_now_add so submit_response can carry an UNCHANGED pick's original time across a re-save,
+    # which deletes and re-creates the rows. Rounded down to the hour on an anonymous poll, like
+    # PollResponse.submitted_at, so it cannot be joined against the participation row.
+    created_at = models.DateTimeField(default=timezone.now, db_index=True)
 
     class Meta:
         unique_together = ("response", "question", "option")
@@ -1029,3 +1108,92 @@ class PollAnswer(models.Model):
 
     def __str__(self):
         return f"answer {self.answer_id} (response {self.response_id}, question {self.question_id})"
+
+
+# ── VOTE TRACKING TABLES (inbox #453 / #457, owner 2 Nov 2026) ─────────────────────────────────────
+# Three small tables beside the answer sheet. None of them stores a user id or an IP address, so an
+# anonymous poll stays as unlinkable as the PollResponse docstring promises. Written by
+# afc_polls.views (submit_response, sheet_opened, admin_review_response), read by the awards Metrics
+# tab (admin_edition_metrics, admin_poll_flags).
+
+
+class PollPickSwitch(models.Model):
+    """A voter changed their pick in one award: from `from_option` to `to_option`.
+
+    Written by submit_response when a re-save replaces a pick with a different one. It answers "how
+    often did people switch away from, or to, each nominee", which is the honest version of
+    "momentum". No voter identity on purpose: the count is what matters, and a row naming who
+    switched would turn an anonymous poll into a named one. `at` is rounded to the hour on an
+    anonymous poll, like PollResponse.submitted_at.
+    """
+
+    switch_id = models.AutoField(primary_key=True)
+    poll = models.ForeignKey(Poll, on_delete=models.CASCADE, related_name="pick_switches")
+    question = models.ForeignKey(PollQuestion, on_delete=models.CASCADE, related_name="pick_switches")
+    from_option = models.ForeignKey(
+        PollOption, on_delete=models.SET_NULL, null=True, blank=True, related_name="+",
+    )
+    to_option = models.ForeignKey(
+        PollOption, on_delete=models.SET_NULL, null=True, blank=True, related_name="+",
+    )
+    at = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        indexes = [models.Index(fields=["poll", "question"])]
+
+    def __str__(self):
+        return f"switch on {self.question_id}: {self.from_option_id} -> {self.to_option_id}"
+
+
+class PollSheetOpen(models.Model):
+    """A voter OPENED the vote sheet on this poll (a started ballot), once per voter per poll.
+
+    Started vs finished is this table's row count against the submitted PollResponse rows.
+    `failed_checks` counts the times this voter was refused at submit by the eligibility check (the
+    in-game UID requirement among them) plus the failed UID links the vote sheet reports itself
+    (frontend KolVoteSheet). A self-report can only ever add a flag to the reporter's own ballot, so
+    trusting it costs nothing. `voter_key` is HMAC(Poll.tracking_key, user id), the same value
+    stamped on PollResponse.voter_key, so the two join without a user id on either side.
+    """
+
+    open_id = models.AutoField(primary_key=True)
+    poll = models.ForeignKey(Poll, on_delete=models.CASCADE, related_name="sheet_opens")
+    voter_key = models.CharField(max_length=64)
+    opened_at = models.DateTimeField(default=timezone.now)
+    failed_checks = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        unique_together = ("poll", "voter_key")
+
+    def __str__(self):
+        return f"sheet opened on {self.poll_id}"
+
+
+class PollReviewLog(models.Model):
+    """Append-only record of every review of a flagged ballot: who decided, when, what, and why.
+
+    PollResponse.review_state holds the CURRENT decision; this table keeps every one, so a ballot
+    removed and later restored still shows both steps. A removal without a reason is refused by
+    admin_review_response before anything is written ("the reason for every removal is recorded",
+    deck Revision 9 slide 06).
+    """
+
+    ACTION_CLEAR = "clear"
+    ACTION_REMOVE = "remove"
+    ACTION_RESTORE = "restore"
+    ACTION_CHOICES = [(ACTION_CLEAR, "Looks fine"), (ACTION_REMOVE, "Removed"), (ACTION_RESTORE, "Restored")]
+
+    log_id = models.AutoField(primary_key=True)
+    response = models.ForeignKey(PollResponse, on_delete=models.CASCADE, related_name="review_log")
+    action = models.CharField(max_length=10, choices=ACTION_CHOICES)
+    reason = models.TextField(blank=True, default="")
+    reviewed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name="+",
+    )
+    at = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        ordering = ["-log_id"]
+
+    def __str__(self):
+        return f"{self.action} on response {self.response_id}"
