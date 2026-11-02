@@ -27,6 +27,10 @@ urlpatterns = [
          name="polls_admin_publish_winner"),                                                # POST
     path("admin/polls/<slug:slug>/announce/", views.admin_announce,
          name="polls_admin_announce"),                                                      # POST
+    path("admin/editions/<slug:slug>/metrics/", views.admin_edition_metrics,
+         name="polls_admin_edition_metrics"),                                        # GET
+    path("admin/legacy-ballot-metrics/", views.admin_legacy_ballot_metrics,
+         name="polls_admin_legacy_ballot_metrics"),                                  # GET
     path("admin/editions/", views.admin_editions, name="polls_admin_editions"),        # GET, POST
     path("admin/editions/<slug:slug>/", views.admin_edition_detail,
          name="polls_admin_edition_detail"),                                          # PATCH, DELETE
