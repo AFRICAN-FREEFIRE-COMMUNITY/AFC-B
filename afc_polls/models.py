@@ -62,10 +62,26 @@ import secrets
 
 from django.conf import settings
 from django.db import models
+from django.core.exceptions import ValidationError
+from django.core.validators import FileExtensionValidator
 from django.utils.text import slugify
 
 from afc_team.models import Team
 from afc_tournament_and_scrims.models import Event
+
+
+# A nominee film is about ten seconds, landscape 16:9. 25 MB is generous for that at 1080p and keeps a
+# wrong file (a whole stream recording) out of the media folder. The upload address
+# (views.admin_option_film) enforces the same cap with a coded refusal and reads the real type from the
+# file's bytes; these validators say the same thing for any other way a row gets written (the Django
+# admin, a shell) and are what the upload rule R70 expects to find on a FileField.
+FILM_MAX_BYTES = 25 * 1024 * 1024
+FILM_EXTENSIONS = ["mp4", "webm"]
+
+
+def validate_film_size(upload):
+    if upload.size > FILM_MAX_BYTES:
+        raise ValidationError("A nominee film must be 25 MB or smaller.")
 
 
 class AwardsEdition(models.Model):
@@ -610,7 +626,10 @@ class PollOption(models.Model):
     # rename (R70/R87) rather than a link to anywhere. Written ONLY by admin_option_film
     # (afc_polls/views.py), which stores it under an opaque name; read as `film_url` by every
     # serializer. Empty means "no film yet" and the nominee page says so in words.
-    film = models.FileField(upload_to="awards/films/", blank=True, default="")
+    film = models.FileField(
+        upload_to="awards/films/", blank=True, default="",
+        validators=[FileExtensionValidator(FILM_EXTENSIONS), validate_film_size],
+    )
 
     class Meta:
         ordering = ["order", "option_id"]

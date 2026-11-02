@@ -68,7 +68,7 @@ from .models import (
     PollQuestion,
     PollWatch,
 )
-from .models import PollResponse, option_slug
+from .models import FILM_MAX_BYTES, PollResponse, option_slug
 from .permissions import can_manage_poll, is_polls_admin
 from .team_voting import (
     recompute_team_result,
@@ -1253,9 +1253,7 @@ def admin_save_questions(request, slug):
     return Response({"message": "Questions saved"}, status=status.HTTP_200_OK)
 
 
-# A nominee film is about ten seconds, landscape 16:9. 25 MB is generous for that at 1080p and keeps
-# a wrong file (a whole stream recording) out of the media folder.
-FILM_MAX_BYTES = 25 * 1024 * 1024
+# The size cap (FILM_MAX_BYTES) lives with the field in models.py.
 # What a browser can play from a <video> tag. QuickTime and Matroska sniff as video elsewhere on the
 # site but do not play everywhere, so they are refused here with a code that says why.
 FILM_KINDS = {"video/mp4", "video/webm"}
