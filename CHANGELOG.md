@@ -20,7 +20,28 @@ number is blocked before the push.
 
 ## Unreleased
 
+### Added
+- Awards vote tracking (inbox #453): every vote now records the country and region it came from (looked up in a
+  local DB-IP City Lite file; the raw address is never stored), a keyed fingerprint of the connection and of the
+  browser, the device type, the voter's account age, which nominee's share link brought them, the time of each
+  pick and every switch between nominees, and whether a voter opened the vote sheet without finishing. The
+  edition metrics answer (`polls/admin/editions/<slug>/metrics/`) carries all of it per nominee.
+- Ballot review (inbox #453): flags for a profile country unlike the vote's country, three or more ballots from
+  one connection, two or more from one browser, an account under three days old, and failed checks;
+  `polls/admin/polls/<slug>/flags/` lists them and `polls/admin/polls/<slug>/responses/<id>/review/` clears,
+  removes (a reason is required) or restores a ballot. A removed ballot leaves every tally, and who decided,
+  when and why is kept.
+- Garena's private live link (inbox #457, "Private link, no sign-in"): `polls/admin/editions/<slug>/live-link/`
+  creates, replaces or turns off the link, and `polls/live/<token>/` answers votes per nominee with country and
+  region, no voter data, places with fewer than five votes folded into Other. A wrong or turned-off link answers
+  404 `live_view_not_found`.
+- `manage.py refresh_geoip_db` downloads the month's DB-IP file (CC BY 4.0); the deploy fetches it when it is
+  missing without failing, and a weekly task keeps it current. New dependency: maxminddb.
+
 ### Security
+- Award votes stay private while voting is open (inbox #454): an award poll shows no counts during voting even
+  when set to show results always, and the public poll list and poll page no longer tell anyone how many
+  ballots were cast unless that viewer may see the results.
 - security-rules.json: the game files upload (views_game_files.py) gets an R70 allow entry with its reason, like debugger_ingest.py: size capped, unpacked and validated by content in memory, never stored or served. The push hook had blocked on it.
 
 ## v7.10.0 - 2026-11-02
