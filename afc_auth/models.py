@@ -252,10 +252,20 @@ def profile_of(user):
     return user.userprofile_set.first() if user else None
 
 
-def esports_pic_url(user, request=None):
-    """Absolute URL of the user's esport image, or None."""
-    prof = profile_of(user)
-    pic = getattr(prof, "esports_pic", None) if prof else None
+def esports_pic_url(user, request=None, event=None):
+    """Absolute URL of the user's esport image, or None.
+
+    `event` (owner 2026-10-25, inbox #400): pass it from any surface that belongs to ONE event. If the
+    player REMOVED their image after joining that event, the event keeps the copy made at removal
+    (afc_tournament_and_scrims.event_player_image) and it is returned here; otherwise the profile's
+    live picture. Surfaces with no event (profile, team and player pages, polls, partner API) pass
+    nothing and so lose the image on removal."""
+    if event is not None:
+        from afc_tournament_and_scrims.event_player_image import pic_for_event
+        pic = pic_for_event(user, event)
+    else:
+        prof = profile_of(user)
+        pic = getattr(prof, "esports_pic", None) if prof else None
     if not pic:
         return None
     return request.build_absolute_uri(pic.url) if request is not None else pic.url

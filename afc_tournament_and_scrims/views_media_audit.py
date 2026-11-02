@@ -93,7 +93,7 @@ def _player_rows(event, request):
         seen.add(u.user_id)
         # esports_pic lives on UserProfile, not User (bug fix 2026-07-02).
         from afc_auth.models import esports_pic_url
-        img_url = esports_pic_url(u, request)
+        img_url = esports_pic_url(u, request, event=event)
         check = checks.get(u.user_id, "")
         rows.append({
             "user_id": u.user_id,
