@@ -222,6 +222,8 @@ def _serialize_question(question, locale, include_results=False, tally=None, hyd
             # The nominee's own uploaded film ("" when none), absolute so the browser can play it
             # from the API host. See PollOption.film and admin_option_film.
             "film_url": _film_url(option, request),
+            # The winner film (inbox #430); empty means the page falls back to `film_url`.
+            "winner_film_url": _film_url(option, request, "winner_film"),
             "linked_type": option.linked_type,
             "linked_id": option.linked_id,
             # The player or team behind the link, already resolved: {type, id, display_name,
@@ -247,11 +249,12 @@ def _serialize_question(question, locale, include_results=False, tally=None, hyd
     return data
 
 
-def _film_url(option, request=None):
-    """Absolute URL of an option's uploaded film, or "" when it has none."""
-    if not option.film:
+def _film_url(option, request=None, field="film"):
+    """Absolute URL of an option's uploaded film (field "film" or "winner_film"), or "" when none."""
+    f = getattr(option, field)
+    if not f:
         return ""
-    return request.build_absolute_uri(option.film.url) if request is not None else option.film.url
+    return request.build_absolute_uri(f.url) if request is not None else f.url
 
 
 def _results_visible(poll, user):
@@ -1260,7 +1263,7 @@ FILM_KINDS = {"video/mp4", "video/webm"}
 
 
 @api_view(["POST", "DELETE"])
-def admin_option_film(request, slug, option_id):
+def admin_option_film(request, slug, option_id, field="film"):
     """POST / DELETE polls/admin/polls/<slug>/options/<option_id>/film/ - set or remove a nominee's film.
 
     POST: multipart form, one file field `film` (MP4 or WebM, at most 25 MB). Answers
@@ -1277,6 +1280,9 @@ def admin_option_film(request, slug, option_id):
     have voted: a film is decoration on a nominee, it does not change what anyone was asked.
     Consumed by the film control in the admin poll builder (frontend app/(a)/a/polls/[slug]/page.tsx);
     read back as `film_url` on every question option and shown on the nominee page.
+
+    The same view serves .../winner-film/ (field="winner_film", read back as `winner_film_url`): the
+    film shown on the winner surfaces once winners are public. Same rules, same gate.
     """
     from afc_auth.upload_safety import opaque_name, sniff_upload
 
@@ -1293,12 +1299,15 @@ def admin_option_film(request, slug, option_id):
     if not option:
         return Response({"message": "Nominee not found", "code": "option_not_found"}, status=status.HTTP_404_NOT_FOUND)
 
+    url_key = "winner_film_url" if field == "winner_film" else "film_url"
+    current = getattr(option, field)
+
     if request.method == "DELETE":
-        if option.film:
-            option.film.delete(save=False)
-            option.film = ""
-            option.save(update_fields=["film"])
-        return Response({"film_url": ""}, status=status.HTTP_200_OK)
+        if current:
+            current.delete(save=False)
+            setattr(option, field, "")
+            option.save(update_fields=[field])
+        return Response({url_key: ""}, status=status.HTTP_200_OK)
 
     upload = request.FILES.get("film")
     if not upload:
@@ -1312,12 +1321,12 @@ def admin_option_film(request, slug, option_id):
                         status=status.HTTP_400_BAD_REQUEST)
 
     # Replace, never accumulate: the old file leaves the disk when the new one arrives.
-    if option.film:
-        option.film.delete(save=False)
+    if current:
+        current.delete(save=False)
     upload.name = opaque_name(ext)
-    option.film = upload
-    option.save(update_fields=["film"])
-    return Response({"film_url": _film_url(option, request)}, status=status.HTTP_200_OK)
+    setattr(option, field, upload)
+    option.save(update_fields=[field])
+    return Response({url_key: _film_url(option, request, field)}, status=status.HTTP_200_OK)
 
 
 def _save_branch_rules(poll, raw):

@@ -31,6 +31,8 @@ number is blocked before the push.
 - Voting one award at a time: `polls/<slug>/responses/` accepts `"merge": true`, which replaces only the
   awards named in the request and keeps the picks in the others. `polls/editions/<slug>/` now also answers
   `your_answers` (which nominee the signed-in caller picked in each award).
+- A second film per nominee, the winner film (`winner_film_url`, admin address
+  `polls/admin/polls/<slug>/options/<id>/winner-film/`), shown on the winner pages once winners are public.
 
 ## v7.5.0 - 2026-10-24
 

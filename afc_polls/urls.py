@@ -19,6 +19,8 @@ urlpatterns = [
          name="polls_admin_questions"),                                                      # PUT
     path("admin/polls/<slug:slug>/options/<int:option_id>/film/", views.admin_option_film,
          name="polls_admin_option_film"),                                              # POST, DELETE
+    path("admin/polls/<slug:slug>/options/<int:option_id>/winner-film/", views.admin_option_film,
+         {"field": "winner_film"}, name="polls_admin_option_winner_film"),             # POST, DELETE
     path("admin/polls/<slug:slug>/results/", views.admin_results,
          name="polls_admin_results"),                                                        # GET
     path("admin/polls/<slug:slug>/publish-winner/", views.admin_publish_winner,

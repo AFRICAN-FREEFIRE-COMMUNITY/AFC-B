@@ -630,6 +630,12 @@ class PollOption(models.Model):
         upload_to="awards/films/", blank=True, default="",
         validators=[FileExtensionValidator(FILM_EXTENSIONS), validate_film_size],
     )
+    # The WINNER film (inbox #430): a second film per nominee, shown on the winner surfaces once
+    # winners are public. Same rules as `film`; the frontend falls back to `film` when it is empty.
+    winner_film = models.FileField(
+        upload_to="awards/films/", blank=True, default="",
+        validators=[FileExtensionValidator(FILM_EXTENSIONS), validate_film_size],
+    )
 
     class Meta:
         ordering = ["order", "option_id"]

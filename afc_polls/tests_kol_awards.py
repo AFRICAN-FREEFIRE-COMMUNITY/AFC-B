@@ -253,3 +253,45 @@ class FilmUploadTests(TestCase):
         option = PollOption.objects.get(pk=self.option.pk)
         self.assertFalse(option.film)
         self.assertFalse(option.film.storage.exists(name))
+
+
+@override_settings(MEDIA_ROOT=FILM_ROOT)
+class WinnerFilmTests(TestCase):
+    """The winner film is a second, separate film per nominee (inbox #430)."""
+
+    def setUp(self):
+        self.edition, self.poll, self.q1, _ = kol_edition("kol-win")
+        self.option = self.q1.options.first()
+        self.admin = make_admin("winboss")
+        self.url = f"/polls/admin/polls/{self.poll.slug}/options/{self.option.option_id}/winner-film/"
+
+    def test_winner_film_is_stored_apart_from_the_nominee_film(self):
+        response = APIClient().post(self.url, {"film": SimpleUploadedFile("w.mp4", MP4_BYTES)}, format="multipart",
+                                    **token_for(self.admin))
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("winner_film_url", response.json())
+        self.option.refresh_from_db()
+        self.assertTrue(self.option.winner_film)
+        self.assertFalse(self.option.film)
+        shown = APIClient().get(f"/polls/editions/{self.edition.slug}/").json()["polls"][0]["questions"][0]["options"][0]
+        self.assertTrue(shown["winner_film_url"].endswith(self.option.winner_film.name))
+        self.assertEqual(shown["film_url"], "")
+
+    def test_html_refused_and_player_refused(self):
+        client = APIClient()
+        bad = client.post(self.url, {"film": SimpleUploadedFile("w.mp4", b"<html></html>")}, format="multipart",
+                          **token_for(self.admin))
+        self.assertEqual(bad.status_code, 400)
+        denied = client.post(self.url, {"film": SimpleUploadedFile("w.mp4", MP4_BYTES)}, format="multipart",
+                             **token_for(make_user("winfan")))
+        self.assertEqual(denied.status_code, 403)
+
+    def test_delete_removes_only_the_winner_film(self):
+        client = APIClient()
+        client.post(self.url, {"film": SimpleUploadedFile("w.mp4", MP4_BYTES)}, format="multipart", **token_for(self.admin))
+        client.post(self.url.replace("winner-film", "film"), {"film": SimpleUploadedFile("n.mp4", MP4_BYTES)},
+                    format="multipart", **token_for(self.admin))
+        client.delete(self.url, **token_for(self.admin))
+        self.option.refresh_from_db()
+        self.assertFalse(self.option.winner_film)
+        self.assertTrue(self.option.film)
