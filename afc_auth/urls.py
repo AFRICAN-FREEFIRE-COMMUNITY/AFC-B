@@ -273,9 +273,14 @@ urlpatterns = [
     # Flip ONE dashboard's one-time intro callout to seen ({"dashboard": "sponsor"|...}).
     # Bearer-auth POST. Consumed by app/(user)/_components/DashboardIntroCoachmark.tsx on dismiss.
     path('mark-dashboard-intro-seen/', mark_dashboard_intro_seen, name='mark_dashboard_intro_seen'),
-    # Upload/REPLACE the current user's esport image (multipart `esport_image`; replace-only, no
-    # delete). Consumed by the profile-edit "Esport Image" section.
+    # Upload/REPLACE the current user's esport image (multipart `esport_image`). Consumed by the
+    # profile-edit "Esport Image" section. It was replace-only by the owner's rule of 2026-06-12;
+    # REMOVAL below reverses that (owner 2026-10-25, inbox #400, in their words: "a user should be
+    # allowed to completely remove their esports image").
     path('upload-esport-image/', upload_esport_image, name='upload_esport_image'),
+    # REMOVE the caller's own esport image (POST, no body, no id). Events they are already in keep a
+    # copy. Consumed by the same profile-edit section (Remove button + confirm).
+    path('remove-esport-image/', remove_esport_image, name='remove_esport_image'),
     path('contact-us/', contact_us, name='contact_us'),
     path('create-news/', create_news, name='create_news'),
     path('edit-news/', edit_news, name='edit_news'),

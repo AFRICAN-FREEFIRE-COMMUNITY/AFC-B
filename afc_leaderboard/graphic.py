@@ -424,6 +424,8 @@ COLUMN_HEADER_LABELS = {
     "deaths": "DEATHS", "knockdowns": "KNOCKS", "headshots": "HEADSHOTS",
     "most_used_weapon": "WEAPON", "survival_time": "SURVIVAL",
     "revives_received": "REVIVES", "gloowall_used": "GLOO", "medkit_used": "MEDKITS",
+    # Kill-event columns (owner 2026-11-01, #421a).
+    "knocks_recorded": "KNOCKS", "sniper_kills": "SNIPER KILLS", "h2h_record": "H2H",
 }
 
 # A header is drawn ONE row-height above the group's first row, at 85% of the row font size, so it

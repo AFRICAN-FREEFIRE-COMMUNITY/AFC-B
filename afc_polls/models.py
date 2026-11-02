@@ -62,10 +62,26 @@ import secrets
 
 from django.conf import settings
 from django.db import models
+from django.core.exceptions import ValidationError
+from django.core.validators import FileExtensionValidator
 from django.utils.text import slugify
 
 from afc_team.models import Team
 from afc_tournament_and_scrims.models import Event
+
+
+# A nominee film is about ten seconds, landscape 16:9. 25 MB is generous for that at 1080p and keeps a
+# wrong file (a whole stream recording) out of the media folder. The upload address
+# (views.admin_option_film) enforces the same cap with a coded refusal and reads the real type from the
+# file's bytes; these validators say the same thing for any other way a row gets written (the Django
+# admin, a shell) and are what the upload rule R70 expects to find on a FileField.
+FILM_MAX_BYTES = 25 * 1024 * 1024
+FILM_EXTENSIONS = ["mp4", "webm"]
+
+
+def validate_film_size(upload):
+    if upload.size > FILM_MAX_BYTES:
+        raise ValidationError("A nominee film must be 25 MB or smaller.")
 
 
 class AwardsEdition(models.Model):
@@ -130,6 +146,18 @@ class AwardsEdition(models.Model):
     winners_announced_at = models.DateTimeField(null=True, blank=True)
 
     status = models.CharField(max_length=12, choices=STATUS_CHOICES, default=AUTO)
+    # HOW THE EDITION IS DRAWN on /awards/<slug> (inbox #419, 2 Nov 2026). "default" is the site's own
+    # awards surface (AwardsExperience). "detty-royale" is Garena's KOL Awards identity inside the
+    # Detty Royale Showdown event: landing, one page per award, one page per nominee, a vote sheet.
+    # Same edition, same polls, same votes: only the frontend component that renders it changes, so
+    # a themed edition is never a second awards system. Read by frontend app/(user)/awards/[edition].
+    THEME_DEFAULT = "default"
+    THEME_DETTY_ROYALE = "detty-royale"
+    THEME_CHOICES = [
+        (THEME_DEFAULT, "AFC awards"),
+        (THEME_DETTY_ROYALE, "Detty Royale KOL Awards"),
+    ]
+    theme = models.CharField(max_length=24, choices=THEME_CHOICES, default=THEME_DEFAULT)
     # Display order on /awards. Newest edition first by default, but an owner running two at once
     # needs to say which leads.
     order = models.IntegerField(default=0)
@@ -575,6 +603,11 @@ class PollOption(models.Model):
 
     option_id = models.AutoField(primary_key=True)
     question = models.ForeignKey(PollQuestion, on_delete=models.CASCADE, related_name="options")
+    # The nominee's address segment (R22: /awards/<edition>/<award>/<nominee>). Unique inside its
+    # question, filled from `label` on first save and then LEFT ALONE, because a published slug is a
+    # bookmark. Rows that predate the column carry "" until `backfill_option_slugs` runs; the
+    # serializer falls back to `option_slug()` for them so a link never breaks in between.
+    slug = models.SlugField(max_length=160, blank=True, default="", db_index=True)
     order = models.PositiveIntegerField(default=0)
     label = models.CharField(max_length=200)
     description = models.CharField(max_length=300, blank=True, default="")
@@ -588,12 +621,62 @@ class PollOption(models.Model):
     # Migration only: which afc_awards.Nominee this option came from, so a later phase can attach
     # the historical Vote rows to the right option. Null for anything created in the new engine.
     legacy_nominee_id = models.PositiveIntegerField(null=True, blank=True, db_index=True)
+    # The nominee's own film, uploaded by an admin (inbox #419/#424: landscape 16:9, about ten
+    # seconds). A FILE, not `video_url`, so a film is something AFC hosts and can sniff, cap and
+    # rename (R70/R87) rather than a link to anywhere. Written ONLY by admin_option_film
+    # (afc_polls/views.py), which stores it under an opaque name; read as `film_url` by every
+    # serializer. Empty means "no film yet" and the nominee page says so in words.
+    film = models.FileField(
+        upload_to="awards/films/", blank=True, default="",
+        validators=[FileExtensionValidator(FILM_EXTENSIONS), validate_film_size],
+    )
+    # The WINNER film (inbox #430): a second film per nominee, shown on the winner surfaces once
+    # winners are public. Same rules as `film`; the frontend falls back to `film` when it is empty.
+    winner_film = models.FileField(
+        upload_to="awards/films/", blank=True, default="",
+        validators=[FileExtensionValidator(FILM_EXTENSIONS), validate_film_size],
+    )
 
     class Meta:
         ordering = ["order", "option_id"]
 
     def __str__(self):
         return f"{self.question_id}: {self.label}"
+
+    def save(self, *args, **kwargs):
+        # Nothing is written slugless. One SELECT on an admin write, never on a read.
+        if not self.slug:
+            self.ensure_slug()
+        super().save(*args, **kwargs)
+
+    def ensure_slug(self, taken=None):
+        """Fill `slug` from `label`, avoiding collisions inside this question. Existing slugs are
+        left alone (a published slug is a bookmark); `taken` is the set already handed out in the
+        same save pass, as PollQuestion.ensure_slug does."""
+        if self.slug:
+            return self.slug
+        base = slugify(self.label)[:150] or f"nominee-{self.order + 1}"
+        used = set(taken or ())
+        if self.question_id:
+            used |= set(
+                PollOption.objects.filter(question_id=self.question_id)
+                .exclude(pk=self.pk)
+                .values_list("slug", flat=True)
+            )
+        slug, counter = base, 2
+        while slug in used:
+            slug = f"{base}-{counter}"
+            counter += 1
+        self.slug = slug
+        return slug
+
+
+def option_slug(option):
+    """The slug to SHOW for an option: the stored one, or for a row the backfill has not reached
+    yet, a deterministic fallback from the label. Used by the serializers and the lookups so that
+    both sides agree about a legacy row. Collisions inside one question are not resolved here (that
+    is what the stored slug is for), the fallback is only a bridge."""
+    return option.slug or slugify(option.label)[:150] or f"nominee-{option.option_id}"
 
 
 class PollBranchRule(models.Model):

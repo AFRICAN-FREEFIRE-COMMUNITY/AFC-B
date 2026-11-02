@@ -187,7 +187,7 @@ def _walk_player_stats(event, group_ids, request):
                 # is select_related above so this adds no query.
                 "team_country": (team.country or None) if team else None,
                 # esports_pic lives on UserProfile, not User (bug fix 2026-07-02).
-                "esports_image": esports_pic_url(p, request),
+                "esports_image": esports_pic_url(p, request, event=event),
                 "kills": 0, "damage": 0, "assists": 0, "matches": 0, "mvp_count": 0,
                 "deaths": 0, "survival_time": 0, "headshots": 0,
             }

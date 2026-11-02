@@ -18,7 +18,31 @@ At release time `node ~/.claude/skills/versioning/scripts/release.mjs next` prin
 rename `## Unreleased` to it, merge, then tag the merge commit. A version tag pushed with the wrong
 number is blocked before the push.
 
-## Unreleased
+## v7.8.0 - 2026-11-02
+
+### Added
+- Awards editions can be drawn as the Detty Royale KOL Awards: a new `theme` on an edition (set in the
+  admin editions form) switches `/awards/<edition>` to the themed pages. Same edition, same polls and same
+  votes, only the drawing changes.
+- Nominees have an address of their own (`slug` on every poll option, unique inside its award) and an
+  uploaded film (`film_url`, set by an admin: MP4 or WebM, 25 MB at most, type read from the file's bytes,
+  stored under an opaque name). New admin address `polls/admin/polls/<slug>/options/<id>/film/` (POST,
+  DELETE). `python manage.py backfill_option_slugs` fills the slug of nominees created before this release.
+- Voting one award at a time: `polls/<slug>/responses/` accepts `"merge": true`, which replaces only the
+  awards named in the request and keeps the picks in the others. `polls/editions/<slug>/` now also answers
+  `your_answers` (which nominee the signed-in caller picked in each award).
+- A second film per nominee, the winner film (`winner_film_url`, admin address
+  `polls/admin/polls/<slug>/options/<id>/winner-film/`), shown on the winner pages once winners are public.
+
+## v7.7.0 - 2026-11-02
+
+### Changed
+- A player can now remove their esport image completely (owner, 25 Oct: "a user should be allowed to completely remove their esports image"). New `POST /auth/remove-esport-image/` (signed in, no body, no id): it deletes the caller's stored file and clears the image and its picture-check verdict; a repeat answers `esport_image_already_empty`. This reverses the replace-only rule of 12 Jun. Events the player is already in KEEP the image (one copy, kept per event, read first by the overlays, MVP, media audit, broadcast kit and media ZIP) and the player stays registered; the profile, team page, player page, polls and the partner API lose it. A new registration for an event that requires an esport image is refused with `registration_requirements_unmet` until a new image is uploaded, and uploading a new image replaces it everywhere at once, event copies included.
+
+## v7.6.0 - 2026-11-02
+
+### Added
+- Leaderboard design columns Knocks recorded, Sniper kills recorded and Head to head record (field types `knocks_recorded`, `sniper_kills`, `h2h_record`). They are read from the stored kill events of the maps in scope, on the overlay feed rows and on the event stage graphic export, and show "-" where nothing was recorded.
 
 ### Added
 - Game files (owner, 24 Oct: "upload both debugger ... and match result files simultaneously at once"):
