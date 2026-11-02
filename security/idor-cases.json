@@ -16,67 +16,11 @@
     }
   },
   "cases": [
-    {
-      "name": "B may ask an organizer a question, and only ever files B's own ticket (support/organizations/<slug>/ask/, inbox #175). Open to any signed-in player by design; the probe sends no message, so it is refused with question_empty and creates nothing",
-      "route": "support/organizations/<slug:slug>/ask/",
-      "attempt": {
-        "as": "b",
-        "method": "POST",
-        "path": "/support/organizations/afc/ask/",
-        "expect": [
-          400,
-          404
-        ]
-      },
-      "r88": {
-        "skip": [
-          "existence",
-          "neighbours"
-        ],
-        "reason": "the organization slug is public and asking is open to every signed-in player; the handler writes only the caller's own ticket"
-      }
-    },
-    {
-      "name": "B cannot list the events a partner reaches (partners/admin/<slug>/events/, inbox #201). Partner admins only; an ordinary player is refused before the partner is looked up, so a real and a made-up slug answer alike",
-      "route": "partners/admin/<slug:slug>/events/",
-      "attempt": {
-        "as": "b",
-        "method": "GET",
-        "path": "/partners/admin/v-ent/events/",
-        "expect": [
-          401,
-          403,
-          404
-        ]
-      },
-      "r88": {
-        "skip": [
-          "neighbours"
-        ],
-        "reason": "addressed by a partner slug, which has no numeric neighbour"
-      }
-    },
-    {
-      "name": "B cannot publish a partner's finished events (partners/admin/<slug>/publish-finished/, inbox #201). Partner admins only; the gate runs before the partner is looked up and before anything is written",
-      "route": "partners/admin/<slug:slug>/publish-finished/",
-      "attempt": {
-        "as": "b",
-        "method": "POST",
-        "path": "/partners/admin/v-ent/publish-finished/",
-        "expect": [
-          401,
-          403,
-          404,
-          405
-        ]
-      },
-      "r88": {
-        "skip": [
-          "neighbours"
-        ],
-        "reason": "addressed by a partner slug, which has no numeric neighbour"
-      }
-    },
+    {"name": "B cannot read the detailed metrics of an awards season (polls/admin/editions/<slug>/metrics/, inbox #432). AFC poll admins only, open or past season alike; an ordinary player is refused before the slug is looked up", "route": "polls/admin/editions/<slug:slug>/metrics/", "attempt": {"as": "b", "method": "GET", "path": "/polls/admin/editions/best-moment-of-the-season/metrics/", "expect": [401, 403]}, "r88": {"skip": ["existence", "neighbours"], "reason": "the admin gate answers 403 before the edition is looked up, so a real and a missing slug answer the same"}},
+    {"name": "B cannot read the original awards ballot (polls/admin/legacy-ballot-metrics/, inbox #432). AFC poll admins only; takes no id", "route": "polls/admin/legacy-ballot-metrics/", "attempt": {"as": "b", "method": "GET", "path": "/polls/admin/legacy-ballot-metrics/", "expect": [401, 403]}, "r88": {"skip": ["existence", "neighbours"], "reason": "the address takes no id"}},
+    {"name": "B may ask an organizer a question, and only ever files B's own ticket (support/organizations/<slug>/ask/, inbox #175). Open to any signed-in player by design; the probe sends no message, so it is refused with question_empty and creates nothing", "route": "support/organizations/<slug:slug>/ask/", "attempt": {"as": "b", "method": "POST", "path": "/support/organizations/afc/ask/", "expect": [400, 404]}, "r88": {"skip": ["existence", "neighbours"], "reason": "the organization slug is public and asking is open to every signed-in player; the handler writes only the caller's own ticket"}},
+    {"name": "B cannot list the events a partner reaches (partners/admin/<slug>/events/, inbox #201). Partner admins only; an ordinary player is refused before the partner is looked up, so a real and a made-up slug answer alike", "route": "partners/admin/<slug:slug>/events/", "attempt": {"as": "b", "method": "GET", "path": "/partners/admin/v-ent/events/", "expect": [401, 403, 404]}, "r88": {"skip": ["neighbours"], "reason": "addressed by a partner slug, which has no numeric neighbour"}},
+    {"name": "B cannot publish a partner's finished events (partners/admin/<slug>/publish-finished/, inbox #201). Partner admins only; the gate runs before the partner is looked up and before anything is written", "route": "partners/admin/<slug:slug>/publish-finished/", "attempt": {"as": "b", "method": "POST", "path": "/partners/admin/v-ent/publish-finished/", "expect": [401, 403, 404, 405]}, "r88": {"skip": ["neighbours"], "reason": "addressed by a partner slug, which has no numeric neighbour"}},
     {
       "name": "B cannot read the Discord reminder settings of an event whose organization B is not part of (events/<id>/discord-reminders/, reopen_event's gate)",
       "attempt": {
@@ -4307,6 +4251,10 @@
           405
         ]
       }
-    }
+    },
+    {"name": "B cannot use the Game files box of an event B does not organize (events/<event_id>/game-files/read/, inbox #396). Staff and the event's organizers only (_broadcast_gate)", "route": "events/<int:event_id>/game-files/read/", "attempt": {"as": "b", "method": "POST", "path": "/events/2/game-files/read/", "expect": [401, 403, 404]}},
+    {"name": "B cannot use the Game files box of an event B does not organize (events/<event_id>/game-files/games/, inbox #396). Staff and the event's organizers only (_broadcast_gate)", "route": "events/<int:event_id>/game-files/games/", "attempt": {"as": "b", "method": "POST", "path": "/events/2/game-files/games/", "expect": [401, 403, 404], "body": {"file_ids": []}}},
+    {"name": "B cannot use the Game files box of an event B does not organize (events/<event_id>/game-files/result-text/, inbox #396). Staff and the event's organizers only (_broadcast_gate)", "route": "events/<int:event_id>/game-files/result-text/", "attempt": {"as": "b", "method": "POST", "path": "/events/2/game-files/result-text/", "expect": [401, 403, 404], "body": {"file_ids": [], "key": "x"}}},
+    {"name": "B cannot use the Game files box of an event B does not organize (events/<event_id>/game-files/debugger/, inbox #396). Staff and the event's organizers only (_broadcast_gate)", "route": "events/<int:event_id>/game-files/debugger/", "attempt": {"as": "b", "method": "POST", "path": "/events/2/game-files/debugger/", "expect": [401, 403, 404], "body": {"file_ids": [], "key": "x", "match_id": 1}}}
   ]
 }
