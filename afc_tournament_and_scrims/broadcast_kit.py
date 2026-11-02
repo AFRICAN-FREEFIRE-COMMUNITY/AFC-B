@@ -27,6 +27,8 @@ import zipfile
 
 from PIL import Image
 
+from .event_player_image import pic_for_event
+
 # Letter -> HeadPicID (owner 2026-07-03). A..Z = 902000034..902000059.
 LETTER_TO_HEADPIC_ID = {chr(ord("A") + i): str(902000034 + i) for i in range(26)}
 
@@ -101,8 +103,8 @@ def build_kit_summary(event, stage=None):
             players += 1
             if getattr(m.user, "uid", None):
                 with_uid += 1
-            prof = profile_of(m.user)
-            if prof and getattr(prof, "esports_pic", None):
+            # The kept copy counts too (owner 2026-10-25, #400): a removal leaves the event its image.
+            if pic_for_event(m.user, event):
                 with_img += 1
         letter = (tt.assigned_letter or "").upper()
         rows.append({
@@ -170,8 +172,7 @@ def build_broadcast_kit(event, stage=None, caster_name="", caster_uid=None,
                     "PlayerNation": team_name,
                     "Color": color,
                 })
-                prof = profile_of(u)
-                pic = getattr(prof, "esports_pic", None) if prof else None
+                pic = pic_for_event(u, event)
                 if pic:
                     avatar = _fit_png(pic, HEADPIC_SIZE)
                     if avatar:

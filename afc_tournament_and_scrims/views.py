@@ -26,10 +26,11 @@ from afc_tournament_and_scrims import scoring as scoring_lib
 # The ONE place a team's per-map result becomes stats rows, shared with the team
 # submission approval endpoint so both produce identical rows. See result_writes.py.
 from afc_tournament_and_scrims import result_writes
-from afc_tournament_and_scrims import capture_rich_stats
+from afc_tournament_and_scrims import capture_rich_stats, kill_stats_fields
 # Open-roster events (owner 2026-09-11): the save-time side effect and the one-team-per-player
 # check every roster door shares. See afc_tournament_and_scrims/open_roster.py.
 from afc_tournament_and_scrims import open_roster
+from afc_tournament_and_scrims.event_player_image import pic_for_event
 # Role history (owner 2026-08-04): resolves the in-game role FROZEN on a player's event roster row so
 # every result path can stamp TournamentPlayerMatchStats.role_at_match. That stamp is what lets the
 # per-role ladders (afc_rankings/player_roles.py) report the role a player held WHEN the points were
@@ -20621,6 +20622,9 @@ def _overlay_rows_from_standings(standings, max_rows, request, stats_filter=None
     identical row shapes."""
     standings = standings[: max(1, max_rows)]
     rich_by_tt = _overlay_rich_team_sums(stats_filter) if stats_filter else {}
+    # Kill-event columns (knocks_recorded / sniper_kills / h2h_record, owner 2026-11-01 #421a): read
+    # from the stored kill events of the SAME maps; empty ("-") where none were recorded.
+    kill_by_tt = _overlay_kill_fields(standings, stats_filter)
 
     # Team logos in bulk -> absolute URLs (tournament_team_id -> URL). Mirrors event_stage_graphic's
     # logo_by_tt, but returns .url (build_absolute_uri) instead of .path for the browser overlay.
@@ -20698,7 +20702,24 @@ def _overlay_rows_from_standings(standings, max_rows, request, stats_filter=None
             "grenades_used": rich.get("grenades_used", 0),
             "grenade_kills": rich.get("grenade_kills", 0),
         })
+        kill_stats_fields.fill_row(rows[-1], kill_by_tt, tt_id)
     return rows
+
+
+def _overlay_kill_fields(standings, stats_filter):
+    """The kill-event design columns for the teams in `standings`, over the maps `stats_filter` names
+    (a TournamentPlayerMatchStats filter, so its keys start with ``team_stats__match__``). {} when no
+    scope was given, which leaves every cell empty. See kill_stats_fields.py."""
+    if not stats_filter or not standings:
+        return {}
+    prefix = "team_stats__match__"
+    match_filter = {k[len(prefix):]: v for k, v in stats_filter.items() if k.startswith(prefix)}
+    # Strip the event hop the cumulative path adds; team_kill_fields scopes to the event itself.
+    match_filter.pop("group__stage__event", None)
+    tt = TournamentTeam.objects.filter(tournament_team_id=standings[0]["tournament_team_id"]).first()
+    if tt is None:
+        return {}
+    return kill_stats_fields.team_kill_fields(tt.event, match_filter)
 
 
 def _overlay_seed_and_carry(standings, event, stage, group):
@@ -27634,9 +27655,12 @@ def download_esport_media(request):
         }
         for u in User.objects.filter(user_id__in=player_ids):
             profile = profiles.get(u.user_id)
-            if profile and profile.esports_pic:
+            # Event copy first (owner 2026-10-25, #400): a player who removed their image keeps it in
+            # the events they were in. No event_id (admin page by ids) reads the profile only.
+            pic_file = pic_for_event(u, event if event_id else None, profile)
+            if pic_file:
                 try:
-                    raw_pic = profile.esports_pic.read()
+                    raw_pic = pic_file.read()
                     data, new_ext = _resize(raw_pic, esport_target, keep_alpha=False)
                     # Same rule as the team logos above (R87).
                     new_ext = new_ext or _real_ext(raw_pic)
@@ -27759,9 +27783,12 @@ def download_single_media(request):
             return Response({"message": "That player is not in this event.", "code": "player_not_event"}, status=403)
         default_name = u.username or f"player-{u.user_id}"
         prof = UserProfile.objects.filter(user_id=u.user_id).first()
-        if prof and prof.esports_pic:
+        # Event copy first (owner 2026-10-25, #400); scoped_event is the organizer's event.
+        copy_event = scoped_event or Event.objects.filter(event_id=request.data.get("event_id")).first()
+        pic_file = pic_for_event(u, copy_event, prof)
+        if pic_file:
             try:
-                raw = prof.esports_pic.read()
+                raw = pic_file.read()
             except Exception:
                 raw = None
     else:

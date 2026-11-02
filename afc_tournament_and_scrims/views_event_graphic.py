@@ -41,7 +41,7 @@ from afc_leaderboard.graphic import render_leaderboard_graphic, render_design_al
 from afc_tournament_and_scrims.models import (
     Event, Stages, StageGroups, StageGroupCompetitor, TournamentTeam,
     TournamentTeamMatchStats, SoloPlayerMatchStats)
-from afc_tournament_and_scrims import round_robin
+from afc_tournament_and_scrims import kill_stats_fields, round_robin
 from afc_tournament_and_scrims.event_links import _is_event_admin
 
 
@@ -342,6 +342,14 @@ def event_stage_graphic(request, event_id, stage_id):
     # Per-row dicts keyed by field_type (the field-layout path reads these); also a legacy-shaped
     # list so a design with NO placed fields still renders via the built-in auto-table.
     rows, legacy = [], []
+    # Kill-event columns (knocks_recorded / sniper_kills / h2h_record, owner 2026-11-01 #421a) over the
+    # same maps as the standings: the combined groups, the chosen group, else the whole stage. SOLO has
+    # no tournament team, so its cells stay empty.
+    kill_by_tt = {}
+    if not is_solo_combined:
+        scope = ({"group_id__in": combine_group_ids} if is_combined
+                 else {"group": group} if group else {"group__stage": stage})
+        kill_by_tt = kill_stats_fields.team_kill_fields(event, scope)
     for i, r in enumerate(standings):
         # SOLO combined: identity is competitor_id + username; map the username onto the design's
         # team_name column (mirrors the overlay solo feed), no team logo/flag. TEAM: tournament_team.
@@ -366,6 +374,7 @@ def event_stage_graphic(request, event_id, stage_id):
             "bonus": r.get("bonus_sum", 0),
             "penalty": r.get("penalty_sum", 0),
         })
+        kill_stats_fields.fill_row(rows[-1], kill_by_tt, tt_id)
         legacy.append({
             "rank": i + 1,
             "participant": {"name": name},

@@ -1,6 +1,6 @@
 """
 Tests for the ESPORT MEDIA feature set (owner 2026-06-12):
-  - POST /auth/upload-esport-image/  : replace-only upload of UserProfile.esports_pic.
+  - POST /auth/upload-esport-image/  : upload or replace of UserProfile.esports_pic (removal: test_esport_image_remove).
   - POST /events/download-esport-media/ : ZIP export of team logos + player esport images
     (sets, or event-scoped), admins + organizers only.
   - register_for_event media criteria: require_team_logo / require_esport_images block
@@ -56,7 +56,7 @@ def _event(creator, **overrides):
 
 
 class UploadEsportImageTests(TestCase):
-    """POST /auth/upload-esport-image/ : auth gate, file required, replace-only."""
+    """POST /auth/upload-esport-image/ : auth gate, file required, replace."""
 
     def setUp(self):
         self.user, self.token = _user("imguser")
@@ -87,7 +87,7 @@ class UploadEsportImageTests(TestCase):
         self.assertTrue(resp.json()["esport_image_url"])
         first = UserProfile.objects.get(user=self.user).esports_pic.name
 
-        # Replace-only: a second upload swaps the image (no delete path exists at all).
+        # A second upload swaps the image (removal is its own endpoint, see test_esport_image_remove).
         resp2 = self._post(file=_png("second.png"))
         self.assertEqual(resp2.status_code, 200)
         second = UserProfile.objects.get(user=self.user).esports_pic.name

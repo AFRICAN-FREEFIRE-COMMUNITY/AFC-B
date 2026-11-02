@@ -4257,6 +4257,7 @@ def mark_dashboard_intro_seen(request):
 def upload_esport_image(request):
     """
     Upload (or REPLACE) the current user's ESPORT IMAGE - UserProfile.esports_pic.
+    (Removal is remove_esport_image, below.)
 
     PURPOSE
         The esport image is a SEPARATE asset from the profile picture (owner 2026-06-12):
@@ -4265,8 +4266,12 @@ def upload_esport_image(request):
         UserProfile since 0001 but had no upload path; this is it.
 
     RULES (owner)
-        - Replace-only: an esport image can NEVER be removed, only replaced - this endpoint
-          requires a file and no delete path exists.
+        - REMOVABLE since 2026-10-25 (owner, inbox #400: "a user should be allowed to completely
+          remove their esports image"). This REVERSES the owner's rule of 2026-06-12 (AFC-B
+          91b5bc2b) that an esport image could never be removed, only replaced. Removal is the
+          separate remove_esport_image endpoint; this one still requires a file.
+        - A REPLACEMENT shows everywhere at once, every event included (owner 2026-10-25), so it also
+          drops any per-event copies an earlier removal left (event_player_image.drop_copies).
         - The player must upload THEIR OWN picture, looking like an esport image (bust shot,
           no branded shirts). The frontend shows the ban warning; uploading someone else's
           picture or a non-esport picture can get the player AND their team banned.
@@ -4355,12 +4360,15 @@ def upload_esport_image(request):
     # SAME lowest-profile_id row profile_of()/readers return - a write/read row mismatch
     # made uploads look like they silently failed (2026-07-06).
     profile = canonical_profile(user, create=True)
-    profile.esports_pic = esport_image  # replace-only: the old file reference is overwritten
+    profile.esports_pic = esport_image  # the old file reference is overwritten
     # A REPLACEMENT is a new picture, so the verdict is the new picture's - including when an admin
     # had cleared the old one. Written in the same column-scoped save (see edit_profile note).
     profile.esports_pic_check = check["verdict"]
     profile.esports_pic_checked_at = timezone.now()
     profile.save(update_fields=["esports_pic", "esports_pic_check", "esports_pic_checked_at"])
+    # The new picture supersedes whatever an earlier removal kept for this player's events.
+    from afc_tournament_and_scrims.event_player_image import drop_copies
+    drop_copies(user)
 
     body = {
         "status": "ok",
@@ -4378,6 +4386,67 @@ def upload_esport_image(request):
             "any image that is not your own face can get you and your team banned."
         )
     return Response(body, status=status.HTTP_200_OK)
+
+
+@api_view(["POST"])
+def remove_esport_image(request):
+    """
+    REMOVE the current user's ESPORT IMAGE completely (owner 2026-10-25, inbox #400).
+
+    PURPOSE
+        Reverses the replace-only rule of 2026-06-12. The caller's stored file is deleted and
+        UserProfile.esports_pic, esports_pic_check and esports_pic_checked_at are cleared.
+
+    RULES (owner answers of 2026-10-25)
+        - Events the player is ALREADY IN keep the image: before the file goes it is copied once and
+          one EventPlayerImage row is written per event (solo registration or event roster seat).
+          Overlays, MVP, media audit, the broadcast kit and the media ZIP read that copy first.
+        - Players already registered STAY registered.
+        - NEW registrations for an event with require_esport_images are refused until a new image is
+          uploaded: _missing_registration_assets reads the profile, which is now empty, so
+          register_for_event answers 403 registration_requirements_unmet listing "esports_image".
+        - Profile, team page, player page, polls and the partner API read the profile, so they lose it.
+
+    AUTH     : Bearer SessionToken (validate_token). Takes NO id: it only ever touches the caller's own
+               profile (R58), so there is nothing to guess (R88).
+    REQUEST  : POST /auth/remove-esport-image/  (no body)
+    RESPONSE : 200 {"status": "ok", "code": "esport_image_removed", "removed": true, "events_kept": n}
+                   or removed false, code "esport_image_already_empty" when there was nothing to remove
+                   (idempotent, so a retry is safe)
+               401 missing / malformed / invalid session (coded)
+
+    FRONTEND CONSUMER
+        app/(user)/profile/edit/page.tsx "Esport Image" section: Remove button with a confirm step.
+    """
+    session_token = request.headers.get("Authorization")
+    if not session_token:
+        return Response({'status': 'error', 'message': 'Please sign in to continue.', "code": "authorization_header_required"},
+                        status=status.HTTP_401_UNAUTHORIZED)
+    if not session_token.startswith("Bearer "):
+        return Response({'status': 'error', 'message': 'Please sign in to continue.', "code": "invalid_token_format"},
+                        status=status.HTTP_401_UNAUTHORIZED)
+    user = validate_token(session_token.split(" ")[1])
+    if not user:
+        return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"},
+                        status=status.HTTP_401_UNAUTHORIZED)
+
+    # canonical_profile: the SAME lowest-id row every reader and upload_esport_image use.
+    profile = canonical_profile(user)
+    if not profile or not profile.esports_pic:
+        return Response({"status": "ok", "code": "esport_image_already_empty", "removed": False, "events_kept": 0},
+                        status=status.HTTP_200_OK)
+
+    from afc_tournament_and_scrims.event_player_image import snapshot_for_events
+    pic = profile.esports_pic
+    # Copy FIRST, delete SECOND: if the copy fails nothing has been lost and the caller can retry.
+    events_kept = snapshot_for_events(user, pic)
+    pic.delete(save=False)  # removes the stored file from storage
+    profile.esports_pic = None
+    profile.esports_pic_check = ""
+    profile.esports_pic_checked_at = None
+    profile.save(update_fields=["esports_pic", "esports_pic_check", "esports_pic_checked_at"])
+    return Response({"status": "ok", "code": "esport_image_removed", "removed": True, "events_kept": events_kept},
+                    status=status.HTTP_200_OK)
 
 
 @api_view(["POST"])
