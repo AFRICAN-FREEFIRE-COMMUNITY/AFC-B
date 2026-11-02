@@ -1893,12 +1893,17 @@ def admin_editions(request):
     return Response({"slug": edition.slug}, status=status.HTTP_201_CREATED)
 
 
+# Edition slugs the website already uses as a page of its own under /awards/: "live" is Garena's
+# private page (/awards/live/<token>, inbox #457), and Next.js would serve it instead of the edition.
+_RESERVED_EDITION_SLUGS = {"live"}
+
+
 def _unique_edition_slug(source):
     """Suffix rather than overwrite, for the same reason poll slugs do: a collision is two
-    different seasons, not the same one twice."""
+    different seasons, not the same one twice. A reserved slug is suffixed the same way."""
     base = slugify(source)[:120] or "awards"
     slug, counter = base, 2
-    while AwardsEdition.objects.filter(slug=slug).exists():
+    while slug in _RESERVED_EDITION_SLUGS or AwardsEdition.objects.filter(slug=slug).exists():
         slug = f"{base}-{counter}"
         counter += 1
     return slug

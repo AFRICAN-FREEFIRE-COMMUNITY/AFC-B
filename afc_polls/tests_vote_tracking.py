@@ -404,3 +404,12 @@ class GeoAndDeviceTests(TestCase):
         }
         for ua, expected in cases.items():
             self.assertEqual(vote_tracking.device_type(ua), expected, ua)
+
+
+class ReservedEditionSlugTests(TestCase):
+    def test_an_edition_named_live_never_takes_the_live_page_address(self):
+        admin = make_user("slug_admin", role="admin")
+        response = self.client.post("/polls/admin/editions/", {"title": "Live"}, content_type="application/json",
+                                    **token_for(admin))
+        self.assertIn(response.status_code, (200, 201))
+        self.assertEqual(response.json()["slug"], "live-2")
