@@ -476,6 +476,11 @@ class OrgLeaderboardDesignField(models.Model):
         # no longer live-only: the official feed sums them per team from the stored rows too.
         ("knocked", "Times knocked"), ("grenades_used", "Grenades thrown"),
         ("grenade_kills", "Grenade kills"),
+        # Kill-event columns (owner 2026-11-01, inbox #399 / #421a): read from the stored kill events
+        # of each map (afc_tournament_and_scrims.kill_stats_fields), so they work without AFC Capture
+        # when a debugger file was uploaded. "-" where nothing was recorded, never a 0.
+        ("knocks_recorded", "Knocks recorded"), ("sniper_kills", "Sniper kills recorded"),
+        ("h2h_record", "Head to head record"),
     ]
     ALIGN_CHOICES = [("left", "Left"), ("center", "Center"), ("right", "Right")]
 

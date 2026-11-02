@@ -68,7 +68,7 @@ from .models import (
     PollQuestion,
     PollWatch,
 )
-from .models import PollResponse
+from .models import FILM_MAX_BYTES, PollResponse, option_slug
 from .permissions import can_manage_poll, is_polls_admin
 from .team_voting import (
     recompute_team_result,
@@ -177,7 +177,7 @@ def _serialize_poll_card(poll, locale):
     return card
 
 
-def _serialize_question(question, locale, include_results=False, tally=None, hydrated=None):
+def _serialize_question(question, locale, include_results=False, tally=None, hydrated=None, request=None):
     """One question and its options.
 
     `tally` is {option_id: count} when results are being shown. It is passed IN rather than
@@ -215,8 +215,15 @@ def _serialize_question(question, locale, include_results=False, tally=None, hyd
             "order": option.order,
             # NOT localize_field. A name is not a sentence. See the docstring.
             "label": option.label,
+            # The nominee's address segment (/awards/<edition>/<award>/<nominee>), R22.
+            "slug": option_slug(option),
             "image_url": option.image_url,
             "video_url": option.video_url,
+            # The nominee's own uploaded film ("" when none), absolute so the browser can play it
+            # from the API host. See PollOption.film and admin_option_film.
+            "film_url": _film_url(option, request),
+            # The winner film (inbox #430); empty means the page falls back to `film_url`.
+            "winner_film_url": _film_url(option, request, "winner_film"),
             "linked_type": option.linked_type,
             "linked_id": option.linked_id,
             # The player or team behind the link, already resolved: {type, id, display_name,
@@ -240,6 +247,14 @@ def _serialize_question(question, locale, include_results=False, tally=None, hyd
         total = sum((tally or {}).values())
         data["response_count"] = total
     return data
+
+
+def _film_url(option, request=None, field="film"):
+    """Absolute URL of an option's uploaded film (field "film" or "winner_film"), or "" when none."""
+    f = getattr(option, field)
+    if not f:
+        return ""
+    return request.build_absolute_uri(f.url) if request is not None else f.url
 
 
 def _results_visible(poll, user):
@@ -415,7 +430,7 @@ def poll_detail(request, slug):
     })
 
     serialized = [
-        _serialize_question(question, locale, include_results=show_results, tally=tally,
+        _serialize_question(question, locale, request=request, include_results=show_results, tally=tally,
                             hydrated=hydrated)
         for question in questions
     ]
@@ -618,6 +633,11 @@ def submit_response(request, slug):
     if not cleaned:
         return Response({"message": "No answers were sent", "code": "no_answers_sent"}, status=status.HTTP_400_BAD_REQUEST)
 
+    # MERGE (inbox #419): an edition lays one poll out as one page per award, and a vote on one page
+    # must not erase the picks made on the others. With {"merge": true} only the questions in this
+    # request are replaced and every other answer on the sheet is kept. Refused on a poll with branch
+    # rules (their path logic needs the whole sheet), where it quietly falls back to a full replace.
+    merge = bool(request.data.get("merge")) and existing is not None and not rules
     now = timezone.now()
     with transaction.atomic():
         response = existing or PollResponse(poll=poll)
@@ -634,13 +654,18 @@ def submit_response(request, slug):
             response.submitted_at = now
         response.status = PollResponse.SUBMITTED
         response.eligibility_snapshot = verdict.get("snapshot") or {}
-        response.path_snapshot = path
+        response.path_snapshot = sorted(set(response.path_snapshot or []) | set(path)) if merge else path
         response.team = team
         response.save()
 
         # An edit REPLACES the sheet. Merging would leave an answer to a question the person has
         # since cleared, which is the same class of bug as keeping an off-path branch answer.
-        response.answers.all().delete()
+        # (The explicit {"merge": true} above is the one deliberate exception, and it only ever
+        # replaces the questions named in the request.)
+        if merge:
+            response.answers.filter(question_id__in=list(cleaned.keys())).delete()
+        else:
+            response.answers.all().delete()
         PollAnswer.objects.bulk_create([
             PollAnswer(
                 response=response, question_id=question_id,
@@ -1231,6 +1256,79 @@ def admin_save_questions(request, slug):
     return Response({"message": "Questions saved"}, status=status.HTTP_200_OK)
 
 
+# The size cap (FILM_MAX_BYTES) lives with the field in models.py.
+# What a browser can play from a <video> tag. QuickTime and Matroska sniff as video elsewhere on the
+# site but do not play everywhere, so they are refused here with a code that says why.
+FILM_KINDS = {"video/mp4", "video/webm"}
+
+
+@api_view(["POST", "DELETE"])
+def admin_option_film(request, slug, option_id, field="film"):
+    """POST / DELETE polls/admin/polls/<slug>/options/<option_id>/film/ - set or remove a nominee's film.
+
+    POST: multipart form, one file field `film` (MP4 or WebM, at most 25 MB). Answers
+          {"film_url": "<absolute url>"}.
+    DELETE: removes the film. Answers {"film_url": ""}.
+    Auth: poll manager (can_manage_poll), the same gate as editing the questions. The option must
+    belong to the poll named in the address, so a manager of one poll cannot reach another poll's
+    nominees by changing the option id (IDOR case in security/idor-cases.json).
+
+    R70/R87, the upload rules: the BYTES decide the type (sniff_upload), never the file name or the
+    declared content type; the stored name is an opaque '<32 hex>.<ext>' from the sniff; the size is
+    capped; and the file lands under media/awards/films/, which nginx serves by extension, so nothing
+    stored there can run or open as a page. Unlike the question list this is allowed after people
+    have voted: a film is decoration on a nominee, it does not change what anyone was asked.
+    Consumed by the film control in the admin poll builder (frontend app/(a)/a/polls/[slug]/page.tsx);
+    read back as `film_url` on every question option and shown on the nominee page.
+
+    The same view serves .../winner-film/ (field="winner_film", read back as `winner_film_url`): the
+    film shown on the winner surfaces once winners are public. Same rules, same gate.
+    """
+    from afc_auth.upload_safety import opaque_name, sniff_upload
+
+    user, error = _require_user(request)
+    if error:
+        return error
+    poll = Poll.objects.filter(slug=slug).first()
+    if not poll:
+        return Response({"message": "Poll not found", "code": "poll_not_found"}, status=status.HTTP_404_NOT_FOUND)
+    if not can_manage_poll(user, poll):
+        return Response({"message": "You do not have permission to manage this poll", "code": "not_permission_manage_poll"},
+                        status=status.HTTP_403_FORBIDDEN)
+    option = PollOption.objects.filter(option_id=option_id, question__poll=poll).first()
+    if not option:
+        return Response({"message": "Nominee not found", "code": "option_not_found"}, status=status.HTTP_404_NOT_FOUND)
+
+    url_key = "winner_film_url" if field == "winner_film" else "film_url"
+    current = getattr(option, field)
+
+    if request.method == "DELETE":
+        if current:
+            current.delete(save=False)
+            setattr(option, field, "")
+            option.save(update_fields=[field])
+        return Response({url_key: ""}, status=status.HTTP_200_OK)
+
+    upload = request.FILES.get("film")
+    if not upload:
+        return Response({"message": "Choose a film file", "code": "film_required"}, status=status.HTTP_400_BAD_REQUEST)
+    if upload.size > FILM_MAX_BYTES:
+        return Response({"message": "That film is larger than 25 MB", "code": "film_too_large"},
+                        status=status.HTTP_400_BAD_REQUEST)
+    kind, ext, mime = sniff_upload(upload, {"video"})
+    if kind != "video" or mime not in FILM_KINDS:
+        return Response({"message": "A nominee film must be an MP4 or WebM video", "code": "film_type_refused"},
+                        status=status.HTTP_400_BAD_REQUEST)
+
+    # Replace, never accumulate: the old file leaves the disk when the new one arrives.
+    if current:
+        current.delete(save=False)
+    upload.name = opaque_name(ext)
+    setattr(option, field, upload)
+    option.save(update_fields=[field])
+    return Response({url_key: _film_url(option, request, field)}, status=status.HTTP_200_OK)
+
+
 def _save_branch_rules(poll, raw):
     """Replace the poll's branch rules. Returns an error message, or None on success.
 
@@ -1348,7 +1446,7 @@ def admin_results(request, slug):
             ),
         },
         "questions": [
-            _serialize_question(question, locale, include_results=True, tally=tally,
+            _serialize_question(question, locale, request=request, include_results=True, tally=tally,
                                 hydrated=hydrate_options(
                                     [option for q in poll.questions.all()
                                      for option in q.options.all()], request,
@@ -1425,6 +1523,8 @@ def _serialize_edition(edition):
         "year": edition.year,
         "tagline": edition.tagline,
         "hero_image": edition.hero_image,
+        # Which drawing the frontend uses for /awards/<slug>: "default" or "detty-royale".
+        "theme": edition.theme,
         "nominations_close": edition.nominations_close,
         "voting_opens_at": edition.voting_opens_at,
         "voting_closes_at": edition.voting_closes_at,
@@ -1470,11 +1570,17 @@ def edition_detail(request, slug):
         total_questions += len(questions)
 
         answered_ids = []
+        your_answers = {}
         if user:
             response = _find_response(poll, user)
             if response:
                 answered_ids = sorted({answer.question_id for answer in response.answers.all()})
                 total_answered += len(answered_ids)
+                # {question_id: [option_id]}: WHICH nominee the caller picked in each award, so a
+                # themed page can say "your pick: X" and a re-vote can say what it replaces.
+                for answer in response.answers.all():
+                    if answer.option_id:
+                        your_answers.setdefault(str(answer.question_id), []).append(answer.option_id)
 
         show_results = _results_visible(poll, user)
         tally = _tally_for_poll(poll) if show_results else {}
@@ -1490,8 +1596,9 @@ def edition_detail(request, slug):
             # Which question ids this caller has already answered, so the ballot rail can tick
             # them and the progress line can be stated in words.
             "answered_question_ids": answered_ids,
+            "your_answers": your_answers,
             "questions": [
-                _serialize_question(question, locale, include_results=show_results, tally=tally,
+                _serialize_question(question, locale, request=request, include_results=show_results, tally=tally,
                                     hydrated=hydrated)
                 for question in questions
             ],
@@ -1736,7 +1843,7 @@ def _unique_edition_slug(source):
 # anything else the model happens to gain later by putting it in the body.
 _EDITABLE_EDITION_FIELDS = (
     "title", "year", "tagline", "hero_image", "nominations_close", "voting_opens_at",
-    "voting_closes_at", "winners_announced_at", "status", "order",
+    "voting_closes_at", "winners_announced_at", "status", "order", "theme",
 )
 
 
@@ -1755,6 +1862,10 @@ def _apply_edition_fields(edition, data):
         value = data[field]
         if field in _NULLABLE_EDITION_FIELDS and value in ("", None):
             value = None
+        # An unknown theme would render as nothing on the frontend; keep the column on a value the
+        # frontend can draw.
+        if field == "theme" and value not in dict(AwardsEdition.THEME_CHOICES):
+            value = AwardsEdition.THEME_DEFAULT
         setattr(edition, field, value)
 
 

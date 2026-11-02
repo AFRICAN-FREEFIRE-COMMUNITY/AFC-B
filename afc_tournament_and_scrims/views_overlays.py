@@ -317,7 +317,7 @@ def _h2h_payload(event, config, request):
                               survival=Sum("survival_seconds"), matches=Count("player_stats_id")))
             from afc_auth.models import esports_pic_url
             name = getattr(u, "in_game_name", "") or u.username
-            image = esports_pic_url(u, request)  # esports_pic lives on UserProfile, not User
+            image = esports_pic_url(u, request, event=event)  # UserProfile pic, or the copy kept at removal (#400)
             stats = {
                 "kills": agg["kills"] or 0, "damage": agg["damage"] or 0,
                 "assists": agg["assists"] or 0, "deaths": agg["deaths"] or 0,
@@ -697,7 +697,7 @@ def _booyah_payload(event, config, request):
                 roster.append({
                     "name": getattr(u, "in_game_name", "") or u.username,
                     # esports_pic lives on UserProfile, not User (bug fix 2026-07-02).
-                    "image": esports_pic_url(u, request),
+                    "image": esports_pic_url(u, request, event=event),
                 })
     return {
         "design": _design_look(config.get("design_id"), request),
@@ -867,7 +867,7 @@ def _booyah_player_rows(event, win, team_row, request):
         so a design can repeat the team name/logo/flag/map beside each player if it wants to."""
         photo = None
         if not _booyah_suppressed(event, "esports_image", user_id=user.user_id):
-            photo = esports_pic_url(user, request)
+            photo = esports_pic_url(user, request, event=event)
         return {
             "slot": BOOYAH_FIRST_PLAYER_SLOT + index,
             "row_key": f"player-{user.user_id}",
