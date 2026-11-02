@@ -30,6 +30,7 @@ from afc_tournament_and_scrims import capture_rich_stats, kill_stats_fields
 # Open-roster events (owner 2026-09-11): the save-time side effect and the one-team-per-player
 # check every roster door shares. See afc_tournament_and_scrims/open_roster.py.
 from afc_tournament_and_scrims import open_roster
+from afc_tournament_and_scrims.event_player_image import pic_for_event
 # Role history (owner 2026-08-04): resolves the in-game role FROZEN on a player's event roster row so
 # every result path can stamp TournamentPlayerMatchStats.role_at_match. That stamp is what lets the
 # per-role ladders (afc_rankings/player_roles.py) report the role a player held WHEN the points were
@@ -27654,9 +27655,12 @@ def download_esport_media(request):
         }
         for u in User.objects.filter(user_id__in=player_ids):
             profile = profiles.get(u.user_id)
-            if profile and profile.esports_pic:
+            # Event copy first (owner 2026-10-25, #400): a player who removed their image keeps it in
+            # the events they were in. No event_id (admin page by ids) reads the profile only.
+            pic_file = pic_for_event(u, event if event_id else None, profile)
+            if pic_file:
                 try:
-                    raw_pic = profile.esports_pic.read()
+                    raw_pic = pic_file.read()
                     data, new_ext = _resize(raw_pic, esport_target, keep_alpha=False)
                     # Same rule as the team logos above (R87).
                     new_ext = new_ext or _real_ext(raw_pic)
@@ -27779,9 +27783,12 @@ def download_single_media(request):
             return Response({"message": "That player is not in this event.", "code": "player_not_event"}, status=403)
         default_name = u.username or f"player-{u.user_id}"
         prof = UserProfile.objects.filter(user_id=u.user_id).first()
-        if prof and prof.esports_pic:
+        # Event copy first (owner 2026-10-25, #400); scoped_event is the organizer's event.
+        copy_event = scoped_event or Event.objects.filter(event_id=request.data.get("event_id")).first()
+        pic_file = pic_for_event(u, copy_event, prof)
+        if pic_file:
             try:
-                raw = prof.esports_pic.read()
+                raw = pic_file.read()
             except Exception:
                 raw = None
     else:

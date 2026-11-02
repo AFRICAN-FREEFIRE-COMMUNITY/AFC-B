@@ -18,6 +18,11 @@ At release time `node ~/.claude/skills/versioning/scripts/release.mjs next` prin
 rename `## Unreleased` to it, merge, then tag the merge commit. A version tag pushed with the wrong
 number is blocked before the push.
 
+## v7.7.0 - 2026-11-02
+
+### Changed
+- A player can now remove their esport image completely (owner, 25 Oct: "a user should be allowed to completely remove their esports image"). New `POST /auth/remove-esport-image/` (signed in, no body, no id): it deletes the caller's stored file and clears the image and its picture-check verdict; a repeat answers `esport_image_already_empty`. This reverses the replace-only rule of 12 Jun. Events the player is already in KEEP the image (one copy, kept per event, read first by the overlays, MVP, media audit, broadcast kit and media ZIP) and the player stays registered; the profile, team page, player page, polls and the partner API lose it. A new registration for an event that requires an esport image is refused with `registration_requirements_unmet` until a new image is uploaded, and uploading a new image replaces it everywhere at once, event copies included.
+
 ## v7.6.0 - 2026-11-02
 
 ### Added
