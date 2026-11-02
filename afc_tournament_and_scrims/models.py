@@ -389,7 +389,7 @@ class Event(models.Model):
     #   require_team_logo     -> a TEAM registration is blocked until Team.team_logo is uploaded.
     #   require_esport_images -> every registering player (solo user, or each roster member of a
     #                            team registration) must have their ESPORT IMAGE uploaded
-    #                            (afc_auth.UserProfile.esports_pic, replace-only - see
+    #                            (afc_auth.UserProfile.esports_pic, removable since 2026-10-25 - see
     #                            afc_auth.views.upload_esport_image).
     # Set in create_event / edit_event, shown as toggles on both event wizards, enforced in
     # register_for_event, and surfaced on the public event page so players know before trying.
@@ -2748,6 +2748,32 @@ class EventMediaOptOut(models.Model):
 
     class Meta:
         unique_together = ("event", "kind", "team", "user")
+
+
+class EventPlayerImage(models.Model):
+    """A player's esport image as it stood in ONE event when they REMOVED it from their profile
+    (owner 2026-10-25, inbox #400: "a user should be allowed to completely remove their esports
+    image", and events they are already in KEEP the image: "it should").
+
+    Until the removal feature every event surface read the live UserProfile.esports_pic, so there was
+    no per-event copy. These rows exist ONLY for removals: afc_auth.views.remove_esport_image copies
+    the file once, then writes one row per event the player is in (solo registration, or an event
+    roster via TournamentTeamMember). A REPLACE never makes a copy; it shows everywhere at once, and
+    upload_esport_image drops the player's copies because the new picture supersedes them (owner
+    2026-10-25: "we go wih your suggestion").
+
+    CONNECTS TO: event_player_image.py (snapshot / lookup / drop helpers); readers that have an event
+    in scope (overlays, MVP, media audit, broadcast kit, media ZIP and per-item download) ask the copy
+    first through afc_auth.models.esports_pic_url(user, request, event=event) and fall back to the
+    profile. Profile, team page, player page, polls, partner API and NEW registrations never read
+    this table, so they lose the image."""
+    event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name="player_image_copies")
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="event_image_copies")
+    image = models.ImageField(upload_to="esports_pictures/event_copies/")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ("event", "user")
 
 
 class MediaFlag(models.Model):
