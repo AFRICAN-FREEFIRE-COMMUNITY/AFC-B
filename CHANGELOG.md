@@ -20,6 +20,9 @@ number is blocked before the push.
 
 ## Unreleased
 
+### Added
+- Leaderboard design columns Knocks recorded, Sniper kills recorded and Head to head record (field types `knocks_recorded`, `sniper_kills`, `h2h_record`). They are read from the stored kill events of the maps in scope, on the overlay feed rows and on the event stage graphic export, and show "-" where nothing was recorded.
+
 ## v7.5.0 - 2026-10-24
 
 ### Added

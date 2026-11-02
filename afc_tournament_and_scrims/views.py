@@ -26,7 +26,7 @@ from afc_tournament_and_scrims import scoring as scoring_lib
 # The ONE place a team's per-map result becomes stats rows, shared with the team
 # submission approval endpoint so both produce identical rows. See result_writes.py.
 from afc_tournament_and_scrims import result_writes
-from afc_tournament_and_scrims import capture_rich_stats
+from afc_tournament_and_scrims import capture_rich_stats, kill_stats_fields
 # Open-roster events (owner 2026-09-11): the save-time side effect and the one-team-per-player
 # check every roster door shares. See afc_tournament_and_scrims/open_roster.py.
 from afc_tournament_and_scrims import open_roster
@@ -20621,6 +20621,9 @@ def _overlay_rows_from_standings(standings, max_rows, request, stats_filter=None
     identical row shapes."""
     standings = standings[: max(1, max_rows)]
     rich_by_tt = _overlay_rich_team_sums(stats_filter) if stats_filter else {}
+    # Kill-event columns (knocks_recorded / sniper_kills / h2h_record, owner 2026-11-01 #421a): read
+    # from the stored kill events of the SAME maps; empty ("-") where none were recorded.
+    kill_by_tt = _overlay_kill_fields(standings, stats_filter)
 
     # Team logos in bulk -> absolute URLs (tournament_team_id -> URL). Mirrors event_stage_graphic's
     # logo_by_tt, but returns .url (build_absolute_uri) instead of .path for the browser overlay.
@@ -20698,7 +20701,24 @@ def _overlay_rows_from_standings(standings, max_rows, request, stats_filter=None
             "grenades_used": rich.get("grenades_used", 0),
             "grenade_kills": rich.get("grenade_kills", 0),
         })
+        kill_stats_fields.fill_row(rows[-1], kill_by_tt, tt_id)
     return rows
+
+
+def _overlay_kill_fields(standings, stats_filter):
+    """The kill-event design columns for the teams in `standings`, over the maps `stats_filter` names
+    (a TournamentPlayerMatchStats filter, so its keys start with ``team_stats__match__``). {} when no
+    scope was given, which leaves every cell empty. See kill_stats_fields.py."""
+    if not stats_filter or not standings:
+        return {}
+    prefix = "team_stats__match__"
+    match_filter = {k[len(prefix):]: v for k, v in stats_filter.items() if k.startswith(prefix)}
+    # Strip the event hop the cumulative path adds; team_kill_fields scopes to the event itself.
+    match_filter.pop("group__stage__event", None)
+    tt = TournamentTeam.objects.filter(tournament_team_id=standings[0]["tournament_team_id"]).first()
+    if tt is None:
+        return {}
+    return kill_stats_fields.team_kill_fields(tt.event, match_filter)
 
 
 def _overlay_seed_and_carry(standings, event, stage, group):
