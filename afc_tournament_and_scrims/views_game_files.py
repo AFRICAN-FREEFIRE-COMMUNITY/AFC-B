@@ -1,6 +1,6 @@
 # ── GAME FILES UPLOAD: the endpoints (owner 2026-10-24, inbox #386 #391 #394 #396) ──────────────────────
 # The reading, joining, pairing and counting live in game_files.py; this module is the door. Consumed by
-# the website's Game files box on the Upload Results tab (components/leaderboards/GameFilesUpload.tsx),
+# the website's Game files box on the Upload Results tab (app/(a)/a/leaderboards/_components/GameFilesUpload.tsx),
 # for admins and the event's organizers (_broadcast_gate, the same gate as the old Debugger log panel).
 #
 #   POST events/<event_id>/game-files/read/          multipart `file` (plain, or gzip from the browser)

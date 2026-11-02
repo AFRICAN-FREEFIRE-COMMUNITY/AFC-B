@@ -222,6 +222,22 @@ class EndpointTests(TestCase):
         resp = anon.post(self.url("read"), {"file": SimpleUploadedFile("a.log", GAME.encode())}, format="multipart")
         self.assertEqual(resp.status_code, 401)
 
+    def test_a_signed_in_player_who_does_not_organize_the_event_is_refused_on_every_step(self):
+        # R58 / R88: the four doors share one gate (_broadcast_gate), proven here for an ordinary player.
+        player = User.objects.create(username="gfplayer", email="gfplayer@x.com", full_name="GF Player",
+                                     role="player", password="x")
+        SessionToken.objects.create(
+            user=player, token="gf-player-token",
+            expires_at=datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=1))
+        other = APIClient()
+        other.credentials(HTTP_AUTHORIZATION="Bearer gf-player-token")
+        for step, body in (("games", {"file_ids": []}), ("result-text", {"file_ids": [], "key": "x"}),
+                           ("debugger", {"file_ids": [], "key": "x", "match_id": self.matches[0].match_id})):
+            resp = other.post(self.url(step), body, format="json")
+            self.assertIn(resp.status_code, (401, 403), f"{step}: {resp.status_code}")
+        resp = other.post(self.url("read"), {"file": SimpleUploadedFile("a.log", GAME.encode())}, format="multipart")
+        self.assertIn(resp.status_code, (401, 403))
+
     def test_the_whole_flow_saves_the_result_and_what_only_the_debugger_knows(self):
         dbg = self.read("debugger-2026-10-20T18-59-00.log", gzip.compress(GAME.encode("utf-8")))
         res = self.read(RESULT_NAME, RESULT.encode("utf-8"))
