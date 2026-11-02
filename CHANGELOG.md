@@ -18,7 +18,7 @@ At release time `node ~/.claude/skills/versioning/scripts/release.mjs next` prin
 rename `## Unreleased` to it, merge, then tag the merge commit. A version tag pushed with the wrong
 number is blocked before the push.
 
-## Unreleased
+## v7.9.0 - 2026-11-02
 
 ### Added
 - `GET polls/admin/editions/<slug>/metrics/` gives AFC poll admins the detailed numbers of any awards season,
