@@ -683,6 +683,11 @@ if not DEBUG:
 # GEOIP_PATH = "/home/ubuntu/geoip"
 GEOIP_PATH = "/home/ubuntu/ipinfo"
 
+# Where the vote tracking reads IP country and region (afc_polls.geo, inbox #453): DB-IP's free
+# "IP to City Lite" file, no account, CC BY 4.0. Written by `manage.py refresh_geoip_db` (the deploy
+# runs it when the file is missing, celery beat refreshes it monthly). The folder is git-ignored.
+GEOIP_CITY_DB = os.getenv("GEOIP_CITY_DB") or os.path.join(BASE_DIR, "geoip", "dbip-city-lite.mmdb")
+
 PAYSTACK_SECRET_KEY = os.getenv("PAYSTACK_SECRET_KEY")
 PAYSTACK_PUBLIC_KEY = os.getenv("PAYSTACK_PUBLIC_KEY")
 # Where Paystack redirects the buyer after a shop payment. MUST match the real FE route

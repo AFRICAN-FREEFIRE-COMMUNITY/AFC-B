@@ -445,8 +445,11 @@ class AwardsEditionTests(TestCase):
         self.question.published_winner_option = self.second
         self.question.published_winner_votes = 313
         self.question.save()
+        # Closed before reading: an award ballot shows no numbers to the public while it is open,
+        # even on ALWAYS (inbox #454, 2 Nov 2026; tests_vote_tracking covers that rule itself).
         self.poll.results_visibility = Poll.ALWAYS
-        self.poll.save(update_fields=["results_visibility"])
+        self.poll.closes_at = timezone.now() - timedelta(minutes=1)
+        self.poll.save(update_fields=["results_visibility", "closes_at"])
 
         payload = self.client.get(f"/polls/{self.poll.slug}/").json()["questions"][0]
         self.assertEqual(payload["published_winner_option_id"], self.second.option_id)

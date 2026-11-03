@@ -40,6 +40,10 @@ venv/bin/python manage.py migrate --noinput
 venv/bin/python manage.py check
 # Django's own static files for /admin (STATIC_ROOT = ./static, served by nginx at /static/).
 venv/bin/python manage.py collectstatic --noinput --clear -v 0
+# The awards vote tracking's location file (afc_polls.geo, inbox #453): fetched once when missing,
+# refreshed monthly by celery beat. A failed download must never fail a deploy: votes then simply
+# carry no country or region until the next try.
+venv/bin/python manage.py refresh_geoip_db --if-missing || echo "GeoIP download failed; votes carry no location until it succeeds"
 
 sudo systemctl reload django_app
 sudo systemctl restart celery-worker celery-beat celery-rankings afc-bot

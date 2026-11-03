@@ -83,6 +83,8 @@ RapidFuzz==3.13.0
 rapidocr==3.10.0
 redis==8.0.0
 requests==2.34.2
+# Reads DB-IP's free city database for the awards vote tracking (afc_polls.geo, inbox #453).
+maxminddb==3.2.0
 rsa==4.9.1
 shapely==2.2.0  # on-site OCR reader, see rapidocr
 six==1.17.0
