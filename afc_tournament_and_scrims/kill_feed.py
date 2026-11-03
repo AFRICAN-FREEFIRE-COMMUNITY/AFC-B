@@ -40,10 +40,11 @@ FIGHT_GAP_SECONDS = 30.0
 # The owner's sniper set is bolt action only, AWM / M82B / Kar98k / M24, every version of those guns counted, as
 # the gold Kar98k and AWM always were: a version is named after its gun ("AWM-Y", "Kar98k-III (Droid
 # Apocalypse)", "M24-I"), and an awakened or Blood Bat version (635, 30924) carries its gun's name.
-# The Hawk (812) is a sniper rifle outside that set: not counted until the owner says so.
+# The Hawk (812, "a high-damage sniper rifle that fires two rounds in quick succession") counts too: owner,
+# 3 Nov 2026, asked whether it should: "yes".
 # Used two ways: `manage.py seed_game_weapons` fills the GameWeapon table from it (never overwriting an admin's
 # edit), and the kill-stats view falls back to it while that table is still empty.
-SNIPER_GUNS = ("AWM", "M82B", "Kar98k", "M24")
+SNIPER_GUNS = ("AWM", "M82B", "Kar98k", "M24", "Hawk")
 
 KNOWN_WEAPONS = {wid: (name, gun_of(name) in SNIPER_GUNS) for wid, name in WEAPON_NAMES.items()}
 
