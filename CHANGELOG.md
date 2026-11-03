@@ -18,7 +18,7 @@ At release time `node ~/.claude/skills/versioning/scripts/release.mjs next` prin
 rename `## Unreleased` to it, merge, then tag the merge commit. A version tag pushed with the wrong
 number is blocked before the push.
 
-## Unreleased
+## v7.12.0 - 2026-11-03
 
 ### Added
 - Awards vote tracking (inbox #453): every vote now records the country and region it came from (looked up in a
