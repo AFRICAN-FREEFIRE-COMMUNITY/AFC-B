@@ -26,30 +26,27 @@
 # CONSUMED BY: views_kill_feed.py (GET events/<slug>/kill-stats/), debugger_ingest.py, tests_kill_feed.py.
 from collections import defaultdict
 
+from .weapon_names import WEAPON_NAMES
+from .weapons import gun_of
+
 FIGHT_GAP_SECONDS = 30.0
 
-# ── Weapon ids (24 Oct 2026, inbox #350) ──────────────────────────────────────────────────────────────
-# The debugger log's `weapon:<id>` uses the same numbers as Craftland's ItemGoodsIDType enum. Proven by joining the
-# enum (FREEFIRE/CRAFTLAND-RESEARCH/_work/js/D5v4pxjR.js) with the 2,705 weapon ids of 22 debugger logs on the
-# observer PC: 601 comes out as Grenade (independently known: every 601 kill followed the killer's grenade counter
-# dropping), 41 M1887, 50 MAG7, 9 EAGLE, 18 SKS, 58 UZI, 8 MP5, 15 MP40. Evidence and scripts:
-# WEBSITE/tasks/kill-feed-weapon-ids-2026-10-24/. The owner's sniper set is bolt action only (AWM, M82B, Kar98k,
-# M24): every enum entry of those, gold variants included. The enum has no "M82B"; XM82 (159) is most likely it,
-# so it is listed but NOT counted until someone confirms it on stream and ticks it in /admin/.
+# ── Weapon ids (24 Oct 2026, inbox #350; names from the game itself since 3 Nov 2026, inbox #474) ────────
+# The debugger log's `weapon:<id>` is the game's weapon id (24 Oct: 601 Grenade, every 601 kill followed the
+# killer's grenade counter dropping; WEBSITE/tasks/kill-feed-weapon-ids-2026-10-24/). The NAME of each id is the
+# one the game shows its players: weapon_names.WEAPON_NAMES, generated from the client's own English text
+# (WEBSITE/tasks/weapon-ids-and-replay-2026-11-03/, read with the owner's permission, #475). That reading also
+# settled the 24 Oct guess: the M82B is 45 (the enum called it "BLT"), and 159 is an XM8, not an M82B.
+# The owner's sniper set is bolt action only, AWM / M82B / Kar98k / M24, every version of those guns counted, as
+# the gold Kar98k and AWM always were: a version is named after its gun ("AWM-Y", "Kar98k-III (Droid
+# Apocalypse)", "M24-I"), and an awakened or Blood Bat version (635, 30924) carries its gun's name.
+# The Hawk (812, "a high-damage sniper rifle that fires two rounds in quick succession") counts too: owner,
+# 3 Nov 2026, asked whether it should: "yes".
 # Used two ways: `manage.py seed_game_weapons` fills the GameWeapon table from it (never overwriting an admin's
 # edit), and the kill-stats view falls back to it while that table is still empty.
-KNOWN_WEAPONS = {
-    4: ("AWM", True), 172: ("AWM (variant 2)", True), 65: ("Gold AWM", True),
-    21: ("Kar98k", True), 64: ("Gold Kar98k", True), 128: ("Gold Kar98k (2)", True),
-    129: ("Gold Kar98k (3)", True), 175: ("Gold Kar98k (3, 2)", True),
-    75: ("M24", True),
-    # 61 chars did not fit GameWeapon.name (60): the seed crashed whenever 159 was not in the table yet (3 Nov 2026)
-    159: ("XM82, likely the M82B: confirm on stream first", False),
-    26: ("SVD (marksman, not counted)", False), 170: ("SVD (variant 2)", False), 72: ("Gold SVD", False),
-    89: ("AC80 (marksman, not counted)", False), 197: ("VSK94 (marksman, not counted)", False),
-    18: ("SKS (marksman, not counted)", False), 11: ("M14 (marksman, not counted)", False),
-    13: ("VSS (marksman, not counted)", False), 601: ("Grenade", False),
-}
+SNIPER_GUNS = ("AWM", "M82B", "Kar98k", "M24", "Hawk")
+
+KNOWN_WEAPONS = {wid: (name, gun_of(name) in SNIPER_GUNS) for wid, name in WEAPON_NAMES.items()}
 
 
 def default_sniper_ids():

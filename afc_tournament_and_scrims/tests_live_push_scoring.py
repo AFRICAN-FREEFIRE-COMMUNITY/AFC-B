@@ -113,14 +113,14 @@ class ClientNumbersAreIgnoredTests(TestCase):
         self.assertEqual(r["players"][0]["uid"], "1001")
 
     def test_each_players_weapon_is_named_and_a_row_without_one_keeps_its_shape(self):
-        rows = [_row("KEEPER", kills=2, most_used_weapon="21002",
+        rows = [_row("KEEPER", kills=2, most_used_weapon="80006",
                      players=[{"uid": "1001", "most_used_weapon": "41"}, {"uid": "1002", "most_used_weapon": ""},
                               {"uid": "1003"}]),
                 _row("PLAIN", kills=1)]
         with self.assertNumQueries(1):              # the admin's names, once for the whole push
             out = normalize_live_standings(rows, placement_points=TABLE, kill_point=1.0)
         keeper = next(r for r in out if r["team_name"] == "KEEPER")
-        self.assertEqual(keeper["most_used_weapon"], "unknown gun (id 21002)")
+        self.assertEqual(keeper["most_used_weapon"], "unknown gun (id 80006)")
         self.assertEqual([p.get("most_used_weapon") for p in keeper["players"]], ["M1887", "", None])
         plain = next(r for r in out if r["team_name"] == "PLAIN")
         self.assertNotIn("most_used_weapon", plain)
