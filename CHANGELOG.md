@@ -18,7 +18,12 @@ At release time `node ~/.claude/skills/versioning/scripts/release.mjs next` prin
 rename `## Unreleased` to it, merge, then tag the merge commit. A version tag pushed with the wrong
 number is blocked before the push.
 
-## Unreleased
+## v7.13.0 - 2026-11-03
+
+### Added
+- The kill stats answer (`events/kill-stats/`) carries `weapons`: kills per gun, by the name the game shows players,
+  most kills first, with the player who made the most kills with each gun. Read by the new Kill stats tab on the admin
+  and organizer leaderboard pages (inbox #467, approved mockup mockups/kill-stats-admin/).
 
 ### Fixed
 - Gun names are the ones the game shows its players (owner, 3 Nov 2026, inbox #474: "EVO3 and SeaGull are not the
