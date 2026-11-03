@@ -41,6 +41,7 @@ from afc_auth.views import validate_token
 from afc_organizers.permissions import org_can_event
 
 from . import kill_feed
+from .weapons import admin_names, weapon_label
 from .models import (
     Event, GameWeapon, Match, MatchKillEvent, Stages, TournamentPlayerMatchStats, TournamentTeam,
 )
@@ -171,6 +172,9 @@ def kill_stats(request):
         return resp
 
     kills = [e for evs in by_match.values() for e in evs if e["kind"] == "kill"]
+    # Which guns count as a sniper, by name: the admin's name, else the award's own label (it tells the
+    # gold Kar98k variants apart), else the enum name or "unknown gun (id N)"; never a bare number (#468).
+    gun_names = admin_names()
     return Response({
         "event": event.slug,
         "stage": int(stage_id) if stage_id and str(stage_id).isdigit() else None,
@@ -185,7 +189,8 @@ def kill_stats(request):
         "teams": {str(t): n for t, n in names.items()},
         "players": {uid: {"name": player_names[uid], "team_id": team_of[uid]} for uid in team_of},
         "player_pairs": player_pairs,
-        "sniper_weapons": ([{"weapon_id": w, "name": kill_feed.KNOWN_WEAPONS.get(w, (str(w), True))[0]}
+        "sniper_weapons": ([{"weapon_id": w, "name": (gun_names.get(w) or kill_feed.KNOWN_WEAPONS.get(w, (None,))[0]
+                                                      or weapon_label(w, gun_names))}
                             for w in sorted(sniper_ids)]),
     })
 

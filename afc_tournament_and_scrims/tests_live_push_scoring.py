@@ -107,9 +107,24 @@ class ClientNumbersAreIgnoredTests(TestCase):
         r = out[0]
         self.assertEqual((r["knockdowns"], r["knocked"], r["headshots"]), (5, 2, 1))
         self.assertEqual((r["grenades_used"], r["grenade_kills"], r["gloowall_used"]), (4, 1, 6))
-        self.assertEqual((r["most_used_weapon"], r["survival_time"]), ("9", 1010.5))
+        # the one change is words: the id the client saw leaves as the gun (inbox #468)
+        self.assertEqual((r["most_used_weapon"], r["survival_time"]), ("Desert Eagle", 1010.5))
         self.assertEqual(r["team_name_source"], "roster")
         self.assertEqual(r["players"][0]["uid"], "1001")
+
+    def test_each_players_weapon_is_named_and_a_row_without_one_keeps_its_shape(self):
+        rows = [_row("KEEPER", kills=2, most_used_weapon="21002",
+                     players=[{"uid": "1001", "most_used_weapon": "41"}, {"uid": "1002", "most_used_weapon": ""},
+                              {"uid": "1003"}]),
+                _row("PLAIN", kills=1)]
+        with self.assertNumQueries(1):              # the admin's names, once for the whole push
+            out = normalize_live_standings(rows, placement_points=TABLE, kill_point=1.0)
+        keeper = next(r for r in out if r["team_name"] == "KEEPER")
+        self.assertEqual(keeper["most_used_weapon"], "unknown gun (id 21002)")
+        self.assertEqual([p.get("most_used_weapon") for p in keeper["players"]], ["M1887", "", None])
+        plain = next(r for r in out if r["team_name"] == "PLAIN")
+        self.assertNotIn("most_used_weapon", plain)
+        self.assertNotIn("players", plain)
 
     def test_a_pre_1_4_0_client_keeps_its_order_and_is_still_scored(self):
         rows = [
