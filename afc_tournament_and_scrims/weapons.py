@@ -30,10 +30,17 @@ UNKNOWN = "unknown gun (id {})"
 _UNKNOWN_RE = re.compile(r"^unknown gun \(id (\d+)\)$")
 
 
+_VERSION_RE = re.compile(r"(?: \([^)]*\))?$")
+_LEVEL_RE = re.compile(r"-(?:I{1,3}|X|Y)$")
+
+
 def gun_of(name):
     """The gun a version is named after: "AWM-Y" -> "AWM", "Kar98k-III (Droid Apocalypse)" -> "Kar98k",
-    "M24-I" -> "M24", "M249-X" -> "M249" (a machine gun, not the M24). Read by kill_feed (the sniper set)."""
-    return re.split(r"-| \(", name or "", maxsplit=1)[0].strip()
+    "M24-I" -> "M24", "M249-X" -> "M249" (a machine gun, not the M24). A hyphen that is part of the gun's own name
+    stays: "MAG-7 (Droid Apocalypse)" -> "MAG-7", "FGL-24" -> "FGL-24" (the first version of this cut at the first
+    hyphen, so the old "MAG7" rows matched no gun, found on the production dry run of 3 Nov 2026). A version is the
+    game's level suffix (-I, -II, -III, -X, -Y) and / or a bracketed mode name. Read by kill_feed (the sniper set)."""
+    return _LEVEL_RE.sub("", _VERSION_RE.sub("", (name or "").strip())).strip()
 
 
 def _retired_ids():
