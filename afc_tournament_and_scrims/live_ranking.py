@@ -41,9 +41,28 @@ CONNECTS TO
   shared with upload_team_match_result (the official path).
 - afc-capture/afc_capture/tailer.py:snapshot - produces the rows this reads.
 - views.py:overlay_feed - serves what this returns, under the shared live cache key.
+- weapons.py:weapon_label - names most_used_weapon (team row and each player) so the live overlay
+  prints the gun, never the game's id (inbox #468, 3 Nov 2026). Naming is not a calculation: the
+  observation stays the client's, only the words change.
 """
 
 from .scoring import compute_team_points
+from .weapons import admin_names, weapon_label
+
+
+def _named_weapons(row, names):
+    """The row's most_used_weapon (and each player's) as gun names, only for the keys the row carries,
+    so a snapshot without the field keeps its shape."""
+    named = {}
+    if "most_used_weapon" in row:
+        named["most_used_weapon"] = weapon_label(row.get("most_used_weapon"), names)
+    players = row.get("players")
+    if isinstance(players, list):
+        named["players"] = [
+            {**p, "most_used_weapon": weapon_label(p.get("most_used_weapon"), names)}
+            if isinstance(p, dict) and "most_used_weapon" in p else p
+            for p in players]
+    return named
 
 
 def _int(value, default=0):
@@ -125,8 +144,10 @@ def normalize_live_standings(rows, *, placement_points, kill_point,
     Every live-only stat the client sent (deaths, knockdowns, knocked, headshots, assists, revives,
     gloowall_used, medkit_used, grenades_used, grenade_kills, survival_time, most_used_weapon,
     players) is passed through untouched: those are observations, and they are what the rich overlay
-    columns render."""
+    columns render. The one change is words: most_used_weapon arrives as the game's id ("9") and
+    leaves as the gun's name ("Desert Eagle"), through weapons.weapon_label."""
     out = []
+    names = admin_names()                  # one query per push, not one per row
     for row, placement in rank_rows(list(rows or [])):
         if not isinstance(row, dict):
             continue
@@ -148,6 +169,7 @@ def normalize_live_standings(rows, *, placement_points, kill_point,
             )
             out.append({
                 **row,                       # the observations, kept as they arrived
+                **_named_weapons(row, names),
                 "kills": kills,
                 "placement": placement,
                 "pos": len(out) + 1,

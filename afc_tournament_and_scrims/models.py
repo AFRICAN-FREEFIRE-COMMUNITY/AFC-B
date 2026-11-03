@@ -1720,7 +1720,9 @@ class TournamentPlayerMatchStats(models.Model):
     # knocked = times this player was knocked; grenades_used = throwables thrown (every GRENADE*
     # counter drop); grenade_kills = kills the game tagged with a grenade weapon id (a lower bound:
     # ~60% of kills carry a weapon id); gloowall / medkit = items used; most_used_weapon = the
-    # weapon id behind most of the player's kills ("" when none carried one). `assists` above is
+    # NAME of the gun behind most of the player's kills ("" when none carried one): Capture sends
+    # the id, weapons.weapon_label stores the name (inbox #468, 3 Nov 2026; 16 -> 60 chars so
+    # "unknown gun (id 21002)" and an admin's name fit). `assists` above is
     # reused for KNOCK assists (this player knocked, a teammate or anyone else finished) since the
     # game logs no damage. rich_stats_source says which path filled the row so a screen can say so.
     knocked = models.PositiveIntegerField(default=0)
@@ -1728,7 +1730,7 @@ class TournamentPlayerMatchStats(models.Model):
     grenade_kills = models.PositiveIntegerField(default=0)
     gloowall_used = models.PositiveIntegerField(default=0)
     medkit_used = models.PositiveIntegerField(default=0)
-    most_used_weapon = models.CharField(max_length=16, blank=True, default="")
+    most_used_weapon = models.CharField(max_length=60, blank=True, default="")
     RICH_STATS_SOURCES = (("", "none"), ("backfill", "debugger log upload"), ("capture", "AFC Capture"))
     rich_stats_source = models.CharField(max_length=16, blank=True, default="", choices=RICH_STATS_SOURCES)
 
@@ -1792,9 +1794,10 @@ class TournamentPlayerMatchStats(models.Model):
 class GameWeapon(models.Model):
     """A Free Fire weapon id as the debugger log reports it (`OnGameAchievementNotify ... weapon:<id>`),
     with its name and whether it counts as a SNIPER for the kill-feed award (owner 2026-10-23, inbox #350:
-    bolt action only, AWM / M82B / Kar98k / M24). Filled by an admin as ids are matched to the gun seen on
-    stream; only 601 (grenade) is known today. An id not in this table is simply not a sniper.
-    Read by views_kill_feed (kill_feed.sniper_counts)."""
+    bolt action only, AWM / M82B / Kar98k / M24). Filled by `manage.py seed_game_weapons` from the proven
+    ids and the game's own enum (weapon_names.py, 252 guns, inbox #468); an admin names the rest (skins,
+    event guns: 814, 21002 ...) as they are matched to the gun seen on stream. An id not in this table is
+    simply not a sniper. Read by views_kill_feed (kill_feed.sniper_counts) and weapons.admin_names."""
     weapon_id = models.IntegerField(unique=True)
     name = models.CharField(max_length=60)
     is_sniper = models.BooleanField(default=False)

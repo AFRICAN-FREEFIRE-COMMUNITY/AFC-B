@@ -132,7 +132,7 @@ class CaptureRichStatsUploadTests(_Fixture):
         self.assertEqual((r.deaths, r.knockdowns, r.knocked, r.headshots, r.assists), (1, 4, 2, 1, 1))
         self.assertEqual((r.revives_received, r.grenades_used, r.grenade_kills), (1, 3, 1))
         self.assertEqual((r.gloowall_used, r.medkit_used, r.most_used_weapon, r.survival_seconds),
-                         (6, 2, "9", 1010))
+                         (6, 2, "Desert Eagle", 1010))   # stored as the gun, #468
         self.assertTrue(r.rich_stats_filled)
         self.assertEqual(r.rich_stats_source, "capture")
         # a player the payload does not name stays unfilled, so 0 and "no data" stay distinct
@@ -160,11 +160,11 @@ class CaptureRichStatsUploadTests(_Fixture):
 
     def test_values_are_clamped(self):
         payload = {"players": {"1001": {"deaths": -4, "knockdowns": "7", "grenades_used": 10 ** 9,
-                                        "most_used_weapon": "x" * 40, "headshots": "zero"}}}
+                                        "most_used_weapon": "x" * 80, "headshots": "zero"}}}
         self._upload(rich_stats=json.dumps(payload))
         r = self._row("1001")
         self.assertEqual((r.deaths, r.knockdowns, r.grenades_used, r.headshots), (0, 7, 100000, 0))
-        self.assertEqual(len(r.most_used_weapon), 16)
+        self.assertEqual(len(r.most_used_weapon), 60)
 
     def test_parse_rich_stats(self):
         self.assertEqual(parse_rich_stats(None), (None, "absent"))
@@ -216,9 +216,9 @@ class CaptureRichStatsUploadTests(_Fixture):
                          (3, 1, 7, 2))
         self.assertEqual(trg["revives_received"], 1)
         self.assertEqual(trg["survival_time"], 1010)          # the longest-surviving player of the map
-        self.assertEqual(trg["most_used_weapon"], "9")
+        self.assertEqual(trg["most_used_weapon"], "Desert Eagle")
         kocc = rows["KOCC"]
-        self.assertEqual((kocc["deaths"], kocc["gloowall_used"], kocc["most_used_weapon"]), (2, 2, "88"))
+        self.assertEqual((kocc["deaths"], kocc["gloowall_used"], kocc["most_used_weapon"]), (2, 2, "MAC10"))
         self.assertEqual(kocc["survival_time"], 600)
 
 

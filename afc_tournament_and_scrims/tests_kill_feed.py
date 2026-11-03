@@ -18,6 +18,8 @@ from afc_tournament_and_scrims.models import (
     Event, GameWeapon, Leaderboard, Match, MatchKillEvent, StageGroups, Stages, TournamentTeam,
     TournamentTeamMember,
 )
+from afc_tournament_and_scrims.weapon_names import WEAPON_NAMES
+from afc_tournament_and_scrims.weapons import REPLAY_NAMES, admin_names, weapon_label
 
 LOG = "\n".join([
     "[2026-07-01 18:29:59.000][0][0] menu noise before the first round",
@@ -250,6 +252,14 @@ class KillStatsEndpointTests(TestCase):
         self.assertEqual(resp.status_code, 404)
         self.assertEqual(resp.json()["code"], "event_not_found")
 
+    def test_the_sniper_weapons_are_named_never_a_bare_number(self):
+        # inbox #468: an admin ticked a gun nobody has named yet; it reads "unknown gun (id N)", not "21002"
+        GameWeapon.objects.create(weapon_id=21002, name="", is_sniper=True)
+        body = self.client.get(self.URL, {"event": self.event.slug},
+                               HTTP_AUTHORIZATION="Bearer kf-admin-token").json()
+        named = {w["weapon_id"]: w["name"] for w in body["sniper_weapons"]}
+        self.assertEqual(named, {113: "AWM (example id)", 21002: "unknown gun (id 21002)"})
+
 
 class CaptureKillEventsUploadTests(TestCase):
     """AFC Capture sends `kill_events` beside the MatchResult file (inbox #376): stored for the map with the
@@ -304,6 +314,22 @@ class WeaponTableTests(TestCase):
         for marksman_or_other in (26, 89, 197, 18, 11, 13, 601, 159):   # 159 waits for a stream check
             self.assertNotIn(marksman_or_other, ids)
 
+    def test_every_seed_name_fits_the_column(self):
+        # 159's label was 61 characters for a 60 character column: the seed crashed on any table without 159
+        limit = GameWeapon._meta.get_field("name").max_length
+        for wid, (name, _) in kill_feed.KNOWN_WEAPONS.items():
+            self.assertLessEqual(len(name), limit, wid)
+        for wid, name in WEAPON_NAMES.items():
+            self.assertLessEqual(len(name), limit, wid)
+
+    def test_the_seed_fills_an_empty_table(self):
+        from io import StringIO
+
+        from django.core.management import call_command
+
+        call_command("seed_game_weapons", stdout=StringIO())
+        self.assertEqual(GameWeapon.objects.get(weapon_id=159).is_sniper, False, "159 waits for a stream check")
+
     def test_the_seed_fills_once_and_never_overwrites_an_admin_edit(self):
         from io import StringIO
 
@@ -311,9 +337,91 @@ class WeaponTableTests(TestCase):
 
         GameWeapon.objects.create(weapon_id=159, name="M82B (checked on stream)", is_sniper=True)
         call_command("seed_game_weapons", stdout=StringIO())
-        self.assertEqual(GameWeapon.objects.count(), len(kill_feed.KNOWN_WEAPONS))
+        # every proven id AND every enum id (inbox #468), once each
+        self.assertEqual(GameWeapon.objects.count(),
+                         len(set(kill_feed.KNOWN_WEAPONS) | set(WEAPON_NAMES) | set(REPLAY_NAMES)))
         self.assertTrue(GameWeapon.objects.get(weapon_id=159).is_sniper, "the admin's tick stays")
+        self.assertEqual(GameWeapon.objects.get(weapon_id=159).name, "M82B (checked on stream)")
         self.assertEqual(GameWeapon.objects.get(weapon_id=21).name, "Kar98k")
+        self.assertTrue(GameWeapon.objects.get(weapon_id=21).is_sniper, "a proven sniper keeps its tick")
+        mag7 = GameWeapon.objects.get(weapon_id=50)
+        self.assertEqual((mag7.name, mag7.is_sniper), ("MAG7", False), "an enum gun is named, not a sniper")
+        self.assertEqual(GameWeapon.objects.get(weapon_id=814).name, "EVO3", "named by the replay file")
+        self.assertFalse(GameWeapon.objects.filter(weapon_id=21002).exists(), "no name is ever invented")
         out = StringIO()
         call_command("seed_game_weapons", stdout=out)
         self.assertIn("0 new", out.getvalue())
+
+
+
+class StoredWeaponNameTests(TestCase):
+    """seed_game_weapons names the most-used weapons stored as a code before inbox #468 (3 Nov 2026)."""
+    setUp = KillStatsEndpointTests.setUp       # the same event, match and roster teams, not its tests
+
+    def test_the_seed_names_most_used_weapons_stored_as_a_code(self):
+        from io import StringIO
+
+        from django.core.management import call_command
+
+        from afc_tournament_and_scrims.models import TournamentPlayerMatchStats as Stats
+        from afc_tournament_and_scrims.models import TournamentTeamMatchStats
+
+        team_stats = TournamentTeamMatchStats.objects.create(
+            match=self.match, tournament_team=TournamentTeam.objects.filter(event=self.event).first())
+        made = [Stats.objects.create(team_stats=team_stats, most_used_weapon=v).pk
+                for v in ("9", "9", "21002", "unknown gun (id 815)", "MP40", "")]
+        out = StringIO()
+        call_command("seed_game_weapons", "--dry-run", stdout=out)
+        self.assertIn("3 stored most-used weapons would be named", out.getvalue())
+        self.assertEqual(Stats.objects.filter(most_used_weapon="9").count(), 2, "a dry run changes nothing")
+        call_command("seed_game_weapons", stdout=StringIO())
+        values = sorted(Stats.objects.filter(pk__in=made).values_list("most_used_weapon", flat=True))
+        self.assertEqual(values, sorted(["Desert Eagle", "Desert Eagle", "unknown gun (id 21002)",
+                                         "unknown gun (id 815)", "MP40", ""]))
+        # an admin names 815 later: the next run reaches the rows stored as unknown
+        GameWeapon.objects.filter(weapon_id=815).delete()
+        GameWeapon.objects.create(weapon_id=815, name="MP40 Cobra")
+        out = StringIO()
+        call_command("seed_game_weapons", stdout=out)
+        self.assertIn("1 stored most-used weapons named", out.getvalue())
+        self.assertTrue(Stats.objects.filter(pk__in=made, most_used_weapon="MP40 Cobra").exists())
+
+
+class WeaponNameTests(TestCase):
+    """weapons.weapon_label, the site's one rule for a gun's name (inbox #468): never a bare number."""
+
+    def test_an_enum_id_reads_as_the_gun(self):
+        for value in (9, "9", " 9 "):
+            self.assertEqual(weapon_label(value), "Desert Eagle")
+        self.assertEqual(weapon_label("601"), "Grenade")
+        self.assertEqual(weapon_label(21), "Kar98k")
+
+    def test_an_id_nobody_named_says_so(self):
+        self.assertEqual(weapon_label("21002"), "unknown gun (id 21002)")
+        self.assertEqual(weapon_label("unknown gun (id 21002)"), "unknown gun (id 21002)", "naming twice is a no-op")
+
+    def test_an_id_the_replay_file_names_reads_as_the_games_own_name(self):
+        self.assertEqual(weapon_label("814"), "EVO3")
+        self.assertEqual(weapon_label("unknown gun (id 812)"), "SeaGull", "a row stored as unknown is named")
+
+    def test_no_gun_is_empty(self):
+        for value in (None, "", "-5", -5, "  ", True, False):
+            self.assertEqual(weapon_label(value), "", value)
+
+    def test_a_name_stays_a_name(self):
+        self.assertEqual(weapon_label("Desert Eagle"), "Desert Eagle")
+
+    def test_an_admin_name_wins_but_the_seed_text_never_reaches_a_screen(self):
+        GameWeapon.objects.create(weapon_id=814, name="MP40 Cobra")
+        GameWeapon.objects.create(weapon_id=159, name="M82B")
+        GameWeapon.objects.create(weapon_id=26, name=kill_feed.KNOWN_WEAPONS[26][0])   # the seeded award note
+        self.assertEqual(weapon_label("814"), "MP40 Cobra")
+        self.assertEqual(weapon_label("unknown gun (id 814)"), "MP40 Cobra")
+        self.assertEqual(weapon_label("159"), "M82B")
+        self.assertEqual(weapon_label("26"), "SVD", "not 'SVD (marksman, not counted)'")
+
+    def test_one_query_names_a_whole_snapshot(self):
+        names = admin_names()
+        with self.assertNumQueries(0):
+            self.assertEqual([weapon_label(v, names) for v in ("9", "88", "814", "21002")],
+                             ["Desert Eagle", "MAC10", "EVO3", "unknown gun (id 21002)"])

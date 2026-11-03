@@ -43,7 +43,8 @@ KNOWN_WEAPONS = {
     21: ("Kar98k", True), 64: ("Gold Kar98k", True), 128: ("Gold Kar98k (2)", True),
     129: ("Gold Kar98k (3)", True), 175: ("Gold Kar98k (3, 2)", True),
     75: ("M24", True),
-    159: ("XM82, most likely the M82B: confirm on stream before counting", False),
+    # 61 chars did not fit GameWeapon.name (60): the seed crashed whenever 159 was not in the table yet (3 Nov 2026)
+    159: ("XM82, likely the M82B: confirm on stream first", False),
     26: ("SVD (marksman, not counted)", False), 170: ("SVD (variant 2)", False), 72: ("Gold SVD", False),
     89: ("AC80 (marksman, not counted)", False), 197: ("VSK94 (marksman, not counted)", False),
     18: ("SKS (marksman, not counted)", False), 11: ("M14 (marksman, not counted)", False),

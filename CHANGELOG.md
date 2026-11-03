@@ -44,6 +44,20 @@ number is blocked before the push.
   ballots were cast unless that viewer may see the results.
 - security-rules.json: the game files upload (views_game_files.py) gets an R70 allow entry with its reason, like debugger_ingest.py: size capped, unpacked and validated by content in memory, never stored or served. The push hook had blocked on it.
 
+### Fixed
+- A player's most-used weapon reads as the gun ("Desert Eagle", "M1887") on the leaderboard editor, the
+  overlays and the leaderboard graphics, not as the game's number ("9") (owner, 2 Nov: "find out what
+  exact weapons they are using nd not just the codes they are showing"). AFC Capture sends the number;
+  the map upload and the live push now store and serve the name from the game's own list of 252 guns,
+  the same list Capture's dashboard reads (`weapons.py`, `weapon_names.py`). The most used gun in AFC
+  matches, 814, is not on that list: the game's own replay files call it "EVO3" (and 812 "SeaGull"), so the
+  site shows those names (research: WEBSITE/tasks/weapon-ids-and-replay-2026-11-03). A gun nobody has named
+  yet reads "unknown gun (id 21002)", never a bare number, and a name an admin gives it in /admin/ wins.
+- `manage.py seed_game_weapons` crashed on a table that did not have weapon 159 yet (its label was 61
+  characters for a 60 character column). It now also fills every gun of the game's list (not a sniper,
+  an admin's row never overwritten) and names the most-used weapons stored as a number before this
+  release. Run it once after the deploy.
+
 ## v7.10.0 - 2026-11-02
 
 ### Added

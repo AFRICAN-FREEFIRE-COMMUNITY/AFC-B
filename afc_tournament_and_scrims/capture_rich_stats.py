@@ -35,7 +35,10 @@
 #     load-bearing thing; these stats decorate it.
 #   - Matched by UID only. A player row whose account has no UID, or a UID the payload does not
 #     carry, keeps zeros and rich_stats_filled=False, so "0" and "no data" stay distinguishable.
-#   - Values are clamped to sane non-negative ints; most_used_weapon to 16 chars.
+#   - Values are clamped to sane non-negative ints. most_used_weapon arrives as the game's weapon
+#     id ("9") and is STORED AS ITS NAME ("Desert Eagle", "unknown gun (id 814)") through
+#     weapons.weapon_label (inbox #468), so every reader of the row prints a gun, never a code;
+#     capped at the column's 60 chars.
 #   - Marks rich_stats_filled=True and rich_stats_source="capture" on every row it fills. The
 #     debugger-log backfill (debugger_ingest.py) marks "backfill" on its rows; a later capture
 #     upload of the same map overwrites either (the freshest full source wins).
@@ -47,6 +50,7 @@ import json
 import logging
 
 from .models import TournamentPlayerMatchStats
+from .weapons import admin_names, weapon_label
 
 log = logging.getLogger("afc_tournament_and_scrims")
 
@@ -67,7 +71,7 @@ _FIELD_MAP = {
 }
 _INT_FIELDS = set(_FIELD_MAP.values())
 _MAX_INT = 100000          # nothing in a 20-minute map gets near this; a bigger value is garbage
-_WEAPON_MAX_LEN = 16
+_WEAPON_MAX_LEN = 60       # TournamentPlayerMatchStats.most_used_weapon, as long as GameWeapon.name
 
 
 def parse_rich_stats(raw):
@@ -108,6 +112,7 @@ def apply_capture_rich_stats(match, payload):
         .select_related("player")
     )
     filled = 0
+    names = None                           # admin weapon names, loaded on the first filled row
     for row in rows:
         uid = str(getattr(row.player, "uid", "") or "").strip()
         stats = by_uid.get(uid) if uid else None
@@ -117,7 +122,9 @@ def apply_capture_rich_stats(match, payload):
             if key in stats:
                 setattr(row, field, _clean_int(stats[key]))
         weapon = stats.get("most_used_weapon", "")
-        row.most_used_weapon = str(weapon or "")[:_WEAPON_MAX_LEN]
+        if names is None:
+            names = admin_names()          # once per upload, only when a player row is filled
+        row.most_used_weapon = weapon_label(weapon, names)[:_WEAPON_MAX_LEN]
         row.rich_stats_filled = True
         row.rich_stats_source = "capture"
         row.save(update_fields=sorted(_INT_FIELDS) + ["most_used_weapon", "rich_stats_filled", "rich_stats_source"])
