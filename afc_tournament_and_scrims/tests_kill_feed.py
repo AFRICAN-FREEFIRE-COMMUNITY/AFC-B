@@ -325,10 +325,10 @@ class WeaponTableTests(TestCase):
     def test_the_defaults_count_the_owners_four_guns_and_every_version_of_them(self):
         ids = kill_feed.default_sniper_ids()
         # AWM, its gold / Droid / awakened / Blood Bat versions; Kar98k and its levels; M24 and its levels; M82B
-        for sniper in (4, 172, 65, 635, 30924, 21, 64, 128, 129, 175, 75, 805, 806, 45, 173):
+        for sniper in (4, 172, 65, 635, 30924, 21, 64, 128, 129, 175, 75, 805, 806, 45, 173, 812, 30805, 30909):
             self.assertIn(sniper, ids, sniper)
-        # marksman rifles, the grenade, the XM8 159 once guessed to be an M82B, the Hawk (outside the owner's set)
-        for other in (26, 89, 197, 18, 11, 13, 601, 159, 812, 19, 71):
+        # marksman rifles, the grenade, the XM8 159 once guessed to be an M82B, the M249 / M249-X (not the M24)
+        for other in (26, 89, 197, 18, 11, 13, 601, 159, 19, 71):
             self.assertNotIn(other, ids, other)
 
     def test_a_version_is_named_after_its_gun_and_the_m249_is_not_the_m24(self):
@@ -361,7 +361,7 @@ class WeaponTableTests(TestCase):
         m82b = GameWeapon.objects.get(weapon_id=45)
         self.assertEqual((m82b.name, m82b.is_sniper), ("M82B", True))
         hawk = GameWeapon.objects.get(weapon_id=812)
-        self.assertEqual((hawk.name, hawk.is_sniper), ("Hawk", False), "outside the owner's set")
+        self.assertEqual((hawk.name, hawk.is_sniper), ("Hawk", True), "the owner added the Hawk, 3 Nov 2026")
         self.assertFalse(GameWeapon.objects.filter(weapon_id=80006).exists(), "no name is ever invented")
 
     def test_the_seed_renames_what_a_machine_wrote_and_never_what_an_admin_did(self):
