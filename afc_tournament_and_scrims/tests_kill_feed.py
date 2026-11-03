@@ -263,6 +263,17 @@ class KillStatsEndpointTests(TestCase):
         named = {w["weapon_id"]: w["name"] for w in body["sniper_weapons"]}
         self.assertEqual(named, {113: "AWM (example id)", 80006: "unknown gun (id 80006)"})
 
+    def test_weapons_used_lists_kills_per_gun_by_name_with_the_top_player(self):
+        # inbox #467, the leaderboard's Kill stats tab: the log has a grenade kill (601) by RAGE and an
+        # admin-named 113 kill by VOID; the zone kill (-5) has no gun and is left out
+        body = self.client.get(self.URL, {"event": self.event.slug},
+                               HTTP_AUTHORIZATION="Bearer kf-admin-token").json()
+        got = {w["name"]: (w["kills"], w["top"]["name"], w["top"]["team_name"], w["top"]["kills"])
+               for w in body["weapons"]}
+        self.assertEqual(got, {"Grenade": (1, "p1111111111", "SAINT", 1),
+                               "AWM (example id)": (1, "p2222222222", "SAINT", 1)})
+        self.assertEqual(sum(w["kills"] for w in body["weapons"]), body["coverage"]["kills_with_weapon"])
+
 
 class CaptureKillEventsUploadTests(TestCase):
     """AFC Capture sends `kill_events` beside the MatchResult file (inbox #376): stored for the map with the

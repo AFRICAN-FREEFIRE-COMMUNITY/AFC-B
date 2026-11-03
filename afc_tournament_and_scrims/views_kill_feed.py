@@ -13,7 +13,11 @@ RESPONSE 200 (json): {event, stage, stages: [{id, name}], switches: {tab, overla
 coverage: {maps, kills, kills_with_weapon}, sniper: [{uid, username, team_name, sniper_kills}],
 head_to_head: [{team_a: {id, name}, team_b: {id, name}, met, wins_a, wins_b, draws, third_party}],
 teams: {id: name}, players: {uid: {name, team_id}}, player_pairs: [[uid_a, uid_b, kills_a_on_b,
-kills_b_on_a, knocks_a_on_b, knocks_b_on_a]], sniper_weapons: [{weapon_id, name}]}.
+kills_b_on_a, knocks_a_on_b, knocks_b_on_a]], sniper_weapons: [{weapon_id, name}],
+weapons: [{name, kills, top: {uid, name, team_name, kills}}]}.
+  weapons: kills per gun for the kills whose weapon the game reported, by the name the game shows players
+  (weapons.weapon_label: an admin's name wins; versions of one gun read as one name), most kills first, with
+  the player who made the most kills with it (#467, the leaderboard page's Kill stats tab).
   third_party: in how many of the pair's fights a third team came in (inbox #383).
   player_pairs: who killed and knocked who, every two players who met in a fight (#384, #385:
   knocks count, a knock is not a kill and players left still drops only on a kill).
@@ -27,7 +31,9 @@ AUTH: open to anybody once the event switched the matching surface on (kill_feed
 for json, kill_feed_export for csv); before that, only the event's admins and organizer (to preview).
 Refusals carry a code: event_not_found (404), kill_stats_off (403).
 CONSUMED BY: the event page's Kill stats tab (AFC_Frontend components/events/KillStatsTab.tsx through
-lib/killStats.ts; approved mockup mockups/kill-feed-tab/, inbox #392) and its CSV link. Next: the AFC LIVE
+lib/killStats.ts; approved mockup mockups/kill-feed-tab/, inbox #392) and its CSV link; the same component on
+the admin and organizer leaderboard pages for staff (inbox #467, mockups/kill-stats-admin/), which reads
+`weapons` and downloads the CSV with the session, so it works while the event's switches are off. Next: the AFC LIVE
 overlays (the player duel overlay gets its own design, #385).
 """
 import csv
@@ -175,6 +181,23 @@ def kill_stats(request):
     # Which guns count as a sniper, by name: the admin's name, else the award's own label (it tells the
     # gold Kar98k variants apart), else the enum name or "unknown gun (id N)"; never a bare number (#468).
     gun_names = admin_names()
+
+    # ── weapons used, by name (inbox #467): kills per gun, and who made the most kills with it ──
+    by_gun = {}
+    for e in kills:
+        if e["weapon"] is None:
+            continue
+        row = by_gun.setdefault(weapon_label(e["weapon"], gun_names), {"kills": 0, "by": {}})
+        row["kills"] += 1
+        row["by"][e["killer_uid"]] = row["by"].get(e["killer_uid"], 0) + 1
+    weapons = []
+    for gun, row in by_gun.items():
+        uid, n = min(row["by"].items(), key=lambda kv: (-kv[1], player_names.get(kv[0], kv[0])))
+        weapons.append({"name": gun, "kills": row["kills"],
+                        "top": {"uid": uid, "name": player_names.get(uid, uid),
+                                "team_name": names.get(team_of.get(uid), ""), "kills": n}})
+    weapons.sort(key=lambda w: (-w["kills"], w["name"]))
+
     return Response({
         "event": event.slug,
         "stage": int(stage_id) if stage_id and str(stage_id).isdigit() else None,
@@ -192,6 +215,7 @@ def kill_stats(request):
         "sniper_weapons": ([{"weapon_id": w, "name": (gun_names.get(w) or kill_feed.KNOWN_WEAPONS.get(w, (None,))[0]
                                                       or weapon_label(w, gun_names))}
                             for w in sorted(sniper_ids)]),
+        "weapons": weapons,
     })
 
 
