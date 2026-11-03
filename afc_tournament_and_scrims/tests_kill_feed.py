@@ -336,6 +336,9 @@ class WeaponTableTests(TestCase):
         self.assertEqual(kill_feed.gun_of("Kar98k-III (Droid Apocalypse)"), "Kar98k")
         self.assertEqual(kill_feed.gun_of("M24-I"), "M24")
         self.assertEqual(kill_feed.gun_of("M249-X"), "M249")
+        self.assertEqual(kill_feed.gun_of("MAG-7 (Droid Apocalypse)"), "MAG-7", "the hyphen is the gun's own")
+        self.assertEqual(kill_feed.gun_of("FGL-24"), "FGL-24")
+        self.assertEqual(kill_feed.gun_of("Heal Pistol-Y"), "Heal Pistol")
 
     def test_the_names_are_the_games_and_never_an_internal_label(self):
         self.assertEqual((WEAPON_NAMES[814], WEAPON_NAMES[812], WEAPON_NAMES[809], WEAPON_NAMES[815]),
@@ -438,6 +441,7 @@ class WeaponNameTests(TestCase):
         self.assertEqual(weapon_label("EVO3"), "Skorp")
         self.assertEqual(weapon_label("SeaGull"), "Hawk")
         self.assertEqual(weapon_label("BLT"), "M82B")
+        self.assertEqual(weapon_label("MAG7"), "MAG-7", "50 and 160 both had it, both are the MAG-7")
         self.assertEqual(weapon_label("Gold MP5"), "MP5", "three gold MP5 levels had it: it names the gun")
 
     def test_an_id_nobody_named_says_so(self):
