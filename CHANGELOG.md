@@ -18,6 +18,14 @@ At release time `node ~/.claude/skills/versioning/scripts/release.mjs next` prin
 rename `## Unreleased` to it, merge, then tag the merge commit. A version tag pushed with the wrong
 number is blocked before the push.
 
+## Unreleased
+
+### Added
+- The capture key's event answer (`events/capture/context/`) carries a broadcast pack: per team its tag, logo address,
+  country and ISO country code, per player their esport image address and in-game role. AFC LIVE's Tournament
+  overlays read it to draw logos, flags and photos (owner, 4 Nov 2026, inbox #484). New keys only: AFC Capture's
+  roster check reads what it read before. A logo or photo the event's media audit took off stays off.
+
 ## v7.13.0 - 2026-11-03
 
 ### Added
