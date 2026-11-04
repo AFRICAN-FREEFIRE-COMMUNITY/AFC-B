@@ -85,6 +85,17 @@ class CaptureContextPackTests(TestCase):
         self.assertIn("skg1.png", players["SKG1"]["photo"])
         self.assertIsNone(players["SKG2"]["photo"])   # no esport image: null, never a placeholder
 
+    def test_player_country_follows_the_site_flag_rule(self):
+        """#500: each player's own country for AFC LIVE's player countries overlay: the login country first,
+        else the profile country, else blank; the code is the ISO alpha-2 (None when unknown)."""
+        User.objects.filter(username="SKG1").update(ip_country="Ghana", country="Nigeria")
+        User.objects.filter(username="SKG2").update(ip_country="", country="Kenya")
+        User.objects.filter(username="SKG3").update(ip_country="", country="")
+        players = {p["username"]: p for p in self._context()["SKG ESPORTS"]["players"]}
+        self.assertEqual((players["SKG1"]["country"], players["SKG1"]["country_code"]), ("Ghana", "GH"))
+        self.assertEqual((players["SKG2"]["country"], players["SKG2"]["country_code"]), ("Kenya", "KE"))
+        self.assertEqual(players["SKG3"]["country"], "")
+
     def test_media_audit_opt_outs_are_honoured(self):
         EventMediaOptOut.objects.create(event=self.event, kind="team_logo", team=self.teams["SKG"])
         skg1 = User.objects.get(username="SKG1")

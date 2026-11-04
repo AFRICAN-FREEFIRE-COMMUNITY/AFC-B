@@ -20521,12 +20521,17 @@ def _capture_expected_teams(event, stage, group, request=None):
         photo = None
         if m.user and m.user_id not in hidden_photos:
             photo = esports_pic_url(m.user, request, event=event)
+        # The player's own country, by the site's per-player flag rule (afc_team.views.get_team_details):
+        # the latest login country, else the profile country. AFC LIVE's "player countries" overlay (inbox #500).
+        player_country = ((m.user.ip_country or m.user.country) if m.user else "") or ""
         members_by_tt[m.tournament_team_id].append({
             "user_id": m.user_id,
             "username": (m.user.username if m.user else "") or "",   # in-game name (IGN)
             "uid": (m.user.uid if m.user else "") or "",             # Free Fire UID (may be blank)
             "photo": photo,                                           # esport image URL or None (pack)
             "in_game_role": role_by.get((team_of_tt.get(m.tournament_team_id), m.user_id), ""),  # pack
+            "country": player_country.strip(),                        # pack (#500)
+            "country_code": country_code(player_country.strip()),     # ISO 3166-1 alpha-2, or "" (pack)
         })
 
     teams_out = []
