@@ -20312,6 +20312,10 @@ def capture_resolve(request):
 # CONNECTS TO: EventUploadToken (auth), Stages/StageGroups (target), StageGroupCompetitor/StageCompetitor
 #   (seeded rosters) → TournamentTeam → TournamentTeamMember → User(uid, username). Consumed by the
 #   capture client's roster.py fetch_expected_roster().
+#   ALSO CONSUMED BY AFC LIVE (owner 2026-11-04, inbox #484): its Tournament overlays fetch this same answer
+#   with the same key as the event PACK (tournament.fetch_pack in LAYO/FREEFIRE/BOUNTY-LIVE) and read the
+#   pack keys _capture_expected_teams adds: team_tag, team_logo, country, country_code, players[].photo,
+#   players[].in_game_role. Media opt-outs (EventMediaOptOut) are honoured there.
 @api_view(["GET"])
 def capture_context(request):
     value, token = _resolve_event_upload_token(request)
@@ -20350,7 +20354,7 @@ def capture_context(request):
         group = stage.groups.all().order_by(
             "group_order", "playing_date", "playing_time", "group_id").first()
 
-    teams_out, roster_source = _capture_expected_teams(event, stage, group)
+    teams_out, roster_source = _capture_expected_teams(event, stage, group, request)
     maps_out = _capture_expected_maps(stage, group)
 
     # ── complaint D extension: existing match slots + expected map count for the resolved group ──────
@@ -20449,7 +20453,7 @@ CAPTURE_PARK_MESSAGES = {
 }
 
 
-def _capture_expected_teams(event, stage, group):
+def _capture_expected_teams(event, stage, group, request=None):
     """Resolve the teams DUE to play in (group ‖ stage ‖ event) plus each team's players (IGN + Free
     Fire UID), for the capture client's expected-vs-collected check (complaint F).
 
@@ -20461,7 +20465,9 @@ def _capture_expected_teams(event, stage, group):
     Returns (teams, source). Solo events carry no team rosters, so teams is [] there (F's check is
     team+UID oriented and the result-upload endpoint is team-only). Members are fetched in ONE query
     (no N+1). Each player: {user_id, username (IGN), uid (Free Fire UID, "" when the member never set
-    one - the client treats a blank uid as name-only)."""
+    one - the client treats a blank uid as name-only), plus the broadcast pack keys AFC LIVE reads
+    (photo, in_game_role per player; team_tag, team_logo, country, country_code per team; owner
+    2026-11-04, inbox #484). `request` makes the picture URLs absolute."""
     from collections import defaultdict
 
     # Which tournament_team rows are due here, most-specific source first.
@@ -20488,24 +20494,63 @@ def _capture_expected_teams(event, stage, group):
     tt_list = list(tt_qs.select_related("team", "ghost_team").order_by("tournament_team_id"))
     tt_ids_final = [t.tournament_team_id for t in tt_list]
 
+    # ── broadcast pack (owner 2026-11-04, inbox #484: AFC LIVE's ten Tournament overlays) ──
+    # AFC LIVE reads this same answer with the same capture key to draw each team's tag, logo and flag
+    # and each player's photo and in-game role (afc_live tournament.fetch_pack, which saves the pictures
+    # on the operator's PC so a dropped connection never blanks an overlay). New keys only: Capture's
+    # roster check reads team_name / uid / username and ignores the rest. The event's media audit wins
+    # here as on every other broadcast surface (EventMediaOptOut, read once per kind), and a player who
+    # removed their image after joining keeps the event's copy (esports_pic_url with event=).
+    from afc_auth.country_grouping import country_code
+    from afc_auth.models import esports_pic_url
+    from .views_overlays import _opted_out_media_ids
+    hidden_logos = _opted_out_media_ids(event, "team_logo", "team_id")
+    hidden_photos = _opted_out_media_ids(event, "esports_image", "user_id")
+    # in_game_role lives on the club membership (TeamMembers), not on the event roster: one query.
+    role_by = {
+        (tm.team_id, tm.member_id): tm.in_game_role or ""
+        for tm in TeamMembers.objects.filter(
+            team_id__in=[tt.team_id for tt in tt_list if tt.team_id]).only("team_id", "member_id", "in_game_role")
+    }
+    team_of_tt = {tt.tournament_team_id: tt.team_id for tt in tt_list}
+
     # All members for those teams in one query, grouped by team (IGN = User.username, UID = User.uid).
     members_by_tt = defaultdict(list)
     for m in TournamentTeamMember.objects.filter(
             tournament_team_id__in=tt_ids_final).select_related("user"):
+        photo = None
+        if m.user and m.user_id not in hidden_photos:
+            photo = esports_pic_url(m.user, request, event=event)
         members_by_tt[m.tournament_team_id].append({
             "user_id": m.user_id,
             "username": (m.user.username if m.user else "") or "",   # in-game name (IGN)
             "uid": (m.user.uid if m.user else "") or "",             # Free Fire UID (may be blank)
+            "photo": photo,                                           # esport image URL or None (pack)
+            "in_game_role": role_by.get((team_of_tt.get(m.tournament_team_id), m.user_id), ""),  # pack
         })
 
     teams_out = []
     for tt in tt_list:
+        # A ghost team (no AFC account yet) has a name and a country but no tag or logo.
+        team = tt.team
+        country = (getattr(tt.competitor, "country", "") or "").strip()
+        logo = None
+        if team is not None and team.team_logo and team.team_id not in hidden_logos:
+            try:
+                logo = request.build_absolute_uri(team.team_logo.url) if request is not None else team.team_logo.url
+            except ValueError:
+                logo = None   # a logo row whose file name is empty has no url
         teams_out.append({
             "tournament_team_id": tt.tournament_team_id,
             "team_id": tt.team_id,
             "team_name": tt.display_name or "",
             "status": tt.status,
             "players": members_by_tt.get(tt.tournament_team_id, []),
+            # pack keys (AFC LIVE): tag, logo URL, the stored country and its ISO 3166-1 alpha-2 code
+            "team_tag": ((team.team_tag if team is not None else "") or "").strip(),
+            "team_logo": logo,
+            "country": country,
+            "country_code": country_code(country),
         })
     return teams_out, source
 
