@@ -26,6 +26,8 @@ number is blocked before the push.
   overlays read it to draw logos, flags and photos (owner, 4 Nov 2026, inbox #484). New keys only: AFC Capture's
   roster check reads what it read before. A logo or photo the event's media audit took off stays off.
 
+- The event pack AFC LIVE reads (`events/capture/context/`) now carries each player's own country (`players[].country`, `players[].country_code`): the latest login country, else the profile country, the same rule as the player flags on team pages. For AFC LIVE's Player countries overlay.
+
 ## v7.13.0 - 2026-11-03
 
 ### Added
