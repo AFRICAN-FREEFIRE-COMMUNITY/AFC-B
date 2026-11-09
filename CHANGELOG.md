@@ -28,6 +28,13 @@ number is blocked before the push.
 
 - The event pack AFC LIVE reads (`events/capture/context/`) now carries each player's own country (`players[].country`, `players[].country_code`): the latest login country, else the profile country, the same rule as the player flags on team pages. For AFC LIVE's Player countries overlay.
 
+### Fixed
+- Damage is now stored for maps AFC Capture uploads (owner, 9 Nov 2026, inbox #512: "The site still does not store
+  damage"). Capture 1.5.4 sends each player's damage as the game counts it; the server now keeps it on the player, adds
+  it to the team's damage, and counts it in damage points for events that score damage. Maps uploaded earlier get their
+  damage, every gun and their stats from the replay files still on the observer PC (`manage.py backfill_capture_stats`),
+  without their results being rewritten. Maps from an older Capture with no replay kept stay at 0.
+
 ## v7.13.0 - 2026-11-03
 
 ### Added

@@ -1724,7 +1724,8 @@ class TournamentPlayerMatchStats(models.Model):
     # the id, weapons.weapon_label stores the name (inbox #468, 3 Nov 2026; 16 -> 60 chars so
     # "unknown gun (id 21002)" and an admin's name fit). `assists` above is
     # reused for KNOCK assists (this player knocked, a teammate or anyone else finished) since the
-    # game logs no damage. rich_stats_source says which path filled the row so a screen can say so.
+    # debugger log has no damage. `damage` above comes from Capture 1.5.4 on (the replay's own figure,
+    # inbox #512, capture_rich_stats.damage_by_uid). rich_stats_source says which path filled the row.
     knocked = models.PositiveIntegerField(default=0)
     grenades_used = models.PositiveIntegerField(default=0)
     grenade_kills = models.PositiveIntegerField(default=0)
