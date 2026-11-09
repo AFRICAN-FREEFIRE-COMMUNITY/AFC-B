@@ -18,7 +18,7 @@ At release time `node ~/.claude/skills/versioning/scripts/release.mjs next` prin
 rename `## Unreleased` to it, merge, then tag the merge commit. A version tag pushed with the wrong
 number is blocked before the push.
 
-## Unreleased
+## v7.14.0 - 2026-11-09
 
 ### Added
 - The capture key's event answer (`events/capture/context/`) carries a broadcast pack: per team its tag, logo address,
