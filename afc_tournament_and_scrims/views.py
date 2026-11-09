@@ -22023,6 +22023,11 @@ def upload_team_match_result(request):
         # roles, and this endpoint re-uploads constantly. See roster_roles.py.
         match_roles = roster_roles.frozen_roles_for_match(match)
 
+        # AFC Capture's rich stats, read once here (inbox #512): each player's damage must be in the entries the
+        # shared writer sums into the team's damage and damage points, so it cannot wait for the fill below.
+        _rich_payload, _rich_reason = capture_rich_stats.parse_rich_stats(request.data.get("rich_stats"))
+        rich_damage = capture_rich_stats.damage_by_uid(_rich_payload)
+
         # -------- CREATE TEAM STATS --------
         for team_data in parsed_teams:
 
@@ -22183,7 +22188,8 @@ def upload_team_match_result(request):
                     # uniqueness), so this list is exactly the set the response loop below reports
                     # as `attributed`.
                     block_players.append(
-                        {"user_id": member.user_id, "kills": p["kills"], "played": True})
+                        {"user_id": member.user_id, "kills": p["kills"], "played": True,
+                         "damage": rich_damage.get(uid, 0)})     # the game's figure from Capture, #512
                 else:  # member is None (no UID match) OR on another team (belongs_to_other_team)
                     if uid in seen_block:
                         continue
@@ -22273,6 +22279,9 @@ def upload_team_match_result(request):
             # still follow the event default. Mirrors _recompute_team_kills_for_event so the upload total
             # is consistent.
             counted_flagged = sum(f["kills"] for f in block_flags if _will_count(f))
+            # Their damage follows the same rule as their kills (inbox #512): it rides the same unnamed entry. The
+            # "unlisted" gap is no player, so it has none.
+            counted_flagged_damage = sum(rich_damage.get(f["uid"], 0) for f in block_flags if _will_count(f))
 
             # THE WRITE, through the shared writer. Two things worth saying out loud:
             #
@@ -22296,7 +22305,8 @@ def upload_team_match_result(request):
                     "bonus_points": 0,
                     "penalty_points": 0,
                     "players": block_players + (
-                        [{"user_id": None, "kills": counted_flagged}] if counted_flagged else []
+                        [{"user_id": None, "kills": counted_flagged, "damage": counted_flagged_damage}]
+                        if counted_flagged or counted_flagged_damage else []
                     ),
                 },
                 ctx=write_ctx,
@@ -22503,7 +22513,7 @@ def upload_team_match_result(request):
         rich_stats_applied = 0
         rich_stats_error = ""
         if not dry_run:
-            _rich_payload, _rich_reason = capture_rich_stats.parse_rich_stats(request.data.get("rich_stats"))
+            # parsed above, before the writer (inbox #512)
             if _rich_payload is not None:
                 try:
                     rich_stats_applied = capture_rich_stats.apply_capture_rich_stats(match, _rich_payload)

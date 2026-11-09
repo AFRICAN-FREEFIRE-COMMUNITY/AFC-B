@@ -109,8 +109,8 @@ class _Fixture(TestCase):
                                         role="player", password="x", uid=uid)
                 TournamentTeamMember.objects.create(tournament_team=tt, user=u)
 
-    def _upload(self, rich_stats=None):
-        f = SimpleUploadedFile("match.log", LOG.encode("utf-8"), content_type="text/plain")
+    def _upload(self, rich_stats=None, log=LOG):
+        f = SimpleUploadedFile("match.log", log.encode("utf-8"), content_type="text/plain")
         data = {"match_id": self.match.match_id, "file": f}
         if rich_stats is not None:
             data["rich_stats"] = rich_stats
@@ -165,6 +165,57 @@ class CaptureRichStatsUploadTests(_Fixture):
         r = self._row("1001")
         self.assertEqual((r.deaths, r.knockdowns, r.grenades_used, r.headshots), (0, 7, 100000, 0))
         self.assertEqual(len(r.most_used_weapon), 60)
+
+    # ── damage (owner 9 Nov 2026, inbox #512: "The site still does not store damage") ──
+    # AFC Capture 1.5.4 sends the game's own damage figure per UID (the replay's TOTAL_DAMAGE). It goes into the
+    # player entries BEFORE the shared writer, so the team row's damage is their sum and damage points count.
+    def _rich_with_damage(self):
+        payload = json.loads(json.dumps(RICH))
+        payload["players"]["1001"]["damage"] = 850
+        payload["players"]["1002"]["damage"] = 300
+        payload["players"]["300"]["damage"] = 1240
+        return payload
+
+    def test_damage_is_stored_on_players_and_summed_on_the_team(self):
+        resp = self._upload(rich_stats=json.dumps(self._rich_with_damage()))
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.assertEqual((self._row("1001").damage, self._row("1002").damage, self._row("300").damage), (850, 300, 1240))
+        self.assertEqual(self._row("301").damage, 0)                      # the payload gave no figure
+        teams = {s.tournament_team_id: s for s in TournamentTeamMatchStats.objects.filter(match=self.match)}
+        self.assertEqual(teams[self.tt["TRG ESPORT"].tournament_team_id].damage, 1150)
+        self.assertEqual(teams[self.tt["KOCC"].tournament_team_id].damage, 1240)
+
+    def test_damage_points_count_when_the_event_scores_damage(self):
+        self.match.scoring_settings = {"placement_points": {"1": 12, "2": 9}, "kill_point": 1,
+                                       "points_per_1000_damage": 2}
+        self.match.save(update_fields=["scoring_settings"])
+        self._upload(rich_stats=json.dumps(self._rich_with_damage()))
+        trg = TournamentTeamMatchStats.objects.get(match=self.match, tournament_team=self.tt["TRG ESPORT"])
+        self.assertEqual(trg.total_points, int(12 + 5 * 1 + 1150 / 1000 * 2))   # 19: 2.3 damage points
+
+    def test_damage_absent_leaves_zero_and_a_bad_figure_is_clamped(self):
+        payload = json.loads(json.dumps(RICH))
+        payload["players"]["1002"]["damage"] = -40
+        payload["players"]["300"]["damage"] = "lots"
+        self._upload(rich_stats=json.dumps(payload))
+        self.assertEqual((self._row("1001").damage, self._row("1002").damage, self._row("300").damage), (0, 0, 0))
+
+    def test_damage_of_a_flagged_player_counts_when_their_kills_do(self):
+        # A player not on the roster (a ringer, or a changed UID) is a flag: their kills reach the team total while the
+        # event counts flagged kills (the default), and so does their damage. A flagged player has no row to hold it.
+        log = LOG.replace("NAME: naruto   ID: 1002   KILL: 2\r\n",
+                          "NAME: naruto   ID: 1002   KILL: 2\r\nNAME: ghost   ID: 5555   KILL: 0\r\n")
+        payload = self._rich_with_damage()
+        payload["players"]["5555"] = {"damage": 400}
+        resp = self._upload(rich_stats=json.dumps(payload), log=log)
+        self.assertEqual(resp.status_code, 200, resp.data)
+        trg = TournamentTeamMatchStats.objects.get(match=self.match, tournament_team=self.tt["TRG ESPORT"])
+        self.assertEqual(trg.damage, 1150 + 400)
+
+    def test_damage_rides_the_rich_stats_writer_too(self):
+        self._upload()
+        apply_capture_rich_stats(self.match, {"players": {"1001": {"damage": 777}}})
+        self.assertEqual(self._row("1001").damage, 777)
 
     def test_parse_rich_stats(self):
         self.assertEqual(parse_rich_stats(None), (None, "absent"))
@@ -236,3 +287,90 @@ class BackfillStillWorks(_Fixture):
         self.assertEqual(n, 3)
         r = self._row("1001")
         self.assertEqual((r.deaths, r.rich_stats_source), (1, "capture"))
+
+
+class BackfillCaptureStatsCommandTests(_Fixture):
+    """manage.py backfill_capture_stats (owner 9 Nov 2026, inbox #512: "resend everything all past maps"): a map uploaded
+    before Capture 1.5.4 gets its damage, rich stats and kill feed WITHOUT its result being rewritten."""
+
+    FF = "2102196355679832064"
+
+    def _run(self, entries, apply):
+        import io
+        import os
+        import tempfile
+        from django.core.management import call_command
+        fd, path = tempfile.mkstemp(suffix=".json")
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(entries, fh)
+        out = io.StringIO()
+        try:
+            call_command("backfill_capture_stats", file=path, apply=apply, stdout=out)
+        finally:
+            os.remove(path)
+        return out.getvalue()
+
+    def _entry(self, **extra):
+        payload = json.loads(json.dumps(RICH))
+        payload["players"]["1001"]["damage"] = 850
+        payload["players"]["1002"]["damage"] = 300
+        payload["players"]["300"]["damage"] = 1240
+        entry = {"rich_stats": payload,
+                 "kill_events": [{"t": 12.5, "kind": "knock", "killer_uid": "1001", "victim_uid": "300",
+                                  "headshot": False, "weapon": 814}]}
+        entry.update(extra)
+        return entry
+
+    def _upload_named(self):
+        f = SimpleUploadedFile("MatchResult_%s_2026-11-01-20-00-00.log" % self.FF, LOG.encode("utf-8"),
+                               content_type="text/plain")
+        resp = self.client.post("/events/upload-team-match-result/", data={"match_id": self.match.match_id, "file": f},
+                                HTTP_AUTHORIZATION=f"Bearer {self.token.token}")
+        self.assertEqual(resp.status_code, 200, resp.data)
+
+    def _trg(self):
+        return TournamentTeamMatchStats.objects.get(match=self.match, tournament_team=self.tt["TRG ESPORT"])
+
+    def test_dry_run_writes_nothing(self):
+        self._upload_named()
+        out = self._run([self._entry(ff_match_id=self.FF)], apply=False)
+        self.assertIn("WOULD APPLY", out)
+        self.assertEqual((self._row("1001").damage, self._trg().damage), (0, 0))
+        from afc_tournament_and_scrims.models import MatchKillEvent
+        self.assertFalse(MatchKillEvent.objects.filter(match=self.match).exists())
+
+    def test_apply_fills_damage_and_points_and_keeps_the_result(self):
+        self.match.scoring_settings = {"placement_points": {"1": 12, "2": 9}, "kill_point": 1,
+                                       "points_per_1000_damage": 2}
+        self.match.save(update_fields=["scoring_settings"])
+        self._upload_named()
+        before = self._trg()
+        TournamentTeamMatchStats.objects.filter(pk=before.pk).update(bonus_points=3)   # an organizer's edit
+        out = self._run([self._entry(ff_match_id=self.FF)], apply=True)
+        self.assertIn("APPLIED", out)
+        after = self._trg()
+        self.assertEqual((self._row("1001").damage, self._row("1002").damage), (850, 300))
+        self.assertEqual(after.damage, 1150)
+        self.assertEqual((after.kills, after.placement, after.bonus_points), (before.kills, before.placement, 3))
+        self.assertEqual(after.total_points, int(12 + 5 + 1150 / 1000 * 2 + 3))      # 22
+        from afc_tournament_and_scrims.models import MatchKillEvent
+        self.assertEqual(list(MatchKillEvent.objects.filter(match=self.match).values_list("weapon_id", flat=True)), [814])
+
+    def test_a_game_never_uploaded_or_uploaded_twice_is_skipped(self):
+        out = self._run([self._entry(ff_match_id="2118000000000000001")], apply=True)
+        self.assertIn("SKIP 2118000000000000001: never_uploaded", out)
+        self._upload_named()
+        other = Match.objects.create(leaderboard=self.match.leaderboard, group=self.group, match_number=2,
+                                     match_map="bermuda", scoring_settings=self.match.scoring_settings)
+        f = SimpleUploadedFile("MatchResult_%s_2026-11-01-21-00-00.log" % self.FF, LOG.encode("utf-8"),
+                               content_type="text/plain")
+        self.client.post("/events/upload-team-match-result/", data={"match_id": other.match_id, "file": f},
+                         HTTP_AUTHORIZATION=f"Bearer {self.token.token}")
+        out = self._run([self._entry(ff_match_id=self.FF)], apply=True)
+        self.assertIn("uploaded_to_2_matches", out)
+        self.assertEqual(self._row("1001").damage, 0)
+
+    def test_a_site_match_id_is_used_as_given(self):
+        self._upload()
+        self._run([self._entry(site_match_id=self.match.match_id)], apply=True)
+        self.assertEqual(self._trg().damage, 1150)

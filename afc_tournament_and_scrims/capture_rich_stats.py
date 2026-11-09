@@ -39,12 +39,18 @@
 #     id ("9") and is STORED AS ITS NAME ("Desert Eagle", "unknown gun (id 814)") through
 #     weapons.weapon_label (inbox #468), so every reader of the row prints a gun, never a code;
 #     capped at the column's 60 chars.
+#   - DAMAGE (owner 9 Nov 2026, inbox #512: "The site still does not store damage"): AFC Capture 1.5.4 sends
+#     `damage` per player, the game's own figure (the replay's TOTAL_DAMAGE; the debugger log has none). It
+#     must count toward the TEAM's damage and the damage points too, so upload_team_match_result reads it
+#     with damage_by_uid() BEFORE the shared writer and puts it in each player entry; the writer stores it
+#     and sums the team. `damage` is also in _FIELD_MAP so this writer keeps the row equal. A player the
+#     payload gives no figure keeps 0 (an older Capture, or no replay on that PC).
 #   - Marks rich_stats_filled=True and rich_stats_source="capture" on every row it fills. The
 #     debugger-log backfill (debugger_ingest.py) marks "backfill" on its rows; a later capture
 #     upload of the same map overwrites either (the freshest full source wins).
 #
 # CONSUMED BY
-#   views.upload_team_match_result (the hook), tests_capture_rich_stats.py.
+#   views.upload_team_match_result (the hook, and damage_by_uid before the writer), tests_capture_rich_stats.py.
 
 import json
 import logging
@@ -68,6 +74,7 @@ _FIELD_MAP = {
     "gloowall_used": "gloowall_used",
     "medkit_used": "medkit_used",
     "survival_seconds": "survival_seconds",
+    "damage": "damage",                 # inbox #512; also read before the writer, see damage_by_uid
 }
 _INT_FIELDS = set(_FIELD_MAP.values())
 _MAX_INT = 100000          # nothing in a 20-minute map gets near this; a bigger value is garbage
@@ -97,6 +104,15 @@ def _clean_int(value):
     except (TypeError, ValueError):
         return 0
     return max(0, min(n, _MAX_INT))
+
+
+def damage_by_uid(payload):
+    """{uid: damage} for the players a parsed payload gives a damage figure (inbox #512), clamped like the rest.
+    Read by upload_team_match_result BEFORE the shared writer, so the team's damage and damage points include it.
+    An absent payload, or a player with no `damage` key, is simply not in the answer (their entry keeps 0)."""
+    players = (payload or {}).get("players") or {}
+    return {str(uid).strip(): _clean_int(stats["damage"])
+            for uid, stats in players.items() if isinstance(stats, dict) and "damage" in stats}
 
 
 def apply_capture_rich_stats(match, payload):
