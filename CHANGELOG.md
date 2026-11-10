@@ -18,7 +18,7 @@ At release time `node ~/.claude/skills/versioning/scripts/release.mjs next` prin
 rename `## Unreleased` to it, merge, then tag the merge commit. A version tag pushed with the wrong
 number is blocked before the push.
 
-## Unreleased
+## v7.15.0 - 2026-11-10
 
 ### Added
 - `events/capture/context/?standings=1` (AFC LIVE): the group's points as the site computes them, so the broadcast
