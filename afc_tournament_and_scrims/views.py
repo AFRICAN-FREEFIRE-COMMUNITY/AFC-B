@@ -20418,6 +20418,10 @@ def capture_context(request):
 #              rule (Event.mvp_config criteria order and scope, set on the leaderboard's MVPs tab), and
 #              the group's MVP (most map MVPs, ties on the same criteria). uid rides along so AFC LIVE can
 #              show the player's cut-out photo.
+#   top_killers views_mvp.compute_top_killers for this group (owner 2026-11-10, inbox #524: kill leaders
+#              "updated in realtime based off whats on the website"): the site's own Top Killers board,
+#              players by summed kills over the group's scored maps, ties on damage then assists, top 10,
+#              uid riding along for the cut-out. The same function the Top Killers overlay and graphic use.
 # CALLERS: AFC LIVE (LAYO/FREEFIRE/BOUNTY-LIVE tournament.fetch_pack and fetch_standings) through
 # capture_context ?standings=1, read into snapshot.tournament for the Tournament and MPRO overlays.
 def _capture_number(value):
@@ -20432,7 +20436,7 @@ def _capture_number(value):
 def _capture_live_standings(event, group, request):
     from . import result_writes
     from .final_standings import official_group_standings
-    from .views_mvp import compute_event_mvp  # lazy: views_mvp imports from this module
+    from .views_mvp import compute_event_mvp, compute_top_killers  # lazy: views_mvp imports from this module
 
     map_points, scoring = [], None
     for m in Match.objects.filter(group=group).order_by("match_number"):
@@ -20492,7 +20496,16 @@ def _capture_live_standings(event, group, request):
         "top": dict(mvp_row(top["user_id"], top.get("in_game_name"), top["kills"], top["damage"], top["assists"]),
                     mvp_count=top.get("mvp_count", 0)) if top else None,
     }
-    return {"scoring": scoring, "standings": standings, "map_points": map_points, "mvp": mvp}
+
+    killers = (compute_top_killers(event, request, group_ids=[group.group_id]).get("players") or [])[:10]
+    killer_uids = dict(User.objects.filter(pk__in=[p["user_id"] for p in killers if p.get("user_id")])
+                       .values_list("pk", "uid"))
+    top_killers = [{"rank": i + 1, "name": p.get("in_game_name") or p.get("username") or "",
+                    "uid": str(killer_uids.get(p.get("user_id")) or ""), "team_name": p.get("team_name") or "",
+                    "kills": p["kills"], "damage": p["damage"], "assists": p["assists"],
+                    "matches": p.get("matches", 0)} for i, p in enumerate(killers)]
+    return {"scoring": scoring, "standings": standings, "map_points": map_points, "mvp": mvp,
+            "top_killers": top_killers}
 
 
 # ── Wrong-data guard for AUTOMATIC capture uploads (owner 2026-10-23, inbox #353: "go") ─────────────

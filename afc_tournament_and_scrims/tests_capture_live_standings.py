@@ -85,7 +85,7 @@ class CaptureLiveStandingsTests(TestCase):
 
     def test_opt_in_only(self):
         body = self._get(group=self.group.group_id)
-        for key in ("standings", "scoring", "map_points", "mvp"):
+        for key in ("standings", "scoring", "map_points", "mvp", "top_killers"):
             self.assertNotIn(key, body)
         self.assertIn("teams", body)                       # what AFC Capture reads is still there
 
@@ -138,3 +138,13 @@ class CaptureLiveStandingsTests(TestCase):
         self.assertIsNone(body["scoring"])
         self.assertEqual((body["standings"], body["map_points"], body["mvp"]["maps"], body["mvp"]["top"]),
                          ([], [], [], None))
+        self.assertEqual(body["top_killers"], [])
+
+    def test_top_killers_are_the_sites_board(self):
+        # inbox #524: kill leaders from the site. Summed kills over the group's maps, ties on damage:
+        # ALPHA1 4+5=9, BRAVO1 2+1=3, ALPHA2 2 (5,000 damage), BRAVO2 2 (1,800 damage).
+        rows = self._get(group=self.group.group_id, standings="1")["top_killers"]
+        self.assertEqual([(r["rank"], r["uid"], r["team_name"], r["kills"], r["damage"]) for r in rows],
+                         [(1, "1001", "ALPHA ESPORTS", 9, 600), (2, "2001", "BRAVO ESPORTS", 3, 600),
+                          (3, "1002", "ALPHA ESPORTS", 2, 5000), (4, "2002", "BRAVO ESPORTS", 2, 1800)])
+        self.assertTrue(all(r["name"] for r in rows))

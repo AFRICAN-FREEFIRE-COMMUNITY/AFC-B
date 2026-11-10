@@ -18,6 +18,14 @@ At release time `node ~/.claude/skills/versioning/scripts/release.mjs next` prin
 rename `## Unreleased` to it, merge, then tag the merge commit. A version tag pushed with the wrong
 number is blocked before the push.
 
+## v7.16.0 - 2026-11-10
+
+### Added
+- `events/capture/context/?standings=1` (AFC LIVE) also carries the group's kill leaders (`top_killers`): the site's
+  own Top Killers board for the group (players by total kills over the group's scored maps, ties on damage then
+  assists, top 10), each with name, game UID, team, kills, damage, assists and maps played. The broadcast's Kill
+  Leaders now read the website's numbers, like the leaderboard and the MVP (owner, 10 Nov 2026, inbox #524).
+
 ## v7.15.0 - 2026-11-10
 
 ### Added
