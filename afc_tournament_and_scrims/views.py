@@ -20368,7 +20368,7 @@ def capture_context(request):
 
     player_count = sum(len(t["players"]) for t in teams_out)
     uid_count = sum(1 for t in teams_out for p in t["players"] if p["uid"])
-    return Response({
+    out = {
         "event_id": event.event_id,
         "event_name": event.event_name,
         "participant_type": event.participant_type,
@@ -20392,7 +20392,107 @@ def capture_context(request):
         # (fallback to all active event teams). Lets the client + complaint D tell a precisely-seeded
         # group apart from the whole-event fallback.
         "roster_source": roster_source,
-    }, status=status.HTTP_200_OK)
+    }
+    # ?standings=1 (AFC LIVE only, owner 2026-11-10, inbox #518): the group's points as the SITE computes
+    # them, so the broadcast overlays never rank by the game room's own running score. Opt-in so AFC
+    # Capture's roster fetches stay as cheap as before. See _capture_live_standings.
+    if group is not None and request.query_params.get("standings") == "1":
+        out.update(_capture_live_standings(event, group, request))
+    return Response(out, status=status.HTTP_200_OK)
+
+
+# ── Live standings for AFC LIVE (owner 2026-11-10, inbox #518) ───────────────────────────────────────
+# Owner: "Ship everything" / "Mvp rule should be taken from the one on the website the leaderboard."
+# AFC LIVE's leaderboard used to rank by the ROOM's running score the game prints, which drifted on
+# 9 Nov 2026 (SOLAR FLARE 7th on 22 where the game's result files made them 1st on 133). The owner rule
+# of 22 Sep 2026 is that the event and leaderboard models calculate and every overlay reads the result,
+# so this hands AFC LIVE the site's own numbers and AFC LIVE does no arithmetic of its own:
+#   scoring    the group's points table (placement -> points, per kill, per assist, per 1000 damage), from
+#              the last scored map's stored scoring_settings through result_writes.scoring_context (the
+#              same reader every writer uses); None while no map is scored.
+#   standings  final_standings.official_group_standings(group): the very table the group's leaderboard
+#              page and the partner API show (stored totals, configured tie-breakers, Point-Rush carry-over,
+#              Champion-Point pin), one row per team, in the site's order.
+#   map_points every scored map of the group: each team's placement, kills and stored total_points.
+#   mvp        views_mvp.compute_event_mvp for this group: the per-map MVP by the event's OWN saved MVP
+#              rule (Event.mvp_config criteria order and scope, set on the leaderboard's MVPs tab), and
+#              the group's MVP (most map MVPs, ties on the same criteria). uid rides along so AFC LIVE can
+#              show the player's cut-out photo.
+# CALLERS: AFC LIVE (LAYO/FREEFIRE/BOUNTY-LIVE tournament.fetch_pack and fetch_standings) through
+# capture_context ?standings=1, read into snapshot.tournament for the Tournament and MPRO overlays.
+def _capture_number(value):
+    """A stored points value as a plain JSON number: an int when whole, else a float (kill_point 1.5)."""
+    try:
+        f = float(value or 0)
+    except (TypeError, ValueError):
+        return 0
+    return int(f) if f.is_integer() else round(f, 2)
+
+
+def _capture_live_standings(event, group, request):
+    from . import result_writes
+    from .final_standings import official_group_standings
+    from .views_mvp import compute_event_mvp  # lazy: views_mvp imports from this module
+
+    map_points, scoring = [], None
+    for m in Match.objects.filter(group=group).order_by("match_number"):
+        rows = list(TournamentTeamMatchStats.objects.filter(match=m)
+                    .select_related("tournament_team__team", "tournament_team__ghost_team"))
+        if not rows:
+            continue                      # an empty slot: not played yet
+        try:
+            ctx = result_writes.scoring_context(m)
+        except ValueError:
+            ctx = None
+        if ctx is not None:               # the last scored map's table wins (they are normally all the same)
+            scoring = {
+                "placement": {str(k): _capture_number(v) for k, v in sorted(ctx["placement_points"].items())},
+                "kill": _capture_number(ctx["kill_point"]),
+                "assist": _capture_number(ctx["points_per_assist"]),
+                "per_1000_damage": _capture_number(ctx["points_per_1000_damage"]),
+            }
+        teams = [{"team_name": r.tournament_team.display_name, "placement": r.placement, "kills": r.kills,
+                  "points": _capture_number(r.total_points), "played": r.played} for r in rows]
+        teams.sort(key=lambda t: (t["placement"] or 999, t["team_name"]))
+        map_points.append({"match_number": m.match_number, "map": m.match_map or "", "teams": teams})
+
+    standings = [{
+        "rank": i + 1,
+        "team_name": r.get("team_name") or "",
+        "games_played": int(r.get("games_played") or 0),
+        "booyahs": int(r.get("total_booyah") or 0),
+        "kills": int(r.get("total_kills") or 0),
+        "placement_points": _capture_number(r.get("placement_sum")),
+        "kill_points": _capture_number(r.get("kill_sum")),
+        "bonus": _capture_number(r.get("bonus_sum")),
+        "penalty": _capture_number(r.get("penalty_sum")),
+        "carry_over": _capture_number(r.get("carry_over_points")),
+        "total": _capture_number(r.get("effective_total")),
+        "is_champion": bool(r.get("is_champion")),
+    } for i, r in enumerate(official_group_standings(group))]
+
+    result = compute_event_mvp(event, request, group_ids=[group.group_id])
+    by_user = {p["user_id"]: p for p in result.get("players") or []}
+    uids = dict(User.objects.filter(pk__in=[m["mvp_user_id"] for m in result.get("map_mvps") or []]
+                                    + [p["user_id"] for p in result.get("players") or []][:1])
+                .values_list("pk", "uid"))
+
+    def mvp_row(user_id, name, kills, damage, assists):
+        p = by_user.get(user_id) or {}
+        return {"name": name or p.get("in_game_name") or "", "uid": str(uids.get(user_id) or ""),
+                "team_name": p.get("team_name") or "", "kills": kills, "damage": damage, "assists": assists}
+
+    top = result.get("mvp")
+    mvp = {
+        "criteria": result.get("rankable_criteria") or [],
+        "scope": result.get("scope"),
+        "maps": [dict(mvp_row(m["mvp_user_id"], m["mvp_name"], m["kills"], m["damage"], m["assists"]),
+                      match_number=m["match_number"], map=m.get("match_map") or "")
+                 for m in sorted(result.get("map_mvps") or [], key=lambda r: r["match_number"] or 0)],
+        "top": dict(mvp_row(top["user_id"], top.get("in_game_name"), top["kills"], top["damage"], top["assists"]),
+                    mvp_count=top.get("mvp_count", 0)) if top else None,
+    }
+    return {"scoring": scoring, "standings": standings, "map_points": map_points, "mvp": mvp}
 
 
 # ── Wrong-data guard for AUTOMATIC capture uploads (owner 2026-10-23, inbox #353: "go") ─────────────
