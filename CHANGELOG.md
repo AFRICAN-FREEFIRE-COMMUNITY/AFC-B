@@ -18,6 +18,16 @@ At release time `node ~/.claude/skills/versioning/scripts/release.mjs next` prin
 rename `## Unreleased` to it, merge, then tag the merge commit. A version tag pushed with the wrong
 number is blocked before the push.
 
+## Unreleased
+
+### Added
+- `events/capture/context/?standings=1` (AFC LIVE): the group's points as the site computes them, so the broadcast
+  leaderboard no longer ranks teams by the game room's own running score (on 9 Nov it put the group leader 7th):
+  the points table (`scoring`), the group's official standings in the site's order (`standings`, the same table the
+  leaderboard page and the partner API show), each played map's placements, kills and points (`map_points`), and the
+  MVP of every map by the event's own MVP rule from the leaderboard's MVPs tab (`mvp`). Without `standings=1` the
+  answer is unchanged, so AFC Capture's roster check costs what it did.
+
 ## v7.14.0 - 2026-11-09
 
 ### Added
