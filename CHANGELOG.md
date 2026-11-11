@@ -18,6 +18,25 @@ At release time `node ~/.claude/skills/versioning/scripts/release.mjs next` prin
 rename `## Unreleased` to it, merge, then tag the merge commit. A version tag pushed with the wrong
 number is blocked before the push.
 
+## Unreleased
+
+### Added
+- A group's Stats on the leaderboard pages (`events/<id>/board/`): every team AND every player number over the whole
+  group, one map, or any maps you choose: kills, damage, assists, knockdowns, knocked, headshots, deaths, revives,
+  grenades, gloo walls, medkits, survival time, most used gun; plus the map being played right now. The same numbers
+  download as a spreadsheet (`events/<id>/board/export/`, teams or players) (owner, 11 Nov 2026, inbox #538 #539).
+- `events/capture/context/?standings=1` (AFC LIVE) carries `live`: the group's table with the map in progress added,
+  and the kill leaders with that map's kills, so AFC LIVE shows the website's numbers during a map too (inbox #540).
+
+### Fixed
+- The live leaderboard overlay showed only the map being played, with that map's points, instead of the group's
+  table with the map added: a team on 133 after five maps read 22 on air. It also never went live when it followed
+  a group picked on the website, and kept counting a finished map after its result was uploaded. Every reader (the
+  overlays, AFC LIVE, the leaderboard page) now takes one table from the server (inbox #540).
+- Players who are not on the event's roster were missing from Top Killers and every player list although their
+  kills count for their team (one map: a team with 15 kills showed one player with 3). They are listed now, marked
+  as not on the roster, with their damage and other numbers from AFC Capture (inbox #538).
+
 ## v7.16.0 - 2026-11-10
 
 ### Added

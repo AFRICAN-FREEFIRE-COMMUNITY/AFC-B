@@ -145,8 +145,41 @@ def apply_capture_rich_stats(match, payload):
         row.rich_stats_source = "capture"
         row.save(update_fields=sorted(_INT_FIELDS) + ["most_used_weapon", "rich_stats_filled", "rich_stats_source"])
         filled += 1
-    log.info("capture rich stats: match %s, %d of %d player rows filled (ff match %s)",
-             match.match_id, filled, len(by_uid), payload.get("ff_match_id"))
+    flagged = fill_flag_stats(match, by_uid, names)
+    log.info("capture rich stats: match %s, %d of %d player rows filled, %d flagged players (ff match %s)",
+             match.match_id, filled, len(by_uid), flagged, payload.get("ff_match_id"))
+    return filled
+
+
+def flag_stats_from(stats, names=None):
+    """One player's payload entry as the dict MatchKillFlag.stats stores (model field names, clamped,
+    the gun as its name). Shared by the capture payload and the game files / debugger paths."""
+    out = {}
+    for key, field in _FIELD_MAP.items():
+        if key in stats:
+            out[field] = _clean_int(stats[key])
+    weapon = stats.get("most_used_weapon", "")
+    if weapon:
+        out["most_used_weapon"] = weapon_label(weapon, names if names is not None else admin_names())[
+            :_WEAPON_MAX_LEN]
+    return out
+
+
+def fill_flag_stats(match, by_uid, names=None):
+    """Store each flagged (not on the roster) player's numbers on his MatchKillFlag row (owner 2026-11-11,
+    inbox #538 #540), so per-player boards show him with damage and the rest, not only his kills.
+    `by_uid` is {uid: payload entry}. Returns how many flags were filled."""
+    from .models import MatchKillFlag
+    filled = 0
+    for flag in MatchKillFlag.objects.filter(match=match):
+        stats = by_uid.get(str(flag.uid).strip())
+        if not stats:
+            continue
+        if names is None:
+            names = admin_names()          # once, on the first flag that has numbers
+        flag.stats = flag_stats_from(stats, names)
+        flag.save(update_fields=["stats"])
+        filled += 1
     return filled
 
 
