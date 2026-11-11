@@ -7,6 +7,7 @@ specific maps in a group that were played"; "all other data should be visible in
 ENDPOINTS
 ---------
 GET events/<event_id>/board/?group_id=<id>[&match_ids=<id,id>]
+    Without group_id: only the event's groups and maps (the page's first call), scope None.
     Auth: Bearer; AFC event admin, or an organizer who can edit the event (views._broadcast_gate, the gate
     every leaderboard tool on these pages uses). A group_id that is not this event's -> 404 coded.
     Scope: every scored map of the group, or only the listed maps (each must be this group's).
@@ -34,6 +35,7 @@ import csv
 import io
 
 from django.http import HttpResponse
+from rest_framework import serializers
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 
@@ -42,24 +44,44 @@ from .models import Match, StageGroups, TournamentTeamMatchStats
 from .views import _broadcast_gate
 
 
+class BoardQuery(serializers.Serializer):
+    """The query of both endpoints: which group, which maps (comma separated ids), which list to download."""
+    group_id = serializers.IntegerField(min_value=1, required=False)
+    match_ids = serializers.RegexField(r"^\d{1,10}(,\d{1,10}){0,99}$", max_length=1100, required=False,
+                                       allow_blank=True)
+    kind = serializers.ChoiceField(choices=("teams", "players"), required=False)
+
+
+def _query(request):
+    """(validated query, None) or (None, coded 400). An unknown kind or a malformed map list is refused here."""
+    q = BoardQuery(data=request.query_params)
+    if q.is_valid():
+        return q.validated_data, None
+    if "kind" in q.errors:
+        return None, Response({"message": "Choose teams or players.", "code": "board_export_kind"}, status=400)
+    if "match_ids" in q.errors:
+        return None, Response({"message": "Maps must be chosen from this group.", "code": "board_maps_invalid"},
+                              status=400)
+    return None, Response({"message": "Choose a group.", "code": "board_group_required"}, status=400)
+
+
 def _scope(event, request):
     """(group, match_ids, all_maps) for the request, or (None, None, error Response)."""
-    raw = str(request.query_params.get("group_id") or "").strip()
-    if not raw.isdigit():
+    q, err = _query(request)
+    if err:
+        return None, None, err
+    if not q.get("group_id"):
         return None, None, Response({"message": "Choose a group.", "code": "board_group_required"}, status=400)
     group = (StageGroups.objects.select_related("stage")
-             .filter(group_id=int(raw), stage__event=event).first())
+             .filter(group_id=q["group_id"], stage__event=event).first())
     if group is None:
         return None, None, Response({"message": "That group is not part of this event.",
                                      "code": "board_group_not_found"}, status=404)
     scored = list(Match.objects.filter(group=group, team_stats__isnull=False)
                   .distinct().order_by("match_number").values_list("match_id", flat=True))
-    wanted = [s.strip() for s in str(request.query_params.get("match_ids") or "").split(",") if s.strip()]
+    wanted = [s for s in (q.get("match_ids") or "").split(",") if s]
     if not wanted:
         return group, (scored, True), None
-    if not all(s.isdigit() for s in wanted):
-        return None, None, Response({"message": "Maps must be chosen from this group.",
-                                     "code": "board_maps_invalid"}, status=400)
     ids = [int(s) for s in wanted]
     own = set(Match.objects.filter(group=group, match_id__in=ids).values_list("match_id", flat=True))
     if len(own) != len(set(ids)):
@@ -88,6 +110,11 @@ def event_board(request, event_id):
     event, err = _broadcast_gate(request, event_id)
     if err:
         return err
+    if not str(request.query_params.get("group_id") or "").strip():
+        # No group yet: the page's first call, to list the groups and their maps to choose from.
+        return Response({"event": {"event_id": event.event_id, "event_name": event.event_name},
+                         "groups": _groups(event), "scope": None, "teams": [], "players": [], "live": None},
+                        status=200)
     group, scope, err = _scope(event, request)
     if err:
         return err
@@ -150,9 +177,7 @@ def event_board_export(request, event_id):
     if err:
         return err
     match_ids, all_maps = scope
-    kind = (request.query_params.get("kind") or "teams").lower()
-    if kind not in ("teams", "players"):
-        return Response({"message": "Choose teams or players.", "code": "board_export_kind"}, status=400)
+    kind = request.query_params.get("kind") or "teams"      # validated by BoardQuery in _scope
     rows = team_board(event, match_ids) if kind == "teams" else player_board(event, match_ids)
     columns = TEAM_COLUMNS if kind == "teams" else PLAYER_COLUMNS
     buf = io.StringIO()

@@ -238,7 +238,11 @@ class BoardTests(TestCase):
         auth = {"HTTP_AUTHORIZATION": "Bearer bd-admin-token"}
         url = f"/events/{self.event.event_id}/board/"
         self.assertEqual(self.client.get(url).status_code, 401)
-        self.assertEqual(self.client.get(url, **auth).json()["code"], "board_group_required")
+        first = self.client.get(url, **auth).json()          # no group: the groups to choose from
+        self.assertEqual((first["scope"], first["teams"], [g["group_id"] for g in first["groups"]]),
+                         (None, [], [self.group.group_id]))
+        self.assertEqual([m["scored"] for m in first["groups"][0]["maps"]], [True, True, False])
+        self.assertEqual(self.client.get(url, {"group_id": "x"}, **auth).json()["code"], "board_group_required")
         self.assertEqual(self.client.get(url, {"group_id": 999999}, **auth).status_code, 404)
         self.assertEqual(self.client.get(url, {"group_id": self.group.group_id, "match_ids": "999999"},
                                          **auth).json()["code"], "board_maps_invalid")

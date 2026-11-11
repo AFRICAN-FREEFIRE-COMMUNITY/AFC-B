@@ -21,6 +21,7 @@ import io
 import json
 
 from django.core.cache import cache
+from rest_framework import serializers
 from rest_framework.decorators import api_view, parser_classes
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.response import Response
@@ -77,6 +78,32 @@ def _game_replays(files, item):
     return [f["replay"] for f in files if f.get("kind") == "replay" and f["replay"]["ff_match_id"] == key]
 
 
+class GameFilesBody(serializers.Serializer):
+    """Every JSON body of the box (games, result-text, debugger): types and sizes checked before anything is
+    read from the cache. file_ids are the opaque ids game_files_read handed out (letters and digits)."""
+    file_ids = serializers.ListField(child=serializers.RegexField(r"^[0-9A-Za-z]{1,64}$"), min_length=1,
+                                     max_length=MAX_FILES)
+    key = serializers.CharField(max_length=64, required=False)
+    match_id = serializers.IntegerField(min_value=1, required=False)
+    keep_debugger = serializers.ListField(child=serializers.CharField(max_length=32), max_length=500, required=False)
+    placements = serializers.DictField(child=serializers.IntegerField(min_value=1, max_value=100), required=False)
+
+
+class GameFileUpload(serializers.Serializer):
+    """The multipart read: one file, its name as the browser knew it."""
+    name = serializers.CharField(max_length=200, required=False, allow_blank=True)
+
+
+def _body(request):
+    """None when the JSON body is well formed, else the coded 400 to answer."""
+    body = GameFilesBody(data=request.data)
+    if body.is_valid():
+        return None
+    if "file_ids" in body.errors:
+        return _refuse("Send the ids of the files you added.", "game_files_ids_required")
+    return _refuse("keep_debugger must be a list and placements an object.", "game_files_bad_choices")
+
+
 def _load(event, raw_ids):
     """The cached files of this upload, in the order given. (files, None) or (None, refusal)."""
     if isinstance(raw_ids, str):
@@ -121,7 +148,10 @@ def game_files_read(request, event_id):
     if up.size > gf.MAX_UPLOAD_BYTES:
         return _refuse("That file is too large to send. Add it again from the box, it compresses it first.",
                        "game_file_too_large")
-    name = str(request.data.get("name") or up.name or "")[:200]
+    form = GameFileUpload(data={"name": request.data.get("name") or ""})
+    if not form.is_valid():
+        return _refuse("That file name is too long.", "game_file_name_too_long")
+    name = str(form.validated_data.get("name") or up.name or "")[:200]
     data = up.read()
     # A REPLAY file (Replays\ReplayInfo_<id>_<date>.bin, owner 2026-11-11, inbox #541): binary, read at once
     # into the little a map needs (every player's damage, the gun of every kill and knock); the file itself
@@ -174,6 +204,9 @@ def game_files_games(request, event_id):
     event, err = _broadcast_gate(request, event_id)
     if err:
         return err
+    bad = _body(request)
+    if bad:
+        return bad
     files, err = _load(event, request.data.get("file_ids"))
     if err:
         return err
@@ -246,6 +279,9 @@ def game_files_result_text(request, event_id):
     event, err = _broadcast_gate(request, event_id)
     if err:
         return err
+    bad = _body(request)
+    if bad:
+        return bad
     _, item, err = _item(event, request)
     if err:
         return err
@@ -276,6 +312,9 @@ def game_files_debugger(request, event_id):
     event, err = _broadcast_gate(request, event_id)
     if err:
         return err
+    bad = _body(request)
+    if bad:
+        return bad
     _, item, err = _item(event, request)
     if err:
         return err
