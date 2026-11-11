@@ -109,9 +109,13 @@ KNOWN_STATUSES = {"sent", "delivered", "read", "failed"}
 # is any of its business, and must not raise. It is imported LAZILY (on the first
 # inbound message, not at startup) so the dependency stays one-way: apps import
 # afc_whatsapp, never the reverse, and no import cycle can form.
+#   afc_polls.whatsapp_votes.handle_inbound_message
+#       a voter proving their WhatsApp number for an awards edition that asks for one ("AFC <code>" sent
+#       to the AFC number; inbox #447 #449, 11 Nov 2026). Only a text matching that shape is its business.
 INBOUND_HANDLERS = [
     "afc_shop.vendor_whatsapp.handle_inbound_message",
     "afc_shop.buyer_whatsapp.handle_inbound_message",
+    "afc_polls.whatsapp_votes.handle_inbound_message",
 ]
 
 

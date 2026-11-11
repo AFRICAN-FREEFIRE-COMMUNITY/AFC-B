@@ -18,6 +18,19 @@ At release time `node ~/.claude/skills/versioning/scripts/release.mjs next` prin
 rename `## Unreleased` to it, merge, then tag the merge commit. A version tag pushed with the wrong
 number is blocked before the push.
 
+## Unreleased
+
+### Added
+- Awards editions can be HIDDEN until release (`hidden`): a hidden edition, its ballots and pages answer 404 to
+  everybody but an AFC poll admin (who previews it), are left out of every list and the hall of fame, and take no
+  votes. A themed (KOL Awards) edition is created hidden; switching it off releases it (owner, 11 Nov 2026, #543).
+- One WhatsApp number, one ballot (`whatsapp_required` on an edition): a voter proves a number by sending
+  "AFC <code>" to the AFC WhatsApp number (`polls/whatsapp/start/`, the webhook's new inbound handler) or by typing
+  back a code AFC sends (`polls/whatsapp/send-code/`, `verify/`, three an hour); a number backs one account; codes are
+  stored hashed. New setting `WHATSAPP_BUSINESS_NUMBER` (owner, 2 Nov 2026, #447 #449).
+- `polls/hall-of-fame/`: every published winner of every released edition, newest season first, and who has won
+  most (#445).
+
 ## v7.16.0 - 2026-11-10
 
 ### Added

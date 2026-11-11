@@ -342,6 +342,7 @@ def list_polls(request):
     locale = get_locale(request)
     queryset = (
         Poll.objects.filter(visibility=Poll.PUBLIC)
+        .exclude(edition__hidden=True)        # hidden until release (#543): never listed, to anybody
         .annotate(
             question_count=Count("questions", distinct=True),
             response_count=Count(
@@ -410,7 +411,7 @@ def poll_detail(request, slug):
         .select_related("eligibility", "edition")
         .first()
     )
-    if not poll:
+    if not poll or edition_hidden_from(poll.edition, user):
         return Response({"message": "Poll not found", "code": "poll_not_found"}, status=status.HTTP_404_NOT_FOUND)
 
     # A draft is visible only to somebody who could edit it. `preview_only` and `link_only` are
@@ -577,9 +578,19 @@ def submit_response(request, slug):
     if error:
         return error
 
-    poll = Poll.objects.filter(slug=slug).prefetch_related("questions__options").first()
-    if not poll:
+    poll = Poll.objects.filter(slug=slug).prefetch_related("questions__options").select_related("edition").first()
+    # A hidden edition takes no votes from anybody, an admin previewing it included (#543).
+    if not poll or (poll.edition_id and poll.edition.hidden):
         return Response({"message": "Poll not found", "code": "poll_not_found"}, status=status.HTTP_404_NOT_FOUND)
+
+    # ONE WHATSAPP NUMBER, ONE BALLOT (#447 #449): an edition that asks for it takes no ballot from an account
+    # that has not proved a WhatsApp number (afc_polls.whatsapp_votes). Before eligibility, so the vote sheet
+    # can send the voter to that step first.
+    if poll.edition_id and poll.edition.whatsapp_required:
+        from .whatsapp_votes import verified_number
+        if not verified_number(user):
+            return Response({"message": "Verify your WhatsApp number to vote in these awards.",
+                             "code": "whatsapp_check_required"}, status=status.HTTP_403_FORBIDDEN)
 
     if poll.visibility == Poll.PREVIEW_ONLY:
         return Response(
@@ -1572,11 +1583,21 @@ def list_editions(request):
     edition to lead with and to build the archive's edition switcher.
     """
     queryset = AwardsEdition.objects.all().prefetch_related("polls")
+    # Hidden editions (#543) are listed only to an AFC poll admin, who previews them before release.
+    if not is_polls_admin(_user_from_request(request)):
+        queryset = queryset.exclude(hidden=True)
     rows, page = _paginate(request, queryset)
     return Response(
         {"results": [_serialize_edition(edition) for edition in rows], **page},
         status=status.HTTP_200_OK,
     )
+
+
+def edition_hidden_from(edition, user):
+    """True when `edition` is hidden until release (#543) and `user` may not preview it (not an AFC poll admin).
+    The ONE check every public awards door asks (edition list, edition detail, poll detail, sheet-opened, hall of
+    fame), so a hidden edition cannot leak through one door the others close."""
+    return bool(edition is not None and edition.hidden and not is_polls_admin(user))
 
 
 def _serialize_edition(edition):
@@ -1597,6 +1618,10 @@ def _serialize_edition(edition):
         "phase": edition.phase(),
         "winners_are_public": edition.winners_are_public(),
         "poll_count": edition.polls.count(),
+        # hidden until release (#543): only an admin ever sees an edition with this True (the preview banner)
+        "hidden": edition.hidden,
+        # one WhatsApp number, one ballot (#449): the vote sheet adds the Verify your WhatsApp step
+        "whatsapp_required": edition.whatsapp_required,
     }
 
 
@@ -1618,7 +1643,7 @@ def edition_detail(request, slug):
     locale = get_locale(request)
     user = _user_from_request(request)
     edition = AwardsEdition.objects.filter(slug=slug).first()
-    if not edition:
+    if not edition or edition_hidden_from(edition, user):
         return Response({"message": "Awards edition not found", "code": "awards_edition_not_found"}, status=status.HTTP_404_NOT_FOUND)
 
     polls = list(
@@ -1889,6 +1914,10 @@ def admin_editions(request):
 
     edition = AwardsEdition(slug=_unique_edition_slug(data.get("slug") or title), title=title)
     _apply_edition_fields(edition, data)
+    # A themed (KOL Awards) edition is built in the open only by choice: it starts HIDDEN until an admin releases
+    # it (owner, 11 Nov 2026, #543), unless the request says otherwise.
+    if "hidden" not in data and edition.theme != AwardsEdition.THEME_DEFAULT:
+        edition.hidden = True
     edition.save()
     return Response({"slug": edition.slug}, status=status.HTTP_201_CREATED)
 
@@ -1913,8 +1942,9 @@ def _unique_edition_slug(source):
 # anything else the model happens to gain later by putting it in the body.
 _EDITABLE_EDITION_FIELDS = (
     "title", "year", "tagline", "hero_image", "nominations_close", "voting_opens_at",
-    "voting_closes_at", "winners_announced_at", "status", "order", "theme",
+    "voting_closes_at", "winners_announced_at", "status", "order", "theme", "hidden", "whatsapp_required",
 )
+_BOOLEAN_EDITION_FIELDS = {"hidden", "whatsapp_required"}
 
 
 # The columns that accept NULL. A cleared date input posts "", and MySQL will not take an empty
@@ -1936,6 +1966,8 @@ def _apply_edition_fields(edition, data):
         # frontend can draw.
         if field == "theme" and value not in dict(AwardsEdition.THEME_CHOICES):
             value = AwardsEdition.THEME_DEFAULT
+        if field in _BOOLEAN_EDITION_FIELDS:
+            value = value is True or str(value).strip().lower() in ("1", "true", "yes", "on")
         setattr(edition, field, value)
 
 
@@ -2241,8 +2273,9 @@ def sheet_opened(request, slug):
     user, error = _require_user(request)
     if error:
         return error
-    poll = Poll.objects.filter(slug=slug).first()
-    if not poll or (poll.visibility == Poll.DRAFT and not can_manage_poll(user, poll)):
+    poll = Poll.objects.filter(slug=slug).select_related("edition").first()
+    if not poll or edition_hidden_from(poll.edition, user) or (
+            poll.visibility == Poll.DRAFT and not can_manage_poll(user, poll)):
         return Response({"message": "Poll not found", "code": "poll_not_found"}, status=status.HTTP_404_NOT_FOUND)
     failed_check = request.data.get("failed_check")
     if failed_check not in (None, "", "uid"):
