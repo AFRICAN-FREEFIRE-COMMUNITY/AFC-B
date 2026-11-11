@@ -191,4 +191,6 @@ def event_board_export(request, event_id):
     safe = "".join(c if c.isalnum() or c in "-_." else "-" for c in name).strip("-")
     resp = HttpResponse("﻿" + buf.getvalue(), content_type="text/csv; charset=utf-8")
     resp["Content-Disposition"] = 'attachment; filename="{}"'.format(safe)
+    # The website (another origin) downloads it with fetch, which can read this header only when exposed.
+    resp["Access-Control-Expose-Headers"] = "Content-Disposition"
     return resp

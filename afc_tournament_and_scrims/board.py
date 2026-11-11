@@ -287,6 +287,25 @@ def live_top_killers(official, rows, limit=10):
     return out[:limit]
 
 
+def live_map_mvp(rows, criteria):
+    """The map in progress's provisional MVP by the event's own MVP rule (`criteria`, the ordered list from
+    views_mvp._mvp_criteria): the live player first on those numbers the live board carries (kills, assists,
+    headshots, knockdowns; damage reads 0 until the map's files are in). None with no live player."""
+    best, best_key = None, None
+    for r in rows or []:
+        live = r.get("live")
+        if not live:
+            continue
+        for p in live["players"]:
+            key = tuple(int(p.get(c) or 0) for c in criteria if c in ("kills", "assists", "headshots", "knockdowns",
+                                                                        "damage")) + (int(p.get("kills") or 0),)
+            if best_key is None or key > best_key:
+                best_key = key
+                best = {"name": p["name"], "uid": p["uid"], "team_name": r["team_name"], "kills": p["kills"],
+                        "assists": p["assists"], "damage": p["damage"]}
+    return best
+
+
 def live_group_table(group):
     """(rows, live_meta): the group's board with the map in progress folded in.
 

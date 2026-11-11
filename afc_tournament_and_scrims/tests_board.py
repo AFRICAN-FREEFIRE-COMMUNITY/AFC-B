@@ -199,6 +199,7 @@ class BoardTests(TestCase):
         tk = {p["uid"]: (p["kills"], p["live_kills"], p["kills_with_live"]) for p in live["top_killers"]}
         self.assertEqual(tk["1001"], (9, 1, 10))          # ALPHA1: 4 + 5 official + 1 live
         self.assertEqual(tk["3001"], (0, 4, 4))           # CHARLIE's player, live only
+        self.assertEqual((live["map_mvp"]["uid"], live["map_mvp"]["kills"]), ("3001", 4))   # kills first rule
 
     # ── players and maps ──
     def test_flagged_player_is_on_the_player_board_with_his_stats(self):
@@ -274,3 +275,12 @@ class BoardTests(TestCase):
         self.assertIn("Damage", players.content.decode("utf-8-sig").splitlines()[0])
         self.assertEqual(self.client.get(f"/events/{self.event.event_id}/board/export/",
                                          {"group_id": self.group.group_id, "kind": "x"}, **auth).status_code, 400)
+
+    def test_png_export_of_one_map(self):
+        auth = {"HTTP_AUTHORIZATION": "Bearer bd-admin-token"}
+        url = f"/events/{self.event.event_id}/stages/{self.stage.stage_id}/graphic/"
+        resp = self.client.get(url, {"group_id": self.group.group_id, "match_ids": str(self.maps[1].match_id)}, **auth)
+        self.assertEqual(resp.status_code, 200, resp.content[:200])
+        self.assertTrue(resp["Content-Type"].startswith(("image/png", "application/zip")))
+        bad = self.client.get(url, {"group_id": self.group.group_id, "match_ids": "999999"}, **auth)
+        self.assertEqual((bad.status_code, bad.json()["code"]), (400, "board_maps_invalid"))

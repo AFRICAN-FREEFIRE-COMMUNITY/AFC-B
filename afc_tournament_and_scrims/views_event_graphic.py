@@ -252,6 +252,27 @@ def event_stage_graphic(request, event_id, stage_id):
             else round_robin.cumulative_standings(stage)
         )
 
+    # ── ONE MAP, or the maps picked (owner 2026-11-11, inbox #539: "export the leaderboard for not only a
+    # grop, but also each map or specific maps in a group that were played"). ?match_ids=<csv> scores only
+    # those maps (each must be a map of this stage, of the chosen group when one is given), through the
+    # same aggregator as the combined export, so a map's board equals the Stats tab's for those maps. Teams
+    # that did not play those maps are not added (include_unscored is off for a map board).
+    raw_maps = [m.strip() for m in str(request.query_params.get("match_ids") or "").split(",") if m.strip()]
+    if raw_maps and not is_combined:
+        if not all(m.isdigit() for m in raw_maps) or len(raw_maps) > 100:
+            return Response({"message": "Maps must be chosen from this stage.", "code": "board_maps_invalid"},
+                            status=status.HTTP_400_BAD_REQUEST)
+        from .models import Match
+        map_qs = Match.objects.filter(match_id__in=[int(m) for m in raw_maps], group__stage=stage)
+        if group is not None:
+            map_qs = map_qs.filter(group=group)
+        picked = list(map_qs.values_list("match_id", flat=True))
+        if len(picked) != len(set(raw_maps)):
+            return Response({"message": "Maps must be chosen from this stage.", "code": "board_maps_invalid"},
+                            status=status.HTTP_400_BAD_REQUEST)
+        qs = TournamentTeamMatchStats.objects.filter(match_id__in=picked)
+        standings = round_robin._aggregate_team_standings(qs, event=event)
+
     # ── Include SEEDED teams that have NO results entered yet, so a team with no scores still shows
     #    on the downloaded graphic (owner 2026-07-13: "downloaded leaderboard did not add the last
     #    team, but they should be there regardless"). ─────────────────────────────────────────────
@@ -271,7 +292,7 @@ def event_stage_graphic(request, event_id, stage_id):
     # zero-fill here - left as-is). Opt out with ?include_unscored=0 for the legacy scored-only board.
     include_unscored = str(
         request.query_params.get("include_unscored") or "1"
-    ).strip().lower() not in ("0", "false", "no", "off")
+    ).strip().lower() not in ("0", "false", "no", "off") and not (raw_maps and not is_combined)
     if include_unscored and not is_solo_combined:
         # Scope the seeded roster the same way the standings were scoped:
         #   combined -> the selected groups' competitors; single group -> that group's; whole stage
