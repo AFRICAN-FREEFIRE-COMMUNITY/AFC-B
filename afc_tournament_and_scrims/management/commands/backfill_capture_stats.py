@@ -33,9 +33,8 @@ import json
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 
-from afc_tournament_and_scrims import capture_rich_stats, kill_feed, result_writes
-from afc_tournament_and_scrims import scoring as scoring_lib
-from afc_tournament_and_scrims.models import Match, MatchKillFlag, MatchResultLog, TournamentTeamMatchStats
+from afc_tournament_and_scrims import capture_rich_stats, kill_feed
+from afc_tournament_and_scrims.models import Match, MatchResultLog
 
 
 def find_match(entry):
@@ -55,27 +54,9 @@ def find_match(entry):
     return Match.objects.get(match_id=ids.pop()), ""
 
 
-def team_damage_and_points(match, damage_by_uid):
-    """Set every team row's damage from its players (+ counted flags) and recompute total_points. Returns the rows."""
-    ctx = result_writes.scoring_context(match)
-    flags = {}
-    for f in MatchKillFlag.objects.filter(match=match).select_related("tournament_team__event"):
-        if f.effective_count:
-            flags.setdefault(f.tournament_team_id, []).append(str(f.uid).strip())
-    rows = list(TournamentTeamMatchStats.objects.filter(match=match).prefetch_related("player_stats"))
-    for ts in rows:
-        damage = sum(p.damage for p in ts.player_stats.all() if p.played)
-        damage += sum(damage_by_uid.get(uid, 0) for uid in flags.get(ts.tournament_team_id, []))
-        pts = scoring_lib.compute_team_points(
-            placement_points=ctx["placement_points"], kill_point=ctx["kill_point"],
-            points_per_assist=ctx["points_per_assist"], points_per_1000_damage=ctx["points_per_1000_damage"],
-            placement=ts.placement, kills=ts.kills, damage=damage, assists=ts.assists,
-            bonus=ts.bonus_points or 0, penalty=ts.penalty_points or 0, played=ts.played,
-        )
-        ts.damage = damage
-        ts.total_points = pts["total_points"]
-        ts.save(update_fields=["damage", "total_points"])
-    return rows
+# team_damage_and_points lives in capture_apply now (11 Nov 2026), shared with the Game files box, which applies
+# an uploaded map exactly the way this command backfills one.
+from afc_tournament_and_scrims.capture_apply import team_damage_and_points  # noqa: E402
 
 
 class Command(BaseCommand):

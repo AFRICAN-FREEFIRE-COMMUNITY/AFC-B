@@ -21959,6 +21959,14 @@ def upload_team_match_result(request):
         })
 
     if not parsed_teams:
+        # A debugger log or a replay dropped where a map's result goes (owner 2026-11-11, inbox #541: the two
+        # 400s of 10 Nov 18:50 and 18:52 were a debugger log sent here). Say what it is and where it reads.
+        from . import game_files as _gf
+        file_name = getattr(uploaded_file, "name", "") or ""
+        if file_name.lower().endswith(".bin") or _gf.looks_like(file_name, text) == "debugger":
+            return Response({"message": "This is a game log, not a match result file. Add it in Game files: it reads "
+                                        "the whole game the way AFC Capture does and asks for any file it still needs.",
+                             "code": "game_log_not_result"}, status=400)
         return Response({"message": "No team data parsed.", "code": "no_team_data_parsed"}, status=400)
 
     # ── ID: 0 (or blank) = the game's "UID unknown" SENTINEL, not a real identity (owner 2026-07-11) ──

@@ -84,15 +84,26 @@ def group_table(group):
     from .final_standings import official_group_standings
     from .models import StageGroupCompetitor
 
+    from .views import _carry_over_for_stage
+
     rows = [dict(r) for r in official_group_standings(group)]
     present = {r.get("tournament_team_id") for r in rows}
     seeds = (StageGroupCompetitor.objects.filter(stage_group=group, tournament_team__isnull=False)
              .select_related("tournament_team__team", "tournament_team__ghost_team")
              .order_by("pk"))
+    # A seeded team that has not played still carries its Point-Rush carry-over (a Finals group before its
+    # first map shows every qualifier with the points they bring), exactly as the admin page and the overlay
+    # always showed it. official_group_standings only folds carry into teams that have played.
+    carry = None
+    landed = False
     for sc in seeds:
         if sc.tournament_team_id in present:
             continue
         present.add(sc.tournament_team_id)
+        if carry is None:
+            carry = _carry_over_for_stage(group.stage, group.stage.event.participant_type)
+        bonus = carry.get(sc.tournament_team_id, 0)
+        landed = landed or bool(bonus)
         tt = sc.tournament_team
         rows.append({
             "tournament_team_id": sc.tournament_team_id,
@@ -100,9 +111,15 @@ def group_table(group):
             "team_country": (tt.competitor.country or "") if tt else "",
             "games_played": 0, "total_kills": 0, "total_booyah": 0,
             "placement_sum": 0, "kill_sum": 0, "bonus_sum": 0, "penalty_sum": 0,
-            "effective_total": 0, "carry_over_points": 0, "is_champion": False,
+            "effective_total": bonus, "carry_over_points": bonus, "is_champion": False,
             "last_match_placement": 999,
         })
+    if landed:
+        # Same chain as official_group_standings; a crowned champion stays first.
+        rows.sort(key=lambda r: (-float(r.get("effective_total") or 0), -int(r.get("total_booyah") or 0),
+                                 -int(r.get("total_kills") or 0), int(r.get("last_match_placement") or 999),
+                                 r.get("team_name") or ""))
+        rows.sort(key=lambda r: 0 if r.get("is_champion") else 1)
     return rows
 
 
