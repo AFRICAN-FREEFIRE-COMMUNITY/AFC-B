@@ -24,14 +24,16 @@ number is blocked before the push.
 - A group's Stats on the leaderboard pages (`events/<id>/board/`): every team AND every player number over the whole
   group, one map, or any maps you choose: kills, damage, assists, knockdowns, knocked, headshots, deaths, revives,
   grenades, gloo walls, medkits, survival time, most used gun; plus the map being played right now. The same numbers
-  download as a spreadsheet (`events/<id>/board/export/`, teams or players) (owner, 11 Nov 2026, inbox #538 #539).
+  download as a spreadsheet (`events/<id>/board/export/`, teams or players) (owner, 11 Nov 2026, inbox #538 #539). The
+  leaderboard graphic (`events/<id>/stages/<id>/graphic/`) takes `match_ids` too: one map's board, or the maps you pick.
 - Game files reads a debugger log with AFC Capture's own reader, so an uploaded log gives every number Capture would
   have sent (knocks, knocked, grenades, gloo walls, medkits, the gun, the kill feed), and it takes the map's replay
   file (`Replays/ReplayInfo_<match>_<date>.bin`) for every player's damage and the gun of every kill and knock. Each
   map lists the files still missing by their real names, and offers the placements the log itself shows when the
   result file is not there (owner, 11 Nov 2026, inbox #541).
 - `events/capture/context/?standings=1` (AFC LIVE) carries `live`: the group's table with the map in progress added,
-  and the kill leaders with that map's kills, so AFC LIVE shows the website's numbers during a map too (inbox #540).
+  the kill leaders with that map's kills, and that map's provisional MVP by the event's own MVP rule, so AFC LIVE
+  shows the website's numbers during a map too (inbox #540).
 
 ### Fixed
 - A debugger log dropped on a map's result upload was refused with "No team data parsed." (twice on 10 Nov). It is
