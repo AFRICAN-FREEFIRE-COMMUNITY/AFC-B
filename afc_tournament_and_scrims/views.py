@@ -20398,6 +20398,12 @@ def capture_context(request):
     # Capture's roster fetches stay as cheap as before. See _capture_live_standings.
     if group is not None and request.query_params.get("standings") == "1":
         out.update(_capture_live_standings(event, group, request))
+    if group is not None:
+        # Where the group's day stands (inbox #501), on EVERY context answer so AFC Capture's roster fetch carries it
+        # too: one map count and two cached reads. "done_for_now" once the organizer marked the last map of this
+        # sitting on the Stats screen, "finished" when every map holds a result (board.session_status).
+        from .board import session_status
+        out["session"] = session_status(group)
     return Response(out, status=status.HTTP_200_OK)
 
 
@@ -20525,11 +20531,8 @@ def _capture_live_standings(event, group, request):
         from .board import live_map_mvp, live_top_killers
         live["top_killers"] = live_top_killers(all_killers, live_rows)
         live["map_mvp"] = live_map_mvp(live_rows, result.get("rankable_criteria") or ["kills"])
-    # Where the group's day stands (inbox #501): "done_for_now" once the organizer marked the last map of this
-    # sitting, "finished" when every map holds a result. AFC Capture and AFC LIVE read it here.
-    from .board import session_status
     return {"scoring": scoring, "standings": standings, "map_points": map_points, "mvp": mvp,
-            "top_killers": top_killers, "live": live, "session": session_status(group)}
+            "top_killers": top_killers, "live": live}
 
 
 # ── Wrong-data guard for AUTOMATIC capture uploads (owner 2026-10-23, inbox #353: "go") ─────────────

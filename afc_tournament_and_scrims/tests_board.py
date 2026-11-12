@@ -320,6 +320,12 @@ class DoneForNowTests(BoardTests):
         cache.clear()                                   # the live board has expired
         self.assertEqual(self.context_session()["status"], "finished")
 
+    def test_capture_roster_fetch_carries_it_without_standings(self):
+        self.client.post(self.url(), {"done": True}, format="json", **self.AUTH)
+        body = self.client.get("/events/capture/context/", {"group": self.group.group_id},
+                               HTTP_X_UPLOAD_TOKEN=self.upload.token).json()
+        self.assertEqual(body["session"]["status"], "done_for_now")
+
     def test_undo(self):
         self.client.post(self.url(), {"done": True}, format="json", **self.AUTH)
         r = self.client.post(self.url(), {"done": False}, format="json", **self.AUTH)
