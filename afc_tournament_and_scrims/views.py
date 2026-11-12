@@ -20463,6 +20463,11 @@ def _capture_live_standings(event, group, request):
         teams.sort(key=lambda t: (t["placement"] or 999, t["team_name"]))
         map_points.append({"match_number": m.match_number, "map": m.match_map or "", "teams": teams})
 
+    # THE BOARD (owner 2026-11-11, inbox #540): the official table is board.group_table (the admin
+    # leaderboard's table, seeded teams included), and `live` is the same table with the map in
+    # progress folded in by board.live_group_table, so AFC LIVE shows exactly what the site's live
+    # overlay and the admin Live panel show and adds nothing itself.
+    from .board import group_table, live_group_table
     standings = [{
         "rank": i + 1,
         "team_name": r.get("team_name") or "",
@@ -20476,7 +20481,12 @@ def _capture_live_standings(event, group, request):
         "carry_over": _capture_number(r.get("carry_over_points")),
         "total": _capture_number(r.get("effective_total")),
         "is_champion": bool(r.get("is_champion")),
-    } for i, r in enumerate(official_group_standings(group))]
+    } for i, r in enumerate(group_table(group))]
+    live_rows, live_meta = live_group_table(group)
+    live = None
+    if live_meta is not None:
+        live = dict(live_meta, standings=[{k: v for k, v in r.items() if k != "tournament_team_id"}
+                                          for r in live_rows])
 
     result = compute_event_mvp(event, request, group_ids=[group.group_id])
     by_user = {p["user_id"]: p for p in result.get("players") or []}
@@ -20500,15 +20510,26 @@ def _capture_live_standings(event, group, request):
                     mvp_count=top.get("mvp_count", 0)) if top else None,
     }
 
-    killers = (compute_top_killers(event, request, group_ids=[group.group_id]).get("players") or [])[:10]
+    # Every ranked player (compute_top_killers keeps 50), so a player outside the top 10 still has his
+    # official kills when the map in progress lifts him in. A player who is not on the event's roster
+    # carries no user_id, only the game's UID (views_mvp, inbox #538).
+    killers = compute_top_killers(event, request, group_ids=[group.group_id]).get("players") or []
     killer_uids = dict(User.objects.filter(pk__in=[p["user_id"] for p in killers if p.get("user_id")])
                        .values_list("pk", "uid"))
-    top_killers = [{"rank": i + 1, "name": p.get("in_game_name") or p.get("username") or "",
-                    "uid": str(killer_uids.get(p.get("user_id")) or ""), "team_name": p.get("team_name") or "",
+    all_killers = [{"rank": i + 1, "name": p.get("in_game_name") or p.get("username") or "",
+                    "uid": str(killer_uids.get(p.get("user_id")) or p.get("uid") or ""),
+                    "team_name": p.get("team_name") or "",
                     "kills": p["kills"], "damage": p["damage"], "assists": p["assists"],
                     "matches": p.get("matches", 0)} for i, p in enumerate(killers)]
+    top_killers = all_killers[:10]
+    if live is not None:
+        # Top killers WITH the map in progress: the official list + each player's live kills (by UID), and the
+        # map's provisional MVP by the event's own saved rule (the same criteria the official MVP uses).
+        from .board import live_map_mvp, live_top_killers
+        live["top_killers"] = live_top_killers(all_killers, live_rows)
+        live["map_mvp"] = live_map_mvp(live_rows, result.get("rankable_criteria") or ["kills"])
     return {"scoring": scoring, "standings": standings, "map_points": map_points, "mvp": mvp,
-            "top_killers": top_killers}
+            "top_killers": top_killers, "live": live}
 
 
 # ── Wrong-data guard for AUTOMATIC capture uploads (owner 2026-10-23, inbox #353: "go") ─────────────
@@ -20827,6 +20848,11 @@ def _overlay_rows_from_standings(standings, max_rows, request, stats_filter=None
         rich = rich_by_tt.get(tt_id, {})
         rows.append({
             "pos": i + 1,
+            # Which team this row is (owner 2026-11-11, inbox #540): the live fold-in matches the map in
+            # progress to the row by it, and a reader can join the row to the admin board.
+            "tournament_team_id": tt_id,
+            # The Champion-Point winner stays first when a live map re-ranks the rows.
+            "is_champion": bool(r.get("is_champion")),
             "team_name": r.get("team_name") or "-",
             "team_logo": logo_by_tt.get(tt_id),
             # Country flag column (owner 2026-07-04): DesignBoard resolves this to a flag.
@@ -20972,19 +20998,92 @@ def _overlay_standings_rows(event, stage, group, max_rows, request):
     leaderboard shows, both of which the raw round_robin standings omit."""
     from . import round_robin  # local import: round_robin isn't loaded at this module's top level.
     if group is not None:
-        standings = round_robin.group_standings(group)
-        carry_stage = group.stage       # carry-over is banked ON the group's stage
+        # The group's table is THE BOARD's (owner 2026-11-11, inbox #540): official_group_standings
+        # (carry-over, tie-breakers, champion pin) + seeded teams at 0, the same table the admin
+        # leaderboard and AFC LIVE read. It used to be group_standings + _overlay_seed_and_carry,
+        # which never pinned a champion. See board.group_table.
+        from .board import group_table
+        standings = group_table(group) if event.participant_type != "solo" else \
+            round_robin.group_standings(group)
     elif stage is not None:
         standings = round_robin.cumulative_standings(stage)
-        carry_stage = stage
+        # Team events only carry standings + Point-Rush seeding/carry (solo overlay returns [] upstream).
+        if event.participant_type != "solo":
+            standings = _overlay_seed_and_carry(list(standings), event, stage, None)
     else:
         return []
-    # Team events only carry standings + Point-Rush seeding/carry (solo overlay returns [] upstream).
-    if event.participant_type != "solo":
-        standings = _overlay_seed_and_carry(list(standings), event, carry_stage, group)
     stats_filter = ({"team_stats__match__group": group} if group is not None
                     else {"team_stats__match__group__stage": stage})
     return _overlay_rows_from_standings(standings, max_rows, request, stats_filter=stats_filter)
+
+
+def _overlay_scope_groups(event, stage, group, cumulative, group_ids):
+    """The groups an overlay's board covers, for the live fold-in: the one group, every group of the
+    stage, the chosen groups of a combine / custom scope, or every group of the event."""
+    if group is not None:
+        return [group]
+    qs = StageGroups.objects.select_related("stage").filter(stage__event=event)
+    if stage is not None and not cumulative:
+        return list(qs.filter(stage=stage))
+    if cumulative and group_ids is not None:
+        return list(qs.filter(group_id__in=group_ids))
+    if cumulative:
+        return list(qs)
+    return []
+
+
+def _overlay_apply_live(rows, groups):
+    """Fold the map in progress of every group in `groups` into official overlay `rows` (owner
+    2026-11-11, inbox #540). Returns (rows, is_live).
+
+    Each pushed team is matched to its row by name (AFC Capture names teams from the site roster);
+    the row's total_points and kills gain the live map's points and kills, and it carries the map's
+    own numbers under live_* keys (live_points, live_kills, live_placement, alive_count, eliminated,
+    in_live_map) for a design to place. A pushed team with no row is added at 0 official points.
+    Rows are re-ranked on the same chain as the board (total, booyahs, kills, name). No map in
+    progress anywhere in scope -> the rows come back untouched and is_live False."""
+    from .board import live_state, _live_part, _norm, _num
+    parts = {}
+    for g in groups:
+        state = live_state(g)
+        if not state:
+            continue
+        for pushed in state["rows"]:
+            if isinstance(pushed, dict):
+                parts.setdefault(_norm(pushed.get("team_name")), (pushed, _live_part(pushed)))
+    if not parts:
+        return rows, False
+
+    def fold(row, part):
+        row["live_points"] = part["points"]
+        row["live_kills"] = part["kills"]
+        row["live_placement"] = part["placement"]
+        row["alive_count"] = part["alive_count"]
+        row["eliminated"] = part["eliminated"]
+        row["in_live_map"] = True
+        row["total_points"] = _num(float(row.get("total_points") or 0) + float(part["points"]))
+        row["kills"] = int(row.get("kills") or 0) + int(part["kills"])
+
+    for row in rows:
+        hit = parts.pop(_norm(row.get("team_name")), None)
+        if hit:
+            fold(row, hit[1])
+        else:
+            row.update({"live_points": 0, "live_kills": 0, "live_placement": None,
+                        "alive_count": 0, "eliminated": False, "in_live_map": False})
+    for pushed, part in parts.values():
+        row = {"pos": 0, "tournament_team_id": None, "team_name": pushed.get("team_name") or "-",
+               "team_logo": None, "team_country": "", "esports_image": None, "booyah": 0,
+               "placement_points": 0, "kill_points": 0, "total_points": 0, "kills": 0, "matches": 0,
+               "base_total": 0, "bonus": 0, "penalty": 0, "carry_over_points": 0}
+        fold(row, part)
+        rows.append(row)
+    rows.sort(key=lambda r: (-float(r.get("total_points") or 0), -int(r.get("booyah") or 0),
+                             -int(r.get("kills") or 0), str(r.get("team_name") or "")))
+    rows.sort(key=lambda r: 0 if r.get("is_champion") else 1)   # stable: only the champion moves
+    for i, row in enumerate(rows):
+        row["pos"] = i + 1
+    return rows, True
 
 
 def _overlay_cumulative_rows(event, group_ids, max_rows, request):
@@ -21249,28 +21348,24 @@ def overlay_feed(request):
     if event.participant_type == "solo":
         note = "Live standings are available for team events only."
     else:
-        # LIVE path (spec §5): when the streamer asked for live and the capture client has pushed a
-        # provisional in-round snapshot into Redis (Tier 2), return THAT with live=true; else the
-        # official per-round standings. Key: overlay:live:<event>:<stage>:<group> (blank when unset).
+        # OFFICIAL board first, always: the same table the admin leaderboard shows (board.group_table
+        # for a group). Not capped yet when live is asked for, so a team the map in progress lifts
+        # into the visible rows is still there to lift.
+        cap = max_rows if not live_requested else 10_000
+        if broadcast_cumulative:
+            standings_rows = _overlay_cumulative_rows(event, broadcast_group_ids, cap, request)
+        else:
+            standings_rows = _overlay_standings_rows(event, stage, group, cap, request)
+        # LIVE (owner 2026-11-11, inbox #540, replacing the 2026-07-01 swap): the map in progress is
+        # ADDED to the official board, never shown instead of it. Before this a team on 133 after five
+        # maps read 22 on air during map six, and Capture's last board kept being shown as "live"
+        # after the map's official result had landed. board.live_state decides which pushed board is
+        # the map in progress; _overlay_apply_live folds it in and re-ranks.
         if live_requested:
-            from django.core.cache import cache
-            # Build the key via the SHARED helper so it matches live_push byte-for-byte (blank
-            # stage/group => the cumulative slice). Single source of truth = reader/writer can't drift.
-            live_key = _overlay_live_key(
-                event.event_id,
-                stage.stage_id if stage else None,
-                group.group_id if group else None,
-            )
-            snapshot = cache.get(live_key)
-            if isinstance(snapshot, list):
-                standings_rows = snapshot[: max(1, max_rows)]
-                is_live = True
-        if not is_live:
-            if broadcast_cumulative:
-                standings_rows = _overlay_cumulative_rows(
-                    event, broadcast_group_ids, max_rows, request)
-            else:
-                standings_rows = _overlay_standings_rows(event, stage, group, max_rows, request)
+            standings_rows, is_live = _overlay_apply_live(
+                standings_rows, _overlay_scope_groups(event, stage, group,
+                                                      broadcast_cumulative, broadcast_group_ids))
+        standings_rows = standings_rows[: max(1, max_rows)]
 
     # board: the labels the overlay shows above the table. subtitle reflects the scope: the stage name
     # for a group/stage slice, else a "cumulative" label for the combined (event/custom) broadcast.
@@ -21537,6 +21632,14 @@ def live_push(request):
     from django.core.cache import cache
     live_key = _overlay_live_key(event_id, request.data.get("stage_id"), request.data.get("group_id"))
     cache.set(live_key, standings, timeout=15)
+    # Which map this board belongs to (owner 2026-11-11, inbox #540): board.py counts a pushed board as
+    # the map in progress only until that map's official result lands, so the overlays, AFC LIVE and
+    # the admin Live panel never add a finished map twice. See board.note_push / LIVE MAP.
+    group_id_raw = request.data.get("group_id")
+    if str(group_id_raw or "").strip().isdigit() and StageGroups.objects.filter(
+            group_id=int(group_id_raw), stage__event_id=event_id).exists():
+        from .board import note_push
+        note_push(event_id, int(group_id_raw), standings)
     return Response({"ok": True})
 
 
@@ -21861,6 +21964,14 @@ def upload_team_match_result(request):
         })
 
     if not parsed_teams:
+        # A debugger log or a replay dropped where a map's result goes (owner 2026-11-11, inbox #541: the two
+        # 400s of 10 Nov 18:50 and 18:52 were a debugger log sent here). Say what it is and where it reads.
+        from . import game_files as _gf
+        file_name = getattr(uploaded_file, "name", "") or ""
+        if file_name.lower().endswith(".bin") or _gf.looks_like(file_name, text) == "debugger":
+            return Response({"message": "This is a game log, not a match result file. Add it in Game files: it reads "
+                                        "the whole game the way AFC Capture does and asks for any file it still needs.",
+                             "code": "game_log_not_result"}, status=400)
         return Response({"message": "No team data parsed.", "code": "no_team_data_parsed"}, status=400)
 
     # ── ID: 0 (or blank) = the game's "UID unknown" SENTINEL, not a real identity (owner 2026-07-11) ──

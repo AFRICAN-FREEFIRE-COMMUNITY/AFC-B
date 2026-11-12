@@ -142,6 +142,7 @@ from .views_event_graphic import event_stage_graphic
 # + Top-killers boards (ranked players, combine-aware) - preview endpoints + a design-rendered PNG export.
 from .views_mvp import (event_mvp, event_tie_breakers,
                         event_top_killers, event_player_board_graphic)
+from .views_board import event_board, event_board_export
 # Debugger-log backfill (owner 2026-07-02): post-hoc rich stats (deaths/knockdowns/headshots/
 # revives/survival) from the 3D-room client's persisted debugger-*.log. See debugger_ingest.py.
 from .debugger_ingest import debugger_backfill
@@ -241,6 +242,11 @@ urlpatterns = [
     # TOP-KILLERS (owner 2026-07-05, complaint H): players ranked by summed kills, same combine scope as
     # MVP. Preview source for the Top-killers design tab. See views_mvp.py.
     path('<int:event_id>/top-killers/', event_top_killers, name='event_top_killers'),
+    # The leaderboard section's Stats view: every team and player number over a group, one map or any
+    # chosen maps, the map in progress, and the CSV of the same (owner 2026-11-11, inbox #538 #539 #540).
+    # Consumed by components/leaderboards/BoardStatsPanel.tsx. See views_board.py.
+    path('<int:event_id>/board/', event_board, name='event_board'),
+    path('<int:event_id>/board/export/', event_board_export, name='event_board_export'),
     # PLAYER-BOARD PNG export (owner 2026-07-05, complaints G+H #7): download the MVP or Top-killers board
     # rendered THROUGH a design (?kind=mvp|top_killers&design_id=&size=&group_ids=&stage_ids=). Like the
     # leaderboard export, but for player rows (esports_image renders as an image). See views_mvp.py.

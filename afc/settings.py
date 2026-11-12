@@ -878,6 +878,10 @@ WHATSAPP_ORDER_TEMPLATE_LANG = os.getenv("WHATSAPP_ORDER_TEMPLATE_LANG", "en")
 # (`python manage.py create_whatsapp_templates --only login_code --apply`, then `--check` until it
 # reads APPROVED), then set this name in the server .env.
 WHATSAPP_LOGIN_CODE_TEMPLATE = os.getenv("WHATSAPP_LOGIN_CODE_TEMPLATE", "")
+# WHATSAPP_BUSINESS_NUMBER -> the AFC WhatsApp number voters SEND their code to (digits, country code first,
+# e.g. 2348012345678), for awards editions with whatsapp_required (afc_polls/whatsapp_votes.py, inbox #449).
+# Blank: the vote sheet offers only "send me a code" (AFC sends the code with WHATSAPP_LOGIN_CODE_TEMPLATE).
+WHATSAPP_BUSINESS_NUMBER = os.getenv("WHATSAPP_BUSINESS_NUMBER", "")
 WHATSAPP_LOGIN_CODE_LANG = os.getenv("WHATSAPP_LOGIN_CODE_LANG", "en")
 
 # Shop checkout currency. Both shop payment paths (Paystack + Stripe, see
