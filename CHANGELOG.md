@@ -18,7 +18,7 @@ At release time `node ~/.claude/skills/versioning/scripts/release.mjs next` prin
 rename `## Unreleased` to it, merge, then tag the merge commit. A version tag pushed with the wrong
 number is blocked before the push.
 
-## Unreleased
+## v7.17.0 - 2026-11-12
 
 ### Added
 - "That was the last map for now" (inbox #501): a group can be marked done for the day from the leaderboard's Stats
