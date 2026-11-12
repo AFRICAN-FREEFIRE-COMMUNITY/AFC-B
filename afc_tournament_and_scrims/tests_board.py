@@ -141,9 +141,9 @@ class BoardTests(TestCase):
         rows, meta = board.live_group_table(self.group)
         self.assertEqual(meta["map_number"], 3)
         got = {r["team_name"]: (r["total"], r["live"]["points"], r["total_with_live"]) for r in rows}
-        # live placements: CHARLIE 1st (12 + 4), ALPHA 2nd (9 + 1), BRAVO 3rd (8 + 0)
-        self.assertEqual(got, {"ALPHA ESPORTS": (32, 10, 42), "BRAVO ESPORTS": (26, 8, 34),
-                               "CHARLIE ESPORTS": (0, 16, 16)})
+        # all three still alive: kills only, no placement points until a team is out (#558, owner 12 Nov 2026)
+        self.assertEqual(got, {"ALPHA ESPORTS": (32, 1, 33), "BRAVO ESPORTS": (26, 0, 26),
+                               "CHARLIE ESPORTS": (0, 4, 4)})
         for r in rows:
             self.assertEqual(r["total_with_live"], r["total"] + r["live"]["points"])
         self.assertEqual([r["rank"] for r in rows], [1, 2, 3])
@@ -179,7 +179,7 @@ class BoardTests(TestCase):
         body = self.client.get("/events/overlay/feed/", {"token": "ovtok-board", "live": "1"}).json()
         self.assertTrue(body["live"])
         got = [(r["team_name"], r["total_points"], r["live_points"]) for r in body["standings"]]
-        self.assertEqual(got, [("ALPHA ESPORTS", 42, 10), ("BRAVO ESPORTS", 34, 8), ("CHARLIE ESPORTS", 16, 16)])
+        self.assertEqual(got, [("ALPHA ESPORTS", 33, 1), ("BRAVO ESPORTS", 26, 0), ("CHARLIE ESPORTS", 4, 4)])
 
     def test_overlay_official_when_nothing_is_live(self):
         body = self.client.get("/events/overlay/feed/", {"token": "ovtok-board", "live": "1",
@@ -195,7 +195,7 @@ class BoardTests(TestCase):
         live = body["live"]
         self.assertEqual(live["map_number"], 3)
         self.assertEqual([(r["team_name"], r["total_with_live"]) for r in live["standings"]],
-                         [("ALPHA ESPORTS", 42), ("BRAVO ESPORTS", 34), ("CHARLIE ESPORTS", 16)])
+                         [("ALPHA ESPORTS", 33), ("BRAVO ESPORTS", 26), ("CHARLIE ESPORTS", 4)])
         tk = {p["uid"]: (p["kills"], p["live_kills"], p["kills_with_live"]) for p in live["top_killers"]}
         self.assertEqual(tk["1001"], (9, 1, 10))          # ALPHA1: 4 + 5 official + 1 live
         self.assertEqual(tk["3001"], (0, 4, 4))           # CHARLIE's player, live only

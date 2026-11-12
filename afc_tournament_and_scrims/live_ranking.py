@@ -22,7 +22,9 @@ THE PLACEMENT RULE (ported verbatim from the client's old _placements, which is 
 A team wiped o-th (1 = first out) is LOCKED at placement ``N - o + 1``: the first team out finishes
 last. The teams still alive take the remaining top placements, ordered by this match's kills, then by
 how many of their players are still standing, then by name so the order is stable between two pushes
-that are otherwise equal. The result is a gap-free permutation of 1..N. The game's own TeamScore
+that are otherwise equal. The result is a gap-free permutation of 1..N. POINTS for a placement are
+only given once it is final (owner 12 Nov 2026, inbox #558): a wiped team scores its locked place, a team
+still alive scores only its kills until it is out, and the last team standing scores 1st when it is alone. The game's own TeamScore
 plays no part: it is the room's cumulative score across maps, not this match's (measured 2026-09-22
 over 24 matches).
 
@@ -83,6 +85,16 @@ def _is_true(value):
     if isinstance(value, (int, float)):
         return value != 0
     return str(value).strip().lower() in ("true", "yes", "1")
+
+
+def _has_facts(row):
+    """A row from afc-capture 1.4.0 or later: it says whether the team is out (pre-1.4.0 rows do not)."""
+    return isinstance(row, dict) and (("eliminated" in row) or ("elimination_order" in row) or ("alive_count" in row))
+
+
+def _is_out(row):
+    """The team is wiped and its place is locked (rank_rows' own test for a locked team)."""
+    return _is_true(row.get("eliminated")) and _int(row.get("elimination_order"), 0) > 0
 
 
 def rank_rows(rows):
@@ -148,14 +160,23 @@ def normalize_live_standings(rows, *, placement_points, kill_point,
     leaves as the gun's name ("Desert Eagle"), through weapons.weapon_label."""
     out = []
     names = admin_names()                  # one query per push, not one per row
-    for row, placement in rank_rows(list(rows or [])):
+    rows = list(rows or [])
+    # PLACEMENT POINTS ONLY ONCE A TEAM'S PLACE IS FINAL (owner 12 Nov 2026, AFC inbox #558: "IT IS GIVIGN
+    # PLACEMENT POINTS WHEN THE ROUND HAS NOT YET ENDED, MEANWHILE IT SHOULD ONLY CALCULATED PLACEMENT FOR TEAMS
+    # ALREADY ELIMINATED ONLY AND NOT TEAMS STILL ALIVE"). A wiped team's place is locked, so it scores it; a
+    # team still in the game keeps its live rank on the board (placement) but scores only its kills until it
+    # is out, and the last team standing scores 1st once it is the only one left, the map being over. A
+    # pre-1.4.0 row (no elimination facts) is scored as before: there is nothing to tell its state by.
+    standing = sum(1 for r in rows if _has_facts(r) and not _is_out(r))
+    for row, placement in rank_rows(rows):
         if not isinstance(row, dict):
             continue
         try:
+            final = (not _has_facts(row)) or _is_out(row) or standing <= 1
             kills = _int(row.get("kills"))
             assists = _int(row.get("assists")) if points_per_assist else 0
             points = compute_team_points(
-                placement_points=placement_points,
+                placement_points=placement_points if final else {},
                 kill_point=kill_point,
                 points_per_assist=points_per_assist,
                 points_per_1000_damage=points_per_1000_damage,
@@ -172,6 +193,7 @@ def normalize_live_standings(rows, *, placement_points, kill_point,
                 **_named_weapons(row, names),
                 "kills": kills,
                 "placement": placement,
+                "placement_final": final,    # False: still alive, its placement points come when it is out
                 "pos": len(out) + 1,
                 "kill_points": points["kill_points"],
                 "placement_points": points["placement_points"],
