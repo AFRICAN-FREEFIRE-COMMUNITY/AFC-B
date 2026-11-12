@@ -374,7 +374,7 @@ def _save_post_images(post, files, *, replace=False):
     """
     # Local import keeps the heavy Pillow/normalise path out of module import (mirrors how
     # upload_esport_image imports it lazily).
-    from afc_auth.image_utils import normalize_image_upload
+    from afc_auth.image_utils import normalize_image_upload, require_image_upload
 
     files = list(files or [])
     if not files:
@@ -390,8 +390,11 @@ def _save_post_images(post, files, *, replace=False):
     start = post.images.count()
     saved = 0
     for idx, f in enumerate(files):
-        normalized = normalize_image_upload(f, force_jpeg=True)
-        RecruitmentPostImage.objects.create(post=post, image=normalized, order=start + idx)
+        # The batch was decoded in _validate_post_image_files; this pass keeps the re-encoded copy under an OPAQUE
+        # name (R87), where normalize_image_upload alone kept the player's own file name.
+        normalized, _bad = require_image_upload(f, max_bytes=MAX_POST_IMAGE_BYTES, force_jpeg=True)
+        RecruitmentPostImage.objects.create(post=post, image=normalized or normalize_image_upload(f, force_jpeg=True),
+                                            order=start + idx)
         saved += 1
     return saved, None
 

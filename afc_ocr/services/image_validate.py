@@ -25,7 +25,7 @@
 #                                               file list)
 # Each caller resolves its uploaded files and does:
 #     if (image_err := validate_ocr_images(files)):
-#         return Response({"message": image_err}, status=400)
+#         return Response({"message": image_err, "code": "<your_endpoint>_refused"}, status=400)
 # i.e. a non-None return is the client-safe error string; None means "every file passed".
 # The check runs BEFORE touching the extraction engine (afc_ocr.services.extract.extract_rows
 # / .gemini.call_gemini).

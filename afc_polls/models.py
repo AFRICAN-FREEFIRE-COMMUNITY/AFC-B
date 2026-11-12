@@ -166,6 +166,16 @@ class AwardsEdition(models.Model):
     # edition answers; only the admin metrics endpoint (afc_polls.views.admin_edition_metrics) and
     # admin_edition_live_link return it, and afc_polls.views.live_view reads by it.
     live_view_token = models.CharField(max_length=40, blank=True, default="", db_index=True)
+    # HIDDEN UNTIL RELEASE (owner, 11 Nov 2026, AFC inbox #543: "the awards page you will build should be hidden
+    # thouh till we are ready to release it"). While True the edition, its ballots and its pages answer 404 to
+    # everybody except an AFC poll admin (who previews it signed in), it is left out of /awards and the sitemap,
+    # and nobody can vote in it. A themed (detty-royale) edition is created hidden; an admin switches it off on
+    # release (frontend app/(a)/a/polls/editions). Existing editions keep showing (default False).
+    hidden = models.BooleanField(default=False)
+    # ONE WHATSAPP NUMBER, ONE BALLOT (owner, 2 Nov 2026, inbox #447 #449; round 6 approved 11 Nov, #537). When
+    # True a voter proves a WhatsApp number before the ballot is accepted (VoterWhatsApp below), and one number
+    # backs one account. Off by default: an edition opts in from the admin editions page.
+    whatsapp_required = models.BooleanField(default=False)
     # Display order on /awards. Newest edition first by default, but an owner running two at once
     # needs to say which leads.
     order = models.IntegerField(default=0)
@@ -1197,3 +1207,45 @@ class PollReviewLog(models.Model):
 
     def __str__(self):
         return f"{self.action} on response {self.response_id}"
+
+
+class VoterWhatsApp(models.Model):
+    """The WhatsApp number a voter has PROVED is theirs, for editions with whatsapp_required (owner, 2 Nov 2026,
+    inbox #447 #449: "people who vote to have a Whatsapp number saved and then they must verify it to vote").
+
+    One row per account, and a number belongs to one account (unique): the point is that one person counts
+    once. Proved either way (afc_polls.whatsapp_votes): the voter SENDS US the code from the number
+    (method "inbound", free for them and for AFC, the number is the message's sender), or AFC sends a code
+    to a number they type and they type it back (method "code"). Never shown in full on any page: the vote
+    sheet shows the last four digits.
+    """
+
+    INBOUND = "inbound"
+    CODE = "code"
+    METHOD_CHOICES = [(INBOUND, "They sent us the code"), (CODE, "We sent them a code")]
+
+    user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="voter_whatsapp")
+    number = models.CharField(max_length=20, unique=True)        # E.164, "+2348012345678"
+    method = models.CharField(max_length=8, choices=METHOD_CHOICES)
+    verified_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return "VoterWhatsApp(user=%s, ...%s)" % (self.user_id, self.number[-4:])
+
+
+class VoterWhatsAppCode(models.Model):
+    """A code waiting to prove a number (afc_polls.whatsapp_votes). `number` is empty for an INBOUND code (the
+    voter sends it to us, so the number is whatever WhatsApp says sent it) and set for a CODE code (we sent it
+    there). Stored HASHED (R63): a live code never sits readable in the database."""
+
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="voter_whatsapp_codes")
+    kind = models.CharField(max_length=8, choices=VoterWhatsApp.METHOD_CHOICES)
+    code_hash = models.CharField(max_length=64, db_index=True)
+    number = models.CharField(max_length=20, blank=True, default="")
+    attempts = models.PositiveSmallIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+    used_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        indexes = [models.Index(fields=["user", "kind", "-created_at"])]
+

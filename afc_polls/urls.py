@@ -8,7 +8,7 @@ each endpoint.
 """
 from django.urls import path
 
-from . import views
+from . import views, views_hof, whatsapp_votes
 
 urlpatterns = [
     # ── admin (declared first: literal prefix before the <slug:slug> patterns) ──
@@ -19,6 +19,8 @@ urlpatterns = [
          name="polls_admin_questions"),                                                      # PUT
     path("admin/polls/<slug:slug>/options/<int:option_id>/film/", views.admin_option_film,
          name="polls_admin_option_film"),                                              # POST, DELETE
+    path("admin/polls/<slug:slug>/options/<int:option_id>/image/", views.admin_option_image,
+         name="polls_admin_option_image"),                                             # POST, DELETE
     path("admin/polls/<slug:slug>/options/<int:option_id>/winner-film/", views.admin_option_film,
          {"field": "winner_film"}, name="polls_admin_option_winner_film"),             # POST, DELETE
     path("admin/polls/<slug:slug>/results/", views.admin_results,
@@ -45,6 +47,13 @@ urlpatterns = [
     # ── awards editions, public. Declared before <slug:slug>/ for the same reason `admin/` is:
     #    a poll whose slug happened to be "editions" would otherwise swallow the route ──
     path("editions/", views.list_editions, name="polls_editions"),                           # GET
+    # The hall of fame: every published winner of every released edition (inbox #445). See views_hof.py.
+    path("hall-of-fame/", views_hof.hall_of_fame, name="polls_hall_of_fame"),                # GET
+    # One WhatsApp number, one ballot (inbox #447 #449): prove a number before voting. See whatsapp_votes.py.
+    path("whatsapp/", whatsapp_votes.whatsapp_status, name="polls_whatsapp_status"),         # GET
+    path("whatsapp/start/", whatsapp_votes.whatsapp_start, name="polls_whatsapp_start"),     # POST
+    path("whatsapp/send-code/", whatsapp_votes.whatsapp_send_code, name="polls_whatsapp_send_code"),  # POST
+    path("whatsapp/verify/", whatsapp_votes.whatsapp_verify, name="polls_whatsapp_verify"),  # POST
     path("editions/<slug:slug>/", views.edition_detail, name="polls_edition_detail"),        # GET
     path("watch/", views.watch, name="polls_watch"),                                # POST, DELETE
     # Garena's private live page reads by its token (live_view). Two segments, so it could never be

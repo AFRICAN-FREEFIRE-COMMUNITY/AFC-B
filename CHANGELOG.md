@@ -38,6 +38,30 @@ number is blocked before the push.
 - `events/capture/context/?standings=1` (AFC LIVE) carries `live`: the group's table with the map in progress added,
   the kill leaders with that map's kills, and that map's provisional MVP by the event's own MVP rule, so AFC LIVE
   shows the website's numbers during a map too (inbox #540).
+- Admins can UPLOAD a nominee's picture in the ballot builder (`POST/DELETE polls/admin/polls/<slug>/options/<id>/image/`)
+  instead of only pasting a link: the bytes are checked and re-encoded, stored under an opaque name, at most 10 MB.
+- Awards editions can be HIDDEN until release (`hidden`): a hidden edition, its ballots and pages answer 404 to
+  everybody but an AFC poll admin (who previews it), are left out of every list and the hall of fame, and take no
+  votes. A themed (KOL Awards) edition is created hidden; switching it off releases it (owner, 11 Nov 2026, #543).
+- One WhatsApp number, one ballot (`whatsapp_required` on an edition): a voter proves a number by sending
+  "AFC <code>" to the AFC WhatsApp number (`polls/whatsapp/start/`, the webhook's new inbound handler) or by typing
+  back a code AFC sends (`polls/whatsapp/send-code/`, `verify/`, three an hour); a number backs one account; codes are
+  stored hashed. New setting `WHATSAPP_BUSINESS_NUMBER` (owner, 2 Nov 2026, #447 #449).
+- `polls/hall-of-fame/`: every published winner of every released edition, newest season first, and who has won
+  most (#445).
+- A group's Stats on the leaderboard pages (`events/<id>/board/`): every team AND every player number over the whole
+  group, one map, or any maps you choose: kills, damage, assists, knockdowns, knocked, headshots, deaths, revives,
+  grenades, gloo walls, medkits, survival time, most used gun; plus the map being played right now. The same numbers
+  download as a spreadsheet (`events/<id>/board/export/`, teams or players) (owner, 11 Nov 2026, inbox #538 #539). The
+  leaderboard graphic (`events/<id>/stages/<id>/graphic/`) takes `match_ids` too: one map's board, or the maps you pick.
+- Game files reads a debugger log with AFC Capture's own reader, so an uploaded log gives every number Capture would
+  have sent (knocks, knocked, grenades, gloo walls, medkits, the gun, the kill feed), and it takes the map's replay
+  file (`Replays/ReplayInfo_<match>_<date>.bin`) for every player's damage and the gun of every kill and knock. Each
+  map lists the files still missing by their real names, and offers the placements the log itself shows when the
+  result file is not there (owner, 11 Nov 2026, inbox #541).
+- `events/capture/context/?standings=1` (AFC LIVE) carries `live`: the group's table with the map in progress added,
+  the kill leaders with that map's kills, and that map's provisional MVP by the event's own MVP rule, so AFC LIVE
+  shows the website's numbers during a map too (inbox #540).
 
 ### Fixed
 - A debugger log dropped on a map's result upload was refused with "No team data parsed." (twice on 10 Nov). It is
@@ -49,6 +73,25 @@ number is blocked before the push.
 - Players who are not on the event's roster were missing from Top Killers and every player list although their
   kills count for their team (one map: a team with 15 kills showed one player with 3). They are listed now, marked
   as not on the roster, with their damage and other numbers from AFC Capture (inbox #538).
+- Once an awards edition's winners are announced, each award's published winner is named to everybody even when
+  the ballot keeps its vote numbers private (the default for an award ballot). Before, the winners page said "not
+  published yet" while the hall of fame named the winners. No vote count is sent with it.
+- A debugger log dropped on a map's result upload was refused with "No team data parsed." (twice on 10 Nov). It is
+  now told it is a game log and where it goes (`game_log_not_result`).
+- The live leaderboard overlay showed only the map being played, with that map's points, instead of the group's
+  table with the map added: a team on 133 after five maps read 22 on air. It also never went live when it followed
+  a group picked on the website, and kept counting a finished map after its result was uploaded. Every reader (the
+  overlays, AFC LIVE, the leaderboard page) now takes one table from the server (inbox #540).
+- Players who are not on the event's roster were missing from Top Killers and every player list although their
+  kills count for their team (one map: a team with 15 kills showed one player with 3). They are listed now, marked
+  as not on the roster, with their damage and other numbers from AFC Capture (inbox #538).
+
+### Security
+- The last image doors that stored any file unchanged (profile picture, esports picture, news cover and article
+  images, market screenshots) now check what the bytes really are, re-encode them and store them under an opaque
+  name; a file that is not a picture is refused with not_an_image (R70, R87; inbox #531).
+- No error answer carries an exception's own text any more: six OCR admin endpoints and event creation now answer a
+  written sentence with a code, the details go to the log only (R79; inbox #532).
 
 ## v7.16.0 - 2026-11-10
 

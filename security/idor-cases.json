@@ -4472,6 +4472,36 @@
           404
         ]
       }
+    },
+    {
+      "name": "B cannot set or remove a nominee picture on a poll B does not manage (POST polls/admin/polls/<slug:slug>/options/<int:option_id>/image/, goal #537). Poll managers only (can_manage_poll); another poll's nominee is a 404",
+      "route": "polls/admin/polls/<slug:slug>/options/<int:option_id>/image/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/polls/admin/polls/best-moment-of-the-season/options/1/image/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "B cannot set or remove a nominee picture on a poll B does not manage (DELETE polls/admin/polls/<slug:slug>/options/<int:option_id>/image/, goal #537). Poll managers only (can_manage_poll); another poll's nominee is a 404",
+      "route": "polls/admin/polls/<slug:slug>/options/<int:option_id>/image/",
+      "attempt": {
+        "as": "b",
+        "method": "DELETE",
+        "path": "/polls/admin/polls/best-moment-of-the-season/options/1/image/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
     }
   ]
 }

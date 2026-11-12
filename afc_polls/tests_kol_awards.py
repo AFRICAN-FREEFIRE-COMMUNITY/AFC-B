@@ -295,3 +295,79 @@ class WinnerFilmTests(TestCase):
         self.option.refresh_from_db()
         self.assertFalse(self.option.winner_film)
         self.assertTrue(self.option.film)
+
+
+@override_settings(MEDIA_ROOT=FILM_ROOT)
+class OptionImageUploadTests(TestCase):
+    """The admin builder's picture upload for a nominee (goal #537 K3): bytes decide, opaque name, replace, remove,
+    managers only, this poll's nominees only."""
+
+    def setUp(self):
+        self.edition, self.poll, self.q1, _ = kol_edition("kol-pics")
+        self.option = self.q1.options.first()
+        self.admin = make_admin("picboss")
+        self.client = APIClient()
+        self.url = f"/polls/admin/polls/{self.poll.slug}/options/{self.option.option_id}/image/"
+
+    @staticmethod
+    def png():
+        from io import BytesIO
+        from PIL import Image
+        out = BytesIO()
+        Image.new("RGB", (40, 50), (200, 150, 60)).save(out, "PNG")
+        return out.getvalue()
+
+    def upload(self, data, name="nova.png", user=None):
+        return self.client.post(self.url, {"image": SimpleUploadedFile(name, data)}, format="multipart",
+                                **token_for(user or self.admin))
+
+    def test_a_picture_is_stored_opaquely_and_shown_on_the_nominee(self):
+        response = self.upload(self.png(), name="Nova Kay FINAL.php.png")
+        self.assertEqual(response.status_code, 200)
+        url = response.json()["image_url"]
+        self.assertRegex(url, r"/media/awards/nominees/[0-9a-f]{32}\.(png|jpg)$")
+        shown = APIClient().get(f"/polls/editions/{self.edition.slug}/").json()["polls"][0]["questions"][0]["options"][0]
+        self.assertEqual(shown["image_url"], url)
+
+    def test_a_new_picture_replaces_the_old_file(self):
+        from django.core.files.storage import default_storage
+        first = self.upload(self.png()).json()["image_url"].split("/media/")[1]
+        self.upload(self.png())
+        self.assertFalse(default_storage.exists(first))
+
+    def test_html_wearing_a_png_name_is_refused(self):
+        response = self.upload(b"<html><script>alert(1)</script></html>", name="nova.png")
+        self.assertEqual((response.status_code, response.json()["code"]), (400, "not_an_image"))
+        self.assertEqual(PollOption.objects.get(pk=self.option.pk).image_url, "")
+
+    def test_too_large_is_refused(self):
+        response = self.upload(self.png() + b"\x00" * (10 * 1024 * 1024 + 1))
+        self.assertEqual((response.status_code, response.json()["code"]), (400, "image_too_large"))
+
+    def test_no_file_is_refused_with_a_code(self):
+        response = self.client.post(self.url, {}, format="multipart", **token_for(self.admin))
+        self.assertEqual((response.status_code, response.json()["code"]), (400, "image_required"))
+
+    def test_players_and_strangers_cannot_upload(self):
+        self.assertEqual(self.upload(self.png(), user=make_user("picfan")).status_code, 403)
+        anon = APIClient().post(self.url, {"image": SimpleUploadedFile("a.png", self.png())}, format="multipart")
+        self.assertEqual(anon.status_code, 401)
+
+    def test_another_polls_nominee_is_not_reachable(self):
+        _, _, other_q, _ = kol_edition("kol-pics-other")
+        theirs = other_q.options.first()
+        url = f"/polls/admin/polls/{self.poll.slug}/options/{theirs.option_id}/image/"
+        response = self.client.post(url, {"image": SimpleUploadedFile("a.png", self.png())}, format="multipart",
+                                    **token_for(self.admin))
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(PollOption.objects.get(pk=theirs.pk).image_url, "")
+
+    def test_delete_clears_it_and_removes_only_our_own_file(self):
+        from django.core.files.storage import default_storage
+        stored = self.upload(self.png()).json()["image_url"].split("/media/")[1]
+        self.assertEqual(self.client.delete(self.url, **token_for(self.admin)).status_code, 200)
+        self.assertEqual(PollOption.objects.get(pk=self.option.pk).image_url, "")
+        self.assertFalse(default_storage.exists(stored))
+        # a pasted link from elsewhere is cleared, never treated as a file of ours
+        PollOption.objects.filter(pk=self.option.pk).update(image_url="https://example.com/media/awards/nominees/x.png")
+        self.assertEqual(self.client.delete(self.url, **token_for(self.admin)).json()["image_url"], "")
