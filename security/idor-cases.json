@@ -16,16 +16,209 @@
     }
   },
   "cases": [
-    {"name": "B cannot read the detailed metrics of an awards season (polls/admin/editions/<slug>/metrics/, inbox #432). AFC poll admins only, open or past season alike; an ordinary player is refused before the slug is looked up", "route": "polls/admin/editions/<slug:slug>/metrics/", "attempt": {"as": "b", "method": "GET", "path": "/polls/admin/editions/best-moment-of-the-season/metrics/", "expect": [401, 403]}, "r88": {"skip": ["existence", "neighbours"], "reason": "the admin gate answers 403 before the edition is looked up, so a real and a missing slug answer the same"}},
-    {"name": "B cannot read the original awards ballot (polls/admin/legacy-ballot-metrics/, inbox #432). AFC poll admins only; takes no id", "route": "polls/admin/legacy-ballot-metrics/", "attempt": {"as": "b", "method": "GET", "path": "/polls/admin/legacy-ballot-metrics/", "expect": [401, 403]}, "r88": {"skip": ["existence", "neighbours"], "reason": "the address takes no id"}},
-    {"name": "B cannot read the flagged ballots of a poll (polls/admin/polls/<slug>/flags/, inbox #453). AFC poll admins only; an ordinary player is refused before the slug is looked up", "route": "polls/admin/polls/<slug:slug>/flags/", "attempt": {"as": "b", "method": "GET", "path": "/polls/admin/polls/best-moment-of-the-season/flags/", "expect": [401, 403]}, "r88": {"skip": ["existence", "neighbours"], "reason": "the poll admin gate (is_polls_admin) answers 403 before the poll, edition or ballot is looked up, so a real and a missing id answer the same"}},
-    {"name": "B cannot clear, remove or restore a ballot (polls/admin/polls/<slug>/responses/<id>/review/, inbox #453). AFC poll admins only; the probe sends no action and is refused before the ballot is looked up", "route": "polls/admin/polls/<slug:slug>/responses/<int:response_id>/review/", "attempt": {"as": "b", "method": "POST", "path": "/polls/admin/polls/best-moment-of-the-season/responses/1/review/", "expect": [401, 403]}, "r88": {"skip": ["existence", "neighbours"], "reason": "the poll admin gate (is_polls_admin) answers 403 before the poll, edition or ballot is looked up, so a real and a missing id answer the same"}},
-    {"name": "B cannot create, replace or turn off Garena's private live link (polls/admin/editions/<slug>/live-link/, inbox #457). AFC poll admins only", "route": "polls/admin/editions/<slug:slug>/live-link/", "attempt": {"as": "b", "method": "POST", "path": "/polls/admin/editions/best-moment-of-the-season/live-link/", "expect": [401, 403]}, "r88": {"skip": ["existence", "neighbours"], "reason": "the poll admin gate (is_polls_admin) answers 403 before the poll, edition or ballot is looked up, so a real and a missing id answer the same"}},
-    {"name": "A guessed live link reaches nothing (polls/live/<token>/, inbox #457). The token IS the access by the owner's choice (Private link, no sign-in); a malformed, unknown or turned-off token answers the same 404 live_view_not_found", "route": "polls/live/<str:token>/", "attempt": {"as": "b", "method": "GET", "path": "/polls/live/lv_00000000000000000000000000000000/", "expect": [404]}, "r88": {"skip": ["existence", "neighbours"], "reason": "a 32 hex token, not an id: no neighbours to walk, and a real token is meant to open the page (aggregates only: no voter data, cells under five folded into Other)"}},
-    {"name": "B records only B's own opened vote sheet (polls/<slug>/sheet-opened/, inbox #453). Open to any signed-in player by design; the probe sends an unknown check and is refused with sheet_open_check_unknown, writing nothing", "route": "polls/<slug:slug>/sheet-opened/", "attempt": {"as": "b", "method": "POST", "path": "/polls/best-moment-of-the-season/sheet-opened/", "expect": [400, 404], "body": {"failed_check": "probe"}}, "r88": {"skip": ["existence", "neighbours"], "reason": "the poll slug is public and the handler writes only the caller's own PollSheetOpen row (request user, never an id from the body)"}},
-    {"name": "B may ask an organizer a question, and only ever files B's own ticket (support/organizations/<slug>/ask/, inbox #175). Open to any signed-in player by design; the probe sends no message, so it is refused with question_empty and creates nothing", "route": "support/organizations/<slug:slug>/ask/", "attempt": {"as": "b", "method": "POST", "path": "/support/organizations/afc/ask/", "expect": [400, 404]}, "r88": {"skip": ["existence", "neighbours"], "reason": "the organization slug is public and asking is open to every signed-in player; the handler writes only the caller's own ticket"}},
-    {"name": "B cannot list the events a partner reaches (partners/admin/<slug>/events/, inbox #201). Partner admins only; an ordinary player is refused before the partner is looked up, so a real and a made-up slug answer alike", "route": "partners/admin/<slug:slug>/events/", "attempt": {"as": "b", "method": "GET", "path": "/partners/admin/v-ent/events/", "expect": [401, 403, 404]}, "r88": {"skip": ["neighbours"], "reason": "addressed by a partner slug, which has no numeric neighbour"}},
-    {"name": "B cannot publish a partner's finished events (partners/admin/<slug>/publish-finished/, inbox #201). Partner admins only; the gate runs before the partner is looked up and before anything is written", "route": "partners/admin/<slug:slug>/publish-finished/", "attempt": {"as": "b", "method": "POST", "path": "/partners/admin/v-ent/publish-finished/", "expect": [401, 403, 404, 405]}, "r88": {"skip": ["neighbours"], "reason": "addressed by a partner slug, which has no numeric neighbour"}},
+    {
+      "name": "B cannot read the detailed metrics of an awards season (polls/admin/editions/<slug>/metrics/, inbox #432). AFC poll admins only, open or past season alike; an ordinary player is refused before the slug is looked up",
+      "route": "polls/admin/editions/<slug:slug>/metrics/",
+      "attempt": {
+        "as": "b",
+        "method": "GET",
+        "path": "/polls/admin/editions/best-moment-of-the-season/metrics/",
+        "expect": [
+          401,
+          403
+        ]
+      },
+      "r88": {
+        "skip": [
+          "existence",
+          "neighbours"
+        ],
+        "reason": "the admin gate answers 403 before the edition is looked up, so a real and a missing slug answer the same"
+      }
+    },
+    {
+      "name": "B cannot read the original awards ballot (polls/admin/legacy-ballot-metrics/, inbox #432). AFC poll admins only; takes no id",
+      "route": "polls/admin/legacy-ballot-metrics/",
+      "attempt": {
+        "as": "b",
+        "method": "GET",
+        "path": "/polls/admin/legacy-ballot-metrics/",
+        "expect": [
+          401,
+          403
+        ]
+      },
+      "r88": {
+        "skip": [
+          "existence",
+          "neighbours"
+        ],
+        "reason": "the address takes no id"
+      }
+    },
+    {
+      "name": "B cannot read the flagged ballots of a poll (polls/admin/polls/<slug>/flags/, inbox #453). AFC poll admins only; an ordinary player is refused before the slug is looked up",
+      "route": "polls/admin/polls/<slug:slug>/flags/",
+      "attempt": {
+        "as": "b",
+        "method": "GET",
+        "path": "/polls/admin/polls/best-moment-of-the-season/flags/",
+        "expect": [
+          401,
+          403
+        ]
+      },
+      "r88": {
+        "skip": [
+          "existence",
+          "neighbours"
+        ],
+        "reason": "the poll admin gate (is_polls_admin) answers 403 before the poll, edition or ballot is looked up, so a real and a missing id answer the same"
+      }
+    },
+    {
+      "name": "B cannot clear, remove or restore a ballot (polls/admin/polls/<slug>/responses/<id>/review/, inbox #453). AFC poll admins only; the probe sends no action and is refused before the ballot is looked up",
+      "route": "polls/admin/polls/<slug:slug>/responses/<int:response_id>/review/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/polls/admin/polls/best-moment-of-the-season/responses/1/review/",
+        "expect": [
+          401,
+          403
+        ]
+      },
+      "r88": {
+        "skip": [
+          "existence",
+          "neighbours"
+        ],
+        "reason": "the poll admin gate (is_polls_admin) answers 403 before the poll, edition or ballot is looked up, so a real and a missing id answer the same"
+      }
+    },
+    {
+      "name": "B cannot create, replace or turn off Garena's private live link (polls/admin/editions/<slug>/live-link/, inbox #457). AFC poll admins only",
+      "route": "polls/admin/editions/<slug:slug>/live-link/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/polls/admin/editions/best-moment-of-the-season/live-link/",
+        "expect": [
+          401,
+          403
+        ]
+      },
+      "r88": {
+        "skip": [
+          "existence",
+          "neighbours"
+        ],
+        "reason": "the poll admin gate (is_polls_admin) answers 403 before the poll, edition or ballot is looked up, so a real and a missing id answer the same"
+      }
+    },
+    {
+      "name": "A guessed live link reaches nothing (polls/live/<token>/, inbox #457). The token IS the access by the owner's choice (Private link, no sign-in); a malformed, unknown or turned-off token answers the same 404 live_view_not_found",
+      "route": "polls/live/<str:token>/",
+      "attempt": {
+        "as": "b",
+        "method": "GET",
+        "path": "/polls/live/lv_00000000000000000000000000000000/",
+        "expect": [
+          404
+        ]
+      },
+      "r88": {
+        "skip": [
+          "existence",
+          "neighbours"
+        ],
+        "reason": "a 32 hex token, not an id: no neighbours to walk, and a real token is meant to open the page (aggregates only: no voter data, cells under five folded into Other)"
+      }
+    },
+    {
+      "name": "B records only B's own opened vote sheet (polls/<slug>/sheet-opened/, inbox #453). Open to any signed-in player by design; the probe sends an unknown check and is refused with sheet_open_check_unknown, writing nothing",
+      "route": "polls/<slug:slug>/sheet-opened/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/polls/best-moment-of-the-season/sheet-opened/",
+        "expect": [
+          400,
+          404
+        ],
+        "body": {
+          "failed_check": "probe"
+        }
+      },
+      "r88": {
+        "skip": [
+          "existence",
+          "neighbours"
+        ],
+        "reason": "the poll slug is public and the handler writes only the caller's own PollSheetOpen row (request user, never an id from the body)"
+      }
+    },
+    {
+      "name": "B may ask an organizer a question, and only ever files B's own ticket (support/organizations/<slug>/ask/, inbox #175). Open to any signed-in player by design; the probe sends no message, so it is refused with question_empty and creates nothing",
+      "route": "support/organizations/<slug:slug>/ask/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/support/organizations/afc/ask/",
+        "expect": [
+          400,
+          404
+        ]
+      },
+      "r88": {
+        "skip": [
+          "existence",
+          "neighbours"
+        ],
+        "reason": "the organization slug is public and asking is open to every signed-in player; the handler writes only the caller's own ticket"
+      }
+    },
+    {
+      "name": "B cannot list the events a partner reaches (partners/admin/<slug>/events/, inbox #201). Partner admins only; an ordinary player is refused before the partner is looked up, so a real and a made-up slug answer alike",
+      "route": "partners/admin/<slug:slug>/events/",
+      "attempt": {
+        "as": "b",
+        "method": "GET",
+        "path": "/partners/admin/v-ent/events/",
+        "expect": [
+          401,
+          403,
+          404
+        ]
+      },
+      "r88": {
+        "skip": [
+          "neighbours"
+        ],
+        "reason": "addressed by a partner slug, which has no numeric neighbour"
+      }
+    },
+    {
+      "name": "B cannot publish a partner's finished events (partners/admin/<slug>/publish-finished/, inbox #201). Partner admins only; the gate runs before the partner is looked up and before anything is written",
+      "route": "partners/admin/<slug:slug>/publish-finished/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/partners/admin/v-ent/publish-finished/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      },
+      "r88": {
+        "skip": [
+          "neighbours"
+        ],
+        "reason": "addressed by a partner slug, which has no numeric neighbour"
+      }
+    },
     {
       "name": "B cannot read the Discord reminder settings of an event whose organization B is not part of (events/<id>/discord-reminders/, reopen_event's gate)",
       "attempt": {
@@ -4184,11 +4377,131 @@
         ]
       }
     },
-    {"name": "B cannot use the Game files box of an event B does not organize (events/<event_id>/game-files/read/, inbox #396). Staff and the event's organizers only (_broadcast_gate)", "route": "events/<int:event_id>/game-files/read/", "attempt": {"as": "b", "method": "POST", "path": "/events/2/game-files/read/", "expect": [401, 403, 404]}},
-    {"name": "B cannot use the Game files box of an event B does not organize (events/<event_id>/game-files/games/, inbox #396). Staff and the event's organizers only (_broadcast_gate)", "route": "events/<int:event_id>/game-files/games/", "attempt": {"as": "b", "method": "POST", "path": "/events/2/game-files/games/", "expect": [401, 403, 404], "body": {"file_ids": []}}},
-    {"name": "B cannot use the Game files box of an event B does not organize (events/<event_id>/game-files/result-text/, inbox #396). Staff and the event's organizers only (_broadcast_gate)", "route": "events/<int:event_id>/game-files/result-text/", "attempt": {"as": "b", "method": "POST", "path": "/events/2/game-files/result-text/", "expect": [401, 403, 404], "body": {"file_ids": [], "key": "x"}}},
-    {"name": "B cannot use the Game files box of an event B does not organize (events/<event_id>/game-files/debugger/, inbox #396). Staff and the event's organizers only (_broadcast_gate)", "route": "events/<int:event_id>/game-files/debugger/", "attempt": {"as": "b", "method": "POST", "path": "/events/2/game-files/debugger/", "expect": [401, 403, 404], "body": {"file_ids": [], "key": "x", "match_id": 1}}},
-    {"name": "B cannot set or remove a nominee picture on a poll B does not manage (POST polls/admin/polls/<slug:slug>/options/<int:option_id>/image/, goal #537). Poll managers only (can_manage_poll); another poll's nominee is a 404", "route": "polls/admin/polls/<slug:slug>/options/<int:option_id>/image/", "attempt": {"as": "b", "method": "POST", "path": "/polls/admin/polls/best-moment-of-the-season/options/1/image/", "expect": [401, 403, 404, 405]}},
-    {"name": "B cannot set or remove a nominee picture on a poll B does not manage (DELETE polls/admin/polls/<slug:slug>/options/<int:option_id>/image/, goal #537). Poll managers only (can_manage_poll); another poll's nominee is a 404", "route": "polls/admin/polls/<slug:slug>/options/<int:option_id>/image/", "attempt": {"as": "b", "method": "DELETE", "path": "/polls/admin/polls/best-moment-of-the-season/options/1/image/", "expect": [401, 403, 404, 405]}}
+    {
+      "name": "B cannot use the Game files box of an event B does not organize (events/<event_id>/game-files/read/, inbox #396). Staff and the event's organizers only (_broadcast_gate)",
+      "route": "events/<int:event_id>/game-files/read/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/events/2/game-files/read/",
+        "expect": [
+          401,
+          403,
+          404
+        ]
+      }
+    },
+    {
+      "name": "B cannot use the Game files box of an event B does not organize (events/<event_id>/game-files/games/, inbox #396). Staff and the event's organizers only (_broadcast_gate)",
+      "route": "events/<int:event_id>/game-files/games/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/events/2/game-files/games/",
+        "expect": [
+          401,
+          403,
+          404
+        ],
+        "body": {
+          "file_ids": []
+        }
+      }
+    },
+    {
+      "name": "B cannot use the Game files box of an event B does not organize (events/<event_id>/game-files/result-text/, inbox #396). Staff and the event's organizers only (_broadcast_gate)",
+      "route": "events/<int:event_id>/game-files/result-text/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/events/2/game-files/result-text/",
+        "expect": [
+          401,
+          403,
+          404
+        ],
+        "body": {
+          "file_ids": [],
+          "key": "x"
+        }
+      }
+    },
+    {
+      "name": "B cannot use the Game files box of an event B does not organize (events/<event_id>/game-files/debugger/, inbox #396). Staff and the event's organizers only (_broadcast_gate)",
+      "route": "events/<int:event_id>/game-files/debugger/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/events/2/game-files/debugger/",
+        "expect": [
+          401,
+          403,
+          404
+        ],
+        "body": {
+          "file_ids": [],
+          "key": "x",
+          "match_id": 1
+        }
+      }
+    },
+    {
+      "name": "B cannot read an event's Stats board or its CSV (events/<int:event_id>/board/, inbox #538 #539). AFC event admins and the event's organizers only (_broadcast_gate); an ordinary player is refused before the group is read",
+      "route": "events/<int:event_id>/board/",
+      "attempt": {
+        "as": "b",
+        "method": "GET",
+        "path": "/events/229/board/?group_id=1",
+        "expect": [
+          401,
+          403,
+          404
+        ]
+      }
+    },
+    {
+      "name": "B cannot read an event's Stats board or its CSV (events/<int:event_id>/board/export/, inbox #538 #539). AFC event admins and the event's organizers only (_broadcast_gate); an ordinary player is refused before the group is read",
+      "route": "events/<int:event_id>/board/export/",
+      "attempt": {
+        "as": "b",
+        "method": "GET",
+        "path": "/events/229/board/export/?group_id=1",
+        "expect": [
+          401,
+          403,
+          404
+        ]
+      }
+    },
+    {
+      "name": "B cannot set or remove a nominee picture on a poll B does not manage (POST polls/admin/polls/<slug:slug>/options/<int:option_id>/image/, goal #537). Poll managers only (can_manage_poll); another poll's nominee is a 404",
+      "route": "polls/admin/polls/<slug:slug>/options/<int:option_id>/image/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/polls/admin/polls/best-moment-of-the-season/options/1/image/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    },
+    {
+      "name": "B cannot set or remove a nominee picture on a poll B does not manage (DELETE polls/admin/polls/<slug:slug>/options/<int:option_id>/image/, goal #537). Poll managers only (can_manage_poll); another poll's nominee is a 404",
+      "route": "polls/admin/polls/<slug:slug>/options/<int:option_id>/image/",
+      "attempt": {
+        "as": "b",
+        "method": "DELETE",
+        "path": "/polls/admin/polls/best-moment-of-the-season/options/1/image/",
+        "expect": [
+          401,
+          403,
+          404,
+          405
+        ]
+      }
+    }
   ]
 }

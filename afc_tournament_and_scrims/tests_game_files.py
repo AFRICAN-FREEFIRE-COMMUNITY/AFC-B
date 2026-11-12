@@ -256,7 +256,10 @@ class EndpointTests(TestCase):
         self.assertEqual(up.status_code, 200, up.content)
         done = self.client.post(self.url("debugger"), {"file_ids": ids, "key": "900001",
                                                        "match_id": self.matches[0].match_id}, format="json").json()
-        self.assertEqual(done, {"updated_rows": 4, "kill_events": 8}, "3 knocks + 5 kills; the 55 s bleed-out is nobody's")
+        # This log stops at SendLogEndGame without the game's MatchEnd line, so AFC Capture's reader (inbox #541)
+        # does not take it as a finished map and the site's own reader counts it: tests_capture_reader has both.
+        self.assertEqual(done, {"updated_rows": 4, "kill_events": 8, "with_damage": 0, "reader": "site"},
+                         "3 knocks + 5 kills; the 55 s bleed-out is nobody's")
         a1 = TournamentPlayerMatchStats.objects.get(team_stats__match=self.matches[0], player__uid=UIDS[A1])
         self.assertEqual((a1.knockdowns, a1.deaths, a1.revives_received, a1.rich_stats_filled), (2, 2, 1, True))
         self.assertEqual(MatchKillEvent.objects.filter(match=self.matches[0], kind="knock").count(), 3)

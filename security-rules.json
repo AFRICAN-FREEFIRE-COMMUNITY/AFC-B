@@ -140,7 +140,7 @@
     {
       "rule": "R70",
       "path": "afc_tournament_and_scrims/views_game_files.py",
-      "reason": "game files (#396, 2 Nov 2026): each upload is capped at MAX_UPLOAD_BYTES (24 MB), unpacked in memory (the browser gzips it, so no content type or magic number is trustworthy), and refused with a code unless game_files.looks_like() finds a real debugger log or match result in the TEXT; nothing is written to disk or served, only the parsed games go to the cache for BATCH_TTL; same shape as debugger_ingest.py"
+      "reason": "game files (#396, 2 Nov 2026): each upload is capped at MAX_UPLOAD_BYTES (24 MB), unpacked in memory (the browser gzips it, so no content type or magic number is trustworthy), and refused with a code unless game_files.looks_like() finds a real debugger log or match result in the TEXT; nothing is written to disk or served, only the parsed games go to the cache for BATCH_TTL; same shape as debugger_ingest.py. Since 11 Nov 2026 (inbox #541) a replay file (Replays/ReplayInfo_<match>_<date>.bin) is accepted too: binary, unpacked in memory with a 120 MB cap (views_game_files._unpack_bytes), refused with replay_file_unreadable unless capture_reader.replay reads replay records from it, and only the damage and gun lists are kept; the debugger text is written to a mkstemp temp file for AFC Capture's reader (capture_apply._segment) and deleted in a finally block, never served"
     },
     {
       "rule": "R74",

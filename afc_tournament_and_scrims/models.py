@@ -1886,6 +1886,15 @@ class MatchKillFlag(models.Model):
     # Per-flag override: True = always count this player's kills, False = never, NULL = follow the
     # event default (Event.count_flagged_kills). Admin/organizer sets it from the panel.
     count_kills = models.BooleanField(null=True, blank=True)
+    # The flagged player's OTHER numbers for this map (owner 2026-11-11, inbox #538 #540): damage and
+    # the rich stats AFC Capture / the game files upload read for this UID (the same keys as
+    # TournamentPlayerMatchStats: damage, assists, deaths, knockdowns, knocked, headshots,
+    # revives_received, grenades_used, grenade_kills, gloowall_used, medkit_used, survival_seconds,
+    # most_used_weapon). Before this a player missing from the roster kept only his kills, so every
+    # per-player board (top killers, damage, MVP) lost him. Filled by
+    # capture_rich_stats.apply_capture_rich_stats and debugger_ingest.apply_rich_stats; read by
+    # board.player_board. {} when nothing was read for him.
+    stats = models.JSONField(default=dict, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

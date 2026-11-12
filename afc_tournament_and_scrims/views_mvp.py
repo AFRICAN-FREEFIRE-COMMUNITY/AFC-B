@@ -299,6 +299,62 @@ def compute_event_mvp(event, request, group_ids=None):
     }
 
 
+def _add_flagged_players(event, group_ids, players):
+    """Fold the flagged players whose kills count into a top-killers `players` dict (owner 2026-11-11,
+    inbox #538 #540). A flagged player is a UID in the game's result that the event's roster does not
+    hold; until now he kept only his kills, on the team, and vanished from every player board although
+    the team's total counts him (map 5111: SNOWY SUMMER 15 kills, one player row of 3).
+    A flag that names a registered user (matched by name) adds to that user's row; one that names
+    nobody becomes a row keyed by the game's UID: user_id None, `uid` set, `registered` False, no photo.
+    Kills, damage and assists come from the flag (MatchKillFlag.stats, filled since 11 Nov 2026).
+    Map MVPs are not awarded to them: MVP stays a roster player's title."""
+    from .board import _flag_counts
+    from .models import MatchKillFlag
+
+    flags = MatchKillFlag.objects.select_related(
+        "registered_user", "tournament_team__team", "tournament_team__ghost_team", "match")
+    flags = (flags.filter(match__group__stage__event=event) if group_ids is None
+             else flags.filter(match__group_id__in=group_ids))
+    seen_maps = defaultdict(set)
+    for f in flags:
+        if not _flag_counts(f, event):
+            continue
+        stats = f.stats or {}
+        if f.registered_user_id and f.registered_user_id in players:
+            row = players[f.registered_user_id]
+        else:
+            key = f.registered_user_id or "uid:{}".format(f.uid)
+            row = players.get(key)
+            if row is None:
+                user = f.registered_user
+                tt = f.tournament_team
+                team = tt.team if tt else None
+                row = players[key] = {
+                    "user_id": user.pk if user else None,
+                    "uid": str(f.uid),
+                    "registered": user is not None,
+                    "username": user.username if user else f.name,
+                    "in_game_name": (getattr(user, "in_game_name", "") or user.username) if user else f.name,
+                    "team_name": tt.display_name if tt else None,
+                    "team_country": (team.country or None) if team else None,
+                    "esports_image": None,
+                    "kills": 0, "damage": 0, "assists": 0, "matches": 0, "mvp_count": 0,
+                    "deaths": 0, "survival_time": 0, "headshots": 0,
+                }
+        row["kills"] += f.kills or 0
+        row["damage"] += int(stats.get("damage") or 0)
+        row["assists"] += int(stats.get("assists") or 0)
+        row["deaths"] += int(stats.get("deaths") or 0)
+        row["headshots"] += int(stats.get("headshots") or 0)
+        row["survival_time"] += int(stats.get("survival_seconds") or 0)
+        # A flag means the player had no stat line on that map (his UID did not match), so the map is
+        # one more he played; counted once per map.
+        key = row.get("user_id") or row.get("uid")
+        if f.match_id not in seen_maps[key]:
+            row["matches"] += 1
+        seen_maps[key].add(f.match_id)
+
+
 def compute_top_killers(event, request, group_ids=None):
     """TOP-KILLERS (complaint H): rank players by SUM(kills) over the scope (`group_ids=None` = whole
     event, else only those groups' matches). Returns the SAME player row shape as compute_event_mvp
@@ -315,6 +371,7 @@ def compute_top_killers(event, request, group_ids=None):
     by_match, players = _walk_player_stats(event, group_ids, request)
     _criteria, rankable, scope, _avail = _mvp_criteria(event)
     _award_map_mvps(by_match, players, rankable, scope)
+    _add_flagged_players(event, group_ids, players)
     for r in players.values():
         r["kdr"] = round(r["kills"] / max(1, r["deaths"]), 2)
     ranked = sorted(
