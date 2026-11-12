@@ -1420,6 +1420,84 @@ def admin_option_film(request, slug, option_id, field="film"):
     return Response({url_key: _film_url(option, request, field)}, status=status.HTTP_200_OK)
 
 
+# Where an uploaded nominee picture lives (served by nginx by extension, like every other /media/ image).
+OPTION_IMAGE_DIR = "awards/nominees/"
+
+
+def _own_option_image_path(url):
+    """The storage path of a picture THIS view stored for an option, or "" for a pasted link from elsewhere (which is
+    never deleted from anybody's disk)."""
+    from urllib.parse import urlparse
+    from django.conf import settings
+
+    path = urlparse(url or "").path
+    media = urlparse(settings.MEDIA_URL or "/media/").path
+    if not path.startswith(media):
+        return ""
+    rel = path[len(media):]
+    return rel if rel.startswith(OPTION_IMAGE_DIR) and "/" not in rel[len(OPTION_IMAGE_DIR):] else ""
+
+
+@api_view(["POST", "DELETE"])
+def admin_option_image(request, slug, option_id):
+    """POST / DELETE polls/admin/polls/<slug>/options/<option_id>/image/ - upload or remove a nominee's picture.
+
+    POST: multipart form, one file field `image` (JPEG, PNG, WEBP, GIF or HEIF, at most 10 MB). Answers
+          {"image_url": "<absolute url>"} and stores it as the option's image_url, the same field a pasted link fills.
+    DELETE: clears image_url (the file is removed only when this view stored it). Answers {"image_url": ""}.
+    Auth: poll manager (can_manage_poll), the gate admin_option_film uses. The option must belong to the poll in the
+    address, so another poll's nominee is a 404 (IDOR cases in security/idor-cases.json).
+
+    R70/R87: afc_auth.image_utils.require_image_upload decodes the BYTES with Pillow, allows the short list, caps the
+    size, re-encodes and names the copy opaquely (<32 hex>.<ext>); refusals carry its codes (not_an_image,
+    image_too_large). Stored under media/awards/nominees/, where nothing can run or open as a page.
+    Consumed by the picture control in the admin poll builder (frontend app/(a)/a/polls/[slug]/_components/
+    OptionImage.tsx), which writes the answer back into the builder's form so the next whole-list save keeps it.
+    Read back as `image_url` on every option: the nominee cards, the winners page and the hall of fame.
+    """
+    from django.core.files.storage import default_storage
+
+    from afc_auth.image_utils import require_image_upload
+
+    user, error = _require_user(request)
+    if error:
+        return error
+    poll = Poll.objects.filter(slug=slug).first()
+    if not poll:
+        return Response({"message": "Poll not found", "code": "poll_not_found"}, status=status.HTTP_404_NOT_FOUND)
+    if not can_manage_poll(user, poll):
+        return Response({"message": "You do not have permission to manage this poll", "code": "not_permission_manage_poll"},
+                        status=status.HTTP_403_FORBIDDEN)
+    option = PollOption.objects.filter(option_id=option_id, question__poll=poll).first()
+    if not option:
+        return Response({"message": "Nominee not found", "code": "option_not_found"}, status=status.HTTP_404_NOT_FOUND)
+
+    old = _own_option_image_path(option.image_url)
+
+    if request.method == "DELETE":
+        if old and default_storage.exists(old):
+            default_storage.delete(old)
+        option.image_url = ""
+        option.save(update_fields=["image_url"])
+        return Response({"image_url": ""}, status=status.HTTP_200_OK)
+
+    upload = request.FILES.get("image")
+    if not upload:
+        return Response({"message": "Choose a picture", "code": "image_required"}, status=status.HTTP_400_BAD_REQUEST)
+    cleaned, code = require_image_upload(upload, max_dim=1600)
+    if code:
+        message = "That picture is larger than 10 MB" if code == "image_too_large" else "That file is not a picture"
+        return Response({"message": message, "code": code}, status=status.HTTP_400_BAD_REQUEST)
+
+    stored = default_storage.save(OPTION_IMAGE_DIR + cleaned.name, cleaned)
+    # Replace, never accumulate: the old file leaves the disk once the new one is safely stored.
+    if old and old != stored and default_storage.exists(old):
+        default_storage.delete(old)
+    option.image_url = request.build_absolute_uri(default_storage.url(stored))
+    option.save(update_fields=["image_url"])
+    return Response({"image_url": option.image_url}, status=status.HTTP_200_OK)
+
+
 def _save_branch_rules(poll, raw):
     """Replace the poll's branch rules. Returns an error message, or None on success.
 

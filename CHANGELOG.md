@@ -20,6 +20,10 @@ number is blocked before the push.
 
 ## Unreleased
 
+### Added
+- Admins can UPLOAD a nominee's picture in the ballot builder (`POST/DELETE polls/admin/polls/<slug>/options/<id>/image/`)
+  instead of only pasting a link: the bytes are checked and re-encoded, stored under an opaque name, at most 10 MB.
+
 ### Fixed
 - Once an awards edition's winners are announced, each award's published winner is named to everybody even when
   the ballot keeps its vote numbers private (the default for an award ballot). Before, the winners page said "not
