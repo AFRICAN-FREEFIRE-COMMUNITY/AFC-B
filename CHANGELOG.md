@@ -18,6 +18,13 @@ At release time `node ~/.claude/skills/versioning/scripts/release.mjs next` prin
 rename `## Unreleased` to it, merge, then tag the merge commit. A version tag pushed with the wrong
 number is blocked before the push.
 
+## Unreleased
+
+### Fixed
+- The per-group "advance to next stage" button now follows a stage's Advancement Routing rules. It used to send
+  the group's top N to the next stage in order whatever the rules said: on 12 Nov the National Free Fire Pro
+  League's Quarter Finals top 6 of each group went to the LCQ instead of the Semi Finals.
+
 ## v7.17.0 - 2026-11-12
 
 ### Added
