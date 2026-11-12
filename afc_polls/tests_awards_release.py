@@ -169,6 +169,34 @@ class WhatsAppCheckTests(TestCase):
         self.assertEqual((r.status_code, r.json()["code"]), (409, "whatsapp_inbound_off"))
 
 
+class PublishedWinnerIsPublicTests(TestCase):
+    """An award ballot keeps results_visibility=admins_only by default. Once the edition's winners are out, the
+    PUBLISHED winner is still named to everybody (the winners page, the award pages), and no vote count leaks."""
+
+    def setUp(self):
+        self.edition, self.poll, self.q1, self.q2 = kol_edition("kol-claims")
+        self.winner = PollOption.objects.get(question=self.q1, label="ARMYKID")
+        PollQuestion.objects.filter(pk=self.q1.pk).update(published_winner_option=self.winner, published_winner_votes=41)
+
+    def questions(self, url):
+        body = APIClient().get(url).json()
+        polls = body.get("polls") or [body]
+        return [q for p in polls for q in (p.get("questions") or [])]
+
+    def test_named_once_the_winners_are_out_with_no_numbers(self):
+        AwardsEdition.objects.filter(pk=self.edition.pk).update(status=AwardsEdition.WINNERS)
+        for url in (f"/polls/editions/{self.edition.slug}/", f"/polls/{self.poll.slug}/"):
+            q1 = next(q for q in self.questions(url) if q["question_id"] == self.q1.question_id)
+            self.assertEqual(q1["published_winner_option_id"], self.winner.option_id)
+            self.assertNotIn("published_winner_votes", q1)
+            self.assertTrue(all("votes" not in o for o in q1["options"]))
+
+    def test_not_named_before_the_announcement(self):
+        for url in (f"/polls/editions/{self.edition.slug}/", f"/polls/{self.poll.slug}/"):
+            q1 = next(q for q in self.questions(url) if q["question_id"] == self.q1.question_id)
+            self.assertNotIn("published_winner_option_id", q1)
+
+
 class HallOfFameTests(TestCase):
     def winners(self, slug, year, picks):
         edition, poll, q1, q2 = kol_edition(slug)

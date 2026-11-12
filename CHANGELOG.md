@@ -20,6 +20,11 @@ number is blocked before the push.
 
 ## Unreleased
 
+### Fixed
+- Once an awards edition's winners are announced, each award's published winner is named to everybody even when
+  the ballot keeps its vote numbers private (the default for an award ballot). Before, the winners page said "not
+  published yet" while the hall of fame named the winners. No vote count is sent with it.
+
 ### Added
 - Awards editions can be HIDDEN until release (`hidden`): a hidden edition, its ballots and pages answer 404 to
   everybody but an AFC poll admin (who previews it), are left out of every list and the hall of fame, and take no

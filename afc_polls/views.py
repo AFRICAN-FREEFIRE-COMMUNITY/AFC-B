@@ -186,7 +186,8 @@ def _serialize_poll_card(poll, locale):
     return card
 
 
-def _serialize_question(question, locale, include_results=False, tally=None, hydrated=None, request=None):
+def _serialize_question(question, locale, include_results=False, tally=None, hydrated=None, request=None,
+                        include_winner=False):
     """One question and its options.
 
     `tally` is {option_id: count} when results are being shown. It is passed IN rather than
@@ -255,6 +256,13 @@ def _serialize_question(question, locale, include_results=False, tally=None, hyd
         data["published_at"] = question.published_at
         total = sum((tally or {}).values())
         data["response_count"] = total
+    elif include_winner:
+        # The edition's winners are out (AwardsEdition.winners_are_public) but this ballot keeps its NUMBERS private
+        # (an award ballot defaults to results_visibility=admins_only). The published winner is a claim the site is
+        # making in public, not a tally, so it is sent on its own: no votes, no counts. Without this the winners page
+        # and the award pages said "not published yet" while the hall of fame named the winners (walk, 12 Nov 2026).
+        data["published_winner_option_id"] = question.published_winner_option_id
+        data["published_at"] = question.published_at
     return data
 
 
@@ -264,6 +272,12 @@ def _film_url(option, request=None, field="film"):
     if not f:
         return ""
     return request.build_absolute_uri(f.url) if request is not None else f.url
+
+
+def _winners_are_out(poll):
+    """True when the poll belongs to an awards edition whose winners have been announced, so each award's PUBLISHED
+    winner may be named in public even where the vote numbers stay private (see _serialize_question)."""
+    return bool(poll.edition_id and poll.edition and poll.edition.winners_are_public())
 
 
 def _results_visible(poll, user):
@@ -448,9 +462,10 @@ def poll_detail(request, slug):
         "edition_slug": poll.edition.slug if poll.edition_id and poll.edition else "",
     })
 
+    winner_claims = _winners_are_out(poll)
     serialized = [
         _serialize_question(question, locale, request=request, include_results=show_results, tally=tally,
-                            hydrated=hydrated)
+                            hydrated=hydrated, include_winner=winner_claims)
         for question in questions
     ]
 
@@ -1689,7 +1704,7 @@ def edition_detail(request, slug):
             "your_answers": your_answers,
             "questions": [
                 _serialize_question(question, locale, request=request, include_results=show_results, tally=tally,
-                                    hydrated=hydrated)
+                                    hydrated=hydrated, include_winner=_winners_are_out(poll))
                 for question in questions
             ],
         })
