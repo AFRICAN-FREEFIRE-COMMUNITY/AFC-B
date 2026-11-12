@@ -18,6 +18,15 @@ At release time `node ~/.claude/skills/versioning/scripts/release.mjs next` prin
 rename `## Unreleased` to it, merge, then tag the merge commit. A version tag pushed with the wrong
 number is blocked before the push.
 
+## Unreleased
+
+### Security
+- The last image doors that stored any file unchanged (profile picture, esports picture, news cover and article
+  images, market screenshots) now check what the bytes really are, re-encode them and store them under an opaque
+  name; a file that is not a picture is refused with not_an_image (R70, R87; inbox #531).
+- No error answer carries an exception's own text any more: six OCR admin endpoints and event creation now answer a
+  written sentence with a code, the details go to the log only (R79; inbox #532).
+
 ## v7.16.0 - 2026-11-10
 
 ### Added

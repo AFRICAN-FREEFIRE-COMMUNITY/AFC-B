@@ -19,7 +19,7 @@
 # USAGE in an endpoint (after the permission + recipient checks, before deliver_broadcast):
 #     allowed, info = check_broadcast_rate(user)
 #     if not allowed:
-#         return Response({"message": info["message"], "resets_at": info["resets_at"],
+#         return Response({"message": info["message"], "code": "<your_endpoint>_refused", "resets_at": info["resets_at"],
 #                          "remaining": info["remaining"], "reason": info["reason"]}, status=429)
 #     ... deliver_broadcast(...) ...
 #     record_broadcast_send(user)            # only AFTER a successful send (so a failed send costs nothing)
