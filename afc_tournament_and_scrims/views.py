@@ -20525,8 +20525,11 @@ def _capture_live_standings(event, group, request):
         from .board import live_map_mvp, live_top_killers
         live["top_killers"] = live_top_killers(all_killers, live_rows)
         live["map_mvp"] = live_map_mvp(live_rows, result.get("rankable_criteria") or ["kills"])
+    # Where the group's day stands (inbox #501): "done_for_now" once the organizer marked the last map of this
+    # sitting, "finished" when every map holds a result. AFC Capture and AFC LIVE read it here.
+    from .board import session_status
     return {"scoring": scoring, "standings": standings, "map_points": map_points, "mvp": mvp,
-            "top_killers": top_killers, "live": live}
+            "top_killers": top_killers, "live": live, "session": session_status(group)}
 
 
 # ── Wrong-data guard for AUTOMATIC capture uploads (owner 2026-10-23, inbox #353: "go") ─────────────

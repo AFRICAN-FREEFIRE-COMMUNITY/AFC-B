@@ -39,7 +39,7 @@ from rest_framework import serializers
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 
-from .board import live_group_table, live_top_killers, player_board, team_board
+from .board import live_group_table, live_top_killers, player_board, session_status, team_board
 from .models import Match, StageGroups, TournamentTeamMatchStats
 from .views import _broadcast_gate
 
@@ -136,7 +136,56 @@ def event_board(request, event_id):
         "teams": team_board(event, match_ids),
         "players": player_board(event, match_ids),
         "live": live,
+        "session": session_status(group),
     }, status=200)
+
+
+class SessionBody(serializers.Serializer):
+    """POST events/<event_id>/groups/<group_id>/session/ body (R69)."""
+    done = serializers.BooleanField()
+
+
+@api_view(["POST"])
+def group_session(request, event_id, group_id):
+    """POST events/<event_id>/groups/<group_id>/session/ - mark or unmark "that was the last map for now"
+    (owner 4 Nov 2026, inbox #501).
+
+    Body: {"done": true|false}. Answers board.session_status for the group:
+    {"status": "playing"|"done_for_now"|"finished"|"waiting", "maps_played", "maps_total", "done_at"}.
+    Auth: the leaderboard Stats screen's gate (views._broadcast_gate: an AFC event admin, or an organizer who can
+    edit the event). The group must belong to the event in the address (404 otherwise).
+    Marking stores how many maps hold a result now, so the mark lapses by itself once a later map is played.
+    Refused while a map is in progress (a live board in the last 15 s): the map being played cannot be the last
+    one already played (code session_map_in_progress).
+    Consumed by components/leaderboards/BoardStatsPanel.tsx ("Last map for now"). Read back by AFC Capture and
+    AFC LIVE through capture/context `session`, and by the Stats screen through events/<id>/board/ `session`.
+    """
+    from django.utils import timezone
+
+    from .board import live_state, scored_map_count
+
+    event, err = _broadcast_gate(request, event_id)
+    if err:
+        return err
+    group = StageGroups.objects.select_related("stage").filter(group_id=group_id, stage__event=event).first()
+    if group is None:
+        return Response({"message": "That group is not part of this event.", "code": "board_group_not_found"},
+                        status=404)
+    body = SessionBody(data=request.data)
+    if not body.is_valid():
+        return Response({"message": "Say whether the last map has been played.", "code": "session_done_required"},
+                        status=400)
+    if body.validated_data["done"]:
+        if live_state(group) is not None:
+            return Response({"message": "A map is being played right now. Mark it once it has ended.",
+                             "code": "session_map_in_progress"}, status=409)
+        group.session_done_at = timezone.now()
+        group.session_done_maps = scored_map_count(group.group_id)
+    else:
+        group.session_done_at = None
+        group.session_done_maps = None
+    group.save(update_fields=["session_done_at", "session_done_maps"])
+    return Response(session_status(group), status=200)
 
 
 TEAM_COLUMNS = (

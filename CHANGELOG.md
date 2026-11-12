@@ -21,6 +21,10 @@ number is blocked before the push.
 ## Unreleased
 
 ### Added
+- "That was the last map for now" (inbox #501): a group can be marked done for the day from the leaderboard's Stats
+  screen (`POST events/<id>/groups/<group_id>/session/`); `capture/context` and `events/<id>/board/` carry the group's
+  `session` (playing, done_for_now, finished, waiting) so AFC Capture and AFC LIVE know the games are over for now.
+  The mark lapses by itself when a later map is played.
 - A group's Stats on the leaderboard pages (`events/<id>/board/`): every team AND every player number over the whole
   group, one map, or any maps you choose: kills, damage, assists, knockdowns, knocked, headshots, deaths, revives,
   grenades, gloo walls, medkits, survival time, most used gun; plus the map being played right now. The same numbers

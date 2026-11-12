@@ -284,3 +284,61 @@ class BoardTests(TestCase):
         self.assertTrue(resp["Content-Type"].startswith(("image/png", "application/zip")))
         bad = self.client.get(url, {"group_id": self.group.group_id, "match_ids": "999999"}, **auth)
         self.assertEqual((bad.status_code, bad.json()["code"]), (400, "board_maps_invalid"))
+
+
+class DoneForNowTests(BoardTests):
+    """"That was the last map for now" (owner 4 Nov 2026, inbox #501): one mark on the group, read by the Stats
+    screen, AFC Capture and AFC LIVE (capture/context `session`), lapsing by itself once a later map is played."""
+
+    AUTH = {"HTTP_AUTHORIZATION": "Bearer bd-admin-token"}
+
+    def url(self):
+        return f"/events/{self.event.event_id}/groups/{self.group.group_id}/session/"
+
+    def context_session(self):
+        return self.client.get("/events/capture/context/", {"group": self.group.group_id, "standings": "1"},
+                               HTTP_X_UPLOAD_TOKEN=self.upload.token).json()["session"]
+
+    def test_between_maps_it_is_waiting(self):
+        self.assertEqual(self.context_session(),
+                         {"status": "waiting", "maps_played": 2, "maps_total": 3, "done_at": None})
+
+    def test_mark_is_read_by_the_apps_and_the_stats_screen(self):
+        r = self.client.post(self.url(), {"done": True}, format="json", **self.AUTH)
+        self.assertEqual((r.status_code, r.json()["status"]), (200, "done_for_now"))
+        self.assertEqual(self.context_session()["status"], "done_for_now")
+        board = self.client.get(f"/events/{self.event.event_id}/board/", {"group_id": self.group.group_id},
+                                **self.AUTH).json()
+        self.assertEqual(board["session"]["status"], "done_for_now")
+        self.assertTrue(board["session"]["done_at"])
+
+    def test_the_mark_lapses_when_a_later_map_is_played(self):
+        self.client.post(self.url(), {"done": True}, format="json", **self.AUTH)
+        self.push(self.live_map())
+        self.assertEqual(self.context_session()["status"], "playing")
+        self.score_map3()
+        cache.clear()                                   # the live board has expired
+        self.assertEqual(self.context_session()["status"], "finished")
+
+    def test_undo(self):
+        self.client.post(self.url(), {"done": True}, format="json", **self.AUTH)
+        r = self.client.post(self.url(), {"done": False}, format="json", **self.AUTH)
+        self.assertEqual(r.json()["status"], "waiting")
+
+    def test_refused_while_a_map_is_being_played(self):
+        self.push(self.live_map())
+        r = self.client.post(self.url(), {"done": True}, format="json", **self.AUTH)
+        self.assertEqual((r.status_code, r.json()["code"]), (409, "session_map_in_progress"))
+
+    def test_gates(self):
+        self.assertEqual(self.client.post(self.url(), {"done": True}, format="json").status_code, 401)
+        player = User.objects.create(username="bdfan", email="bdfan@x.com", full_name="Fan", role="player",
+                                     password="x")
+        SessionToken.objects.create(user=player, token="bd-fan-token",
+                                    expires_at=datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=1))
+        r = self.client.post(self.url(), {"done": True}, format="json", HTTP_AUTHORIZATION="Bearer bd-fan-token")
+        self.assertIn(r.status_code, (403, 404))
+        r = self.client.post(self.url(), {}, format="json", **self.AUTH)
+        self.assertEqual((r.status_code, r.json()["code"]), (400, "session_done_required"))
+        other = f"/events/{self.event.event_id}/groups/999999/session/"
+        self.assertEqual(self.client.post(other, {"done": True}, format="json", **self.AUTH).status_code, 404)

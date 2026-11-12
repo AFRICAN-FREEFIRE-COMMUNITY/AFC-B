@@ -1114,6 +1114,11 @@ class StageGroups(models.Model):
     # would seed nobody and look broken. Unticking one is how an organizer reserves a group, for
     # example a bracket-only or invitational group they intend to fill by hand.
     auto_seed_include = models.BooleanField(default=True)
+    # DONE FOR NOW (owner 4 Nov 2026, inbox #501): the organizer's mark that the map just played was the last one
+    # of this sitting. session_done_maps is how many maps held a result when it was set, so the mark lapses by
+    # itself the moment a later map is played or uploaded (board.session_status). Both null = not marked.
+    session_done_at = models.DateTimeField(null=True, blank=True)
+    session_done_maps = models.PositiveIntegerField(null=True, blank=True)
 
     # ── Clash Squad: this group IS a bracket (owner backlog item 21, built 2026-08-13) ─────────
     # A Battle Royale group is a LOBBY: teams drop in together and are scored on placement + kills.

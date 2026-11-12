@@ -135,6 +135,36 @@ def scored_map_count(group_id):
             .distinct().count())
 
 
+def session_status(group):
+    """Where this group's day stands, for every reader (inbox #501): the leaderboard screen, AFC Capture and AFC
+    LIVE (both through capture/context `session`).
+
+    {"status": one of
+        "playing"       a map is in progress (a live board was pushed in the last 15 s),
+        "done_for_now"  the organizer marked the last map played as the last one of this sitting, and nothing has
+                        been played since,
+        "finished"      every map of the group holds a result,
+        "waiting"       none of the above: between maps, or before the first,
+     "maps_played", "maps_total", "done_at" (ISO time of the mark, or null)}
+
+    A mark lapses by itself when a later map is played (maps_played moves past session_done_maps), so nobody has to
+    remember to clear it the next day."""
+    played = scored_map_count(group.group_id)
+    total = int(group.match_count or 0)
+    marked = (group.session_done_at is not None and group.session_done_maps is not None
+              and int(group.session_done_maps) == played)
+    if live_state(group) is not None:
+        status = "playing"
+    elif total and played >= total:
+        status = "finished"
+    elif marked:
+        status = "done_for_now"
+    else:
+        status = "waiting"
+    return {"status": status, "maps_played": played, "maps_total": total,
+            "done_at": group.session_done_at.isoformat() if marked else None}
+
+
 def note_push(event_id, group_id, rows):
     """Called by live_push for every board it stores: keep track of which map the board belongs to.
 
