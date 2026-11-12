@@ -2733,8 +2733,11 @@ def create_news(request):
         if getattr(images, "size", 0) > 10 * 1024 * 1024:
             return Response({"message": "That cover image is too large (over 10MB). Please upload a "
                                         "smaller image.", "code": "cover_image_too_large"}, status=status.HTTP_400_BAD_REQUEST)
-        from .image_utils import normalize_image_upload
-        images = normalize_image_upload(images, force_jpeg=True)
+        # R70: the bytes decide (require_image_upload), not the file name; a non-image is refused with a code.
+        from .image_utils import require_image_upload
+        images, bad_image = require_image_upload(images, force_jpeg=True)
+        if bad_image:
+            return Response({"message": "That file is not a picture. Use a JPEG, PNG, WEBP, GIF or HEIC image.", "code": bad_image}, status=status.HTTP_400_BAD_REQUEST)
 
     # Scheduled publish (optional). A FUTURE scheduled_publish_at creates the post HIDDEN
     # (is_published=False); the publish_scheduled_news beat task flips it live at that time. Blank or a
@@ -2877,8 +2880,12 @@ def edit_news(request):
         if getattr(new_cover, "size", 0) > 10 * 1024 * 1024:
             return Response({"message": "That cover image is too large (over 10MB). Please upload a "
                                         "smaller image.", "code": "cover_image_too_large"}, status=status.HTTP_400_BAD_REQUEST)
-        from .image_utils import normalize_image_upload
-        news.images = normalize_image_upload(new_cover, force_jpeg=True)
+        # R70: the bytes decide (require_image_upload), not the file name; a non-image is refused with a code.
+        from .image_utils import require_image_upload
+        cleaned_cover, bad_image = require_image_upload(new_cover, force_jpeg=True)
+        if bad_image:
+            return Response({"message": "That file is not a picture. Use a JPEG, PNG, WEBP, GIF or HEIC image.", "code": bad_image}, status=status.HTTP_400_BAD_REQUEST)
+        news.images = cleaned_cover
     elif str(request.data.get("remove_image", "")).lower() == "true":
         news.images = None
 
@@ -3009,8 +3016,11 @@ def upload_news_image(request):
 
     # HEIC->JPEG + EXIF-rotate + downscale, same as every other image upload. force_jpeg=True: article
     # images are photos, so JPEG keeps them small. normalize_image_upload is fail-safe (never raises).
-    from .image_utils import normalize_image_upload
-    image = normalize_image_upload(image, force_jpeg=True)
+    # R70: require_image_upload decodes the bytes first; a file merely NAMED .jpg is refused with a code.
+    from .image_utils import require_image_upload
+    image, bad_image = require_image_upload(image, force_jpeg=True)
+    if bad_image:
+        return Response({"message": "That file is not a picture. Use a JPEG, PNG, WEBP, GIF or HEIC image.", "code": bad_image}, status=status.HTTP_400_BAD_REQUEST)
 
     # Persist to local MEDIA under news_images/ (the same folder News.images uses). default_storage
     # uniquifies the name, so two uploads both called "photo.jpg" never overwrite each other. We return
@@ -3617,8 +3627,13 @@ def edit_profile(request):
             return Response({"message": uid_error, "code": uid_code}, status=status.HTTP_400_BAD_REQUEST)
     profile_pic = request.FILES.get("profile_pic")
     # HEIC/HEIF -> JPEG + downscale so the avatar displays + stays small (owner 2026-06-21).
-    from .image_utils import normalize_image_upload
-    profile_pic = normalize_image_upload(profile_pic, force_jpeg=True)
+    # R70 (inbox #531): any signed-in player reaches this door, so the bytes decide: require_image_upload decodes
+    # them (HEIC included, pillow-heif), re-encodes and names the copy opaquely. No file means no change.
+    if profile_pic:
+        from .image_utils import require_image_upload
+        profile_pic, bad_image = require_image_upload(profile_pic, force_jpeg=True)
+        if bad_image:
+            return Response({"message": "That file is not a picture. Use a JPEG, PNG, WEBP, GIF or HEIC image.", "code": bad_image}, status=status.HTTP_400_BAD_REQUEST)
 
     # Validate required fields
     if not all([full_name, in_game_name, email]):
@@ -4317,8 +4332,11 @@ def upload_esport_image(request):
     # HEIC/HEIF (iPhone default) -> JPEG before anything else (owner 2026-06-21): browsers
     # can't render HEIC and OpenCV can't decode it, so without this the image neither
     # displays nor gets face-checked. Fail-safe passthrough for non-HEIC / on error.
-    from .image_utils import normalize_image_upload
-    esport_image = normalize_image_upload(esport_image, force_jpeg=True)
+    # R70 (inbox #531): the bytes decide, not the name; the 15 MB ceiling above is this door's own.
+    from .image_utils import require_image_upload
+    esport_image, bad_image = require_image_upload(esport_image, max_bytes=15 * 1024 * 1024, force_jpeg=True)
+    if bad_image:
+        return Response({"message": "That file is not a picture. Use a JPEG, PNG, WEBP, GIF or HEIC image.", "code": bad_image}, status=status.HTTP_400_BAD_REQUEST)
 
     # ── Human-picture check (owner 2026-06-20; demoted to ADVISORY 2026-07-06) ──
     # Originally a hard 400 gate against random gallery junk (logos, screenshots,

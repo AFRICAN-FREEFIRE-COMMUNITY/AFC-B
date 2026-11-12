@@ -2613,9 +2613,12 @@ def create_event(request):
         # response format" - an organizer hit this on prod (most likely a NOT-YET-MIGRATED column
         # for a newer Event field). Catch here so the caller gets the REAL reason as JSON and the
         # atomic block has already rolled back any partial write.
-        import traceback as _tb
-        print('create_event failed:', _tb.format_exc())
-        return Response({"message": f"Could not create the event: {exc}"}, status=500)
+        # R79 (inbox #532): the exception text (a column name, a database message) stays in the log; the organizer
+        # gets a sentence and a code the screen can translate. Still JSON, so the form never sees an HTML 500.
+        import logging as _logging
+        _logging.getLogger(__name__).exception("create_event failed: %s", exc)
+        return Response({"message": "The event could not be created. Nothing was saved; please try again, and tell "
+                                    "AFC support if it keeps happening.", "code": "create_event_failed"}, status=500)
 
 
 def _cloned_dates(source):

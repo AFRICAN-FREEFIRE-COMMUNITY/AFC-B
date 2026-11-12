@@ -60,6 +60,13 @@ number is blocked before the push.
   kills count for their team (one map: a team with 15 kills showed one player with 3). They are listed now, marked
   as not on the roster, with their damage and other numbers from AFC Capture (inbox #538).
 
+### Security
+- The last image doors that stored any file unchanged (profile picture, esports picture, news cover and article
+  images, market screenshots) now check what the bytes really are, re-encode them and store them under an opaque
+  name; a file that is not a picture is refused with not_an_image (R70, R87; inbox #531).
+- No error answer carries an exception's own text any more: six OCR admin endpoints and event creation now answer a
+  written sentence with a code, the details go to the log only (R79; inbox #532).
+
 ## v7.16.0 - 2026-11-10
 
 ### Added

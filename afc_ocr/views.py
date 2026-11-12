@@ -1188,7 +1188,8 @@ def ocr_model_stats(request):
     except Exception as exc:  # noqa: BLE001 - dashboard must not 500 on a data hiccup
         logger.exception("ocr_model_stats failed: %s", exc)
         return Response(
-            {"message": "Could not assemble OCR model stats.", "detail": str(exc)},
+            # R79: the exception is in the log line above; the client gets the sentence and a code only.
+            {"message": "Could not assemble OCR model stats.", "code": "ocr_model_stats_failed"},
             status=500,
         )
 
@@ -1389,7 +1390,8 @@ def ocr_dataset_export(request):
     except Exception as exc:  # noqa: BLE001 - never leak a stack to the client
         logger.exception("ocr_dataset_export failed: %s", exc)
         return Response(
-            {"message": "Could not build the dataset export.", "detail": str(exc)},
+            # R79: the exception is in the log line above; the client gets the sentence and a code only.
+            {"message": "Could not build the dataset export.", "code": "ocr_dataset_export_failed"},
             status=500,
         )
     finally:
@@ -1484,7 +1486,8 @@ def ocr_retrain_status(request):
     except Exception as exc:  # noqa: BLE001
         logger.exception("ocr_retrain_status failed: %s", exc)
         return Response(
-            {"message": "Could not compute retrain status.", "detail": str(exc)},
+            # R79: the exception is in the log line above; the client gets the sentence and a code only.
+            {"message": "Could not compute retrain status.", "code": "ocr_retrain_status_failed"},
             status=500,
         )
 
@@ -1637,7 +1640,8 @@ def ocr_upload_model(request):
     except Exception as exc:  # noqa: BLE001
         logger.exception("ocr_upload_model failed: %s", exc)
         return Response(
-            {"message": "Could not store the uploaded model bundle.", "detail": str(exc)},
+            # R79: the exception is in the log line above; the client gets the sentence and a code only.
+            {"message": "Could not store the uploaded model bundle.", "code": "ocr_upload_model_failed"},
             status=500,
         )
 
@@ -1675,7 +1679,8 @@ def ocr_promote_model(request):
     except Exception as exc:  # noqa: BLE001
         logger.exception("ocr_promote_model failed: %s", exc)
         return Response(
-            {"message": "Could not promote the model.", "detail": str(exc)},
+            # R79: the exception is in the log line above; the client gets the sentence and a code only.
+            {"message": "Could not promote the model.", "code": "ocr_promote_model_failed"},
             status=500,
         )
 
@@ -1705,6 +1710,7 @@ def ocr_rollback_model(request):
     except Exception as exc:  # noqa: BLE001
         logger.exception("ocr_rollback_model failed: %s", exc)
         return Response(
-            {"message": "Could not roll back the model.", "detail": str(exc)},
+            # R79: the exception is in the log line above; the client gets the sentence and a code only.
+            {"message": "Could not roll back the model.", "code": "ocr_rollback_model_failed"},
             status=500,
         )
