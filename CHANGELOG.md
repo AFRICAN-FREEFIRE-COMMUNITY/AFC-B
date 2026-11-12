@@ -18,6 +18,13 @@ At release time `node ~/.claude/skills/versioning/scripts/release.mjs next` prin
 rename `## Unreleased` to it, merge, then tag the merge commit. A version tag pushed with the wrong
 number is blocked before the push.
 
+## v7.18.1 - 2026-11-12
+
+### Fixed
+- Room details and group messages now reach every inbox: the emails go out one every 2.5 seconds and an address
+  the mail server refuses is tried again after 20 and 60 seconds. The LCQ room details on 12 Nov lost 31 of 55
+  emails to Microsoft 365 cutting the connection for sending too fast (AFC inbox #557).
+
 ## v7.17.1 - 2026-11-12
 
 ### Fixed

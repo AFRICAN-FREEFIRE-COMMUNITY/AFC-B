@@ -1064,6 +1064,49 @@ class BroadcastResult(tuple):
         return result
 
 
+# ── Broadcast email pacing (12 Nov 2026, AFC inbox #557) ──
+# Microsoft 365 SMTP (info@) resets the connection when one mailbox sends too fast (about 30 messages a
+# minute). The NATIONAL FREE FIRE PRO LEAGUE LCQ room details at 17:43 UTC lost 31 of 55 emails that way
+# ("Connection reset by peer") while the same group's 64 at 14:49 all went: nothing waited, nothing tried
+# again, and the room ID never reached those inboxes. So one message every BROADCAST_EMAIL_PACE_SECONDS,
+# and a refused one is tried again after each wait in BROADCAST_EMAIL_RETRY_WAITS.
+BROADCAST_EMAIL_PACE_SECONDS = 2.5          # 24 a minute, under the mailbox's limit
+BROADCAST_EMAIL_RETRY_WAITS = (20, 60)      # seconds before the 2nd and 3rd try of one address
+
+
+def send_broadcast_emails(targets, title, subject, message, *, sleep=None, send=None):
+    """Send one broadcast's emails, paced and retried. targets: (address, language, user) triples from
+    deliver_broadcast. Runs on deliver_broadcast's daemon thread; returns (sent, failed) counts. `sleep`
+    and `send` are for the tests (afc_auth/tests_broadcast_email_pacing.py)."""
+    import time
+    from .broadcast_tokens import resolve_broadcast_tokens   # imported here, as deliver_broadcast does
+    sleep = sleep or time.sleep
+    send = send or send_email
+    sent = failed = 0
+    for i, (addr, lang, _user) in enumerate(targets):
+        if i:
+            sleep(BROADCAST_EMAIL_PACE_SECONDS)
+        try:
+            html = broadcast_message_email_html(title, resolve_broadcast_tokens(message, _user))
+        except Exception:
+            failed += 1
+            continue                    # one bad body never blocks the rest; push is the sure channel
+        ok = False
+        for attempt, wait in enumerate((0,) + tuple(BROADCAST_EMAIL_RETRY_WAITS)):
+            if wait:
+                sleep(wait)
+            try:
+                ok = bool(send(addr, subject, html, language=lang))
+            except Exception:
+                ok = False
+            if ok:
+                break
+        sent += ok
+        failed += (not ok)
+    print(f"BROADCAST EMAIL: {sent} sent, {failed} failed of {len(targets)}", flush=True)
+    return sent, failed
+
+
 def deliver_broadcast(recipients, title, message, *, delivery="both",
                       notification_type="admin_message", related_event=None,
                       target_type="", target_id="", targets=None,
@@ -1175,12 +1218,7 @@ def deliver_broadcast(recipients, title, message, *, delivery="both",
             # recipient's body. A message with NO tokens resolves unchanged, so it stays one cached
             # body for everyone; only token-bearing broadcasts vary per person.
             def _send():
-                for addr, lang, _user in targets:
-                    try:
-                        html = broadcast_message_email_html(title, resolve_broadcast_tokens(message, _user))
-                        send_email(addr, subject, html, language=lang)
-                    except Exception:
-                        pass  # one bad address never blocks the rest; push is the sure channel
+                send_broadcast_emails(targets, title, subject, message)
 
             import threading
             threading.Thread(target=_send, daemon=True).start()
