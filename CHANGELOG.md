@@ -18,6 +18,34 @@ At release time `node ~/.claude/skills/versioning/scripts/release.mjs next` prin
 rename `## Unreleased` to it, merge, then tag the merge commit. A version tag pushed with the wrong
 number is blocked before the push.
 
+## Unreleased
+
+### Added
+- A group's Stats on the leaderboard pages (`events/<id>/board/`): every team AND every player number over the whole
+  group, one map, or any maps you choose: kills, damage, assists, knockdowns, knocked, headshots, deaths, revives,
+  grenades, gloo walls, medkits, survival time, most used gun; plus the map being played right now. The same numbers
+  download as a spreadsheet (`events/<id>/board/export/`, teams or players) (owner, 11 Nov 2026, inbox #538 #539). The
+  leaderboard graphic (`events/<id>/stages/<id>/graphic/`) takes `match_ids` too: one map's board, or the maps you pick.
+- Game files reads a debugger log with AFC Capture's own reader, so an uploaded log gives every number Capture would
+  have sent (knocks, knocked, grenades, gloo walls, medkits, the gun, the kill feed), and it takes the map's replay
+  file (`Replays/ReplayInfo_<match>_<date>.bin`) for every player's damage and the gun of every kill and knock. Each
+  map lists the files still missing by their real names, and offers the placements the log itself shows when the
+  result file is not there (owner, 11 Nov 2026, inbox #541).
+- `events/capture/context/?standings=1` (AFC LIVE) carries `live`: the group's table with the map in progress added,
+  the kill leaders with that map's kills, and that map's provisional MVP by the event's own MVP rule, so AFC LIVE
+  shows the website's numbers during a map too (inbox #540).
+
+### Fixed
+- A debugger log dropped on a map's result upload was refused with "No team data parsed." (twice on 10 Nov). It is
+  now told it is a game log and where it goes (`game_log_not_result`).
+- The live leaderboard overlay showed only the map being played, with that map's points, instead of the group's
+  table with the map added: a team on 133 after five maps read 22 on air. It also never went live when it followed
+  a group picked on the website, and kept counting a finished map after its result was uploaded. Every reader (the
+  overlays, AFC LIVE, the leaderboard page) now takes one table from the server (inbox #540).
+- Players who are not on the event's roster were missing from Top Killers and every player list although their
+  kills count for their team (one map: a team with 15 kills showed one player with 3). They are listed now, marked
+  as not on the roster, with their damage and other numbers from AFC Capture (inbox #538).
+
 ## v7.16.0 - 2026-11-10
 
 ### Added
