@@ -186,7 +186,8 @@ def _serialize_poll_card(poll, locale):
     return card
 
 
-def _serialize_question(question, locale, include_results=False, tally=None, hydrated=None, request=None):
+def _serialize_question(question, locale, include_results=False, tally=None, hydrated=None, request=None,
+                        include_winner=False):
     """One question and its options.
 
     `tally` is {option_id: count} when results are being shown. It is passed IN rather than
@@ -255,6 +256,13 @@ def _serialize_question(question, locale, include_results=False, tally=None, hyd
         data["published_at"] = question.published_at
         total = sum((tally or {}).values())
         data["response_count"] = total
+    elif include_winner:
+        # The edition's winners are out (AwardsEdition.winners_are_public) but this ballot keeps its NUMBERS private
+        # (an award ballot defaults to results_visibility=admins_only). The published winner is a claim the site is
+        # making in public, not a tally, so it is sent on its own: no votes, no counts. Without this the winners page
+        # and the award pages said "not published yet" while the hall of fame named the winners (walk, 12 Nov 2026).
+        data["published_winner_option_id"] = question.published_winner_option_id
+        data["published_at"] = question.published_at
     return data
 
 
@@ -264,6 +272,12 @@ def _film_url(option, request=None, field="film"):
     if not f:
         return ""
     return request.build_absolute_uri(f.url) if request is not None else f.url
+
+
+def _winners_are_out(poll):
+    """True when the poll belongs to an awards edition whose winners have been announced, so each award's PUBLISHED
+    winner may be named in public even where the vote numbers stay private (see _serialize_question)."""
+    return bool(poll.edition_id and poll.edition and poll.edition.winners_are_public())
 
 
 def _results_visible(poll, user):
@@ -342,6 +356,7 @@ def list_polls(request):
     locale = get_locale(request)
     queryset = (
         Poll.objects.filter(visibility=Poll.PUBLIC)
+        .exclude(edition__hidden=True)        # hidden until release (#543): never listed, to anybody
         .annotate(
             question_count=Count("questions", distinct=True),
             response_count=Count(
@@ -410,7 +425,7 @@ def poll_detail(request, slug):
         .select_related("eligibility", "edition")
         .first()
     )
-    if not poll:
+    if not poll or edition_hidden_from(poll.edition, user):
         return Response({"message": "Poll not found", "code": "poll_not_found"}, status=status.HTTP_404_NOT_FOUND)
 
     # A draft is visible only to somebody who could edit it. `preview_only` and `link_only` are
@@ -447,9 +462,10 @@ def poll_detail(request, slug):
         "edition_slug": poll.edition.slug if poll.edition_id and poll.edition else "",
     })
 
+    winner_claims = _winners_are_out(poll)
     serialized = [
         _serialize_question(question, locale, request=request, include_results=show_results, tally=tally,
-                            hydrated=hydrated)
+                            hydrated=hydrated, include_winner=winner_claims)
         for question in questions
     ]
 
@@ -577,9 +593,19 @@ def submit_response(request, slug):
     if error:
         return error
 
-    poll = Poll.objects.filter(slug=slug).prefetch_related("questions__options").first()
-    if not poll:
+    poll = Poll.objects.filter(slug=slug).prefetch_related("questions__options").select_related("edition").first()
+    # A hidden edition takes no votes from anybody, an admin previewing it included (#543).
+    if not poll or (poll.edition_id and poll.edition.hidden):
         return Response({"message": "Poll not found", "code": "poll_not_found"}, status=status.HTTP_404_NOT_FOUND)
+
+    # ONE WHATSAPP NUMBER, ONE BALLOT (#447 #449): an edition that asks for it takes no ballot from an account
+    # that has not proved a WhatsApp number (afc_polls.whatsapp_votes). Before eligibility, so the vote sheet
+    # can send the voter to that step first.
+    if poll.edition_id and poll.edition.whatsapp_required:
+        from .whatsapp_votes import verified_number
+        if not verified_number(user):
+            return Response({"message": "Verify your WhatsApp number to vote in these awards.",
+                             "code": "whatsapp_check_required"}, status=status.HTTP_403_FORBIDDEN)
 
     if poll.visibility == Poll.PREVIEW_ONLY:
         return Response(
@@ -1394,6 +1420,84 @@ def admin_option_film(request, slug, option_id, field="film"):
     return Response({url_key: _film_url(option, request, field)}, status=status.HTTP_200_OK)
 
 
+# Where an uploaded nominee picture lives (served by nginx by extension, like every other /media/ image).
+OPTION_IMAGE_DIR = "awards/nominees/"
+
+
+def _own_option_image_path(url):
+    """The storage path of a picture THIS view stored for an option, or "" for a pasted link from elsewhere (which is
+    never deleted from anybody's disk)."""
+    from urllib.parse import urlparse
+    from django.conf import settings
+
+    path = urlparse(url or "").path
+    media = urlparse(settings.MEDIA_URL or "/media/").path
+    if not path.startswith(media):
+        return ""
+    rel = path[len(media):]
+    return rel if rel.startswith(OPTION_IMAGE_DIR) and "/" not in rel[len(OPTION_IMAGE_DIR):] else ""
+
+
+@api_view(["POST", "DELETE"])
+def admin_option_image(request, slug, option_id):
+    """POST / DELETE polls/admin/polls/<slug>/options/<option_id>/image/ - upload or remove a nominee's picture.
+
+    POST: multipart form, one file field `image` (JPEG, PNG, WEBP, GIF or HEIF, at most 10 MB). Answers
+          {"image_url": "<absolute url>"} and stores it as the option's image_url, the same field a pasted link fills.
+    DELETE: clears image_url (the file is removed only when this view stored it). Answers {"image_url": ""}.
+    Auth: poll manager (can_manage_poll), the gate admin_option_film uses. The option must belong to the poll in the
+    address, so another poll's nominee is a 404 (IDOR cases in security/idor-cases.json).
+
+    R70/R87: afc_auth.image_utils.require_image_upload decodes the BYTES with Pillow, allows the short list, caps the
+    size, re-encodes and names the copy opaquely (<32 hex>.<ext>); refusals carry its codes (not_an_image,
+    image_too_large). Stored under media/awards/nominees/, where nothing can run or open as a page.
+    Consumed by the picture control in the admin poll builder (frontend app/(a)/a/polls/[slug]/_components/
+    OptionImage.tsx), which writes the answer back into the builder's form so the next whole-list save keeps it.
+    Read back as `image_url` on every option: the nominee cards, the winners page and the hall of fame.
+    """
+    from django.core.files.storage import default_storage
+
+    from afc_auth.image_utils import require_image_upload
+
+    user, error = _require_user(request)
+    if error:
+        return error
+    poll = Poll.objects.filter(slug=slug).first()
+    if not poll:
+        return Response({"message": "Poll not found", "code": "poll_not_found"}, status=status.HTTP_404_NOT_FOUND)
+    if not can_manage_poll(user, poll):
+        return Response({"message": "You do not have permission to manage this poll", "code": "not_permission_manage_poll"},
+                        status=status.HTTP_403_FORBIDDEN)
+    option = PollOption.objects.filter(option_id=option_id, question__poll=poll).first()
+    if not option:
+        return Response({"message": "Nominee not found", "code": "option_not_found"}, status=status.HTTP_404_NOT_FOUND)
+
+    old = _own_option_image_path(option.image_url)
+
+    if request.method == "DELETE":
+        if old and default_storage.exists(old):
+            default_storage.delete(old)
+        option.image_url = ""
+        option.save(update_fields=["image_url"])
+        return Response({"image_url": ""}, status=status.HTTP_200_OK)
+
+    upload = request.FILES.get("image")
+    if not upload:
+        return Response({"message": "Choose a picture", "code": "image_required"}, status=status.HTTP_400_BAD_REQUEST)
+    cleaned, code = require_image_upload(upload, max_dim=1600)
+    if code:
+        message = "That picture is larger than 10 MB" if code == "image_too_large" else "That file is not a picture"
+        return Response({"message": message, "code": code}, status=status.HTTP_400_BAD_REQUEST)
+
+    stored = default_storage.save(OPTION_IMAGE_DIR + cleaned.name, cleaned)
+    # Replace, never accumulate: the old file leaves the disk once the new one is safely stored.
+    if old and old != stored and default_storage.exists(old):
+        default_storage.delete(old)
+    option.image_url = request.build_absolute_uri(default_storage.url(stored))
+    option.save(update_fields=["image_url"])
+    return Response({"image_url": option.image_url}, status=status.HTTP_200_OK)
+
+
 def _save_branch_rules(poll, raw):
     """Replace the poll's branch rules. Returns an error message, or None on success.
 
@@ -1572,11 +1676,21 @@ def list_editions(request):
     edition to lead with and to build the archive's edition switcher.
     """
     queryset = AwardsEdition.objects.all().prefetch_related("polls")
+    # Hidden editions (#543) are listed only to an AFC poll admin, who previews them before release.
+    if not is_polls_admin(_user_from_request(request)):
+        queryset = queryset.exclude(hidden=True)
     rows, page = _paginate(request, queryset)
     return Response(
         {"results": [_serialize_edition(edition) for edition in rows], **page},
         status=status.HTTP_200_OK,
     )
+
+
+def edition_hidden_from(edition, user):
+    """True when `edition` is hidden until release (#543) and `user` may not preview it (not an AFC poll admin).
+    The ONE check every public awards door asks (edition list, edition detail, poll detail, sheet-opened, hall of
+    fame), so a hidden edition cannot leak through one door the others close."""
+    return bool(edition is not None and edition.hidden and not is_polls_admin(user))
 
 
 def _serialize_edition(edition):
@@ -1597,6 +1711,10 @@ def _serialize_edition(edition):
         "phase": edition.phase(),
         "winners_are_public": edition.winners_are_public(),
         "poll_count": edition.polls.count(),
+        # hidden until release (#543): only an admin ever sees an edition with this True (the preview banner)
+        "hidden": edition.hidden,
+        # one WhatsApp number, one ballot (#449): the vote sheet adds the Verify your WhatsApp step
+        "whatsapp_required": edition.whatsapp_required,
     }
 
 
@@ -1618,7 +1736,7 @@ def edition_detail(request, slug):
     locale = get_locale(request)
     user = _user_from_request(request)
     edition = AwardsEdition.objects.filter(slug=slug).first()
-    if not edition:
+    if not edition or edition_hidden_from(edition, user):
         return Response({"message": "Awards edition not found", "code": "awards_edition_not_found"}, status=status.HTTP_404_NOT_FOUND)
 
     polls = list(
@@ -1664,7 +1782,7 @@ def edition_detail(request, slug):
             "your_answers": your_answers,
             "questions": [
                 _serialize_question(question, locale, request=request, include_results=show_results, tally=tally,
-                                    hydrated=hydrated)
+                                    hydrated=hydrated, include_winner=_winners_are_out(poll))
                 for question in questions
             ],
         })
@@ -1889,6 +2007,10 @@ def admin_editions(request):
 
     edition = AwardsEdition(slug=_unique_edition_slug(data.get("slug") or title), title=title)
     _apply_edition_fields(edition, data)
+    # A themed (KOL Awards) edition is built in the open only by choice: it starts HIDDEN until an admin releases
+    # it (owner, 11 Nov 2026, #543), unless the request says otherwise.
+    if "hidden" not in data and edition.theme != AwardsEdition.THEME_DEFAULT:
+        edition.hidden = True
     edition.save()
     return Response({"slug": edition.slug}, status=status.HTTP_201_CREATED)
 
@@ -1913,8 +2035,9 @@ def _unique_edition_slug(source):
 # anything else the model happens to gain later by putting it in the body.
 _EDITABLE_EDITION_FIELDS = (
     "title", "year", "tagline", "hero_image", "nominations_close", "voting_opens_at",
-    "voting_closes_at", "winners_announced_at", "status", "order", "theme",
+    "voting_closes_at", "winners_announced_at", "status", "order", "theme", "hidden", "whatsapp_required",
 )
+_BOOLEAN_EDITION_FIELDS = {"hidden", "whatsapp_required"}
 
 
 # The columns that accept NULL. A cleared date input posts "", and MySQL will not take an empty
@@ -1936,6 +2059,8 @@ def _apply_edition_fields(edition, data):
         # frontend can draw.
         if field == "theme" and value not in dict(AwardsEdition.THEME_CHOICES):
             value = AwardsEdition.THEME_DEFAULT
+        if field in _BOOLEAN_EDITION_FIELDS:
+            value = value is True or str(value).strip().lower() in ("1", "true", "yes", "on")
         setattr(edition, field, value)
 
 
@@ -2241,8 +2366,9 @@ def sheet_opened(request, slug):
     user, error = _require_user(request)
     if error:
         return error
-    poll = Poll.objects.filter(slug=slug).first()
-    if not poll or (poll.visibility == Poll.DRAFT and not can_manage_poll(user, poll)):
+    poll = Poll.objects.filter(slug=slug).select_related("edition").first()
+    if not poll or edition_hidden_from(poll.edition, user) or (
+            poll.visibility == Poll.DRAFT and not can_manage_poll(user, poll)):
         return Response({"message": "Poll not found", "code": "poll_not_found"}, status=status.HTTP_404_NOT_FOUND)
     failed_check = request.data.get("failed_check")
     if failed_check not in (None, "", "uid"):

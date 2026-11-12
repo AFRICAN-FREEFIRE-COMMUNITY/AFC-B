@@ -21,6 +21,17 @@ number is blocked before the push.
 ## Unreleased
 
 ### Added
+- Admins can UPLOAD a nominee's picture in the ballot builder (`POST/DELETE polls/admin/polls/<slug>/options/<id>/image/`)
+  instead of only pasting a link: the bytes are checked and re-encoded, stored under an opaque name, at most 10 MB.
+- Awards editions can be HIDDEN until release (`hidden`): a hidden edition, its ballots and pages answer 404 to
+  everybody but an AFC poll admin (who previews it), are left out of every list and the hall of fame, and take no
+  votes. A themed (KOL Awards) edition is created hidden; switching it off releases it (owner, 11 Nov 2026, #543).
+- One WhatsApp number, one ballot (`whatsapp_required` on an edition): a voter proves a number by sending
+  "AFC <code>" to the AFC WhatsApp number (`polls/whatsapp/start/`, the webhook's new inbound handler) or by typing
+  back a code AFC sends (`polls/whatsapp/send-code/`, `verify/`, three an hour); a number backs one account; codes are
+  stored hashed. New setting `WHATSAPP_BUSINESS_NUMBER` (owner, 2 Nov 2026, #447 #449).
+- `polls/hall-of-fame/`: every published winner of every released edition, newest season first, and who has won
+  most (#445).
 - A group's Stats on the leaderboard pages (`events/<id>/board/`): every team AND every player number over the whole
   group, one map, or any maps you choose: kills, damage, assists, knockdowns, knocked, headshots, deaths, revives,
   grenades, gloo walls, medkits, survival time, most used gun; plus the map being played right now. The same numbers
@@ -36,6 +47,9 @@ number is blocked before the push.
   shows the website's numbers during a map too (inbox #540).
 
 ### Fixed
+- Once an awards edition's winners are announced, each award's published winner is named to everybody even when
+  the ballot keeps its vote numbers private (the default for an award ballot). Before, the winners page said "not
+  published yet" while the hall of fame named the winners. No vote count is sent with it.
 - A debugger log dropped on a map's result upload was refused with "No team data parsed." (twice on 10 Nov). It is
   now told it is a game log and where it goes (`game_log_not_result`).
 - The live leaderboard overlay showed only the map being played, with that map's points, instead of the group's
