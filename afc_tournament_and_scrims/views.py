@@ -15862,6 +15862,25 @@ def advance_group_competitors_to_next_stage(request):
             "missing_results_matches_count": not_done,
          "code": "cannot_advance_matches_no"}, status=400)
 
+    # 1b) A stage with Advancement Routing rules advances BY THOSE RULES, whichever button is pressed
+    #     (owner 12 Nov 2026, "why didn't it follow the rules that was set for the national Freefire Pro
+    #     League?"). This per-group button used to ignore them: it took the group's single qualifier
+    #     (teams_qualifying, top N) to the NEXT stage in order, so on 12 Nov the top 6 of both Quarter
+    #     Finals groups landed in the LCQ instead of the Semi Finals, and places 7 to 12 went nowhere. The
+    #     rules engine (advancement_routing.route_stage_advancement) ranks each rule's scope, seeds every
+    #     target stage, and removes a team that is no longer in a cut (if it has not played there yet).
+    if StageAdvancementRule.objects.filter(source_stage=stage).exists():
+        from .advancement_routing import route_stage_advancement
+        result = route_stage_advancement(stage)
+        return Response({
+            "message": "Advanced by this stage's routing rules.",
+            "code": "advanced_by_rules",
+            "routed": result.get("routed", []),
+            "newly_seeded": result.get("newly_seeded", 0),
+            "already_seeded": result.get("already_seeded", 0),
+            "removed_stale": result.get("removed_stale", 0),
+        }, status=200)
+
     # 2) Find next stage - follow the CANONICAL display order so advancement honours a manual
     #    reorder (owner 2026-06-15). order_by("stage_order", "start_date", "stage_id") is the same
     #    ordering get_event_details + the standings builder use: manual stage_order wins, and when

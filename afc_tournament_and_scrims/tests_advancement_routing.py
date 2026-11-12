@@ -124,6 +124,25 @@ class AdvancementEngineTests(TestCase):
         res = route_stage_advancement(self.s0)
         self.assertEqual(res["newly_seeded"], 4)
 
+    def test_the_per_group_advance_button_follows_the_rules(self):
+        # 12 Nov 2026 (National Free Fire Pro League): the per-group "advance to next stage" button took the
+        # group's top teams_qualifying to the NEXT stage in order, ignoring the stage's routing rules, so the
+        # Quarter Finals' top 6 landed in the LCQ. With rules on the stage it now runs the rules.
+        from rest_framework.test import APIClient
+        from afc_auth.models import SessionToken
+        self._rule(1, 2, self.s2, order=0)            # top 2 -> Finals (two stages ahead)
+        self._rule(3, 4, self.s1, order=1)            # 3-4  -> Play-In (the NEXT stage in order)
+        SessionToken.objects.create(user=self.admin, token="adv-admin-token",
+                                    expires_at=datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=1))
+        resp = APIClient().post("/events/advance-group-competitors-to-next-stage/",
+                                {"event_id": self.event.event_id, "group_id": self.group.group_id}, format="json",
+                                HTTP_AUTHORIZATION="Bearer adv-admin-token")
+        self.assertEqual((resp.status_code, resp.json()["code"]), (200, "advanced_by_rules"))
+        finals = set(StageCompetitor.objects.filter(stage=self.s2).values_list("tournament_team_id", flat=True))
+        playin = set(StageCompetitor.objects.filter(stage=self.s1).values_list("tournament_team_id", flat=True))
+        self.assertEqual(finals, {self.tts[0].tournament_team_id, self.tts[1].tournament_team_id})
+        self.assertEqual(playin, {self.tts[2].tournament_team_id, self.tts[3].tournament_team_id})
+
     def test_per_group_scope_ranks_only_that_group(self):
         # A per-group rule ranks only the group's standings. Here the only group holds all four,
         # so top-1 = T1. (Proves the source_group path is exercised, not just stage-wide.)
