@@ -21,6 +21,23 @@ number is blocked before the push.
 ## Unreleased
 
 ### Added
+- "That was the last map for now" (inbox #501): a group can be marked done for the day from the leaderboard's Stats
+  screen (`POST events/<id>/groups/<group_id>/session/`); `capture/context` and `events/<id>/board/` carry the group's
+  `session` (playing, done_for_now, finished, waiting) so AFC Capture and AFC LIVE know the games are over for now.
+  The mark lapses by itself when a later map is played.
+- A group's Stats on the leaderboard pages (`events/<id>/board/`): every team AND every player number over the whole
+  group, one map, or any maps you choose: kills, damage, assists, knockdowns, knocked, headshots, deaths, revives,
+  grenades, gloo walls, medkits, survival time, most used gun; plus the map being played right now. The same numbers
+  download as a spreadsheet (`events/<id>/board/export/`, teams or players) (owner, 11 Nov 2026, inbox #538 #539). The
+  leaderboard graphic (`events/<id>/stages/<id>/graphic/`) takes `match_ids` too: one map's board, or the maps you pick.
+- Game files reads a debugger log with AFC Capture's own reader, so an uploaded log gives every number Capture would
+  have sent (knocks, knocked, grenades, gloo walls, medkits, the gun, the kill feed), and it takes the map's replay
+  file (`Replays/ReplayInfo_<match>_<date>.bin`) for every player's damage and the gun of every kill and knock. Each
+  map lists the files still missing by their real names, and offers the placements the log itself shows when the
+  result file is not there (owner, 11 Nov 2026, inbox #541).
+- `events/capture/context/?standings=1` (AFC LIVE) carries `live`: the group's table with the map in progress added,
+  the kill leaders with that map's kills, and that map's provisional MVP by the event's own MVP rule, so AFC LIVE
+  shows the website's numbers during a map too (inbox #540).
 - Admins can UPLOAD a nominee's picture in the ballot builder (`POST/DELETE polls/admin/polls/<slug>/options/<id>/image/`)
   instead of only pasting a link: the bytes are checked and re-encoded, stored under an opaque name, at most 10 MB.
 - Awards editions can be HIDDEN until release (`hidden`): a hidden edition, its ballots and pages answer 404 to
@@ -47,6 +64,15 @@ number is blocked before the push.
   shows the website's numbers during a map too (inbox #540).
 
 ### Fixed
+- A debugger log dropped on a map's result upload was refused with "No team data parsed." (twice on 10 Nov). It is
+  now told it is a game log and where it goes (`game_log_not_result`).
+- The live leaderboard overlay showed only the map being played, with that map's points, instead of the group's
+  table with the map added: a team on 133 after five maps read 22 on air. It also never went live when it followed
+  a group picked on the website, and kept counting a finished map after its result was uploaded. Every reader (the
+  overlays, AFC LIVE, the leaderboard page) now takes one table from the server (inbox #540).
+- Players who are not on the event's roster were missing from Top Killers and every player list although their
+  kills count for their team (one map: a team with 15 kills showed one player with 3). They are listed now, marked
+  as not on the roster, with their damage and other numbers from AFC Capture (inbox #538).
 - Once an awards edition's winners are announced, each award's published winner is named to everybody even when
   the ballot keeps its vote numbers private (the default for an award ballot). Before, the winners page said "not
   published yet" while the hall of fame named the winners. No vote count is sent with it.

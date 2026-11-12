@@ -142,7 +142,7 @@ from .views_event_graphic import event_stage_graphic
 # + Top-killers boards (ranked players, combine-aware) - preview endpoints + a design-rendered PNG export.
 from .views_mvp import (event_mvp, event_tie_breakers,
                         event_top_killers, event_player_board_graphic)
-from .views_board import event_board, event_board_export
+from .views_board import event_board, event_board_export, group_session
 # Debugger-log backfill (owner 2026-07-02): post-hoc rich stats (deaths/knockdowns/headshots/
 # revives/survival) from the 3D-room client's persisted debugger-*.log. See debugger_ingest.py.
 from .debugger_ingest import debugger_backfill
@@ -247,6 +247,9 @@ urlpatterns = [
     # Consumed by components/leaderboards/BoardStatsPanel.tsx. See views_board.py.
     path('<int:event_id>/board/', event_board, name='event_board'),
     path('<int:event_id>/board/export/', event_board_export, name='event_board_export'),
+    # "That was the last map for now" (inbox #501): set on the Stats screen, read by AFC Capture and AFC LIVE
+    # through capture/context `session`. See views_board.group_session.
+    path('<int:event_id>/groups/<int:group_id>/session/', group_session, name='group_session'),
     # PLAYER-BOARD PNG export (owner 2026-07-05, complaints G+H #7): download the MVP or Top-killers board
     # rendered THROUGH a design (?kind=mvp|top_killers&design_id=&size=&group_ids=&stage_ids=). Like the
     # leaderboard export, but for player rows (esports_image renders as an image). See views_mvp.py.

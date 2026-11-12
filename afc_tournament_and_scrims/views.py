@@ -20401,6 +20401,12 @@ def capture_context(request):
     # Capture's roster fetches stay as cheap as before. See _capture_live_standings.
     if group is not None and request.query_params.get("standings") == "1":
         out.update(_capture_live_standings(event, group, request))
+    if group is not None:
+        # Where the group's day stands (inbox #501), on EVERY context answer so AFC Capture's roster fetch carries it
+        # too: one map count and two cached reads. "done_for_now" once the organizer marked the last map of this
+        # sitting on the Stats screen, "finished" when every map holds a result (board.session_status).
+        from .board import session_status
+        out["session"] = session_status(group)
     return Response(out, status=status.HTTP_200_OK)
 
 
