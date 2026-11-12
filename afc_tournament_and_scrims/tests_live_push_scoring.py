@@ -20,7 +20,9 @@ Run: python manage.py test afc_tournament_and_scrims.tests_live_push_scoring
 import datetime
 
 from django.core.cache import cache
-from django.test import TestCase, override_settings
+from unittest.mock import patch
+
+from django.test import SimpleTestCase, TestCase, override_settings
 from rest_framework.test import APIClient
 
 from afc_auth.models import User
@@ -77,6 +79,43 @@ class PlacementRuleTests(TestCase):
         rows = [_row("A", kills=1), _row("B", eliminated=True, elimination_order=1, alive_count=0),
                 _row("C", kills=3), _row("D", eliminated=True, elimination_order=2, alive_count=0)]
         self.assertEqual(sorted(p for _, p in rank_rows(rows)), [1, 2, 3, 4])
+
+
+class PlacementPointsOnlyWhenOutTests(SimpleTestCase):
+    """Owner, 12 Nov 2026 (AFC inbox #558): "IT IS GIVIGN PLACEMENT POINTS WHEN THE ROUND HAS NOT YET ENDED,
+    MEANWHILE IT SHOULD ONLY CALCULATED PLACEMENT FOR TEAMS ALREADY ELIMINATED ONLY AND NOT TEAMS STILL ALIVE".
+    No database: the gun names lookup is stubbed."""
+
+    def _score(self, rows):
+        with patch("afc_tournament_and_scrims.live_ranking.admin_names", return_value={}):
+            return {r["team_name"]: r for r in normalize_live_standings(rows, placement_points=TABLE, kill_point=1.0)}
+
+    def test_teams_still_alive_score_kills_only(self):
+        out = self._score([_row("LEADER", kills=6), _row("CHASER", kills=2), _row("THIRD", kills=0)])
+        for name, kills in (("LEADER", 6), ("CHASER", 2), ("THIRD", 0)):
+            self.assertEqual((out[name]["placement_points"], out[name]["total_points"]), (0, kills), name)
+            self.assertFalse(out[name]["placement_final"])
+        self.assertEqual(out["LEADER"]["placement"], 1)          # the live rank still shows
+
+    def test_a_wiped_team_scores_its_locked_place_while_the_rest_play_on(self):
+        out = self._score([_row("ALIVE A", kills=3), _row("ALIVE B", kills=1),
+                           _row("OUT", eliminated=True, elimination_order=1, alive_count=0, kills=2)])
+        self.assertEqual((out["OUT"]["placement"], out["OUT"]["placement_points"], out["OUT"]["total_points"]),
+                         (3, 8, 10))                                 # first of three out: 3rd, 8 + 2 kills
+        self.assertTrue(out["OUT"]["placement_final"])
+        self.assertEqual((out["ALIVE A"]["placement_points"], out["ALIVE B"]["placement_points"]), (0, 0))
+
+    def test_the_last_team_standing_scores_first_place(self):
+        out = self._score([_row("WINNER", kills=5),
+                           _row("SECOND", eliminated=True, elimination_order=2, alive_count=0, kills=4),
+                           _row("THIRD", eliminated=True, elimination_order=1, alive_count=0, kills=1)])
+        self.assertEqual((out["WINNER"]["placement_points"], out["WINNER"]["total_points"]), (12, 17))
+        self.assertTrue(out["WINNER"]["placement_final"])
+        self.assertEqual(out["SECOND"]["total_points"], 9 + 4)
+
+    def test_a_pre_1_4_0_row_is_scored_as_before(self):
+        out = self._score([{"team_name": "OLD", "kills": 2, "pos": 1}, {"team_name": "OLDER", "kills": 1, "pos": 2}])
+        self.assertEqual(out["OLD"]["total_points"], 2 + 12)
 
 
 class ClientNumbersAreIgnoredTests(TestCase):
@@ -231,5 +270,6 @@ class LivePushEndpointTests(TestCase):
         self.assertEqual(self._push(rows_in).status_code, 200)
         rows = self._cached()
         self.assertEqual([r["team_name"] for r in rows], ["B", "A"])
-        self.assertEqual(rows[0]["total_points"], 4 * 3 + 20)
-        self.assertEqual(rows[1]["total_points"], 1 * 3 + 10)
+        # both still alive: kills only, no placement points until they are out (#558)
+        self.assertEqual(rows[0]["total_points"], 4 * 3)
+        self.assertEqual(rows[1]["total_points"], 1 * 3)
