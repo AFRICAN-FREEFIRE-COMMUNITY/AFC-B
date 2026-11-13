@@ -18,7 +18,7 @@ At release time `node ~/.claude/skills/versioning/scripts/release.mjs next` prin
 rename `## Unreleased` to it, merge, then tag the merge commit. A version tag pushed with the wrong
 number is blocked before the push.
 
-## Unreleased
+## v7.18.4 - 2026-11-13
 
 ### Fixed
 - The group draw on a round robin stage now puts each team in ONE group, A, B or C. It used to deal
