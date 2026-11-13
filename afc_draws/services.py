@@ -24,6 +24,9 @@ HOW IT CONNECTS
     Models: afc_draws.models (StageDraw, DrawCard). Writes StageGroupCompetitor rows in
     afc_tournament_and_scrims so every existing reader of group membership (standings, rooms,
     broadcasts, Discord roles, the advancement engine) sees a drawn group exactly like a seeded one.
+    On a Battle Royale ROUND ROBIN stage (owner 13 Nov 2026, AFC inbox #570) the cards hide the
+    base groups A, B, C (RoundRobinGroup) instead of the day lobbies, and a pick writes the team
+    into its base group plus a row in every lobby that base group plays in (draw_groups, _take).
     Permission helpers are borrowed from afc_tournament_and_scrims.views (_is_event_admin,
     _user_can_register_team, org_can_event) so a captain who may register the team may pick for it,
     and whoever may seed a stage may run its draw. Notifications: afc_auth.Notifications, deep
@@ -39,7 +42,9 @@ from django.utils import timezone
 
 from afc_auth.models import Notifications
 from afc_tournament_and_scrims.group_capacity import GroupCapacityError, plan_placements
-from afc_tournament_and_scrims.models import Match, StageCompetitor, StageGroupCompetitor, StageGroups
+from afc_tournament_and_scrims.models import (
+    Match, RoundRobinGroup, StageCompetitor, StageGroupCompetitor, StageGroups,
+)
 
 from .models import DrawCard, StageDraw
 
@@ -56,8 +61,73 @@ class DrawError(Exception):
 # ── the seal ────────────────────────────────────────────────────────────────────────────────────
 
 def mapping_of(cards):
-    """The canonical mapping the seal covers: [[number, group_id], ...] sorted by number."""
-    return sorted([[c.number, c.stage_group_id] for c in cards], key=lambda pair: pair[0])
+    """The canonical mapping the seal covers: [[number, group_id], ...] sorted by number. The id is
+    the base group's on a round robin draw, the stage group's otherwise (card_group_id); one draw
+    only ever holds one kind, so the numbers never mix."""
+    return sorted([[c.number, card_group_id(c)] for c in cards], key=lambda pair: pair[0])
+
+
+# ── what a card hides: a stage group, or on a round robin stage a base group ──────────────────────
+# Owner 13 Nov 2026 (AFC inbox #570), on the NFPL Semi Finals draw whose cards read A+B, B+C, A+C:
+# "It's supposed to put teams into a single group like A or B or C". A round robin stage keeps its
+# teams in base groups (RoundRobinGroup A, B, C) and plays them in day lobbies (StageGroups "Day 1:
+# A+B", source_groups = [A, B]); views._materialise_round_robin_lobby seeds each lobby from its base
+# groups. So on such a stage the draw deals over the BASE groups, and a pick places the team the way
+# the lobby builder would (_place_in_base_group).
+
+def base_groups(stage):
+    """A round robin stage's base groups (A, B, C ...) in order; [] on every other stage. RoundRobinGroup
+    rows existing is the signal the rest of the site already uses for "this stage keeps its teams on
+    base groups" (seeding_management.move_team_between_groups, views.get_event_group_rosters)."""
+    return list(RoundRobinGroup.objects.filter(stage=stage).order_by("order", "group_id"))
+
+
+def draw_groups(stage):
+    """What a NEW draw of this stage deals over, in deal order: the base groups of a round robin
+    stage, the stage's groups otherwise."""
+    return base_groups(stage) or list(StageGroups.objects.filter(stage=stage).order_by("group_id"))
+
+
+def _groups_of_draw(draw, cards):
+    """The groups an EXISTING draw was dealt over, judged by its own cards rather than by the stage
+    today, so a draw dealt over lobbies before 13 Nov 2026 keeps its own groups (colours, the extra
+    card) until it is reset."""
+    if any(c.round_robin_group_id for c in cards):
+        return base_groups(draw.stage)
+    return list(StageGroups.objects.filter(stage=draw.stage).order_by("group_id"))
+
+
+def _is_base(group):
+    return isinstance(group, RoundRobinGroup)
+
+
+def group_display_name(group):
+    """What people read: a stage group's own name, or "Group A" for base group A (labels are stored
+    as the bare letter by the event form; one already starting with "Group" is left alone)."""
+    if _is_base(group):
+        label = (group.label or "").strip()
+        return label if label.lower().startswith("group") else f"Group {label}"
+    return group.group_name
+
+
+def card_group(card):
+    return card.round_robin_group if card.round_robin_group_id else card.stage_group
+
+
+def card_group_id(card):
+    return card.round_robin_group_id if card.round_robin_group_id else card.stage_group_id
+
+
+def card_group_name(card):
+    return group_display_name(card_group(card))
+
+
+def _new_card(draw, number, group):
+    """An unsaved card hiding `group`, in the field that matches its kind (DrawCard's
+    draw_card_one_group constraint holds exactly one)."""
+    if _is_base(group):
+        return DrawCard(draw=draw, number=number, round_robin_group=group)
+    return DrawCard(draw=draw, number=number, stage_group=group)
 
 
 def commitment_for(salt, mapping):
@@ -150,20 +220,32 @@ def deal(stage, user):
     # stage that had its draw reset a moment ago would still look like it has one.
     if StageDraw.objects.filter(stage=stage).exists():
         raise DrawError("This stage already has a draw. Reset it first.", 409)
-    groups = list(StageGroups.objects.filter(stage=stage).order_by("group_id"))
+    # Base groups A, B, C on a round robin stage, the stage's groups otherwise (draw_groups).
+    groups = draw_groups(stage)
+    round_robin = bool(groups) and _is_base(groups[0])
     if not groups:
         raise DrawError("This stage has no groups yet.")
     competitors = active_competitors(stage)
     if not competitors:
         raise DrawError("No active competitors in this stage yet. Seed the stage first.")
-    if StageGroupCompetitor.objects.filter(stage_group__stage=stage).exists():
+    if StageGroupCompetitor.objects.filter(stage_group__stage=stage).exists() or (
+        round_robin and RoundRobinGroup.objects.filter(stage=stage, teams__isnull=False).exists()
+    ):
         raise DrawError("The groups of this stage already hold teams. Clear them before opening a draw.", 409)
+    if round_robin and any(not c.tournament_team_id for c in competitors):
+        # A base group holds teams only (RoundRobinGroup.teams); a solo round robin has nowhere to go.
+        raise DrawError("A round robin stage draws teams, not solo players.")
 
     # Even deal, then shuffle the order the cards are numbered in. The split comes from the stage's
     # structure (group_capacity.plan_placements): round robin on an empty stage, never more cards
     # for a group than competitors_per_group, refused with the numbers when the pool does not fit.
+    # Base groups have no StageGroupCompetitor rows to count, so they start from zero (checked empty
+    # just above).
     try:
-        slots = plan_placements(stage, groups, len(competitors))
+        slots = plan_placements(
+            stage, groups, len(competitors),
+            counts={g.group_id: 0 for g in groups} if round_robin else None,
+        )
     except GroupCapacityError as e:
         raise DrawError(str(e))
     random.SystemRandom().shuffle(slots)
@@ -171,9 +253,7 @@ def deal(stage, user):
     salt = secrets.token_hex(16)
     with transaction.atomic():
         draw = StageDraw.objects.create(stage=stage, salt=salt, commitment="", created_by=user)
-        cards = [
-            DrawCard(draw=draw, number=i + 1, stage_group=group) for i, group in enumerate(slots)
-        ]
+        cards = [_new_card(draw, i + 1, group) for i, group in enumerate(slots)]
         DrawCard.objects.bulk_create(cards)
         cards = list(draw.cards.all())
         draw.commitment = commitment_for(salt, mapping_of(cards))
@@ -284,6 +364,13 @@ def _stragglers(draw, cards):
         for t, p in StageGroupCompetitor.objects.filter(stage_group__stage=draw.stage)
         .values_list("tournament_team_id", "player_id")
     }
+    # On a round robin stage a team placed in a base group by hand is not a straggler either.
+    grouped_keys |= {
+        ("team", t)
+        for t in RoundRobinGroup.objects.filter(stage=draw.stage, teams__isnull=False)
+        .values_list("teams__tournament_team_id", flat=True)
+        if t
+    }
     return [
         c for c in active_competitors(draw.stage)
         if _competitor_key(c) not in taken_keys and _competitor_key(c) not in grouped_keys
@@ -304,15 +391,18 @@ def close_draw(draw, place_rest=None):
         if place_rest is None:
             place_rest = draw.auto_place_at_close
 
-        cards = list(draw.cards.select_related("stage_group").all())
+        cards = list(draw.cards.select_related("stage_group", "round_robin_group").all())
         stragglers = _stragglers(draw, cards)
         free = [c for c in cards if not c.is_taken]
         random.SystemRandom().shuffle(free)
+        round_robin = any(c.round_robin_group_id for c in cards)
 
         placed_auto = []
         left_unplaced = []
         for comp in stragglers:
-            if not place_rest:
+            # A solo entry on a round robin stage has no base group to go to (deal refuses one;
+            # this catches one added after the deal): left for the organizer.
+            if not place_rest or (round_robin and not comp.tournament_team_id):
                 left_unplaced.append(comp)
                 continue
             if free:
@@ -396,13 +486,23 @@ def reset(draw):
         raise DrawError("Results have been entered for this stage; the draw cannot be reset.", 409)
     with transaction.atomic():
         StageDraw.objects.select_for_update().get(pk=draw.pk)
-        for card in draw.cards.all():
-            if card.is_taken:
+        for card in draw.cards.select_related("round_robin_group").all():
+            if not card.is_taken:
+                continue
+            if card.round_robin_group_id:
+                # Undo _place_in_base_group: out of the base group and out of every lobby it feeds.
+                card.round_robin_group.teams.remove(card.tournament_team_id)
                 StageGroupCompetitor.objects.filter(
-                    stage_group=card.stage_group,
+                    stage_group__source_groups=card.round_robin_group,
                     tournament_team_id=card.tournament_team_id,
-                    player_id=card.player_id,
+                    player__isnull=True,
                 ).delete()
+                continue
+            StageGroupCompetitor.objects.filter(
+                stage_group=card.stage_group,
+                tournament_team_id=card.tournament_team_id,
+                player_id=card.player_id,
+            ).delete()
         draw.delete()
 
 
@@ -417,12 +517,31 @@ def _card_of(draw, comp):
 def _already_grouped(stage, comp):
     qs = StageGroupCompetitor.objects.filter(stage_group__stage=stage)
     if comp.tournament_team_id:
+        if RoundRobinGroup.objects.filter(stage=stage, teams=comp.tournament_team_id).exists():
+            return True
         return qs.filter(tournament_team_id=comp.tournament_team_id).exists()
     return qs.filter(player_id=comp.player_id).exists()
 
 
+def _place_in_base_group(base, comp):
+    """The round robin twin of the ordinary group row. The team joins its base group, which is
+    where a round robin keeps it (the event edit form round-trips it, the Structure tab and the
+    group rosters list it, the next stage's seed reads it), and gets a row in every day lobby that
+    base group plays in, exactly as views._materialise_round_robin_lobby seeds a lobby from its
+    base groups. So team A plays Day 1 (A+B) and Day 2 (A+C), and never Day 3 (B+C)."""
+    base.teams.add(comp.tournament_team_id)
+    for lobby in StageGroups.objects.filter(source_groups=base):
+        StageGroupCompetitor.objects.get_or_create(
+            stage_group=lobby, tournament_team_id=comp.tournament_team_id, player_id=None,
+            defaults={"status": "active"},
+        )
+
+
 def _take(card, comp, user, via):
-    """Mark the card taken and write the ordinary group row in one go."""
+    """Mark the card taken and write the ordinary group row in one go (on a round robin stage: the
+    base group and its lobbies, _place_in_base_group)."""
+    if card.round_robin_group_id and not comp.tournament_team_id:
+        raise DrawError("A round robin stage draws teams, not solo players.")
     card.tournament_team_id = comp.tournament_team_id
     card.player_id = comp.player_id
     card.picked_by = user
@@ -432,6 +551,9 @@ def _take(card, comp, user, via):
         card.save(update_fields=["tournament_team", "player", "picked_by", "picked_at", "via"])
     except IntegrityError:
         raise DrawError("You already have a card in this draw.", 409)
+    if card.round_robin_group_id:
+        _place_in_base_group(card.round_robin_group, comp)
+        return
     StageGroupCompetitor.objects.get_or_create(
         stage_group=card.stage_group,
         tournament_team_id=comp.tournament_team_id,
@@ -444,15 +566,19 @@ def _extra_card(draw, cards):
     competitors_per_group (group_capacity.plan_placements). None when every group is full."""
     counts = {}
     for c in cards:
-        counts[c.stage_group_id] = counts.get(c.stage_group_id, 0) + 1
-    groups = list(StageGroups.objects.filter(stage=draw.stage).order_by("group_id"))
+        gid = card_group_id(c)
+        counts[gid] = counts.get(gid, 0) + 1
+    # The same kind of group the draw was dealt over (base groups on a round robin draw).
+    groups = _groups_of_draw(draw, cards)
     for g in groups:
         counts.setdefault(g.group_id, 0)
     target = plan_placements(draw.stage, groups, 1, counts=counts, strict=False)
     if not target:
         return None
     number = max((c.number for c in cards), default=0) + 1
-    return DrawCard.objects.create(draw=draw, number=number, stage_group=target[0])
+    card = _new_card(draw, number, target[0])
+    card.save()
+    return card
 
 
 # ── notifications ───────────────────────────────────────────────────────────────────────────────
@@ -566,9 +692,9 @@ def _notify_auto_placed(draw, placed):
     for comp, card in placed:
         _notify(
             _people_who_pick_for(comp), event,
-            f"You were placed in {card.stage_group.group_name}",
+            f"You were placed in {card_group_name(card)}",
             f"The group draw for {draw.stage.stage_name} closed before you picked, so your team was "
-            f"placed in {card.stage_group.group_name} (card {card.number}).",
+            f"placed in {card_group_name(card)} (card {card.number}).",
             "group_draw_auto",
         )
 
@@ -616,11 +742,16 @@ def serialize_board(draw, viewer=None):
         return serialize_hidden(draw)
     stage = draw.stage
     cards = list(
-        draw.cards.select_related("stage_group", "tournament_team__team", "tournament_team__ghost_team", "player__user")
+        draw.cards.select_related(
+            "stage_group", "round_robin_group", "tournament_team__team", "tournament_team__ghost_team", "player__user",
+        )
         .order_by("number")
     )
     closed = draw.status == StageDraw.STATUS_CLOSED
-    groups = list(StageGroups.objects.filter(stage=stage).order_by("group_id"))
+    # Base groups A, B, C on a round robin draw ("Group A"), the stage's groups otherwise. The board
+    # (frontend GroupDrawBoard) colours and labels cards by this list, so it must be the same kind
+    # of group the cards hide.
+    groups = _groups_of_draw(draw, cards)
 
     out = {
         "draw_id": draw.draw_id,
@@ -637,7 +768,7 @@ def serialize_board(draw, viewer=None):
         "per_group": stage.competitors_per_group,
         "last_reminder_at": draw.last_reminder_at.isoformat() if draw.last_reminder_at else None,
         "commitment": draw.commitment,
-        "groups": [{"group_id": g.group_id, "group_name": g.group_name} for g in groups],
+        "groups": [{"group_id": g.group_id, "group_name": group_display_name(g)} for g in groups],
         "cards_total": len(cards),
         "cards_taken": sum(1 for c in cards if c.is_taken),
         "cards": [
@@ -645,8 +776,8 @@ def serialize_board(draw, viewer=None):
                 "number": c.number,
                 "taken": c.is_taken,
                 # The group is only revealed on a taken card while the draw is open.
-                "group_id": c.stage_group_id if (c.is_taken or closed) else None,
-                "group_name": c.stage_group.group_name if (c.is_taken or closed) else None,
+                "group_id": card_group_id(c) if (c.is_taken or closed) else None,
+                "group_name": card_group_name(c) if (c.is_taken or closed) else None,
                 "competitor": _competitor_name(c),
                 "via": c.via,
                 "picked_at": c.picked_at.isoformat() if c.picked_at else None,
@@ -670,7 +801,7 @@ def serialize_board(draw, viewer=None):
                 "name": comp.tournament_team.display_name if comp.tournament_team_id else (
                     comp.player.user.username if comp.player and comp.player.user else "You"),
                 "card_number": card.number if card else None,
-                "group_name": card.stage_group.group_name if card else None,
+                "group_name": card_group_name(card) if card else None,
                 # "pick" or "auto": the page words a card they turned over differently from one
                 # the close dealt them.
                 "via": card.via if card else None,

@@ -26,6 +26,13 @@ FAIRNESS OF THE MAPPING
     group; picking early or late changes nothing about which groups remain possible, only which
     numbers are still on the table.
 
+ROUND ROBIN STAGES (owner 13 Nov 2026, AFC inbox #570)
+    A Battle Royale round robin stage keeps its teams in BASE GROUPS (RoundRobinGroup A, B, C) and
+    plays them in DAY LOBBIES that each merge two of them (StageGroups "Day 1: A+B"). There the
+    cards hide base groups, not lobbies: a team draws "Group A" and plays every day A plays. The
+    first live draw on such a stage (NFPL Semi Finals, 12 Nov 2026) dealt over the lobbies and put
+    each team in one day; see services.draw_groups.
+
 HOW IT CONNECTS
     - Written by afc_draws/views.py (create / open / pick / close / reset).
     - Read by the public board (GET draws/<id>/board/) rendered on the event page
@@ -109,9 +116,22 @@ class DrawCard(models.Model):
     draw = models.ForeignKey(StageDraw, on_delete=models.CASCADE, related_name="cards")
     # 1-based, what the player sees on the board.
     number = models.PositiveIntegerField()
-    # The group this card hides. Fixed at creation and part of the sealed mapping.
+    # The group this card hides. Fixed at creation and part of the sealed mapping. EXACTLY ONE of
+    # the two is set (constraint draw_card_one_group below):
+    #   stage_group        an ordinary stage: the group IS a StageGroups row ("Group A").
+    #   round_robin_group  a Battle Royale round robin stage (owner 13 Nov 2026, AFC inbox #570:
+    #                      "It's supposed to put teams into a single group like A or B or C"). Its
+    #                      StageGroups are DAY LOBBIES that each merge two base groups ("Day 1:
+    #                      A+B"), so a card over a lobby put a team in one day only. The card hides
+    #                      the base group (RoundRobinGroup A, B, C); taking it writes the team into
+    #                      that base group and into every lobby fed by it (services._take).
     stage_group = models.ForeignKey(
         "afc_tournament_and_scrims.StageGroups", on_delete=models.CASCADE, related_name="draw_cards",
+        null=True, blank=True,
+    )
+    round_robin_group = models.ForeignKey(
+        "afc_tournament_and_scrims.RoundRobinGroup", on_delete=models.CASCADE, related_name="draw_cards",
+        null=True, blank=True,
     )
 
     # Who holds the card. Exactly one of tournament_team / player once taken; both NULL while the
@@ -139,6 +159,15 @@ class DrawCard(models.Model):
             # unique index, so the untaken cards (both NULL) never collide with each other.
             models.UniqueConstraint(fields=["draw", "tournament_team"], name="uniq_draw_card_team"),
             models.UniqueConstraint(fields=["draw", "player"], name="uniq_draw_card_player"),
+            # One group per card, of one kind (see stage_group above). Every card dealt before
+            # 13 Nov 2026 has a stage_group and no round_robin_group, so it already satisfies this.
+            models.CheckConstraint(
+                condition=(
+                    models.Q(stage_group__isnull=False, round_robin_group__isnull=True)
+                    | models.Q(stage_group__isnull=True, round_robin_group__isnull=False)
+                ),
+                name="draw_card_one_group",
+            ),
         ]
         ordering = ["number"]
 
