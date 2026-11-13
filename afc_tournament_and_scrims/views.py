@@ -1698,7 +1698,7 @@ def _materialise_round_robin_lobby(stage, event, user, lobby_spec, source_groups
     return lobby
 
 
-def _build_round_robin_groups(stage, event, user, stage_data, reuse_groups_by_label=None):
+def _build_round_robin_groups(stage, event, user, stage_data, reuse_groups_by_label=None, keep_teams=False):
     """Create (or reuse) the base groups (A/B/C…) for a round-robin stage and wire their teams.
 
     `stage_data["round_robin_groups"]` is `[{label, order, team_ids}]`. Returns the resulting
@@ -1712,6 +1712,11 @@ def _build_round_robin_groups(stage, event, user, stage_data, reuse_groups_by_la
     protected rows AND create fresh duplicates of the same labels - corrupting the base-group set
     (Task 4 bug: 3 base groups → 5 with duplicate A/B). When None (create path), every group is
     created fresh as before.
+
+    `keep_teams` (edit path, while a group draw of this stage is dealt or open; owner 13 Nov 2026,
+    AFC inbox #570): the draw is what places teams in the base groups (afc_draws.services
+    _place_in_base_group), so the payload's team lists, which may have been loaded before the latest
+    pick, are NOT applied. A reused group keeps its members; a new one starts empty.
     """
     reuse_groups_by_label = reuse_groups_by_label or {}
     created_groups = []
@@ -1731,8 +1736,10 @@ def _build_round_robin_groups(stage, event, user, stage_data, reuse_groups_by_la
 
         # Resolve the sent Team ids → this event's TournamentTeam rows and attach them. .set()
         # replaces the membership, so a reused group's roster is refreshed from the payload too.
-        tts = _resolve_round_robin_team_ids(grp_data.get("team_ids"), event, user)
-        grp.teams.set(tts)
+        # Not while a draw is placing the teams (keep_teams, see the docstring).
+        if not keep_teams:
+            tts = _resolve_round_robin_team_ids(grp_data.get("team_ids"), event, user)
+            grp.teams.set(tts)
         created_groups.append(grp)
     return created_groups
 
@@ -1789,16 +1796,40 @@ def _edit_round_robin_stage(stage, event, user, stage_data):
     if unplayed_ids:
         StageGroups.objects.filter(group_id__in=unplayed_ids).delete()
 
-    # Drop the base groups that are NOT protected by a played lobby. Protected ones stay so the
-    # played lobbies keep their identity; the payload rebuild below REUSES them by label (rather
-    # than recreating duplicates) and creates only the genuinely-new labels.
-    stage.round_robin_groups.exclude(group_id__in=protected_group_ids).delete()
+    # Keep EVERY base group whose label the payload still sends, not only the protected ones (owner
+    # 13 Nov 2026, AFC inbox #570). Deleting and recreating them gave base group A a new id on every
+    # save of the edit form, and a group draw's cards point at that row (afc_draws DrawCard
+    # .round_robin_group, CASCADE): one save during a draw would have thrown its cards away. A label
+    # the payload no longer sends, and is not protected, is still dropped. The protected rows win a
+    # label they share with an unprotected duplicate (the Task 4 bug below).
+    payload_labels = {
+        (g.get("label") or chr(ord("A") + i))
+        for i, g in enumerate(stage_data.get("round_robin_groups", []))
+    }
+    reuse_by_label = dict(protected_groups_by_label)
+    for grp in stage.round_robin_groups.all():
+        if grp.label in payload_labels and grp.label not in reuse_by_label:
+            reuse_by_label[grp.label] = grp
+    keep_group_ids = protected_group_ids | {g.group_id for g in reuse_by_label.values()}
 
-    # Rebuild the base groups from the payload (same helper as create), reusing the protected
-    # rows for labels a played lobby still depends on. Result: exactly the payload's base-group
-    # set (no duplicate labels), with the played lobby's groups preserved verbatim.
+    # Drop the base groups that are neither protected by a played lobby nor sent again. Protected
+    # ones stay so the played lobbies keep their identity; the payload rebuild below REUSES every
+    # kept row by label (rather than recreating duplicates) and creates only the genuinely-new labels.
+    stage.round_robin_groups.exclude(group_id__in=keep_group_ids).delete()
+
+    # While a group draw of this stage is dealt or open, the draw places the teams, not the form
+    # (afc_draws.services._place_in_base_group): the base groups keep their members on this save.
+    from afc_draws.models import StageDraw
+    draw_places_teams = StageDraw.objects.filter(
+        stage=stage, status__in=(StageDraw.STATUS_DRAFT, StageDraw.STATUS_OPEN),
+    ).exists()
+
+    # Rebuild the base groups from the payload (same helper as create), reusing the kept rows.
+    # Result: exactly the payload's base-group set (no duplicate labels), with the played lobby's
+    # groups preserved verbatim.
     created_groups = _build_round_robin_groups(
-        stage, event, user, stage_data, reuse_groups_by_label=protected_groups_by_label)
+        stage, event, user, stage_data, reuse_groups_by_label=reuse_by_label,
+        keep_teams=draw_places_teams)
 
     default_date = stage.start_date
     default_time = parse_time("19:00")

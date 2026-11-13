@@ -21,6 +21,10 @@ What must stay true, and the test that holds it:
     - a board limited to participants hides its cards from guests and
       outsiders, shows them to any member of a registered club and to
       the organizer; the choice can change in any state                    (VisibilityTests)
+    - on a round robin stage the cards hide base groups A, B, C (not the day
+      lobbies); a pick places the team in its base group and the two lobbies
+      it plays; close, the extra card and reset follow; saving the event
+      form during the draw keeps the groups, the cards and the picks (#570) (RoundRobinDrawTests)
 
 Run: python manage.py test afc_draws
 """
@@ -588,3 +592,159 @@ class VisibilityTests(DrawFixture):
                      {"closes_at": (timezone.now() + timedelta(hours=1)).isoformat()})
         self.assertEqual(resp.status_code, 409, resp.content)
 
+
+
+# ── round robin stages (owner 13 Nov 2026, AFC inbox #570) ──────────────────────────────────────────
+# "It's supposed to put teams into a single group like A or B or C": on the NFPL Semi Finals (a
+# br - round robin stage, base groups A B C, day lobbies Day 1: A+B, Day 2: A+C, Day 3: B+C) the draw
+# dealt its cards over the LOBBIES, so every team landed in one day. These hold the fix: the cards
+# hide base groups, and a pick places the team in its base group and in both lobbies it plays.
+
+def _round_robin_stage(event, user):
+    """A br - round robin stage the way create_event builds one: base groups A, B, C and one lobby
+    per pairing, each lobby's source_groups set (views._materialise_round_robin_lobby)."""
+    from afc_tournament_and_scrims import round_robin
+    from afc_tournament_and_scrims.models import RoundRobinGroup
+    from afc_tournament_and_scrims.views import _materialise_round_robin_lobby
+
+    today = date.today()
+    st = Stages.objects.create(
+        event=event, stage_name="Semi Finals", start_date=today, end_date=today,
+        number_of_groups=3, stage_format="br - round robin", teams_qualifying_from_stage=4,
+    )
+    bases = [RoundRobinGroup.objects.create(stage=st, label=label, order=i) for i, label in enumerate("ABC")]
+    by_id = {g.group_id: g for g in bases}
+    for spec in round_robin.round_robin_schedule([g.group_id for g in bases], games_per_day=1):
+        _materialise_round_robin_lobby(
+            st, event, user, spec, [by_id[i] for i in spec["source_group_ids"]], today, datetime.time(19, 0))
+    return st, bases
+
+
+class RoundRobinDrawTests(DrawFixture):
+    n_teams = 6
+
+    def setUp(self):
+        super().setUp()
+        self.rr, self.bases = _round_robin_stage(self.event, self.admin)
+        for tt in self.tts:
+            StageCompetitor.objects.create(stage=self.rr, tournament_team=tt)
+        self.lobbies = list(StageGroups.objects.filter(stage=self.rr).order_by("game_day"))
+
+    def _lobbies_of(self, tt):
+        return sorted(
+            StageGroupCompetitor.objects.filter(stage_group__stage=self.rr, tournament_team=tt)
+            .values_list("stage_group__group_name", flat=True)
+        )
+
+    def _open(self):
+        draw = services.deal(self.rr, self.admin)
+        services.open_draw(draw, timezone.now() + timedelta(hours=1))
+        return draw
+
+    def test_deal_is_over_the_base_groups_not_the_lobbies(self):
+        self.assertEqual([lb.group_name for lb in self.lobbies], ["Day 1: A+B", "Day 2: A+C", "Day 3: B+C"])
+        draw = services.deal(self.rr, self.admin)
+        cards = list(draw.cards.all())
+        self.assertEqual(len(cards), 6)
+        self.assertTrue(all(c.stage_group_id is None and c.round_robin_group_id for c in cards))
+        per_base = {}
+        for c in cards:
+            per_base[c.round_robin_group.label] = per_base.get(c.round_robin_group.label, 0) + 1
+        self.assertEqual(per_base, {"A": 2, "B": 2, "C": 2})
+        self.assertEqual(draw.commitment, services.commitment_for(draw.salt, services.mapping_of(cards)))
+
+    def test_pick_places_in_base_group_and_its_lobbies(self):
+        draw = self._open()
+        cap0 = User.objects.get(username="dr_cap0")
+        card = services.pick(draw, cap0, 1)
+        base = card.round_robin_group
+        self.assertEqual(
+            list(base.teams.values_list("tournament_team_id", flat=True)), [self.tts[0].tournament_team_id])
+        # in both lobbies that base group plays, never in the third
+        expected = sorted(lb.group_name for lb in self.lobbies if base.label in lb.group_name.split(": ")[1])
+        self.assertEqual(len(expected), 2)
+        self.assertEqual(self._lobbies_of(self.tts[0]), expected)
+        # the board talks in single groups
+        board = services.serialize_board(StageDraw.objects.get(pk=draw.pk), viewer=cap0)
+        self.assertEqual([g["group_name"] for g in board["groups"]], ["Group A", "Group B", "Group C"])
+        self.assertEqual(board["cards"][0]["group_name"], f"Group {base.label}")
+        self.assertEqual(board["cards"][0]["group_id"], base.group_id)
+        self.assertEqual(board["viewer"]["competitors"][0]["group_name"], f"Group {base.label}")
+        self.assertEqual(len(board["unpicked"]), 5)
+
+    def test_a_team_already_in_a_base_group_cannot_pick_and_is_no_straggler(self):
+        draw = self._open()
+        self.bases[0].teams.add(self.tts[1])
+        with self.assertRaises(services.DrawError) as ctx:
+            services.pick(draw, User.objects.get(username="dr_cap1"), 2)
+        self.assertEqual(ctx.exception.status, 409)
+        board = services.serialize_board(StageDraw.objects.get(pk=draw.pk))
+        self.assertEqual(len(board["unpicked"]), 5)
+
+    def test_close_places_everyone_in_one_base_group_and_the_seal_verifies(self):
+        draw = self._open()
+        services.pick(draw, User.objects.get(username="dr_cap0"), 3)
+        services.close_draw(draw)
+        for tt in self.tts:
+            homes = [g.label for g in self.bases if g.teams.filter(pk=tt.pk).exists()]
+            self.assertEqual(len(homes), 1, homes)
+            self.assertEqual(len(self._lobbies_of(tt)), 2)
+        self.assertEqual(sorted(g.teams.count() for g in self.bases), [2, 2, 2])
+        # each lobby holds its two base groups: 4 teams
+        for lb in self.lobbies:
+            self.assertEqual(StageGroupCompetitor.objects.filter(stage_group=lb).count(), 4)
+        board = services.serialize_board(StageDraw.objects.get(pk=draw.pk))
+        self.assertEqual(board["commitment"], services.commitment_for(board["salt"], board["mapping"]))
+        self.assertTrue(all(c["group_name"].startswith("Group ") for c in board["cards"]))
+        auto = Notifications.objects.filter(notification_type="group_draw_auto").first()
+        self.assertTrue(auto.title.startswith("You were placed in Group "), auto.title)
+
+    def test_late_team_gets_an_extra_card_in_a_base_group(self):
+        draw = self._open()
+        cap, _ = _user("dr_cap_late")
+        team = Team.objects.create(team_name="Club Late", team_owner=cap, team_creator=cap)
+        TeamMembers.objects.create(team=team, member=cap, management_role="team_captain")
+        tt = TournamentTeam.objects.create(event=self.event, team=team, registered_by=cap)
+        StageCompetitor.objects.create(stage=self.rr, tournament_team=tt)
+        services.close_draw(draw)
+        card = DrawCard.objects.get(draw=draw, tournament_team=tt)
+        self.assertEqual(card.number, 7)
+        self.assertIsNotNone(card.round_robin_group_id)
+        self.assertTrue(card.round_robin_group.teams.filter(pk=tt.pk).exists())
+
+    def test_reset_takes_the_team_out_of_its_base_group_and_lobbies(self):
+        draw = self._open()
+        services.pick(draw, User.objects.get(username="dr_cap0"), 1)
+        services.reset(draw)
+        self.assertFalse(StageDraw.objects.filter(pk=draw.pk).exists())
+        self.assertEqual(sum(g.teams.count() for g in self.bases), 0)
+        self.assertEqual(self._lobbies_of(self.tts[0]), [])
+        # and a fresh deal is allowed again
+        self.assertEqual(services.deal(self.rr, self.admin).cards.count(), 6)
+
+    def test_refuses_to_deal_over_base_groups_that_hold_teams(self):
+        self.bases[2].teams.add(self.tts[0])
+        with self.assertRaises(services.DrawError) as ctx:
+            services.deal(self.rr, self.admin)
+        self.assertEqual(ctx.exception.status, 409)
+
+    def test_saving_the_event_form_during_the_draw_keeps_groups_cards_and_picks(self):
+        # The edit form rebuilt the base groups on every save (new ids), which would have cascaded
+        # the draw's cards away; and its team lists may predate the latest pick.
+        from afc_tournament_and_scrims.models import RoundRobinGroup
+        from afc_tournament_and_scrims.views import _edit_round_robin_stage
+
+        draw = self._open()
+        card = services.pick(draw, User.objects.get(username="dr_cap0"), 1)
+        ids_before = [g.group_id for g in self.bases]
+        payload = {"stage_format": "br - round robin", "round_robin": {
+            "round_robin_groups": [{"label": lab, "order": i, "team_ids": []} for i, lab in enumerate("ABC")],
+            "generate_schedule": True, "games_per_day": 1}}
+        _edit_round_robin_stage(self.rr, self.event, self.admin, payload)
+        self.assertEqual(
+            list(RoundRobinGroup.objects.filter(stage=self.rr).values_list("group_id", flat=True)), ids_before)
+        self.assertEqual(DrawCard.objects.filter(draw=draw).count(), 6)
+        base = RoundRobinGroup.objects.get(pk=card.round_robin_group_id)
+        self.assertTrue(base.teams.filter(pk=self.tts[0].pk).exists())
+        # the regenerated lobbies carry the pick again
+        self.assertEqual(len(self._lobbies_of(self.tts[0])), 2)

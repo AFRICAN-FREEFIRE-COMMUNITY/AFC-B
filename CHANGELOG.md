@@ -18,6 +18,17 @@ At release time `node ~/.claude/skills/versioning/scripts/release.mjs next` prin
 rename `## Unreleased` to it, merge, then tag the merge commit. A version tag pushed with the wrong
 number is blocked before the push.
 
+## Unreleased
+
+### Fixed
+- The group draw on a round robin stage now puts each team in ONE group, A, B or C. It used to deal
+  its cards over the day lobbies ("Day 1: A+B"), so a team landed in a single day. A card now hides
+  a group, and turning it over places the team in that group and in every day that group plays
+  (group A plays Day 1: A+B and Day 2: A+C). The board says "You are in Group A" (AFC inbox #570).
+- Saving the event's edit page no longer replaces a round robin stage's groups with new ones. It
+  keeps them, so a group draw's cards survive the save, and while a draw is open the picks are not
+  overwritten by the team lists the edit page loaded earlier.
+
 ## v7.18.2 - 2026-11-12
 
 ### Fixed
