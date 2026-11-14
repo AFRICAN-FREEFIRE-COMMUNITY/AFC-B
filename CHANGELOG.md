@@ -18,6 +18,12 @@ At release time `node ~/.claude/skills/versioning/scripts/release.mjs next` prin
 rename `## Unreleased` to it, merge, then tag the merge commit. A version tag pushed with the wrong
 number is blocked before the push.
 
+## Unreleased
+
+### Internal
+- The esport picture tests upload a real PNG again. Their hand-typed test picture did not decode, so
+  since every image upload checks the bytes (v7.17.0) 8 of them failed; real uploads were never affected.
+
 ## v7.20.2 - 2026-11-18
 
 ### Fixed
