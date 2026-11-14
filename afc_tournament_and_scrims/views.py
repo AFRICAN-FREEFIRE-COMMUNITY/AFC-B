@@ -20580,10 +20580,11 @@ def _capture_live_standings(event, group, request):
     top_killers = all_killers[:10]
     if live is not None:
         # Top killers WITH the map in progress: the official list + each player's live kills (by UID), and the
-        # map's provisional MVP by the event's own saved rule (the same criteria the official MVP uses).
+        # map's provisional MVP by the event's own saved rule (the same criteria AND scope the official MVP uses).
         from .board import live_map_mvp, live_top_killers
         live["top_killers"] = live_top_killers(all_killers, live_rows)
-        live["map_mvp"] = live_map_mvp(live_rows, result.get("rankable_criteria") or ["kills"])
+        live["map_mvp"] = live_map_mvp(live_rows, result.get("rankable_criteria") or ["kills"],
+                                       result.get("scope") or "overall")
     return {"scoring": scoring, "standings": standings, "map_points": map_points, "mvp": mvp,
             "top_killers": top_killers, "live": live}
 

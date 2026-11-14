@@ -18,6 +18,15 @@ At release time `node ~/.claude/skills/versioning/scripts/release.mjs next` prin
 rename `## Unreleased` to it, merge, then tag the merge commit. A version tag pushed with the wrong
 number is blocked before the push.
 
+## Unreleased
+
+### Fixed
+- The live map's MVP that AFC LIVE receives now follows the whole MVP rule the organizer or admin saved
+  on the leaderboard's MVPs tab, the "winning team" choice included. With "winning team" there is no
+  MVP while two or more teams are still in, and once one team is left the MVP comes only from that
+  team, the same way a finished map's MVP is picked. It used to look at every player in the lobby
+  (AFC inbox #577).
+
 ## v7.18.4 - 2026-11-13
 
 ### Fixed

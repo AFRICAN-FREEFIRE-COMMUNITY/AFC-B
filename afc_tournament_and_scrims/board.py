@@ -317,10 +317,22 @@ def live_top_killers(official, rows, limit=10):
     return out[:limit]
 
 
-def live_map_mvp(rows, criteria):
-    """The map in progress's provisional MVP by the event's own MVP rule (`criteria`, the ordered list from
-    views_mvp._mvp_criteria): the live player first on those numbers the live board carries (kills, assists,
-    headshots, knockdowns; damage reads 0 until the map's files are in). None with no live player."""
+def live_map_mvp(rows, criteria, scope="overall"):
+    """The map in progress's provisional MVP by the event's own MVP rule, as the organizer or admin saved it on the
+    leaderboard's MVPs tab (views_mvp._mvp_criteria): `criteria` the ordered list, `scope` "overall" or
+    "winning_team". The live player first on those numbers the live board carries (kills, assists, headshots,
+    knockdowns; damage reads 0 until the map's files are in). None with no live player.
+
+    Scope "winning_team" (owner 14 Nov 2026, inbox #577: "the mvp of each map should be picked based off what was set
+    by the organizer or admin on the website"): a finished map's MVP comes only from its booyah team
+    (views_mvp._award_map_mvps), so the live map has NO MVP while two or more teams are still in, and once one team
+    is left only that team's players count. Before this the scope was ignored here and the live MVP could be a
+    player whose team then lost the map."""
+    if scope == "winning_team":
+        standing = [r for r in rows or [] if r.get("live") and not r["live"]["eliminated"]]
+        if len(standing) != 1:
+            return None
+        rows = standing
     best, best_key = None, None
     for r in rows or []:
         live = r.get("live")
