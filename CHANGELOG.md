@@ -27,6 +27,10 @@ number is blocked before the push.
   team, the same way a finished map's MVP is picked. It used to look at every player in the lobby
   (AFC inbox #577).
 
+### Internal
+- The esport picture tests upload a real PNG again. Their hand-typed test picture did not decode, so
+  since every image upload checks the bytes (v7.17.0) 8 of them failed; real uploads were never affected.
+
 ## v7.18.4 - 2026-11-13
 
 ### Fixed
