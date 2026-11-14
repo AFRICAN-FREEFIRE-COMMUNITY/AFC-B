@@ -229,6 +229,10 @@
       "status": 200,
       "reason": "public content, decided 2026-09-13"
     },
+    "GET polls/hall-of-fame/": {
+      "status": 200,
+      "reason": "the awards hall of fame, public by design (owner 2 Nov 2026, inbox #445; mockup approved 11 Nov, #537): published winners of editions whose winners are public only, an edition hidden until release (#543) is left out for everybody, no vote counts; shipped in v7.17.0 without this line, caught by the first CI run of the Django tests (14 Nov 2026, #581)"
+    },
     "GET rankings/players/<int:player_id>/score/": {
       "status": 200,
       "reason": "public content, decided 2026-09-13"

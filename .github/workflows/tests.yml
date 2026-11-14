@@ -87,8 +87,35 @@ jobs:
       DB_HOST: 127.0.0.1
       DB_PORT: "3306"
       TURNSTILE_SECRET_KEY: ""
+      # Production has a Stripe webhook secret, so a stranger's POST to a webhook is refused. Without one the
+      # webhooks accept unsigned events (their "test setup" branch) and the signed-out test sees them answer 2xx.
+      # A dummy here makes this job behave like production. Not a real secret.
+      STRIPE_WEBHOOK_SECRET: whsec_ci_only_not_a_secret
     steps:
       - uses: actions/checkout@v4
+      # afc_auth/test_currencies.py checks the website's currency lists against the server's, reading the
+      # AFC_Frontend tree next to this one (../frontend), as on the workstation. AFC_Frontend is public: fetch only
+      # the folders those tests read (its master), and link it where the test looks.
+      - uses: actions/checkout@v4
+        with:
+          repository: AFRICAN-FREEFIRE-COMMUNITY/AFC_Frontend
+          ref: master
+          path: _frontend
+          sparse-checkout: |
+            lib
+            components
+            app
+      - name: Put the website tree beside this one
+        run: ln -sfn "$GITHUB_WORKSPACE/_frontend" "$(dirname "$GITHUB_WORKSPACE")/frontend"
+      # afc_sso signs ID tokens and webhook signals with AFC_OIDC_RSA_PRIVATE_KEY (afc/settings.py; empty = no
+      # signing). A throwaway key made for this job only; production's own key never leaves the server.
+      - name: Throwaway OIDC signing key
+        run: |
+          {
+            echo 'AFC_OIDC_RSA_PRIVATE_KEY<<PEM_EOF'
+            openssl genrsa 2048 2>/dev/null
+            echo 'PEM_EOF'
+          } >> "$GITHUB_ENV"
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
