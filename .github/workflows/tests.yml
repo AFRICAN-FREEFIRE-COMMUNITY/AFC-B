@@ -1,0 +1,126 @@
+# Django test suites: on every pull request for the parts it touches, and every night for all of them.
+#
+# Owner, 14 Nov 2026 (AFC inbox #580 #581, "yes"): main had stayed red for days twice (16 Oct key-set tests,
+# 12 to 14 Nov esport picture tests) because CI ran no Django tests. Now:
+#   * pull request  tools/test_plan.py picks the apps the change touches plus every app that imports them, and
+#                   splits them into parallel jobs (at most 6). Not a required check: an urgent fix can still merge.
+#   * every night   02:15 UTC, every app with tests, on main. When it is red an issue "Nightly tests are red" is
+#                   opened (or commented on, if one is already open), so it is seen the next morning.
+#   * by hand       Actions > Tests > Run workflow: every app, on the chosen branch.
+# The deploy (deploy-backend.yml) does not wait for this and is unchanged.
+#
+# Each job gets its own MySQL 8.0 (production runs 8.0) and Redis 7 (the settings' cache is django_redis),
+# installs requirements-prod.txt on Python 3.12 (the server's), and makes the migrations the way the deploy does
+# (migrations are git-ignored in this repo). No secret is used: the values below exist only inside the job.
+
+name: Tests
+
+on:
+  pull_request:
+  schedule:
+    - cron: "15 2 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      groups: ${{ steps.plan.outputs.groups }}
+      any: ${{ steps.plan.outputs.any }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Planner self-test
+        run: python3 tools/test_plan.py --self-test
+      - name: Which apps to test
+        id: plan
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            python3 tools/test_plan.py --base "origin/${{ github.base_ref }}" --github-output "$GITHUB_OUTPUT"
+          else
+            python3 tools/test_plan.py --all --github-output "$GITHUB_OUTPUT"
+          fi
+
+  test:
+    needs: plan
+    if: needs.plan.outputs.any == 'true'
+    name: test (${{ matrix.group.name }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        group: ${{ fromJson(needs.plan.outputs.groups) }}
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: ci-root
+          MYSQL_DATABASE: afc_ci
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -pci-root"
+          --health-interval=5s --health-timeout=5s --health-retries=30
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd="redis-cli ping"
+          --health-interval=5s --health-timeout=5s --health-retries=20
+    env:
+      DJANGO_SECRET_KEY: ci-only-not-a-secret
+      DEBUG: "True"
+      DB_NAME: afc_ci
+      DB_USER: root
+      DB_PASSWORD: ci-root
+      DB_HOST: 127.0.0.1
+      DB_PORT: "3306"
+      TURNSTILE_SECRET_KEY: ""
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-prod.txt
+      - name: MySQL client headers (mysqlclient builds against them)
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq pkg-config default-libmysqlclient-dev
+      - name: Install
+        run: pip install -q -r requirements-prod.txt
+      - name: Migrations (git-ignored here; made the way the deploy makes them)
+        run: python manage.py makemigrations --noinput
+      - name: Tests (${{ matrix.group.apps }})
+        run: python manage.py test ${{ matrix.group.apps }} --noinput
+
+  nightly-alert:
+    needs: [plan, test]
+    if: failure() && github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    steps:
+      - name: Open or update the "Nightly tests are red" issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          title="Nightly tests are red"
+          body="The nightly run of every Django test suite on main failed: $RUN_URL. Fix it before merging anything else (owner rule: a red checker is fixed first)."
+          n=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "\"$title\" in:title" --json number --jq '.[0].number // empty')
+          if [ -n "$n" ]; then
+            gh issue comment "$n" --repo "$GITHUB_REPOSITORY" --body "$body"
+          else
+            gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body "$body"
+          fi
