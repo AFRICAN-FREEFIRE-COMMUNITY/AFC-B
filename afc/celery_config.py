@@ -84,6 +84,18 @@ app.conf.beat_schedule = {
     # month + active season directly and is idempotent, so a night with the rankings worker up
     # costs one redundant pass and a night with it down still ends with correct ladders.
     # 04:00 server time, after the OCR jobs and the event sweeps, when the DB is quietest.
+    # ── Match MVP sync (owner 14 Nov 2026, AFC inbox #579: "yes fix it also for future sessions") ──
+    # Match.mvp = each map's MVP by the event's saved MVP rule (afc_tournament_and_scrims/mvp_sync.py). Every 10 min
+    # for ongoing and just-finished events (result writes skip model signals, so a sweep catches every path), and
+    # every event at 03:45 so the 04:00 rankings sweep below scores today's MVPs. Default queue, idempotent.
+    'sync_match_mvps_every_10m': {
+        'task': 'afc_tournament_and_scrims.tasks.sync_match_mvps_recent',
+        'schedule': crontab(minute='*/10'),
+    },
+    'sync_match_mvps_nightly': {
+        'task': 'afc_tournament_and_scrims.tasks.sync_match_mvps_all',
+        'schedule': crontab(minute=45, hour=3),    # 03:45 every day, before rankings at 04:00
+    },
     'rankings_sweep_nightly': {
         'task': 'afc_rankings.tasks.sweep_rankings',
         'schedule': crontab(minute=0, hour=4),     # 04:00 every day

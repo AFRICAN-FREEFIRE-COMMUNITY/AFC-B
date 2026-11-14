@@ -26,6 +26,12 @@ number is blocked before the push.
   MVP while two or more teams are still in, and once one team is left the MVP comes only from that
   team, the same way a finished map's MVP is picked. It used to look at every player in the lobby
   (AFC inbox #577).
+- Each map's MVP is now stored by that same rule, so player profiles and the players list count a
+  player's MVPs, the rankings score them, and the partner API's map `mvp` names the player. All three
+  read 0 or empty before, because nothing stored a map's MVP. A new result gets its MVP within 10
+  minutes, saving a new rule on the MVPs tab updates the event's maps at once, and every event is
+  checked again at 03:45, before the rankings run at 04:00, so maps already played get theirs the
+  first night (292 maps, 36 events). Rankings move for players with MVPs (AFC inbox #579).
 
 ### Internal
 - The esport picture tests upload a real PNG again. Their hand-typed test picture did not decode, so
