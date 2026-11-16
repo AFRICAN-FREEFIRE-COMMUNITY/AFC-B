@@ -18,6 +18,22 @@ At release time `node ~/.claude/skills/versioning/scripts/release.mjs next` prin
 rename `## Unreleased` to it, merge, then tag the merge commit. A version tag pushed with the wrong
 number is blocked before the push.
 
+## v7.19.0 - 2026-11-16
+
+### Added
+- In-game letters are now distinct per LOBBY, not per event. Two teams may hold the same letter as
+  long as they never share a lobby, so an event with more than 26 teams can be fully lettered. An
+  admin or organizer chooses whether a letter applies to ALL stages (the team keeps it) or only to
+  the stages they pick; a stage letter wins over the all-stages one in that stage. A round robin day
+  lobby counts both of its groups (AFC inbox #602).
+- `POST /events/assign-team-letters/` saves many teams' letters at once (the "Suggest letters" panel's
+  Apply all). The check reads the final result, so two teams can swap letters in one save, and a
+  clash anywhere saves nothing. `assign-team-letter/` takes an optional `stage_ids`.
+- `GET /events/event-team-letters/` now also lists every stage's lobbies with their teams and each
+  team's per-stage letters.
+- The broadcast kit (client files zip) can be built for one lobby (`group_id`) and uses the letters
+  of the chosen stage, so two lobbies that share letters never overwrite each other's flag files.
+
 ## v7.18.4 - 2026-11-13
 
 ### Fixed
