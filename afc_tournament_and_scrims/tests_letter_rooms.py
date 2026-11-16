@@ -269,6 +269,19 @@ class LetterEndpointTests(LetterRoomsFixture):
 
 
 class BroadcastKitGroupTests(LetterRoomsFixture):
+    def test_kit_summary_endpoint_lists_stages_and_scopes_to_a_lobby(self):
+        SessionToken.objects.create(user=self.admin, token="kit-admin-token",
+                                    expires_at=timezone.now() + datetime.timedelta(hours=1))
+        r = APIClient().get(
+            f"/events/{self.event.event_id}/broadcast-kit/?stage_id={self.s1.stage_id}&group_id={self.g1.group_id}",
+            HTTP_AUTHORIZATION="Bearer kit-admin-token",
+        )
+        self.assertEqual(r.status_code, 200)
+        body = r.json()
+        s1 = next(s for s in body["stages"] if s["stage_id"] == self.s1.stage_id)
+        self.assertEqual([g["group_name"] for g in s1["groups"]], ["Group 1", "Group 2"])
+        self.assertEqual({t["tournament_team_id"] for t in body["teams"]}, {self.pk(0), self.pk(1)})
+
     def test_kit_summary_scoped_to_a_group_uses_that_stage_letters(self):
         from .broadcast_kit import build_kit_summary
         apply_letters(self.event, {self.pk(0): "A", self.pk(2): "A"}, [self.s1.stage_id])

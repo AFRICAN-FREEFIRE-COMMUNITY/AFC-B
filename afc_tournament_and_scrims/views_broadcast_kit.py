@@ -56,6 +56,18 @@ def broadcast_kit_summary(request, event_id):
         "event_name": event.event_name,
         "stage_id": stage.stage_id if stage else None,
         "group_id": group.group_id if group else None,
+        # The stage + lobby pickers on BroadcastKitCard (inbox #602): every stage with its lobbies.
+        "stages": [
+            {
+                "stage_id": s.stage_id,
+                "stage_name": s.stage_name,
+                "groups": [
+                    {"group_id": g.group_id, "group_name": g.group_name}
+                    for g in s.groups.all().order_by("group_id")
+                ],
+            }
+            for s in event.stages.all()
+        ],
         "teams": build_kit_summary(event, stage=stage, group=group),
     })
 
