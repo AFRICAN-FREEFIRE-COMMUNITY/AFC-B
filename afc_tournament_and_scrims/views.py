@@ -37,7 +37,8 @@ from afc_tournament_and_scrims.event_player_image import pic_for_event
 # earned instead of the role they hold today. See afc_tournament_and_scrims/roster_roles.py.
 from afc_tournament_and_scrims import roster_roles
 from .still_in import competitor_still_in
-from .models import Event, EventInviteToken, EventPageView, MatchResultImage, RegisteredCompetitors, RoundRobinGroup, SoloPlayerMatchStats, SponsorEvent, StageAdvancementRule, StageCompetitor, StageGroupCompetitor, StageGroups, Stages, StreamChannel, TournamentPlayerMatchStats, TournamentTeam, Leaderboard, TournamentTeamMatchStats, Match, TournamentTeamMember
+from .models import Event, EventInviteToken, EventPageView, MatchResultImage, RegisteredCompetitors, RoundRobinGroup, SoloPlayerMatchStats, SponsorEvent, StageAdvancementRule, StageCompetitor, StageGroupCompetitor, StageGroups, Stages, StageTeamLetter, StreamChannel, TournamentPlayerMatchStats, TournamentTeam, Leaderboard, TournamentTeamMatchStats, Match, TournamentTeamMember
+from .letter_rooms import LetterClash, apply_letters, stage_rooms
 # One answer to "what KIND of stage is this?" for all three generations of stage_format values
 # (owner item 21, 2026-08-13). create_event / edit_event branch on it below. See stage_formats.py.
 from .stage_formats import is_clash_squad
@@ -24102,21 +24103,24 @@ def assign_team_letter(request):
     """POST /events/assign-team-letter/  (admin / organizer)  - Letter Avatars feature #7, plan B5.
 
     Assign ONE A-Z letter to a registered team for in-game use in this event (e.g. each team flies a
-    distinct letter banner). OWNER DECISION (Open Q g, 2026-06-29): a letter is UNIQUE per team per
-    event - assigning a letter already held by ANOTHER team in this event is rejected with a friendly
-    409 naming that team; reassigning a team to a new letter frees its old one automatically (a single
-    column update). Admins/organizers may CHANGE an assignment at ANY time (no lock once set or once
-    the event starts).
+    distinct letter banner). LETTERS PER ROOM (inbox #602, owner 2026-11-16, replacing the old
+    one-letter-per-event rule of 2026-06-29): a letter only has to be distinct between teams that
+    share a lobby in a stage it applies to, so the same letter can serve teams in different groups.
+    The admin / organizer picks the stages: none = ALL STAGES (TournamentTeam.assigned_letter, kept
+    across stages, clears any per-stage override), a list = those stages only (StageTeamLetter).
+    Admins/organizers may CHANGE an assignment at ANY time (no lock once set or once the event starts).
 
     REQUEST (JSON)
       { "event_id": <int>, "team_id": <int>,
         "letter": "A",          # a single A-Z char; "" / null / "none" CLEARS the assignment (unassign)
+        "stage_ids": [<int>],   # optional; absent / [] = all stages
         "broadcast": false }    # optional: when true ALSO emails the team (push happens either way)
 
     RESPONSE
-      200 { tournament_team_id, team_id, team_name, assigned_letter, notified }
-      400 missing ids / invalid letter   403 not an event admin / org for this event
-      404 team not registered for this event   409 letter already taken by another team in this event
+      200 { tournament_team_id, team_id, team_name, assigned_letter, stage_ids, letter, notified }
+      400 missing ids / invalid letter / invalid_stage   403 not an event admin / org for this event
+      404 team not registered for this event
+      409 letter_taken: another team in the same lobby would hold it (both teams, stage, room named)
 
     GATE
       AFC event admin (_is_event_admin) OR organizer with can_manage_registrations on the event's
@@ -24155,85 +24159,218 @@ def assign_team_letter(request):
     if not tt:
         return Response({"message": "That team is not registered for this event.", "code": "team_not_registered_event"}, status=404)
 
-    # CLEAR (unassign): an empty / null / "none" letter frees this team's letter for reuse.
+    # Letters per room (inbox #602): which stages this letter applies to. Absent / [] = ALL STAGES
+    # (the team keeps it across stages); a list = only those stages (StageTeamLetter rows).
+    try:
+        stage_ids = _parse_letter_stage_ids(request.data.get("stage_ids"))
+    except ValueError:
+        return Response({"message": "stage_ids must be a list of this event's stages.", "code": "invalid_stage"}, status=400)
+
+    # CLEAR (unassign): an empty / null / "none" letter frees this team's letter for reuse (in the
+    # chosen stages, or everywhere when no stages are named).
     raw_letter = request.data.get("letter")
     if raw_letter in (None, "", "none", "None"):
-        tt.assigned_letter = None
-        tt.save(update_fields=["assigned_letter"])
-        return Response({
-            "tournament_team_id": tt.tournament_team_id, "team_id": tt.team_id,
-            "team_name": tt.display_name, "assigned_letter": None, "notified": 0,
-        }, status=200)
+        letter = None
+    else:
+        letter = _norm_letter_char(raw_letter)
+        if not letter:
+            return Response({"message": "letter must be a single A-Z character.", "code": "letter_single_character"}, status=400)
 
-    letter = _norm_letter_char(raw_letter)
-    if not letter:
-        return Response({"message": "letter must be a single A-Z character.", "code": "letter_single_character"}, status=400)
+    # Distinct per ROOM, not per event (inbox #602). apply_letters locks the event's registrations,
+    # writes, then checks the FINAL state of every room in the affected stages and rolls back on a
+    # clash, so two staff assigning at once cannot both pass.
+    try:
+        apply_letters(event, {tt.pk: letter}, stage_ids)
+    except ValueError:
+        return Response({"message": "stage_ids must be a list of this event's stages.", "code": "invalid_stage"}, status=400)
+    except LetterClash as clash:
+        return _letter_clash_response(clash.info)
+    tt.refresh_from_db()
 
-    # UNIQUE per event (Open Q g, HARD). The conditional DB UniqueConstraint
-    # (uniq_assigned_letter_per_event) is a NO-OP on MySQL, which has no partial indexes - so this
-    # check IS the real enforcement. To make it HARD even under concurrent assigns by two staff, we
-    # lock this event's TournamentTeam rows FOR UPDATE inside one transaction, re-read the clash under
-    # the lock, then write. Reassigning THIS team to a new letter is fine (exclude self) and frees its
-    # old letter automatically (a single column update). No data is written before any early return,
-    # so returning the 409 inside the atomic block is safe (only SELECTs ran).
-    with transaction.atomic():
-        locked = list(
-            TournamentTeam.objects
-            .select_for_update()
-            .filter(event=event)
-            .select_related("team", "ghost_team")
-        )
-        # Re-resolve tt from the locked snapshot (same row, now lock-held).
-        tt = next((x for x in locked if x.pk == tt.pk), tt)
-        # NOTE (owner 2026-08-20): this scans the WHOLE event's TournamentTeam rows, which now
-        # includes ghost rows too - a ghost can hold the clashing letter just as a real team can,
-        # so clash.display_name (not .team.team_name) is required here.
-        clash = next(
-            (x for x in locked if x.assigned_letter == letter and x.pk != tt.pk),
-            None,
-        )
-        if clash:
-            return Response({
-                "code": "letter_taken",
-                "message": f"Letter {letter} is already assigned to {clash.display_name} in this event.",
-                "conflicting_team_id": clash.team_id,
-                "conflicting_team_name": clash.display_name,
-            }, status=409)
-
-        tt.assigned_letter = letter
-        tt.save(update_fields=["assigned_letter"])
-
-    # Notify every member of the team (Open Q i). TeamMembers is the live team roster (not the event
-    # roster) so EVERY teammate hears about it. broadcast=true also emails; either way they get the
-    # in-app push. deliver_broadcast localizes the email per recipient + stamps the event deep link.
-    broadcast = _as_bool(request.data.get("broadcast"))
-    recipients = [
-        tm.member
-        for tm in TeamMembers.objects.filter(team=tt.team).select_related("member")
-        if tm.member
-    ]
     notified = 0
-    if recipients:
-        # English source line (broadcasts are stored in English; deliver_broadcast translate-on-reads
-        # the in-app row + localizes the email). No em/en dashes.
-        message = f"Your assigned letter for {event.event_name} is {letter}."
-        try:
-            pushed, _emailed = deliver_broadcast(
-                recipients, "Letter assignment", message,
-                delivery="both" if broadcast else "push",
-                notification_type="letter_assignment", related_event=event,
-                sender=user, scope="event", log=False,
-            )
-            notified = pushed
-        except Exception:
-            # A notification failure must never roll back an assignment that already persisted.
-            pass
+    if letter:
+        notified = _notify_letter_assignment(
+            user, event, tt, letter, stage_ids, _as_bool(request.data.get("broadcast")),
+        )
 
     return Response({
         "tournament_team_id": tt.tournament_team_id,
         "team_id": tt.team_id,
         "team_name": tt.display_name,
         "assigned_letter": tt.assigned_letter,
+        "stage_ids": stage_ids or [],
+        "letter": letter,
+        "notified": notified,
+    }, status=200)
+
+
+# ── Letters per room helpers (inbox #602, owner 2026-11-16) ─────────────────────────────────────
+# Shared by assign_team_letter (one team, the per-row Assign Select) and assign_team_letters_bulk
+# (the suggester's "Apply all"). The rule itself lives in letter_rooms.py.
+
+def _parse_letter_stage_ids(raw):
+    """[] / None -> None (ALL STAGES). A list of ints -> that list. Anything else -> ValueError.
+
+    apply_letters re-checks that every id is a stage of the event (ValueError -> 400 invalid_stage).
+    """
+    if raw in (None, "", []):
+        return None
+    if not isinstance(raw, (list, tuple)):
+        raise ValueError("stage_ids must be a list")
+    return [int(x) for x in raw]
+
+
+def _letter_clash_response(info):
+    """409 letter_taken naming both teams, the stage and the room, from a LetterClash.info."""
+    # display_name (not team.team_name): a ghost registration can hold a letter too (owner 2026-08-20).
+    rows = {
+        tt.pk: tt
+        for tt in TournamentTeam.objects.filter(
+            pk__in=[info["tournament_team_id"], info["other_tournament_team_id"]],
+        ).select_related("team", "ghost_team")
+    }
+    team = rows.get(info["tournament_team_id"])
+    other = rows.get(info["other_tournament_team_id"])
+    where = info["stage_name"] + (f", {info['group_name']}" if info["group_name"] else "")
+    return Response({
+        "code": "letter_taken",
+        "message": (
+            f"Letter {info['letter']} would be shared by {team.display_name if team else 'a team'} and "
+            f"{other.display_name if other else 'another team'} in {where}."
+        ),
+        "letter": info["letter"],
+        "stage_id": info["stage_id"],
+        "group_name": info["group_name"],
+        "team_id": team.team_id if team else None,
+        "conflicting_team_id": other.team_id if other else None,
+        "conflicting_team_name": other.display_name if other else None,
+    }, status=409)
+
+
+def _notify_letter_assignment(user, event, tt, letter, stage_ids, broadcast):
+    """Push (and with broadcast=True also email) every member of the team its new letter.
+
+    TeamMembers is the live team roster (not the event roster) so EVERY teammate hears about it.
+    deliver_broadcast localizes the email per recipient + stamps the event deep link. log=False so a
+    single assignment does not flood the broadcast-history audit. Returns the number pushed; a
+    notification failure never rolls back an assignment that already persisted.
+    """
+    recipients = [
+        tm.member
+        for tm in TeamMembers.objects.filter(team=tt.team).select_related("member")
+        if tm.member
+    ] if tt.team_id else []
+    if not recipients:
+        return 0
+    # English source line (broadcasts are stored in English; deliver_broadcast translate-on-reads
+    # the in-app row + localizes the email). No em/en dashes.
+    if stage_ids:
+        stage_names = ", ".join(
+            Stages.objects.filter(event=event, stage_id__in=stage_ids)
+            .values_list("stage_name", flat=True)
+        )
+        message = f"Your assigned letter for {event.event_name} ({stage_names}) is {letter}."
+    else:
+        message = f"Your assigned letter for {event.event_name} is {letter}."
+    try:
+        pushed, _emailed = deliver_broadcast(
+            recipients, "Letter assignment", message,
+            delivery="both" if broadcast else "push",
+            notification_type="letter_assignment", related_event=event,
+            sender=user, scope="event", log=False,
+        )
+        return pushed
+    except Exception:
+        return 0
+
+
+@api_view(["POST"])
+def assign_team_letters_bulk(request):
+    """POST /events/assign-team-letters/  (admin / organizer)  - letters per room, inbox #602.
+
+    The suggester's "Apply all": write many teams' letters in ONE transaction. The clash check reads
+    the FINAL state, so a swap (team X: A->B, team Y: B->A) passes, and a clash anywhere in the batch
+    writes nothing at all.
+
+    REQUEST (JSON)
+      { "event_id": <int>,
+        "stage_ids": [<int>, ...],   # [] / absent = ALL STAGES (kept across stages)
+        "assignments": [{"tournament_team_id": <int>} or {"team_id": <int>}, "letter": "A" or ""}],
+        "broadcast": false }         # optional: also email each team (push happens either way)
+
+    RESPONSE
+      200 { updated: [{tournament_team_id, team_id, letter}], stage_ids, notified }
+      400 bad body / letter (code invalid_letter) / stage (code invalid_stage)
+      403 not an event admin / org for this event   404 event not found
+      409 letter_taken (both teams, the stage and the room named; nothing written)
+
+    GATE
+      Same as assign_team_letter (AFC event admin OR org can_manage_registrations).
+
+    CONSUMED BY
+      frontend RegisteredTeamsTab.tsx, the Suggest letters panel ("Apply all").
+    """
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
+    user = validate_token(auth.split(" ")[1])
+    if not user:
+        return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
+
+    event_id = request.data.get("event_id")
+    if not event_id:
+        return Response({"message": "event_id is required.", "code": "event_required"}, status=400)
+    event = get_object_or_404(Event, event_id=event_id)
+    if not _is_event_admin(user) and not org_can_event(user, "can_manage_registrations", event):
+        return Response({"message": "You do not have permission to assign letters for this event.", "code": "not_permission_assign_letters"}, status=403)
+
+    try:
+        stage_ids = _parse_letter_stage_ids(request.data.get("stage_ids"))
+    except ValueError:
+        return Response({"message": "stage_ids must be a list of this event's stages.", "code": "invalid_stage"}, status=400)
+
+    raw = request.data.get("assignments")
+    if not isinstance(raw, list) or len(raw) > 200:
+        return Response({"message": "assignments must be a list of at most 200 teams.", "code": "invalid_assignments"}, status=400)
+
+    regs = list(TournamentTeam.objects.filter(event=event).select_related("team", "ghost_team"))
+    by_pk = {tt.pk: tt for tt in regs}
+    by_team = {tt.team_id: tt for tt in regs if tt.team_id}
+    changes = {}
+    for item in raw:
+        if not isinstance(item, dict):
+            return Response({"message": "Each assignment needs a team and a letter.", "code": "invalid_assignments"}, status=400)
+        tt = by_pk.get(item.get("tournament_team_id")) or by_team.get(item.get("team_id"))
+        if not tt:
+            return Response({"message": "A team in the list is not registered for this event.", "code": "team_not_registered_event"}, status=404)
+        raw_letter = item.get("letter")
+        if raw_letter in (None, "", "none", "None"):
+            changes[tt.pk] = None
+            continue
+        letter = _norm_letter_char(raw_letter)
+        if not letter:
+            return Response({"message": "letter must be a single A-Z character.", "code": "invalid_letter"}, status=400)
+        changes[tt.pk] = letter
+
+    try:
+        apply_letters(event, changes, stage_ids)
+    except ValueError:
+        return Response({"message": "stage_ids must be a list of this event's stages.", "code": "invalid_stage"}, status=400)
+    except LetterClash as clash:
+        return _letter_clash_response(clash.info)
+
+    broadcast = _as_bool(request.data.get("broadcast"))
+    notified = 0
+    for tt_pk, letter in changes.items():
+        if letter:
+            notified += _notify_letter_assignment(user, event, by_pk[tt_pk], letter, stage_ids, broadcast)
+
+    return Response({
+        "updated": [
+            {"tournament_team_id": pk, "team_id": by_pk[pk].team_id, "letter": letter}
+            for pk, letter in changes.items()
+        ],
+        "stage_ids": stage_ids or [],
         "notified": notified,
     }, status=200)
 
@@ -24253,7 +24390,9 @@ def get_event_team_letters(request):
 
     RESPONSE
       200 { event_id, min_letter_avatars,
-            teams: [{tournament_team_id, team_id, team_name, available_letters, assigned_letter, member_count}],
+            stages: [{stage_id, stage_name, rooms: [{group_id, group_name, tournament_team_ids}]}],
+            teams: [{tournament_team_id, team_id, team_name, available_letters, assigned_letter,
+                     stage_letters: {"<stage_id>": "A"}, member_count}],
             limit, offset, total_count, has_more, next_offset }
       400 missing event_id   403 not an event admin / org for this event   404 event not found
 
@@ -24300,6 +24439,15 @@ def get_event_team_letters(request):
     total_count = base_qs.count()
     page = base_qs[offset:offset + limit]
 
+    # Letters per room (inbox #602): every per-stage letter of the page's teams, keyed by stage id as
+    # a STRING (JSON object keys are strings on the wire anyway; the site reads them that way).
+    page = list(page)
+    stage_letters = {}
+    for tt_id, stage_id, letter in StageTeamLetter.objects.filter(
+        tournament_team__in=page,
+    ).values_list("tournament_team_id", "stage_id", "letter"):
+        stage_letters.setdefault(tt_id, {})[str(stage_id)] = letter
+
     teams = []
     for tt in page:
         # The team's event-roster member users feed the live union (+ the team's manual extras).
@@ -24312,12 +24460,33 @@ def get_event_team_letters(request):
             "team_name": tt.display_name,
             "available_letters": _letter_avatars_available(member_users, team=tt.team),
             "assigned_letter": tt.assigned_letter,
+            "stage_letters": stage_letters.get(tt.tournament_team_id, {}),
             "member_count": len(member_users),
         })
+
+    # The ROOMS of every stage (letter_rooms.stage_rooms), so the site can filter by stage / group,
+    # flag clashes and run the suggester on exactly the rooms the server checks. Small (a stage has a
+    # handful of lobbies), so it rides on every page rather than its own endpoint.
+    stages = [
+        {
+            "stage_id": stage.stage_id,
+            "stage_name": stage.stage_name,
+            "rooms": [
+                {
+                    "group_id": room["group_id"],
+                    "group_name": room["group_name"],
+                    "tournament_team_ids": sorted(room["team_ids"]),
+                }
+                for room in stage_rooms(stage)
+            ],
+        }
+        for stage in Stages.objects.filter(event=event)  # model ordering: stage_order, start_date
+    ]
 
     return Response({
         "event_id": event.event_id,
         "min_letter_avatars": event.min_letter_avatars,
+        "stages": stages,
         "teams": teams,
         "limit": limit,
         "offset": offset,

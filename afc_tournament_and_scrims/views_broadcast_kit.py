@@ -4,10 +4,14 @@
 #
 #   GET  events/<id>/broadcast-kit/            -> readiness summary (per team: assigned letter,
 #                                                 headpic id, has-logo, player uid/image coverage).
-#                                                 Optional ?stage_id= to scope to a stage.
+#                                                 Optional ?stage_id= to scope to a stage, and
+#                                                 ?group_id= to one lobby of it (inbox #602).
 #   POST events/<id>/broadcast-kit/download/   -> the zip (attachment). multipart body:
-#                                                 caster_name?, caster_uid?, stage_id?,
+#                                                 caster_name?, caster_uid?, stage_id?, group_id?,
 #                                                 billboard? (file), skybox? (file).
+# Letters per room (inbox #602): two lobbies of one stage may now share a letter, and each team's flag
+# file is NAMED after its letter, so a stage-wide zip could hold two logos under one name (the last
+# one wins). The group_id scope builds one lobby's zip, with that stage's letters, so nothing collides.
 # Frontend consumer: components/overlay/BroadcastKitCard.tsx.
 
 from django.http import HttpResponse
@@ -28,6 +32,17 @@ def _resolve_stage(event, stage_id):
         return None
 
 
+def _resolve_group(stage, group_id):
+    """The lobby `group_id` of `stage`, or None (no stage, no id, or not a lobby of that stage)."""
+    if not stage or not group_id:
+        return None
+    from .models import StageGroups
+    try:
+        return StageGroups.objects.get(group_id=group_id, stage=stage)
+    except (StageGroups.DoesNotExist, ValueError, TypeError):
+        return None
+
+
 @api_view(["GET"])
 def broadcast_kit_summary(request, event_id):
     """Readiness report for the Broadcast Kit UI (what will/won't be in the zip)."""
@@ -35,11 +50,13 @@ def broadcast_kit_summary(request, event_id):
     if err:
         return err
     stage = _resolve_stage(event, request.GET.get("stage_id"))
+    group = _resolve_group(stage, request.GET.get("group_id"))
     return Response({
         "event_id": event.event_id,
         "event_name": event.event_name,
         "stage_id": stage.stage_id if stage else None,
-        "teams": build_kit_summary(event, stage=stage),
+        "group_id": group.group_id if group else None,
+        "teams": build_kit_summary(event, stage=stage, group=group),
     })
 
 
@@ -50,6 +67,7 @@ def broadcast_kit_download(request, event_id):
     if err:
         return err
     stage = _resolve_stage(event, request.data.get("stage_id"))
+    group = _resolve_group(stage, request.data.get("group_id"))
     caster_name = (request.data.get("caster_name") or "").strip()
     caster_uid = (request.data.get("caster_uid") or "").strip() or None
     # The caster's Free Fire UID goes into the observer config, so digits only (inbox #89).
@@ -71,7 +89,7 @@ def broadcast_kit_download(request, event_id):
     skybox_bytes = skybox.read() if skybox else None
 
     data = build_broadcast_kit(
-        event, stage=stage, caster_name=caster_name, caster_uid=caster_uid,
+        event, stage=stage, group=group, caster_name=caster_name, caster_uid=caster_uid,
         billboard_bytes=billboard_bytes, skybox_bytes=skybox_bytes,
     )
 

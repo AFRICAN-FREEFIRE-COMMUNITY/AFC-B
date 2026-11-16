@@ -500,6 +500,8 @@ urlpatterns = [
     #   registered team's live available_letters + assigned_letter + member_count for the assign UI.
     #   Both gated _is_event_admin OR org can_manage_registrations. Consumed by RegisteredTeamsTab.
     path("assign-team-letter/", assign_team_letter, name="assign_team_letter"),
+    # Letters per room (inbox #602): the suggester's "Apply all", many teams in one transaction.
+    path("assign-team-letters/", assign_team_letters_bulk, name="assign_team_letters_bulk"),
     path("event-team-letters/", get_event_team_letters, name="get_event_team_letters"),
     # Admin / organizer single-player roster add (roster-rules, 2026-06-15). Additive sibling of
     # edit-roster/: appends ONE TournamentTeamMember. View: add_player_to_event_roster.

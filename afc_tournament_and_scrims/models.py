@@ -1390,32 +1390,20 @@ class TournamentTeam(models.Model):
     # written by the assign_team_letter endpoint (POST events/assign-team-letter/) and echoed per team
     # in get_event_details.tournament_teams + the event-team-letters list, where the RegisteredTeamsTab
     # Assign-letter Select reads it and the SendNotificationModal "Letter assignments" broadcast
-    # announces it. OWNER DECISION (Open Q g, 2026-06-29): a letter is UNIQUE per team per event - the
-    # Meta UniqueConstraint below stops two teams in the same event holding the same letter (the
-    # endpoint also guards it with a friendly 409). Reassigning a team to a new letter frees its old
-    # one automatically (a single column update). Distinct from Event.min_letter_avatars, which is the
-    # registration REQUIREMENT, not the per-team in-game assignment.
+    # announces it. Distinct from Event.min_letter_avatars, which is the registration REQUIREMENT,
+    # not the per-team in-game assignment.
+    #
+    # LETTERS PER ROOM (inbox #602, owner 2026-11-16): this column is the "ALL STAGES" letter - the
+    # one a team keeps across stages. A StageTeamLetter row (below) overrides it for one stage. A
+    # letter is no longer unique per EVENT: it only has to be distinct between teams that share a
+    # ROOM (a lobby) in a stage, because only 26 letters exist and a 48-team event could never be
+    # fully lettered. The old Meta UniqueConstraint uniq_assigned_letter_per_event was dropped for
+    # exactly that reason; letter_rooms.apply_letters is now the enforcement (it locks the event's
+    # TournamentTeam rows and checks the FINAL state of every room before committing).
     assigned_letter = models.CharField(max_length=1, null=True, blank=True)
 
     class Meta:
         constraints = [
-            # One letter per event: no two TournamentTeam rows in the same event may share the SAME
-            # non-null assigned_letter. This is a PLAIN UniqueConstraint (no `condition=`) ON PURPOSE.
-            #   • MySQL - the PRODUCTION database - IGNORES the partial-index `condition` on a
-            #     UniqueConstraint, so the previous conditional form (condition=assigned_letter is not
-            #     null) gave ZERO DB enforcement there: two teams in one event could be saved with the
-            #     same letter straight through the ORM. It only ever worked on Postgres.
-            #   • A plain unique index DOES enforce on MySQL. And because BOTH MySQL and Postgres allow
-            #     MULTIPLE NULLs in a unique index, every unassigned team (assigned_letter = NULL) still
-            #     coexists without colliding - only two NON-NULL teams sharing a letter in the same event
-            #     are rejected at the DB level. So dropping the condition loses nothing and gains real
-            #     MySQL enforcement.
-            # The app-level 409 in assign_team_letter stays as the friendly first line of defence; this
-            # constraint is the DB backstop that enforces Open Q (g) even on a direct/bulk write.
-            models.UniqueConstraint(
-                fields=["event", "assigned_letter"],
-                name="uniq_assigned_letter_per_event",
-            ),
             # ── Bug C (duplicate registration + un-removable dupe) ────────────────────────────────
             # One registration per (event, team). Before this, a race in register_for_event /
             # add_teams_to_event could create TWO TournamentTeam rows for the same team in the same
@@ -2147,6 +2135,30 @@ class StageGroupCompetitor(models.Model):
 
     class Meta:
         unique_together = ("stage_group", "tournament_team", "player")
+
+
+class StageTeamLetter(models.Model):
+    """A team's in-game letter for ONE stage (inbox #602, owner 2026-11-16).
+
+    Owner: "i need to be able to do this only teams in certains groups or per stage ... The admin or
+    organizer decides that, also decides what stages it applies to." An assignment either applies to
+    ALL stages (TournamentTeam.assigned_letter, the letter a team keeps across stages) or to chosen
+    stages (one row here per stage). A row here OVERRIDES the all-stages letter in its stage; the
+    effective letter is letter_rooms.effective_letters(event, stage).
+
+    HOW IT CONNECTS
+      - Written ONLY through letter_rooms.apply_letters (called by views.assign_team_letter and
+        views.assign_team_letters_bulk), which refuses a letter two teams would share in one room.
+      - Read by views.get_event_team_letters (per team `stage_letters`) for the RegisteredTeamsTab
+        letter scope + suggester, and by broadcast_kit (the client files zip for a stage / group).
+      - Not copied by clone/duplicate_event (per-registration data, like assigned_letter).
+    """
+    stage = models.ForeignKey(Stages, on_delete=models.CASCADE, related_name="team_letters")
+    tournament_team = models.ForeignKey(TournamentTeam, on_delete=models.CASCADE, related_name="stage_letters")
+    letter = models.CharField(max_length=1)
+
+    class Meta:
+        unique_together = ("stage", "tournament_team")
 
 
 # ════════════════════════════════════════════════════════════════════════════════════════════

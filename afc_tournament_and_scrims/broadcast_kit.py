@@ -16,7 +16,9 @@
 #   PCTexture/SkyboxPicture.png        - optional, from an uploaded skybox image.
 #
 # LETTER -> HeadPicID map is the owner's fixed assignment (A=902000034 ... Z=902000059); the team's
-# assigned_letter (TournamentTeam.assigned_letter, set via the existing Assign-letter UI) picks the id.
+# letter picks the id. For a stage kit that is the team's EFFECTIVE letter in that stage
+# (letter_rooms.effective_letters: the stage's own letter, else the all-stages assigned_letter);
+# without a stage it is the all-stages TournamentTeam.assigned_letter (inbox #602).
 #
 # CONSUMED BY: views_broadcast_kit.broadcast_kit_download / _preview (gated by _broadcast_gate);
 # the frontend BroadcastKitCard mounts on the overlay studio + event edit page.
@@ -81,23 +83,38 @@ def _bytes_to_png(raw, size=None):
     return out.getvalue()
 
 
-def _event_teams(event, stage=None):
-    """Active TournamentTeams for the event (optionally scoped to a stage's competitors)."""
+def _event_teams(event, stage=None, group=None):
+    """TournamentTeams for the kit, each with `.kit_letter` set (the letter its flag files use).
+
+    No stage: every registration, all-stages letter. A stage: its competitors, letters effective in
+    that stage. A stage + group (inbox #602): only that lobby's teams (letter_rooms.stage_rooms, so a
+    round robin day lobby includes its base groups), letters effective in that stage.
+    """
     from .models import TournamentTeam, StageCompetitor
+    from .letter_rooms import effective_letters, stage_rooms
     qs = TournamentTeam.objects.filter(event=event).select_related("team")
+    letters = None
     if stage is not None:
-        ids = StageCompetitor.objects.filter(stage=stage).values_list("tournament_team_id", flat=True)
+        letters = effective_letters(event, stage)
+        if group is not None:
+            room = next((r for r in stage_rooms(stage) if r["group_id"] == group.group_id), None)
+            ids = room["team_ids"] if room else set()
+        else:
+            ids = StageCompetitor.objects.filter(stage=stage).values_list("tournament_team_id", flat=True)
         qs = qs.filter(pk__in=list(ids))
-    return list(qs)
+    teams = list(qs)
+    for tt in teams:
+        tt.kit_letter = (letters.get(tt.pk) if letters is not None else tt.assigned_letter) or None
+    return teams
 
 
-def build_kit_summary(event, stage=None):
+def build_kit_summary(event, stage=None, group=None):
     """Readiness report for the UI: per team, its assigned letter + whether it has a logo, and the
     per-player uid/image coverage. Lets the operator see what will (and won't) be in the zip."""
     from .models import TournamentTeamMember
     from afc_auth.models import profile_of
     rows = []
-    for tt in _event_teams(event, stage):
+    for tt in _event_teams(event, stage, group):
         players, with_uid, with_img = 0, 0, 0
         for m in TournamentTeamMember.objects.filter(tournament_team=tt).select_related("user"):
             players += 1
@@ -106,13 +123,13 @@ def build_kit_summary(event, stage=None):
             # The kept copy counts too (owner 2026-10-25, #400): a removal leaves the event its image.
             if pic_for_event(m.user, event):
                 with_img += 1
-        letter = (tt.assigned_letter or "").upper()
+        letter = (tt.kit_letter or "").upper()
         rows.append({
             "tournament_team_id": tt.pk,
             # display_name: a ghost has no .team. This feeds a BROADCAST overlay, where "?"
             # would go out on stream instead of the team's name (owner 2026-08-20).
             "team_name": tt.display_name,
-            "assigned_letter": tt.assigned_letter or None,
+            "assigned_letter": tt.kit_letter,
             "headpic_id": LETTER_TO_HEADPIC_ID.get(letter) if letter else None,
             "has_logo": bool(getattr(tt.team, "team_logo", None)) if tt.team else False,
             "players": players,
@@ -122,14 +139,14 @@ def build_kit_summary(event, stage=None):
     return rows
 
 
-def build_broadcast_kit(event, stage=None, caster_name="", caster_uid=None,
+def build_broadcast_kit(event, stage=None, group=None, caster_name="", caster_uid=None,
                         billboard_bytes=None, skybox_bytes=None):
     """Build the whole kit zip (bytes). Best-effort per asset - a team with no logo/letter is
     simply skipped for the flag files but still included in the JSON."""
     from .models import TournamentTeamMember
     from afc_auth.models import profile_of
 
-    teams = _event_teams(event, stage)
+    teams = _event_teams(event, stage, group)
     buf = io.BytesIO()
     player_list, team_list, seen_uids = [], [], set()
 
@@ -141,7 +158,7 @@ def build_broadcast_kit(event, stage=None, caster_name="", caster_uid=None,
             team_list.append({"TeamID": idx + 1, "TeamRegion": team_name, "Color": color})
 
             # Flag files: the team LOGO renamed to the assigned letter's HeadPicID, per size.
-            letter = (tt.assigned_letter or "").upper()
+            letter = (tt.kit_letter or "").upper()
             hid = LETTER_TO_HEADPIC_ID.get(letter)
             logo = getattr(team, "team_logo", None) if team else None
             if hid and logo:
