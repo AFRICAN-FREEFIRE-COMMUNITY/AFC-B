@@ -159,4 +159,19 @@ def apply_letters(event, changes, stage_ids):
             clash = _first_clash(event, stage, changed_ids)
             if clash:
                 raise LetterClash(clash)
+        if not stage_ids and not stages:
+            # No stages yet: there are no lobbies to compare, so keep the old rule and treat the
+            # whole event as one room (frontend lib/letterScope.ts roomsFor does the same).
+            holder = {}
+            for tt in sorted(TournamentTeam.objects.filter(event=event), key=lambda t: (t.pk in changed_ids, t.pk)):
+                letter = tt.assigned_letter
+                if not letter:
+                    continue
+                other = holder.get(letter)
+                if other is not None and tt.pk in changed_ids:
+                    raise LetterClash({
+                        "tournament_team_id": tt.pk, "other_tournament_team_id": other, "letter": letter,
+                        "stage_id": None, "stage_name": event.event_name, "group_name": "",
+                    })
+                holder.setdefault(letter, tt.pk)
     return targets

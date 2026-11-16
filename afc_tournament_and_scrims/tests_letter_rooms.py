@@ -178,6 +178,29 @@ class ApplyLettersTests(LetterRoomsFixture):
             apply_letters(self.event, {self.pk(0): "A"}, [foreign.stage_id])
 
 
+class NoStagesTests(TestCase):
+    """An event with no stages yet keeps the old rule: the whole event is one room."""
+
+    def test_all_stages_letter_is_unique_per_event_when_there_are_no_stages(self):
+        admin = User.objects.create_user(username=_u("adm"), email=f"{_u('e')}@t.local",
+                                         password="pw-strong-9273", role="admin")
+        event = Event.objects.create(
+            slug=_u("ev"), competition_type="tournament", participant_type="squad",
+            event_type="internal", max_teams_or_players=16, event_name="No Stages Cup",
+            event_mode="virtual", start_date=TODAY, end_date=TODAY, registration_open_date=TODAY,
+            registration_end_date=TODAY, prizepool="0", prize_distribution={}, event_rules="r",
+            event_status="ongoing", registration_link="https://x.co/r", number_of_stages=1,
+        )
+        tts = [
+            TournamentTeam.objects.create(event=event, status="active", team=Team.objects.create(
+                team_name=_u("T"), join_settings="open", team_creator=admin, team_owner=admin))
+            for _ in range(2)
+        ]
+        apply_letters(event, {tts[0].pk: "A"}, None)
+        with self.assertRaises(LetterClash):
+            apply_letters(event, {tts[1].pk: "A"}, None)
+
+
 class LetterEndpointTests(LetterRoomsFixture):
     def setUp(self):
         super().setUp()
