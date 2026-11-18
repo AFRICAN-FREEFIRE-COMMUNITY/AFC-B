@@ -19,7 +19,7 @@
 #                                                 logo), hud_pics? (files, many), map_skins? (files,
 #                                                 many), billboard? (file: the older card's field, now
 #                                                 the BillBoard.png map skin).
-#                                                 Refusals: 400 {message, code, field} with code
+#                                                 Refusals: 400 {message, code, field, file?} with code
 #                                                 not_an_image | image_too_large | too_many_files.
 # Letters per room (inbox #602): two lobbies of one stage may now share a letter, and each team's flag
 # file is NAMED after its letter, so a stage-wide zip could hold two logos under one name (the last
@@ -39,6 +39,8 @@ from . import client_files as cf
 
 # Uploads (R70): every file is decoded by Pillow before use, only raster formats, 10 MB each. The kit
 # draws on the decoded pixels and writes fresh PNGs, so nothing the organizer sent reaches the zip as-is.
+# The per-file cap, the same as afc_auth.image_utils.MAX_IMAGE_BYTES (every image door on the site).
+MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 MAX_HUD_FILES = len(cf.HUD_PANELS)
 MAX_SKIN_FILES = len(cf.MAP_SKINS)
 
@@ -68,16 +70,15 @@ def _image_bytes(uploaded):
     """(raw bytes, None) when `uploaded` is a raster picture under the cap, else (None, code). The same
     test as afc_auth.image_utils.require_image_upload, without its re-encode: a panel or a skin keeps
     its own pixels (that helper would turn a picture without transparency into a JPEG)."""
-    from afc_auth.image_utils import IMAGE_FORMATS, IMAGE_TOO_LARGE, MAX_IMAGE_BYTES, NOT_AN_IMAGE
-    size = getattr(uploaded, "size", None)
-    if size is not None and size > MAX_IMAGE_BYTES:
+    from afc_auth.image_utils import IMAGE_FORMATS, IMAGE_TOO_LARGE, NOT_AN_IMAGE
+    if getattr(uploaded, "size", None) is not None and uploaded.size > MAX_UPLOAD_BYTES:
         return None, IMAGE_TOO_LARGE
     try:
         uploaded.seek(0)
         raw = uploaded.read()
     except Exception:
         return None, NOT_AN_IMAGE
-    if len(raw) > MAX_IMAGE_BYTES:
+    if len(raw) > MAX_UPLOAD_BYTES:
         return None, IMAGE_TOO_LARGE
     try:
         with Image.open(io.BytesIO(raw)) as img:
@@ -97,7 +98,8 @@ _REFUSAL = {
 
 
 def _refuse(code, field, name):
-    return Response({"message": _REFUSAL[code] % (name or field), "code": code, "field": field}, status=400)
+    return Response({"message": _REFUSAL[code] % (name or field), "code": code, "field": field,
+                     "file": name or ""}, status=400)
 
 
 def _int_in(value, low, high, default):
