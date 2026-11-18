@@ -18,6 +18,23 @@ At release time `node ~/.claude/skills/versioning/scripts/release.mjs next` prin
 rename `## Unreleased` to it, merge, then tag the merge commit. A version tag pushed with the wrong
 number is blocked before the push.
 
+## v7.20.4 - 2026-11-19
+
+### Fixed
+- Uploading a map's results (AFC Capture or the website) is fast again and no longer slows down as an event goes
+  on. Every upload re-saved every team result of the whole event, and each save queued a ranking recalculation
+  for that team and each of its players: one map of the Pro League semi finals queued 1,112 of them (5,556
+  database queries on a local copy; the server took about 20 s, which is what tripped AFC Capture's 30 s wait in
+  AFC inbox #623). Now only results that changed are saved, and the map just written queues its own 12 teams
+  and their players once (309 queries on the same copy). Stored results are identical.
+- The Broadcast Kit's HOW_TO_USE.txt now says to delete each folder the zip carries from Free Fire_64_Data
+  before copying (it names them), instead of "Overwrite when asked", which left an earlier kit's pictures
+  mixed in with the new ones (AFC inbox #621). None of those folders comes with the game.
+
+### Internal
+- The esport picture tests upload a real PNG again. Their hand-typed test picture did not decode, so
+  since every image upload checks the bytes (v7.17.0) 8 of them failed; real uploads were never affected.
+
 ## v7.20.2 - 2026-11-18
 
 ### Fixed

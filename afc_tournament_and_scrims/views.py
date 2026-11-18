@@ -26336,18 +26336,39 @@ def _recompute_team_kills_for_event(event):
     qs = (TournamentTeamMatchStats.objects
           .filter(tournament_team__event=event)
           .select_related("match"))
+    # Every team row's rostered kills in ONE grouped query (was one aggregate per row: a query per
+    # team per map of the whole event on every upload; open list item 5, 18 Nov 2026).
+    rostered_by_row = dict(
+        TournamentPlayerMatchStats.objects
+        .filter(team_stats__tournament_team__event=event)
+        .values("team_stats")
+        .annotate(s=Sum("kills"))
+        .values_list("team_stats", "s")
+    )
     for ts in qs:
         key = (ts.match_id, ts.tournament_team_id)
         seen.add(key)
-        rostered = ts.player_stats.aggregate(s=Sum("kills"))["s"] or 0
+        rostered = rostered_by_row.get(ts.team_stats_id) or 0
         new_kills = rostered + counted_by_key.get(key, 0) + attr_kills.get(key, 0)
         pts = _score(ts.match, ts.placement, new_kills, ts.damage, ts.assists,
                      ts.bonus_points or 0, ts.penalty_points or 0, ts.played)
+        updated += 1   # counts rows RECOMPUTED (the callers' team_rows_recomputed), written or not
+        # SAVE ONLY WHAT CHANGED (open list item 5, 18 Nov 2026). Every save fires afc_rankings'
+        # post_save receiver, which queues a ranking recalc for the team AND each of its players
+        # (after a season lookup per call). Saving every row of the event unconditionally made one
+        # Capture upload queue a recalc for every team and player of every map the event had ever
+        # scored, so each upload got slower as the event went on: on a local copy of event 373 one
+        # map queued 1,112 recalcs over 5,556 SQL queries (6.8 s); with this skip, 12 team and 42
+        # player recalcs. The server took about 20 s on the semi final uploads (inbox #623's 30 s
+        # Capture timeout); that figure was not measured on the server itself. An unchanged row needs
+        # no write and no recalc: the rankings would read the same numbers. The NEW map's players
+        # are queued by the writer (result_writes.write_team_result_row), not by this re-save.
+        if (ts.kills, ts.kill_points, ts.total_points) == (new_kills, pts["kill_points"], pts["total_points"]):
+            continue
         ts.kills = new_kills
         ts.kill_points = pts["kill_points"]
         ts.total_points = pts["total_points"]
         ts.save(update_fields=["kills", "kill_points", "total_points"])
-        updated += 1
 
     # Attributed block whose team has NO stats row in that match yet -> create one (placement from the
     # block, kills = its attributed total). This is how a team that only appears via the admin's

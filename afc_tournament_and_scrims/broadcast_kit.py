@@ -368,15 +368,31 @@ def build_broadcast_kit(event, stage=None, group=None, caster_name="", caster_ui
                 if target.endswith(".png .png"):
                     z.writestr("PCTexture/%s" % target[: -len(" .png")], png)
 
-        z.writestr("HOW_TO_USE.txt", _how_to_use(nation_mode, one_room, notes))
+        # The folders this zip writes, for the "delete them first" step (read off the zip itself, so the list
+        # is always exactly what this kit carries).
+        folders = sorted({n.split("/", 1)[0] for n in z.namelist() if "/" in n})
+        z.writestr("HOW_TO_USE.txt", _how_to_use(nation_mode, one_room, notes, folders))
 
     return buf.getvalue()
 
 
-def _how_to_use(nation_mode, one_room, notes):
+def _how_to_use(nation_mode, one_room, notes, folders=()):
+    # DELETE FIRST, THEN COPY (AFC inbox #621, owner 2026-11-19 "Build it on a branch"). "Overwrite when asked"
+    # left an earlier kit's files in place, so the game's HUD_PIC held 25 old panels mixed with 38 new ones on
+    # the semi finals' Day 3. None of these folders comes with the game (checked against the stock OB55 client
+    # zip on 19 Nov 2026: it ships none of HUD_PIC, PCTexture, HeadPics, GloowallPics, BackPackPics, FlagLogos,
+    # RolePicture, RolePictureHUD, TeamBillboard, EnvWeather), so deleting them removes only earlier kits' files.
     lines = [
         "Unzip these folders + files INTO your Free Fire_64_Data folder",
-        "(the folder next to Free Fire_64.exe). Overwrite when asked.",
+        "(the folder next to Free Fire_64.exe).",
+    ]
+    if folders:
+        lines += [
+            "FIRST delete these folders from Free Fire_64_Data if they are there: " + ", ".join(folders) + ".",
+            "None of them comes with the game; they only hold an earlier kit's pictures, and copying over them",
+            "leaves old files mixed in with these. Then copy. PlayerNameOverwrite.json replaces the old one.",
+        ]
+    lines += [
         "Close AFC Capture while copying, then start Free Fire, then Capture.",
         "Files are read once at load, so drop them BEFORE entering the observer session.",
         "",

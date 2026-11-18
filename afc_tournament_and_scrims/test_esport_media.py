@@ -16,17 +16,26 @@ from unittest.mock import patch
 
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase, Client
+from PIL import Image
 
 from afc_auth.models import Roles, SessionToken, User, UserProfile, UserRoles
 from afc_team.models import Team
 from afc_tournament_and_scrims.models import Event
 
-# A minimal valid PNG (1x1 transparent) so ImageField accepts the upload.
-_PNG = (
-    b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06"
-    b"\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\rIDATx\x9cc\xfc\xff\xff?\x00\x05"
-    b"\xfe\x02\xfe\xa75\x81\x84\x00\x00\x00\x00IEND\xaeB`\x82"
-)
+
+def _make_png():
+    """A real 1x1 transparent PNG, written by Pillow.
+
+    The fixture used to be hand-typed PNG bytes whose image data does not decode (Pillow: "broken data
+    stream"). ImageField never decoded it, so it passed; since every image door checks the bytes
+    (afc_auth.image_utils.require_image_upload, AFC-B #165, 12 Nov 2026) the upload answered 400
+    not_an_image and 8 tests here and in test_esport_image_remove went red (found 14 Nov 2026)."""
+    buf = io.BytesIO()
+    Image.new("RGBA", (1, 1), (0, 0, 0, 0)).save(buf, "PNG")
+    return buf.getvalue()
+
+
+_PNG = _make_png()
 
 
 def _png(name="img.png"):

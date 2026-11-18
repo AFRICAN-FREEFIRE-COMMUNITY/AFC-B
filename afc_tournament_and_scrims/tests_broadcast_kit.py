@@ -246,6 +246,19 @@ class KitZipTests(KitFixture):
         self.assertEqual(_open(z.read("FlagLogos/902000034.png")).size, (512, 1280))
         self.assertIn("no flag for letters Y and Z", z.read("HOW_TO_USE.txt").decode())
 
+    def test_how_to_says_delete_each_folder_the_zip_holds_first(self):
+        # #621: "Overwrite when asked" left an earlier kit's HUD_PIC files mixed in with the new ones.
+        z = self.zip_of(stage=self.s1, group=self.g1, flag_banner_bytes=_png((512, 1280), (40, 0, 80, 255)),
+                        billboard_art_bytes=_png((1920, 1080)))
+        how = z.read("HOW_TO_USE.txt").decode()
+        held = sorted({n.split("/", 1)[0] for n in z.namelist() if "/" in n})
+        self.assertIn("FlagLogos", held)
+        self.assertIn("TeamBillboard", held)
+        self.assertIn("FIRST delete these folders from Free Fire_64_Data if they are there: "
+                      + ", ".join(held) + ".", how)
+        self.assertNotIn("Overwrite when asked", how)
+        self.assertIn("\r\n", how)
+
     def test_no_banner_no_flags(self):
         z = self.zip_of(stage=self.s1, group=self.g1)
         self.assertFalse([n for n in z.namelist() if n.startswith("FlagLogos/")])
