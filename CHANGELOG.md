@@ -18,7 +18,7 @@ At release time `node ~/.claude/skills/versioning/scripts/release.mjs next` prin
 rename `## Unreleased` to it, merge, then tag the merge commit. A version tag pushed with the wrong
 number is blocked before the push.
 
-## Unreleased
+## v7.20.2 - 2026-11-18
 
 ### Fixed
 - A game is counted once per event. An upload of a game the event already holds (same Free Fire game id
