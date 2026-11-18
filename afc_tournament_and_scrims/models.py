@@ -2423,6 +2423,75 @@ class MatchResultLog(models.Model):
         return f"Result log for match {self.match_id} ({self.file_name})"
 
 
+def _gen_game_file_token():
+    """The opaque id a game file is downloaded by (R22 / R88: never the row's number)."""
+    return secrets.token_hex(16)
+
+
+def _game_file_path(instance, filename):
+    """Where an archived game file lives: game_archive/<event_id>/<sha256>.gz. The name is the content's hash,
+    so it says nothing and cannot collide (one row per (event, sha256)). nginx refuses /media/game_archive/:
+    a file is only ever served by the permission-checked download view."""
+    return f"game_archive/{instance.event_id}/{instance.sha256}.gz"
+
+
+class GameFile(models.Model):
+    """One file the Free Fire client wrote for a map, kept for good (owner 2026-11-18, inbox #603 #611: "save
+    everything"): result, debugger log, replay info and replay data, safe zone, heat map, and the tiny match id /
+    room id markers. Stored gzipped, ONCE per content (unique event + sha256), so the analysis step can read the
+    same bytes again years later (design tasks/game-archive-design-2026-11-18.md).
+
+    A file is linked to the site map(s) it belongs to through `matches`: one map for the per-map kinds, several
+    for a debugger log (one log holds a whole evening). A file no map claims yet stays "not matched" under its
+    event and is linked the moment that game's result is scored (game_archive.link_waiting).
+
+    Written by: game_archive.store_bytes, called from views_game_archive.archive_send (AFC Capture 1.7.0), from
+    views.upload_team_match_result (the result it just scored), from views_game_files.game_files_read (the Game
+    files box) and from the archive_result_logs backfill command. Read by: views_game_archive (tree, list,
+    download) and tasks.build_archive_zip."""
+    KIND_CHOICES = [
+        ("result", "Match result"),
+        ("debugger", "Debugger log"),
+        ("replay_info", "Replay info"),
+        ("replay_bin", "Replay data"),
+        ("safezone", "Safe zone"),
+        ("heatmap", "Heat map"),
+        ("marker", "Match or room marker"),
+    ]
+    SOURCE_CHOICES = [
+        ("capture", "AFC Capture"),
+        ("upload_box", "Game files box"),
+        ("result_upload", "Result upload"),
+        ("backfill", "Backfill"),
+    ]
+    token = models.CharField(max_length=32, unique=True, default=_gen_game_file_token)
+    event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name="game_files")
+    # Fallback filing for a file no map claims yet: the stage / group the sender was set to (Capture's choice).
+    stage = models.ForeignKey(Stages, null=True, blank=True, on_delete=models.SET_NULL, related_name="+")
+    group = models.ForeignKey(StageGroups, null=True, blank=True, on_delete=models.SET_NULL, related_name="+")
+    matches = models.ManyToManyField(Match, blank=True, related_name="game_files")
+    kind = models.CharField(max_length=16, choices=KIND_CHOICES)
+    # The game's own match id, from the file name (blank for debugger logs, heat maps and room markers).
+    game_match_id = models.CharField(max_length=32, blank=True, db_index=True)
+    # Debugger logs only: every match id the log saw end ("SendLogEndGame matchend matchid = <id>").
+    game_match_ids = models.JSONField(default=list, blank=True)
+    original_name = models.CharField(max_length=255)
+    size_bytes = models.BigIntegerField()          # uncompressed
+    sha256 = models.CharField(max_length=64)       # of the uncompressed bytes
+    file = models.FileField(upload_to=_game_file_path, max_length=255)
+    source = models.CharField(max_length=16, choices=SOURCE_CHOICES)
+    uploaded_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+                                    related_name="+")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["created_at", "pk"]
+        constraints = [models.UniqueConstraint(fields=["event", "sha256"], name="game_file_once_per_event")]
+
+    def __str__(self):
+        return f"GameFile({self.kind} {self.original_name} event={self.event_id})"
+
+
 class EventPrizePayout(models.Model):
     event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name="payouts")
     user = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.CASCADE)
