@@ -18,6 +18,29 @@ At release time `node ~/.claude/skills/versioning/scripts/release.mjs next` prin
 rename `## Unreleased` to it, merge, then tag the merge commit. A version tag pushed with the wrong
 number is blocked before the push.
 
+## v7.20.0 - 2026-11-18
+
+### Added
+- The Broadcast Kit zip now carries the in-map team flags (FlagLogos): each team's logo on an empty
+  banner the organizer uploads, sized and placed as they choose. Letters A to X only: the game has no
+  flag for Y and Z (AFC inbox #613 to #618).
+- Team billboards (TeamBillboard) and a "Room seating.txt" sheet in a one-lobby kit: each team gets a
+  room slot in letter order, and its billboard shows its logo and name on the organizer's art.
+- The sky title now lands in EnvWeather with the folder that switches the effect on (wide title
+  2048 x 256 or logo 2048 x 512). It used to go to PCTexture, where the game never read it.
+- Panel backgrounds (HUD_PIC) and map skins (PCTexture: billboards, plane, airdrops, vehicles) can be
+  added by the game's own file names; anything else is left out and listed in HOW_TO_USE.txt.
+- The name under each player can be the team name, the team's country (the game shows its flag
+  icon) or the player's role (role icon).
+- `GET /events/<id>/broadcast-kit/` answers each team's slot, flag letter, logo address and name tag
+  values, `one_room`, and the game's name lists.
+
+### Changed
+- PlayerNameOverwrite.json is written the way the last file that loaded was: Windows line endings,
+  only its 18 colours (the caster row is no longer white), names cut to 12 and team or country to
+  18, only characters a loaded file held (a lowercase f or w becomes its capital), at most 101 rows,
+  and no extra key for a caster without a UID.
+
 ## v7.19.0 - 2026-11-16
 
 ### Added
