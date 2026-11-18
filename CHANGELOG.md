@@ -20,6 +20,14 @@ number is blocked before the push.
 
 ## Unreleased
 
+### Fixed
+- Uploading a map's results (AFC Capture or the website) is fast again and no longer slows down as an event goes
+  on. Every upload re-saved every team result of the whole event, and each save queued a ranking recalculation
+  for that team and each of its players: one map of the Pro League semi finals queued 1,112 of them (5,556
+  database queries on a local copy; the server took about 20 s, which is what tripped AFC Capture's 30 s wait in
+  AFC inbox #623). Now only results that changed are saved, and the map just written queues its own 12 teams
+  and their players once (309 queries on the same copy). Stored results are identical.
+
 ### Internal
 - The esport picture tests upload a real PNG again. Their hand-typed test picture did not decode, so
   since every image upload checks the bytes (v7.17.0) 8 of them failed; real uploads were never affected.
