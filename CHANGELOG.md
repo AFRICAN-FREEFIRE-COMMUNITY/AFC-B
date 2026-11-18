@@ -18,7 +18,7 @@ At release time `node ~/.claude/skills/versioning/scripts/release.mjs next` prin
 rename `## Unreleased` to it, merge, then tag the merge commit. A version tag pushed with the wrong
 number is blocked before the push.
 
-## Unreleased
+## v7.20.0 - 2026-11-18
 
 ### Added
 - The Broadcast Kit zip now carries the in-map team flags (FlagLogos): each team's logo on an empty
