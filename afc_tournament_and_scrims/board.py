@@ -34,7 +34,8 @@ being pushed began (`scored_at_start`) and the last board's kills and wiped-team
 NEW map when its kills or its wiped teams go DOWN (a fresh map starts from 0). The pushed board counts as
 live only while the group's scored-map count is still `scored_at_start`: the moment the map's official
 result is uploaded the count rises and the board, which Capture keeps re-sending, stops being added on top
-of the official numbers that now contain it.
+of the official numbers that now contain it. Clearing or deleting a scored map lowers the count, so
+note_cleared lowers `scored_at_start` with it (inbox #622), or the live map would vanish.
 
 CONNECTS TO
 -----------
@@ -190,6 +191,26 @@ def note_push(event_id, group_id, rows):
     state["kills"] = kills
     state["wiped"] = wiped
     cache.set(key, state, timeout=LIVE_STATE_TTL)
+    return state
+
+
+def note_cleared(event_id, group_id):
+    """Called when a group's scored-map count goes DOWN (views.clear_match_result, views.delete_match).
+
+    note_push only ever raises scored_at_start, so after a scored map is cleared the state still remembers the
+    higher count and live_state reads every later board as "its result has landed" and hides it. On 18 Nov 2026
+    (inbox #622) clearing a duplicate map during a live game made the live map vanish from the site and AFC LIVE for
+    four minutes. Lower scored_at_start to the real count; never raise it. Returns the state, or None."""
+    if not group_id:
+        return None
+    key = live_state_key(event_id, group_id)
+    state = cache.get(key)
+    if not isinstance(state, dict):
+        return None
+    scored = scored_map_count(group_id)
+    if _int(state.get("scored_at_start")) > scored:
+        state["scored_at_start"] = scored
+        cache.set(key, state, timeout=LIVE_STATE_TTL)
     return state
 
 

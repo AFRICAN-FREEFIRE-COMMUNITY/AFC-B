@@ -27,6 +27,7 @@ from afc_tournament_and_scrims import scoring as scoring_lib
 # submission approval endpoint so both produce identical rows. See result_writes.py.
 from afc_tournament_and_scrims import result_writes
 from afc_tournament_and_scrims import capture_rich_stats, kill_stats_fields
+from afc_tournament_and_scrims import board as live_board, duplicate_game
 # Open-roster events (owner 2026-09-11): the save-time side effect and the one-team-per-player
 # check every roster door shares. See afc_tournament_and_scrims/open_roster.py.
 from afc_tournament_and_scrims import open_roster
@@ -16804,6 +16805,10 @@ def delete_match(request):
                 group.match_count = max(0, group.match_count - 1)
                 group.save(update_fields=["match_count"])
 
+    # A deleted scored map lowers the group's result count: keep the live board showing (see clear_match_result).
+    if group is not None and _del_event is not None:
+        live_board.note_cleared(_del_event.event_id, group.group_id)
+
     return Response({
         "message": "Match deleted successfully.",
         "deleted_match_number": deleted_number,
@@ -16873,6 +16878,11 @@ def clear_match_result(request):
         match.leaderboard = None
         match.upload_method = None
         match.save(update_fields=["result_inputted", "leaderboard", "upload_method"])
+
+    # The group now holds one result fewer. A live board pushed for the map being played remembered the higher
+    # count, and would read as "already counted" and vanish (18 Nov 2026, inbox #622): lower it (board.py).
+    if match.group_id and _event is not None:
+        live_board.note_cleared(_event.event_id, match.group_id)
 
     return Response({"message": "Map results cleared. You can re-enter results for this map.",
                      "match_id": match.match_id}, status=200)
@@ -21826,6 +21836,12 @@ def upload_team_match_result(request):
     attribution = str(request.data.get("attribution") or "").strip().lower()
 
     match_id = request.data.get("match_id")
+    # ONE GAME, ONE MAP (inbox #623, duplicate_game.py): an AUTOMATIC upload (no match_id, the server picks the
+    # slot) may never score a game the event already holds; a person's chosen slot (match_id / replace:) may
+    # re-score the map that holds it and nothing else. _created_slot is the map attribution "new" made, removed
+    # again if the game turns out to be in already.
+    _auto_slot = not match_id and not attribution.startswith("replace:")
+    _created_slot = None
     # "replace:<id>" resolves to an explicit match_id and then flows the normal (overwrite) path below.
     if not match_id and attribution.startswith("replace:"):
         _rid = attribution.split(":", 1)[1].strip()
@@ -21855,6 +21871,18 @@ def upload_team_match_result(request):
         # Gate the Bearer path here (native org=None events stay admin-only), mirroring the match path.
         if upload_token is None and not (_is_event_admin(admin) or org_can_event(admin, "can_upload_results", _event)):
             return Response({"message": "You do not have permission to manage results for this event.", "code": "not_permission_manage_results"}, status=403)
+
+        # ONE GAME, ONE MAP (inbox #623): a game the event already holds is refused here, before it can be parked
+        # ("decide later" included), made into a new map or scored into the next slot. AFC Capture 1.6.1 reads the
+        # 409 as "already on the website". The same check runs again under a lock in the write block below.
+        _dup_file = request.FILES.get("file")
+        if _dup_file is not None:
+            _dup_text = _dup_file.read().decode("utf-8", errors="ignore")
+            _dup_file.seek(0)   # the paths below read the same upload again
+            _dup_name = getattr(_dup_file, "name", "") or ""
+            _holder = duplicate_game.scored_holder(_event, file_name=_dup_name, text=_dup_text)
+            if _holder is not None:
+                return Response(duplicate_game.duplicate_answer(_holder, _dup_name), status=409)
 
         # "decide later" -> park the raw upload verbatim in the pending bucket; score nothing. This is the
         # never-lose-data guarantee: the file text + set stage/group are stored so a human can re-score it.
@@ -21903,7 +21931,8 @@ def upload_team_match_result(request):
         if attribution == "new":
             # The ONLY path that auto-creates a slot now: the operator explicitly chose "new extra map".
             _num = (_grp.matches.aggregate(m=Max("match_number"))["m"] or 0) + 1
-            match_id = Match.objects.create(group=_grp, match_number=_num).match_id
+            _created_slot = Match.objects.create(group=_grp, match_number=_num)
+            match_id = _created_slot.match_id
         else:
             _next = (_grp.matches.filter(result_inputted=False)
                      .order_by("match_number", "match_id").first())
@@ -21996,6 +22025,15 @@ def upload_team_match_result(request):
     # be re-checked against the original game export.
     raw_bytes = uploaded_file.read()
     text = raw_bytes.decode("utf-8", errors="ignore")
+    _upload_name = getattr(uploaded_file, "name", "") or ""
+
+    # ONE GAME, ONE MAP (inbox #623): a person's chosen slot may re-score the map that already holds this game
+    # (excluded here), never put the same game into a second map. The automatic path was checked above.
+    if not _auto_slot:
+        _holder = duplicate_game.scored_holder(event, file_name=_upload_name, text=text,
+                                               exclude_match_id=match.match_id)
+        if _holder is not None:
+            return Response(duplicate_game.duplicate_answer(_holder, _upload_name), status=409)
 
     parsed_teams = []
 
@@ -22272,6 +22310,20 @@ def upload_team_match_result(request):
         team_data["_team_obj"] = resolved
 
     with transaction.atomic():
+
+        # ONE GAME, ONE MAP, UNDER A LOCK (inbox #623). The checks above read committed data, so a retry that
+        # arrives while the first request is still scoring (18 Nov 2026: Capture gave up after 30 s, the server
+        # finished MATCH 1, the retry filled MATCH 2) sees nothing yet. Locking the group's row makes the second
+        # request wait here until the first commits, then the same check sees the first one's map. Nothing has
+        # been written in this block yet, so the early return below writes nothing (except removing the empty
+        # map attribution "new" just made for it).
+        StageGroups.objects.select_for_update().filter(pk=match.group_id).first()
+        _holder = duplicate_game.scored_holder(event, file_name=_upload_name, text=text,
+                                               exclude_match_id=None if _auto_slot else match.match_id)
+        if _holder is not None:
+            if _created_slot is not None:
+                _created_slot.delete()
+            return Response(duplicate_game.duplicate_answer(_holder, _upload_name), status=409)
 
         # §1i snapshot (owner 2026-06-29): capture any per-flag approval/rejection (count_kills set to
         # True/False by an admin in the panel) BEFORE the idempotent clear wipes the rows, so a
@@ -22852,6 +22904,9 @@ def upload_team_match_result(request):
                 import logging
                 logging.getLogger("afc_tournament_and_scrims").exception(
                     "MatchResultLog store failed for match %s", match.match_id)
+            # inbox #623: a "decide later" copy of this game parked earlier (18 Nov: the same game parked under
+            # Day 2, then scored in Day 3) is retired now, so it can never be resolved into a second map.
+            duplicate_game.discard_pending_duplicates(event, _upload_name, match)
 
         # DRY-RUN: roll back EVERY write above (the idempotent clear, team/player stats, kill flags,
         # result_inputted) as the LAST act of the atomic block. All the summary lists were already
