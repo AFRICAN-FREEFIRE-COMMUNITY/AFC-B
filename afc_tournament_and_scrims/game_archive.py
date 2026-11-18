@@ -21,6 +21,7 @@
 
 import gzip
 import hashlib
+import logging
 import os
 import re
 import shutil
@@ -222,3 +223,41 @@ def store_bytes(event, rel_path, data, *, source, user=None, stage=None, group=N
         old.delete()
     link_file(row, match)
     return row, ("replaced" if replaced else "stored")
+
+
+# ── the two existing doors (never raise: the archive must not fail what they already do) ──────────────────
+_log = logging.getLogger("afc_tournament_and_scrims")
+
+
+def archive_scored_result(match, name, data, user=None):
+    """Keep the result file views.upload_team_match_result / upload_solo_match_result just scored on `match`,
+    then file every replay, safe zone or log of that game that arrived before it. Runs in its own savepoint after
+    the result is saved; any failure is logged and swallowed, so a result never fails because of the archive."""
+    try:
+        with transaction.atomic():
+            named = classify(name)
+            gid = named[1] if named and named[0] == "result" else ""
+            store_bytes(match.group.stage.event, name or f"MatchResult_{match.match_id}.log", data,
+                        source="result_upload", user=user, match=match, kind="result")
+            if gid:
+                link_waiting(match, gid)
+    except ArchiveRefused as refused:
+        _log.warning("Archive kept no copy of the result for match %s: %s", match.match_id, refused.code)
+    except Exception:
+        _log.exception("Archive store failed for the result of match %s", match.match_id)
+
+
+# The Game files box's own kinds -> the archive's.
+_BOX_KINDS = {"debugger": "debugger", "result": "result", "replay": "replay_bin"}
+
+
+def archive_box_file(event, name, data, box_kind, user=None):
+    """Keep a file the Game files box just read (views_game_files.game_files_read). The box has already proved
+    the kind from the content, so an odd file name is still kept. Never raises."""
+    try:
+        with transaction.atomic():
+            store_bytes(event, name, data, source="upload_box", user=user, kind=_BOX_KINDS.get(box_kind, box_kind))
+    except ArchiveRefused as refused:
+        _log.warning("Archive kept no copy of box file %s for event %s: %s", name, event.pk, refused.code)
+    except Exception:
+        _log.exception("Archive store failed for box file %s of event %s", name, event.pk)
