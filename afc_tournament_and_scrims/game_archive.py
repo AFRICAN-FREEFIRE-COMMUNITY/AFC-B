@@ -25,6 +25,8 @@ import logging
 import os
 import re
 import shutil
+import time
+import zipfile
 
 from django.conf import settings
 from django.core.files.base import ContentFile
@@ -261,3 +263,104 @@ def archive_box_file(event, name, data, box_kind, user=None):
         _log.warning("Archive kept no copy of box file %s for event %s: %s", name, event.pk, refused.code)
     except Exception:
         _log.exception("Archive store failed for box file %s of event %s", name, event.pk)
+
+
+# ── zips (design 8.6): any level, built in the background, kept 24 hours ─────────────────────────────────────
+# State lives in the cache under zip_key(zip_id) for ZIP_TTL: {event_id, scope, id, file_ids (frozen when asked),
+# status: queued|building|ready|failed, size_bytes, created_at, user_id}. The file is
+# MEDIA_ROOT/game_archive/_zips/<zip_id>.zip; tasks.purge_archive_zips removes it after a day.
+ZIP_TTL = 24 * 60 * 60
+ZIP_SCOPES = ("event", "stage", "group", "match", "unmatched")
+_UNSAFE = re.compile(r'[\/:*?"<>|\x00-\x1f]+')
+
+
+def zip_key(zip_id):
+    return f"gamearchive:zip:{zip_id}"
+
+
+def zip_folder():
+    return os.path.join(settings.MEDIA_ROOT, "game_archive", "_zips")
+
+
+def zip_path(zip_id):
+    return os.path.join(zip_folder(), f"{zip_id}.zip")
+
+
+def _segment(text, fallback):
+    """A folder or file name that is safe inside a zip on every system."""
+    clean = _UNSAFE.sub("-", str(text or "")).strip(" .")
+    return clean[:120] or fallback
+
+
+def scope_maps(event, scope, scope_id):
+    """The site maps a scope covers (None for "event" = every map; [] for "unmatched")."""
+    from .models import Match
+    if scope == "event":
+        return None
+    if scope == "unmatched":
+        return []
+    field = {"stage": "group__stage_id", "group": "group_id", "match": "match_id"}[scope]
+    return list(Match.objects.filter(group__stage__event=event, **{field: scope_id}).values_list("match_id", flat=True))
+
+
+def scope_file_ids(event, scope, scope_id):
+    """The ids of the files a zip of this scope holds, as they are right now."""
+    qs = GameFile.objects.filter(event=event)
+    if scope == "unmatched":
+        qs = qs.filter(matches__isnull=True)
+    elif scope != "event":
+        qs = qs.filter(matches__in=scope_maps(event, scope, scope_id))
+    return list(qs.distinct().order_by("pk").values_list("pk", flat=True))
+
+
+def build_zip(zip_id):
+    """Write the zip a request froze (see the state above). Each file is unpacked to its original name under
+    Stage/Group/Map N/ for every map of the scope it belongs to, or not-matched/ when it has none."""
+    from django.core.cache import cache
+    state = cache.get(zip_key(zip_id))
+    if not state:
+        return None
+    state["status"] = "building"
+    cache.set(zip_key(zip_id), state, ZIP_TTL)
+    try:
+        allowed = scope_maps(state["event_id"], state["scope"], state.get("id")) if state["scope"] not in (
+            "event", "unmatched") else None
+        os.makedirs(zip_folder(), exist_ok=True)
+        part = zip_path(zip_id) + ".part"
+        used = set()
+        rows = (GameFile.objects.filter(pk__in=state["file_ids"]).order_by("pk")
+                .prefetch_related("matches__group__stage"))
+        with zipfile.ZipFile(part, "w", compression=zipfile.ZIP_DEFLATED, allowZip64=True) as z:
+            for row in rows:
+                maps = [m for m in row.matches.all() if allowed is None or m.match_id in allowed]
+                folders = [f"{_segment(m.group.stage.stage_name, 'Stage')}/{_segment(m.group.group_name, 'Group')}"
+                           f"/Map {m.match_number}" for m in maps] or ["not-matched"]
+                for folder in folders:
+                    name = f"{folder}/{_segment(row.original_name, 'file')}"
+                    stem, n = name, 2
+                    while name in used:
+                        root, ext = os.path.splitext(stem)
+                        name, n = f"{root} ({n}){ext}", n + 1
+                    used.add(name)
+                    with row.file.open("rb") as fh, gzip.GzipFile(fileobj=fh) as gz, z.open(name, "w") as out:
+                        shutil.copyfileobj(gz, out, 1024 * 1024)
+        os.replace(part, zip_path(zip_id))
+        state.update(status="ready", size_bytes=os.path.getsize(zip_path(zip_id)))
+    except Exception:
+        _log.exception("Archive zip %s failed", zip_id)
+        state["status"] = "failed"
+    cache.set(zip_key(zip_id), state, ZIP_TTL)
+    return state["status"]
+
+
+def purge_zips(max_age=ZIP_TTL):
+    """Delete zips (and half-written parts) older than a day. Returns how many files went."""
+    folder, gone, cutoff = zip_folder(), 0, time.time() - max_age
+    if not os.path.isdir(folder):
+        return 0
+    for name in os.listdir(folder):
+        path = os.path.join(folder, name)
+        if os.path.isfile(path) and os.path.getmtime(path) < cutoff:
+            os.remove(path)
+            gone += 1
+    return gone

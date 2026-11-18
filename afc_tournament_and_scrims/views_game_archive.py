@@ -23,12 +23,15 @@
 import gzip
 import hashlib
 import io
+import os
 import re
+import secrets
 import time
 
 from django.core.cache import cache
 from django.db.models import Count, Sum
-from django.http import StreamingHttpResponse
+from django.http import FileResponse, StreamingHttpResponse
+from django.utils import timezone
 from django.utils.http import content_disposition_header
 from rest_framework import serializers
 from rest_framework.decorators import api_view, parser_classes
@@ -299,3 +302,89 @@ def _original_bytes(row, chunk=256 * 1024):
             if not piece:
                 return
             yield piece
+
+
+# ── ZIPS (design 8.6, Best practices #11: 202 + poll) ──────────────────────────────────────────────────────────
+#   POST events/<event_id>/archive/zips/                      {scope: event|stage|group|match|unmatched, id?}
+#        -> 202 {zip_id}; the files are frozen now, the zip is built by tasks.build_archive_zip
+#   GET  events/<event_id>/archive/zips/<zip_id>/             {zip_id, scope, id, status, size_bytes, created_at}
+#   GET  events/<event_id>/archive/zips/<zip_id>/download/    the zip, an attachment
+# A zip id that is unknown, expired, or belongs to another event answers the same 410 archive_zip_expired.
+
+class ZipBody(serializers.Serializer):
+    scope = serializers.ChoiceField(choices=ga.ZIP_SCOPES)
+    id = serializers.IntegerField(min_value=1, required=False)
+
+
+def _enqueue_zip(zip_id):
+    from .tasks import build_archive_zip
+    build_archive_zip.delay(zip_id)
+
+
+def _zip_state(event, zip_id):
+    state = cache.get(ga.zip_key(str(zip_id)[:32])) if re.fullmatch(r"[0-9a-f]{32}", str(zip_id)) else None
+    if not state or state.get("event_id") != event.event_id:
+        return None
+    return state
+
+
+def _zip_gone():
+    return _refuse("That zip has expired. Ask for it again.", "archive_zip_expired", 410)
+
+
+@api_view(["POST"])
+@parser_classes([JSONParser])
+def archive_zips(request, event_id):
+    """Ask for a zip of one level of the event's archive. Built in the background; poll its state."""
+    event, user, err = _archive_gate(request, event_id, sending=False)
+    if err:
+        return err
+    body = ZipBody(data=request.data)
+    if not body.is_valid():
+        return _refuse("Choose what to put in the zip.", "archive_bad_zip")
+    scope, scope_id = body.validated_data["scope"], body.validated_data.get("id")
+    if scope in ("stage", "group", "match"):
+        model, field = {"stage": (Stages, "event"), "group": (StageGroups, "stage__event"),
+                        "match": (Match, "group__stage__event")}[scope]
+        pk = {"stage": "stage_id", "group": "group_id", "match": "match_id"}[scope]
+        if not scope_id or not model.objects.filter(**{pk: scope_id, field: event}).exists():
+            return _refuse("That part of the event was not found.", "archive_scope_not_found", 404)
+    file_ids = ga.scope_file_ids(event, scope, scope_id)
+    if not file_ids:
+        return _refuse("There are no files there yet.", "archive_zip_empty")
+    zip_id = secrets.token_hex(16)
+    cache.set(ga.zip_key(zip_id), {
+        "event_id": event.event_id, "scope": scope, "id": scope_id, "file_ids": file_ids, "status": "queued",
+        "size_bytes": None, "created_at": timezone.now().isoformat(), "user_id": getattr(user, "pk", None),
+    }, ga.ZIP_TTL)
+    _enqueue_zip(zip_id)
+    return Response({"zip_id": zip_id, "files": len(file_ids)}, status=202)
+
+
+@api_view(["GET"])
+def archive_zip_status(request, event_id, zip_id):
+    event, _user, err = _archive_gate(request, event_id, sending=False)
+    if err:
+        return err
+    state = _zip_state(event, zip_id)
+    if state is None:
+        return _zip_gone()
+    return Response({"zip_id": zip_id, "scope": state["scope"], "id": state.get("id"), "status": state["status"],
+                     "files": len(state["file_ids"]), "size_bytes": state.get("size_bytes"),
+                     "created_at": state["created_at"]})
+
+
+@api_view(["GET"])
+def archive_zip_download(request, event_id, zip_id):
+    event, _user, err = _archive_gate(request, event_id, sending=False)
+    if err:
+        return err
+    state = _zip_state(event, zip_id)
+    if state is None or state["status"] != "ready" or not os.path.exists(ga.zip_path(zip_id)):
+        return _zip_gone()
+    label = state["scope"] if not state.get("id") else f"{state['scope']}-{state['id']}"
+    resp = FileResponse(open(ga.zip_path(zip_id), "rb"), as_attachment=True,
+                        filename=f"{event.slug or f'event-{event.event_id}'}-{label}.zip",
+                        content_type="application/zip")
+    resp["X-Content-Type-Options"] = "nosniff"
+    return resp

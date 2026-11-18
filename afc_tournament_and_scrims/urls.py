@@ -149,7 +149,8 @@ from .debugger_ingest import debugger_backfill
 # Game files upload (inbox #386 #396): many debugger + result files, read as games. See views_game_files.py.
 from .views_game_files import game_files_read, game_files_games, game_files_result_text, game_files_debugger
 # Game file archive (inbox #603 #611): every game file kept per map; see views_game_archive.py.
-from .views_game_archive import archive_check, archive_download, archive_files, archive_tree
+from .views_game_archive import (archive_check, archive_download, archive_files, archive_tree, archive_zip_download,
+                                 archive_zip_status, archive_zips)
 # Media audit/flags/opt-outs (owner 2026-07-02): broadcast-media hygiene. See views_media_audit.py.
 from .views_media_audit import media_audit, media_flag, media_flag_resolve, media_image_check_clear, media_opt_out, media_upload
 from .views_broadcast_kit import broadcast_kit_summary, broadcast_kit_download
@@ -269,6 +270,9 @@ urlpatterns = [
     path('<int:event_id>/archive/files/', archive_files, name='archive_files'),
     path('<int:event_id>/archive/files/check/', archive_check, name='archive_check'),
     path('<int:event_id>/archive/files/<str:file_token>/download/', archive_download, name='archive_download'),
+    path('<int:event_id>/archive/zips/', archive_zips, name='archive_zips'),
+    path('<int:event_id>/archive/zips/<str:zip_id>/', archive_zip_status, name='archive_zip_status'),
+    path('<int:event_id>/archive/zips/<str:zip_id>/download/', archive_zip_download, name='archive_zip_download'),
     # Media hygiene (owner 2026-07-02): audit + flag-and-notify + per-event logo/image opt-outs.
     path('<int:event_id>/media-audit/', media_audit, name='media_audit'),
     # Admin media upload (owner 2026-07-02): set a team's logo / a player's esport image in place.

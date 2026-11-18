@@ -64,6 +64,11 @@ app.conf.beat_schedule = {
         'task': 'afc_tournament_and_scrims.tasks.close_finished_events',
         'schedule': crontab(minute=0, hour=1),     # 01:00 every day
     },
+    # Game file archive (owner 2026-11-18, inbox #603): zips of the archive are kept 24 hours, then removed.
+    'purge_archive_zips_hourly': {
+        'task': 'afc_tournament_and_scrims.tasks.purge_archive_zips',
+        'schedule': crontab(minute=15),            # every hour at :15
+    },
     # ── Auto-release scheduled news (News "schedule publish" feature) ─────────
     # Every minute, flip any news item whose scheduled_publish_at has arrived from hidden
     # (is_published=False) to live. Runs on the default queue (a normal `celery -A afc worker`
