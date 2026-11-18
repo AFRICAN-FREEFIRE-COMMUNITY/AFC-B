@@ -41,8 +41,9 @@ from . import client_files as cf
 # draws on the decoded pixels and writes fresh PNGs, so nothing the organizer sent reaches the zip as-is.
 # The per-file cap, the same as afc_auth.image_utils.MAX_IMAGE_BYTES (every image door on the site).
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
-MAX_HUD_FILES = len(cf.HUD_PANELS)
-MAX_SKIN_FILES = len(cf.MAP_SKINS)
+# How many files one kit may carry is Django's own cap (DATA_UPLOAD_MAX_NUMBER_FILES, 100 by default): a file whose
+# name the game never reads is skipped without being decoded, so it costs nothing, and the card sends at most
+# 60 panels + 17 skins + 3 pictures. Past the cap Django refuses while reading the body; that refusal is coded below.
 
 
 def _resolve_stage(event, stage_id):
@@ -148,6 +149,11 @@ def broadcast_kit_download(request, event_id):
     event, err = _broadcast_gate(request, event_id)
     if err:
         return err
+    from django.core.exceptions import TooManyFilesSent
+    try:
+        request.data, request.FILES  # reading the body is where Django counts the files
+    except TooManyFilesSent:
+        return Response({"message": "Too many files for one kit.", "code": "too_many_files"}, status=400)
     stage = _resolve_stage(event, request.data.get("stage_id"))
     group = _resolve_group(stage, request.data.get("group_id"))
     caster_name = (request.data.get("caster_name") or "").strip()
@@ -171,10 +177,6 @@ def broadcast_kit_download(request, event_id):
 
     # Named sets: only the game's own names reach the zip; anything else is listed in HOW_TO_USE.
     hud_list, skin_list = request.FILES.getlist("hud_pics"), request.FILES.getlist("map_skins")
-    if len(hud_list) > MAX_HUD_FILES or len(skin_list) > MAX_SKIN_FILES:
-        return Response({"message": "At most %d panel pictures and %d map skins in one kit."
-                         % (MAX_HUD_FILES, MAX_SKIN_FILES), "code": "too_many_files",
-                         "field": "hud_pics" if len(hud_list) > MAX_HUD_FILES else "map_skins"}, status=400)
     hud_files, skin_files, unknown = {}, {}, []
     for field, files, match in (("hud_pics", hud_list, cf.hud_panel_name),
                                 ("map_skins", skin_list, cf.map_skin_file)):

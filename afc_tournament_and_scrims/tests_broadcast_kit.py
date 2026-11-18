@@ -390,8 +390,19 @@ class KitEndpointTests(KitFixture):
         self.assertEqual(r.json()["code"], "not_an_image")
         self.assertEqual(r.json()["field"], "flag_banner")
 
-    def test_too_many_panels(self):
-        files = [SimpleUploadedFile("hp%d.png" % i, _png((4, 4)), "image/png") for i in range(61)]
+    def test_unknown_names_do_not_count_against_the_panels(self):
+        # 63 files like the MPRO set: the 60 names + 3 misspelt ones. The 60 are used, the 3 listed.
+        files = [SimpleUploadedFile(n + ".png", _png((4, 4)), "image/png") for n in cf.HUD_PANELS]
+        files += [SimpleUploadedFile(n, _png((4, 4)), "image/png")
+                  for n in ("NationalBg.png", "MapTeamBackgrond.png", "ReviveFeedsBackgrond.png")]
+        r = self._post(hud_pics=files)
+        self.assertEqual(r.status_code, 200, r.content[:200])
+        z = zipfile.ZipFile(io.BytesIO(r.content))
+        self.assertEqual(len([n for n in z.namelist() if n.startswith("HUD_PIC/")]), 60)
+        self.assertIn("MapTeamBackgrond.png", z.read("HOW_TO_USE.txt").decode())
+
+    def test_more_files_than_django_reads_is_a_coded_refusal(self):
+        files = [SimpleUploadedFile("x%d.png" % i, _png((2, 2)), "image/png") for i in range(101)]
         r = self._post(hud_pics=files)
         self.assertEqual(r.status_code, 400)
         self.assertEqual(r.json()["code"], "too_many_files")
