@@ -18,6 +18,21 @@ At release time `node ~/.claude/skills/versioning/scripts/release.mjs next` prin
 rename `## Unreleased` to it, merge, then tag the merge commit. A version tag pushed with the wrong
 number is blocked before the push.
 
+## Unreleased
+
+### Fixed
+- A game is counted once per event. An upload of a game the event already holds (same Free Fire game id
+  in the file name, or the same result when the file was renamed) is refused with code
+  `capture_duplicate_game`, naming the map that holds it; nothing is scored, parked or created. On 18 Nov
+  2026 AFC Capture gave up waiting after 30 s while the server was still scoring Day 3's first game, sent
+  it again, and it became MATCH 1 and MATCH 2 (AFC inbox #623). The check runs again under a lock, so a
+  retry that arrives while the first upload is still being scored is refused too.
+- A website upload into the map that already holds the game still re-scores it; into another map it is
+  refused. A parked ("decide later") copy of a game is retired when the game is scored, and resolving one
+  of a game already in is refused with the same code.
+- Clearing or deleting a scored map no longer hides the live board of the map being played (the live
+  map vanished from the site and AFC LIVE for four minutes on 18 Nov 2026, inbox #622).
+
 ## v7.20.0 - 2026-11-18
 
 ### Added

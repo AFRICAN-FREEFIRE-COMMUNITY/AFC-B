@@ -18,6 +18,7 @@ Run: python manage.py test afc_tournament_and_scrims.tests_capture_rich_stats
 import datetime
 import json
 
+from django.core.files.base import ContentFile
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase
 from rest_framework.test import APIClient
@@ -28,7 +29,7 @@ from afc_tournament_and_scrims.capture_rich_stats import (
     RICH_PLAYER_FIELDS, apply_capture_rich_stats, parse_rich_stats,
 )
 from afc_tournament_and_scrims.models import (
-    Event, Leaderboard, Match, StageGroups, Stages, TournamentPlayerMatchStats, TournamentTeam,
+    Event, Leaderboard, Match, MatchResultLog, StageGroups, Stages, TournamentPlayerMatchStats, TournamentTeam,
     TournamentTeamMember, TournamentTeamMatchStats,
 )
 
@@ -362,10 +363,16 @@ class BackfillCaptureStatsCommandTests(_Fixture):
         self._upload_named()
         other = Match.objects.create(leaderboard=self.match.leaderboard, group=self.group, match_number=2,
                                      match_map="bermuda", scoring_settings=self.match.scoring_settings)
-        f = SimpleUploadedFile("MatchResult_%s_2026-11-01-21-00-00.log" % self.FF, LOG.encode("utf-8"),
-                               content_type="text/plain")
-        self.client.post("/events/upload-team-match-result/", data={"match_id": other.match_id, "file": f},
-                         HTTP_AUTHORIZATION=f"Bearer {self.token.token}")
+        # Since inbox #623 the upload refuses a game the event already holds (409 capture_duplicate_game), so
+        # "uploaded twice" is the state OLD data can still be in (18 Nov 2026, before the guard): written directly.
+        name = "MatchResult_%s_2026-11-01-21-00-00.log" % self.FF
+        refused = self.client.post(
+            "/events/upload-team-match-result/",
+            data={"match_id": other.match_id,
+                  "file": SimpleUploadedFile(name, LOG.encode("utf-8"), content_type="text/plain")},
+            HTTP_AUTHORIZATION=f"Bearer {self.token.token}")
+        self.assertEqual(refused.status_code, 409, refused.content)
+        MatchResultLog.objects.create(match=other, file=ContentFile(LOG.encode("utf-8"), name=name), file_name=name)
         out = self._run([self._entry(ff_match_id=self.FF)], apply=True)
         self.assertIn("uploaded_to_2_matches", out)
         self.assertEqual(self._row("1001").damage, 0)
