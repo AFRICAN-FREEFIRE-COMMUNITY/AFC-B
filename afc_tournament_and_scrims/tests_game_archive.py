@@ -76,6 +76,8 @@ class ClassifyTests(TestCase):
             "HeatMap/123456789/hud_click_2026-11-06-21-16-02_p0.bin": ("heatmap", ""),
             "MatchId_777_2026-11-06-21-00-00.log": ("marker", "777"),
             "RoomID_5551234_2026-11-06-20-58-00.log": ("marker", ""),
+            # Custom rooms also write this one (UIModelCustomRoom.LogBatchMatchId, read from the client 18 Nov).
+            "BatchMatchID_777_2026-11-18-20-00-00.log": ("marker", "777"),
         }
         for name, want in cases.items():
             self.assertEqual(ga.classify(name), want, name)

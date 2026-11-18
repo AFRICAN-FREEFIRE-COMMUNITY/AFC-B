@@ -59,6 +59,8 @@ _RULES = (
     ("heatmap", ("", "heatmap/*"), re.compile(r"^hud_click_[^/]+_p\d+\.bin$", re.I)),
     ("marker", ("",), re.compile(r"^MatchId_(\d+)_[^/]+\.log$", re.I)),
     ("marker", ("",), re.compile(r"^RoomID_\d+_[^/]+\.log$", re.I)),
+    # Written in custom rooms (UIModelCustomRoom.LogBatchMatchId; tasks/client-folder-names-2026-11-18.md).
+    ("marker", ("",), re.compile(r"^BatchMatchID_(\d+)_[^/]+\.log$", re.I)),
 )
 _HEATMAP_FOLDER = re.compile(r"^heatmap/\d+$", re.I)
 
