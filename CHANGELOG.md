@@ -18,7 +18,7 @@ At release time `node ~/.claude/skills/versioning/scripts/release.mjs next` prin
 rename `## Unreleased` to it, merge, then tag the merge commit. A version tag pushed with the wrong
 number is blocked before the push.
 
-## Unreleased
+## v7.20.4 - 2026-11-19
 
 ### Fixed
 - Uploading a map's results (AFC Capture or the website) is fast again and no longer slows down as an event goes
