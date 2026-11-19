@@ -18,6 +18,14 @@ At release time `node ~/.claude/skills/versioning/scripts/release.mjs next` prin
 rename `## Unreleased` to it, merge, then tag the merge commit. A version tag pushed with the wrong
 number is blocked before the push.
 
+## Unreleased
+
+### Fixed
+- A stage now reads "completed" as soon as every one of its maps has its result, instead of staying "ongoing"
+  until the day after its end date (the Pro League semi finals read ongoing with all 18 maps scored). It uses
+  the same rule that already completes an event. A stage that gets a new map without a result goes back to
+  ongoing, and a stage an organizer paused is no longer switched back to ongoing by the five-minute sweep.
+
 ## v7.20.4 - 2026-11-19
 
 ### Fixed
