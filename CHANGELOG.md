@@ -18,6 +18,16 @@ At release time `node ~/.claude/skills/versioning/scripts/release.mjs next` prin
 rename `## Unreleased` to it, merge, then tag the merge commit. A version tag pushed with the wrong
 number is blocked before the push.
 
+## v7.21.1 - 2026-11-19
+
+### Fixed
+- An event no longer completes early because a stage was added to it late. The stage that decides the event is
+  the one marked as the finals, else the last stage in the event's running order (manual order, then start
+  date), the order every page already shows; it used to be the most recently created stage, so the NATIONAL
+  FREE FIRE PRO LEAGUE, whose QUARTER FINALS was added after its FINALS, read completed from 10 Nov with the
+  finals still to play. The same choice decides which teams "reached the final stage", when the event's prize
+  pool is attributed, and the partner API's final_stage. AFC inbox #627.
+
 ## v7.21.0 - 2026-11-19
 
 ### Changed
