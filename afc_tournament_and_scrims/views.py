@@ -392,7 +392,19 @@ def update_event_and_stage_statuses():
     _live_stage = Stages.objects.filter(event__is_draft=False).exclude(
         event__event_status="cancelled").exclude(event__auto_complete_suppressed=True)
     _live_stage.filter(end_date__lt=today).exclude(stage_status="completed").update(stage_status="completed")
-    _live_stage.filter(start_date__lte=today, end_date__gte=today).exclude(stage_status="ongoing").update(stage_status="ongoing")
+    # INSIDE ITS DATES (owner 2026-11-19: "it still shows ongoing even though all 18 maps are scored ... check
+    # why and fix"). This used to set every stage inside its date window to "ongoing", so a stage stayed
+    # ongoing until the day after its end_date whatever its results said (the NATIONAL FREE FIRE PRO LEAGUE
+    # semi finals: end_date 19 Nov, every map scored on 18 Nov), and it also undid an organizer's Pause
+    # (set_stage_status) within five minutes. Now: a stage whose results are all in is completed, by the
+    # SAME rule maybe_autocomplete_event uses for an event (stage_results_all_in); otherwise it is ongoing,
+    # except a paused one, which stays paused. A completed stage that gets a new map without a result goes
+    # back to ongoing on the next run.
+    _in_window = _live_stage.filter(start_date__lte=today, end_date__gte=today)
+    _results_in = [st.stage_id for st in _in_window.only("stage_id") if stage_results_all_in(st)]
+    _in_window.filter(stage_id__in=_results_in).exclude(stage_status="completed").update(stage_status="completed")
+    _in_window.exclude(stage_id__in=_results_in).exclude(stage_status__in=["ongoing", "paused"]).update(
+        stage_status="ongoing")
     _live_stage.filter(start_date__gt=today).exclude(stage_status="upcoming").update(stage_status="upcoming")
 
     # ── Check-in relegation (owner 2026-07-04) ─────────────────────────────────────────────────
@@ -26042,14 +26054,22 @@ def maybe_autocomplete_event(event, by_user):
     # completion is still gated on EVERY final-stage match having result_inputted=True, so a scrims with
     # maps still to enter stays ongoing. A completed scrims can still be reopened (reopen_event).
     stage = _final_stage_for_event(event)
-    if stage is None:
-        return False
-    matches = Match.objects.filter(group__stage=stage)
-    if matches.count() == 0:
-        return False
-    if matches.filter(result_inputted=False).exists():
-        return False  # at least one final-stage match still has no result
+    if stage is None or not stage_results_all_in(stage):
+        return False  # no final stage, no maps yet, or at least one final-stage map still has no result
     return complete_event_core(event, by_user, source="auto-results")
+
+
+def stage_results_all_in(stage):
+    """True when `stage` has at least one map and every one of them has its result (result_inputted).
+
+    THE one definition of "this stage's results are all in" (owner 2026-11-19). Read by
+    maybe_autocomplete_event (an event completes when its FINAL stage's results are all in) and by
+    update_event_and_stage_statuses (any stage inside its dates is completed once its results are all in,
+    instead of staying ongoing until the day after its end_date). A stage with no maps at all (a bracket
+    stage whose results live elsewhere, or one not set up yet) is never "all in", so the date rule decides it.
+    """
+    matches = Match.objects.filter(group__stage=stage)
+    return matches.exists() and not matches.filter(result_inputted=False).exists()
 
 
 @api_view(["POST"])

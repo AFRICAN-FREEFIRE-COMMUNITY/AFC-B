@@ -167,6 +167,73 @@ class UpdateSweepTests(TestCase):
         self.assertNotEqual(ev.event_status, "completed")
 
 
+class StageSweepTests(TestCase):
+    """update_event_and_stage_statuses, stages inside their dates (owner 2026-11-19: the Pro League semi
+    finals read "ongoing" with all 18 maps scored, because the sweep set every in-window stage ongoing
+    until the day after its end_date). A stage whose results are all in (stage_results_all_in, the rule
+    maybe_autocomplete_event uses) is completed; otherwise ongoing; a paused stage stays paused."""
+
+    def setUp(self):
+        self.admin = User.objects.create(
+            username="stage_sweep", email="stage_sweep@example.com", full_name="Stage Sweep",
+            role="admin", password="x",
+        )
+        today = timezone.localdate()
+        # A long event (still running) with a stage whose window holds today, like the semis inside the league.
+        self.event = Event.objects.create(
+            competition_type="tournament", participant_type="squad", event_type="internal",
+            max_teams_or_players=12, event_name="Long League", event_mode="virtual",
+            start_date=today - datetime.timedelta(days=10), end_date=today + datetime.timedelta(days=20),
+            registration_open_date=today - datetime.timedelta(days=20),
+            registration_end_date=today - datetime.timedelta(days=11),
+            prizepool="0", event_rules="r", event_status="ongoing", registration_link="https://x",
+            number_of_stages=2, creator=self.admin, is_draft=False,
+        )
+        self.stage = Stages.objects.create(
+            event=self.event, stage_name="SEMI FINALS", start_date=today - datetime.timedelta(days=3),
+            end_date=today + datetime.timedelta(days=1), number_of_groups=1,
+            stage_format="br - round robin", teams_qualifying_from_stage=12, stage_status="ongoing",
+        )
+        self.group = StageGroups.objects.create(
+            stage=self.stage, group_name="Day 1", playing_date=today - datetime.timedelta(days=1),
+            playing_time=datetime.time(19, 0), teams_qualifying=12, match_count=2,
+        )
+
+    def _maps(self, *scored):
+        for i, done in enumerate(scored):
+            Match.objects.create(group=self.group, match_number=i + 1, match_map="bermuda", result_inputted=done)
+
+    def _status_after_sweep(self):
+        update_event_and_stage_statuses()
+        self.stage.refresh_from_db()
+        return self.stage.stage_status
+
+    def test_every_map_scored_completes_the_stage_inside_its_dates(self):
+        self._maps(True, True)
+        self.assertEqual(self._status_after_sweep(), "completed")
+        self.event.refresh_from_db()
+        self.assertEqual(self.event.event_status, "ongoing")   # the league itself is not over
+
+    def test_a_map_without_its_result_keeps_the_stage_ongoing(self):
+        self._maps(True, False)
+        self.assertEqual(self._status_after_sweep(), "ongoing")
+
+    def test_a_stage_with_no_maps_follows_the_dates(self):
+        Stages.objects.filter(pk=self.stage.pk).update(stage_status="upcoming")
+        self.assertEqual(self._status_after_sweep(), "ongoing")
+
+    def test_a_paused_stage_stays_paused(self):
+        self._maps(True, False)
+        Stages.objects.filter(pk=self.stage.pk).update(stage_status="paused")
+        self.assertEqual(self._status_after_sweep(), "paused")
+
+    def test_a_new_map_without_a_result_reopens_a_completed_stage(self):
+        self._maps(True, True)
+        self.assertEqual(self._status_after_sweep(), "completed")
+        Match.objects.create(group=self.group, match_number=3, match_map="bermuda", result_inputted=False)
+        self.assertEqual(self._status_after_sweep(), "ongoing")
+
+
 class ReopenEventTests(APITestCase):
     """reopen_event gates on effective_event_status, not the raw stored event_status (owner 2026-07-07:
     "LEGACY SCRIMS" showed completed + locked but reopen said "this one is upcoming"). A finished-by-date
