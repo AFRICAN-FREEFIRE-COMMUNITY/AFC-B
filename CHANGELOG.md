@@ -18,7 +18,7 @@ At release time `node ~/.claude/skills/versioning/scripts/release.mjs next` prin
 rename `## Unreleased` to it, merge, then tag the merge commit. A version tag pushed with the wrong
 number is blocked before the push.
 
-## Unreleased
+## v7.21.0 - 2026-11-19
 
 ### Changed
 - A stage (and an event, through its final stage) now completes only when ALL its results are in and confirmed:
