@@ -26023,15 +26023,23 @@ def complete_event_core(event, by_user, *, source="manual"):
 
 
 def _final_stage_for_event(event):
-    """The event's LAST stage: an explicit finals stage if any is marked, else the highest
-    stage_order (ties broken by stage_id). None when the event has no stages. Used to decide
-    'the tournament is over' for auto-complete (only the final stage finishing matters)."""
-    stages = list(Stages.objects.filter(event=event))
-    if not stages:
-        return None
-    finals = [s for s in stages if getattr(s, "is_finals_stage", False)]
-    pool = finals or stages
-    return max(pool, key=lambda s: ((s.stage_order or 0), s.stage_id))
+    """The stage that decides the event: a stage marked is_finals_stage if any, else the LAST stage in
+    the event's running order (stage_order, start_date, stage_id), the same order the event page, the
+    partner API, seeding and final_standings use. None when the event has no stages.
+
+    Read by maybe_autocomplete_event (the event completes when THIS stage's results are all in),
+    final_standings.event_final_standings (which teams reached the final stage, and so prize_sync),
+    and the partner API (final_stage, final_stage_has_results).
+
+    It used to be the highest stage_order with ties broken by stage_id, skipping start_date. A stage
+    nobody ordered by hand all share stage_order 0, so the most recently CREATED stage won: the
+    NATIONAL FREE FIRE PRO LEAGUE added its QUARTER FINALS after its FINALS, and scoring the quarter
+    finals' last map completed the whole event on 10 Nov 2026 with the finals a month away (owner
+    2026-11-19, inbox #627). Measured on production that day: event 373 was the only one of 176 whose
+    pick changes."""
+    stages = Stages.objects.filter(event=event)
+    finals = stages.filter(is_finals_stage=True)
+    return (finals if finals.exists() else stages).order_by("stage_order", "start_date", "stage_id").last()
 
 
 def maybe_autocomplete_event(event, by_user):
