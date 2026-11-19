@@ -233,6 +233,72 @@ class StageSweepTests(TestCase):
         Match.objects.create(group=self.group, match_number=3, match_map="bermuda", result_inputted=False)
         self.assertEqual(self._status_after_sweep(), "ongoing")
 
+    # ── inbox #626 (owner 2026-11-19): all PLANNED maps, entered AND confirmed; brackets by their own rule ──
+    def test_fewer_maps_than_planned_keeps_the_stage_ongoing(self):
+        # Maps created one at a time as results arrive: 1 of the 2 planned exists and is scored.
+        self._maps(True)
+        self.assertEqual(self._status_after_sweep(), "ongoing")
+
+    def test_a_parked_capture_upload_keeps_the_stage_ongoing_until_decided(self):
+        from afc_tournament_and_scrims.models import PendingCaptureUpload
+        self._maps(True, True)
+        parked = PendingCaptureUpload.objects.create(event=self.event, stage=self.stage, group=self.group,
+                                                     file_name="MatchResult_1_x.log")
+        self.assertEqual(self._status_after_sweep(), "ongoing")
+        PendingCaptureUpload.objects.filter(pk=parked.pk).update(status="discarded")
+        self.assertEqual(self._status_after_sweep(), "completed")
+
+    def test_a_team_result_awaiting_review_keeps_the_stage_ongoing(self):
+        from afc_team.models import Team
+        from afc_tournament_and_scrims.models import TeamMapResultSubmission, TournamentTeam
+        self._maps(True, True)
+        team = Team.objects.create(team_name="Review FC", join_settings="open", team_creator=self.admin,
+                                   team_owner=self.admin, country="NG")
+        tt = TournamentTeam.objects.create(event=self.event, team=team)
+        sub = TeamMapResultSubmission.objects.create(
+            match=Match.objects.filter(group=self.group).first(), tournament_team=tt,
+            submitted_by=self.admin, submitted_payload={"placement": 1})
+        self.assertEqual(self._status_after_sweep(), "ongoing")
+        TeamMapResultSubmission.objects.filter(pk=sub.pk).update(status="approved")
+        self.assertEqual(self._status_after_sweep(), "completed")
+
+    def _bracket(self, name, done):
+        """A one-match knockout (its only match is the final) in its own group."""
+        from afc_team.models import Team
+        from afc_tournament_and_scrims.models import HeadToHeadMatch, TournamentTeam
+        g = StageGroups.objects.create(
+            stage=self.stage, group_name=name, playing_date=self.group.playing_date,
+            playing_time=datetime.time(19, 0), teams_qualifying=1, match_count=0, bracket_format="single_elim")
+        tts = []
+        for side in ("A", "B"):
+            team = Team.objects.create(team_name=f"{name} {side}", join_settings="open", team_creator=self.admin,
+                                       team_owner=self.admin, country="NG")
+            tts.append(TournamentTeam.objects.create(event=self.event, team=team))
+        HeadToHeadMatch.objects.create(
+            stage=self.stage, group=g, round_number=1, bracket="winners", position=0,
+            team_a=tts[0], team_b=tts[1], status="completed" if done else "pending",
+            winner=tts[0] if done else None, score_a=2 if done else 0)
+        return g
+
+    def test_two_brackets_finish_the_stage_only_when_both_are_decided(self):
+        self.group.delete()                       # a pure bracket stage
+        self._bracket("Group A", done=True)
+        b = self._bracket("Group B", done=False)
+        self.assertEqual(self._status_after_sweep(), "ongoing")
+        from afc_tournament_and_scrims.models import HeadToHeadMatch
+        final = HeadToHeadMatch.objects.get(group=b)
+        HeadToHeadMatch.objects.filter(pk=final.pk).update(status="completed", winner=final.team_a_id)
+        self.assertEqual(self._status_after_sweep(), "completed")
+
+    def test_a_finished_bracket_ignores_its_own_placement_map_but_not_the_other_brackets(self):
+        # The placement write of a finished bracket leaves a scored map in its group; that must not
+        # count as "the stage is done" while the other bracket plays (the v7.20.5 gap).
+        self.group.delete()
+        a = self._bracket("Group A", done=True)
+        Match.objects.create(group=a, match_number=0, match_map="clash_squad", result_inputted=True)
+        self._bracket("Group B", done=False)
+        self.assertEqual(self._status_after_sweep(), "ongoing")
+
 
 class ReopenEventTests(APITestCase):
     """reopen_event gates on effective_event_status, not the raw stored event_status (owner 2026-07-07:

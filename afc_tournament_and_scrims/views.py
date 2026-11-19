@@ -26060,16 +26060,69 @@ def maybe_autocomplete_event(event, by_user):
 
 
 def stage_results_all_in(stage):
-    """True when `stage` has at least one map and every one of them has its result (result_inputted).
+    """True when every lobby and every bracket of `stage` is finished AND nothing is awaiting a decision.
 
     THE one definition of "this stage's results are all in" (owner 2026-11-19). Read by
     maybe_autocomplete_event (an event completes when its FINAL stage's results are all in) and by
-    update_event_and_stage_statuses (any stage inside its dates is completed once its results are all in,
-    instead of staying ongoing until the day after its end_date). A stage with no maps at all (a bracket
-    stage whose results live elsewhere, or one not set up yet) is never "all in", so the date rule decides it.
+    update_event_and_stage_statuses (a stage inside its dates is completed once its results are all in,
+    instead of staying ongoing until the day after its end_date).
+
+    Owner, 19 Nov 2026 (inbox #626), on v7.20.5's first version (every existing map scored): "they should read
+    completed after all map results have been entered and confirmed", and brackets need a way too. So:
+      - A map LOBBY (a group with no bracket_format) is finished when it holds at least its PLANNED number of
+        maps (StageGroups.match_count, at least 1) and every one has its result. Maps created one at a time as
+        results arrive no longer make the stage read completed between two games.
+      - A BRACKET is finished by its own rule (head_to_head._bracket_complete: the final decided, plus the
+        3rd-place match when there is one; a league when every match is played). Each group bracket counts
+        separately, and the legacy stage-wide bracket (matches with no group) too. Finishing Group A's bracket
+        writes scored placement maps, which the first version read as "the whole stage is done" while Group B
+        was still playing; the bracket rule replaces that.
+      - CONFIRMED means nothing is waiting for an organizer: no parked AFC Capture upload for this stage or
+        one of its groups, no team-submitted map result and no team-reported bracket result pending review.
+    Bookkeeping groups (is_synthetic) are skipped, and so is a map-less group in a stage that runs a bracket
+    (an old Clash Squad stage's leftover group). A stage with nothing to finish is never "all in", so the
+    date rule decides it.
     """
-    matches = Match.objects.filter(group__stage=stage)
-    return matches.exists() and not matches.filter(result_inputted=False).exists()
+    from .head_to_head import _bracket_complete, bracket_matches
+    from .models import H2HResultSubmission, PendingCaptureUpload, TeamMapResultSubmission
+
+    groups = [g for g in stage.groups.all() if not g.is_synthetic]
+    legacy_bracket = list(bracket_matches(stage, None))
+    has_bracket = bool(legacy_bracket) or any(g.bracket_format for g in groups)
+    finished_parts = 0
+
+    if legacy_bracket:
+        if not _bracket_complete(legacy_bracket):
+            return False
+        finished_parts += 1
+
+    for g in groups:
+        if g.bracket_format:
+            matches = list(bracket_matches(stage, g.group_id))
+            if not matches or not _bracket_complete(matches):
+                return False
+        else:
+            maps = Match.objects.filter(group=g)
+            if has_bracket and not maps.exists():
+                continue  # a map-less leftover group in a bracket stage is not a lobby
+            if maps.filter(result_inputted=False).exists():
+                return False
+            if maps.filter(result_inputted=True).count() < max(g.match_count or 0, 1):
+                return False
+        finished_parts += 1
+
+    if not finished_parts:
+        return False
+
+    # Confirmed: nothing awaiting a decision.
+    if PendingCaptureUpload.objects.filter(status="pending").filter(
+            Q(stage=stage) | Q(group__stage=stage)).exists():
+        return False
+    if TeamMapResultSubmission.objects.filter(status="pending", match__group__stage=stage).exists():
+        return False
+    if H2HResultSubmission.objects.filter(status="pending", h2h_match__stage=stage).exists():
+        return False
+    return True
 
 
 @api_view(["POST"])

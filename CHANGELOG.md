@@ -18,6 +18,16 @@ At release time `node ~/.claude/skills/versioning/scripts/release.mjs next` prin
 rename `## Unreleased` to it, merge, then tag the merge commit. A version tag pushed with the wrong
 number is blocked before the push.
 
+## Unreleased
+
+### Changed
+- A stage (and an event, through its final stage) now completes only when ALL its results are in and confirmed:
+  every lobby holds its planned number of maps, each with a result (maps created one at a time no longer make it
+  read completed between games); every bracket is decided by its own rule (the final, plus the 3rd-place match
+  if any; a league when every match is played), so a stage with two brackets waits for both; and nothing is
+  waiting for an organizer (no parked AFC Capture upload, no team-submitted map or bracket result pending
+  review). AFC inbox #626.
+
 ## v7.20.5 - 2026-11-19
 
 ### Fixed
