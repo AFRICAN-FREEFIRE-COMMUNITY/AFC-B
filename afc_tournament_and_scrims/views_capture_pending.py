@@ -25,7 +25,10 @@ HOW IT CONNECTS
     - Intake: views.upload_team_match_result calls _create_pending_capture() on attribution="pending".
     - Scoring: resolve_pending_capture() rebuilds the file and calls views.upload_team_match_result with
       attribution="new" (a fresh slot) or match_id=<mid> (overwrite), forwarding the operator's Bearer.
-    - Permissions: AFC event admin OR an organizer with can_upload_results on the event's owning org - 
+    - Duplicates (inbox #623, duplicate_game.py): a game already scored in this event is never parked, a parked
+      copy is retired the moment its game is scored, and resolving one anyway is refused by the inner view (409
+      capture_duplicate_game, passed through with its code).
+    - Permissions: AFC event admin OR an organizer with can_upload_results on the event's owning org -
       the SAME gate the other result endpoints use.
     - Consumed by: frontend lib/pendingCaptures.ts -> the admin event leaderboard editor's Flagging tab
       (PendingCapturesPanel).
@@ -251,9 +254,14 @@ def resolve_pending_capture(request, event_id, pending_id):
     body = getattr(resp, "data", {}) or {}
     if not (200 <= status_code < 300):
         # Scoring rejected the file (bad parse, permission, ...). Leave the pending row PENDING so the
-        # operator can retry / discard - never lose it. Surface the inner error verbatim.
-        return Response({"message": body.get("message", "Could not score this capture."), "detail": body},
-                        status=status_code)
+        # operator can retry / discard - never lose it. Surface the inner error verbatim, with its code and params
+        # so the website can print it in the reader's language (inbox #623: capture_duplicate_game, a parked copy
+        # of a game that is already a map of this event).
+        refusal = {"message": body.get("message", "Could not score this capture."), "detail": body}
+        for key in ("code", "params", "duplicate_game"):
+            if key in body:
+                refusal[key] = body[key]
+        return Response(refusal, status=status_code)
 
     scored_match_id = body.get("match_id")
     pending.status = "resolved"

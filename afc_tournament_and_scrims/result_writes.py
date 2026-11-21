@@ -225,4 +225,11 @@ def write_team_result_row(*, match, tournament_team_id, row, ctx, frozen_roles):
         for p in players if p["user_id"] is not None
     ], batch_size=500)
 
+    # RANKINGS: bulk_create sends no post_save, and the team row's own post_save (on create, above)
+    # ran before these players existed, so nothing would queue their ranking recalcs. Ask for them
+    # here, once per player, after the commit (afc_rankings.signals.queue_player_recalcs explains).
+    # Lazy import: afc_rankings.signals imports this app's models.
+    from afc_rankings.signals import queue_player_recalcs
+    queue_player_recalcs(match, [p["user_id"] for p in players if p["user_id"] is not None])
+
     return team_stats

@@ -1,5 +1,9 @@
 """
-DB-level enforcement test for the per-event assigned-letter uniqueness (Gap 3, feature #7).
+DB-level tests for TournamentTeam.assigned_letter (Gap 3, feature #7).
+
+SUPERSEDED IN PART (inbox #602, owner 2026-11-16): the per-EVENT unique index described below was
+dropped, because a letter only has to be distinct inside one lobby (letter_rooms.py). The NULL and
+cross-event cases still hold; the duplicate case now expects the row to save.
 
 TournamentTeam.assigned_letter is the single A-Z letter an admin/organizer assigns to a registered
 team for in-game use in one event (see assign_team_letter). The Meta UniqueConstraint
@@ -17,7 +21,6 @@ behaviour the production swap depends on.
 """
 import datetime
 
-from django.db import IntegrityError, transaction
 from django.test import TestCase
 
 from afc_auth.models import User
@@ -54,19 +57,19 @@ class AssignedLetterUniqueConstraintTests(TestCase):
             team_creator=self.admin, team_owner=self.admin, country="NG",
         )
 
-    def test_duplicate_non_null_letter_in_same_event_is_rejected(self):
-        # First team takes "A" -> ok. Second team in the SAME event taking "A" -> DB IntegrityError.
+    def test_same_letter_twice_in_one_event_is_allowed_at_db_level(self):
+        # Letters per room (inbox #602, owner 2026-11-16): the event-wide unique index was DROPPED.
+        # Two teams in different lobbies may share a letter; letter_rooms.apply_letters refuses only
+        # a letter shared INSIDE one lobby (tests_letter_rooms). The table itself must now accept it.
         TournamentTeam.objects.create(
             event=self.event, team=self._team("Alpha", "ALP"),
             registered_by=self.admin, assigned_letter="A",
         )
-        with self.assertRaises(IntegrityError):
-            # atomic so the failed INSERT doesn't poison the outer test transaction.
-            with transaction.atomic():
-                TournamentTeam.objects.create(
-                    event=self.event, team=self._team("Bravo", "BRV"),
-                    registered_by=self.admin, assigned_letter="A",
-                )
+        TournamentTeam.objects.create(
+            event=self.event, team=self._team("Bravo", "BRV"),
+            registered_by=self.admin, assigned_letter="A",
+        )
+        self.assertEqual(TournamentTeam.objects.filter(event=self.event, assigned_letter="A").count(), 2)
 
     def test_multiple_null_letters_in_same_event_coexist(self):
         # Several UNASSIGNED teams (assigned_letter=NULL) in one event must NOT collide - the whole
