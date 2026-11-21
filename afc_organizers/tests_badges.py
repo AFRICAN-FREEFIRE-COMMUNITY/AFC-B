@@ -150,3 +150,13 @@ class SetBadgeTests(BadgeBase):
     def test_perks_list(self):
         self.assertEqual(badges.PERKS, ("featured", "promo", "stream", "qualifiers", "support", "early",
                                         "fast_reader"))
+
+
+class PublicBadgeTests(BadgeBase):
+    def test_public_page_and_directory_carry_the_badge(self):
+        Organization.objects.filter(pk=self.org.pk).update(badge="partner")
+        page = self.client.get("/organizers/get-organization-public/kopa/").json()
+        self.assertEqual(page["badge"], "partner")
+        make_event("PUBLISHED", org=self.org, is_draft=False)
+        rows = self.client.get("/organizers/get-organizations-public/").json()["organizations"]
+        self.assertEqual([(r["slug"], r["badge"]) for r in rows], [("kopa", "partner")])
