@@ -115,6 +115,12 @@ def _serialize_org(org):
         # every event currently homed under this org (drafts included).
         "event_count": org.events.count(),
         "created_at": org.created_at.isoformat() if org.created_at else None,
+        # Open organizations (21 Nov 2026): the badge (community / verified / partner), whether its owner started it
+        # (organizers/start/) or AFC provisioned it, the partner perks and the country. badges.py says what they mean.
+        "badge": org.badge,
+        "self_started": org.self_started,
+        "perks": org.perks or {},
+        "country": org.country,
     }
 
 
@@ -236,6 +242,26 @@ def admin_list_organizations(request):
     if status_filter:
         qs = qs.filter(status=status_filter)
 
+    # Optional badge tab (open organizations, 21 Nov 2026; the admin Organizations page's tabs):
+    #   waiting   Community organizations that meet every Verified rule AFC does not tick by hand (20 finished
+    #             events, rating, reports, profile): the ones an admin should look at next.
+    #   community / verified / partner   that badge, not suspended or deleted.
+    #   suspended  status suspended, whatever the badge.
+    badge_filter = request.GET.get("badge")
+    if badge_filter == "suspended":
+        qs = qs.filter(status="suspended")
+    elif badge_filter in ("community", "verified", "partner"):
+        qs = qs.filter(badge=badge_filter, status="active")
+    elif badge_filter == "waiting":
+        from django.db.models import Count, Q as _Q
+        from . import badges as _badges
+        near = (qs.filter(badge="community", status="active")
+                .annotate(_done=Count("events", filter=_Q(events__event_status="completed"), distinct=True))
+                .filter(_done__gte=_badges.FINISHED_EVENTS_NEEDED))
+        ids = [o.pk for o in near if all(r["met"] for r in _badges.verified_rules(o)
+                                          if r["key"] not in _badges.TICK_RULES)]
+        qs = qs.filter(pk__in=ids)
+
     # Optional fuzzy search across name OR slug. Punctuation-insensitive (so "vent" finds "V-ENT"):
     # we OR a separator-stripped normalized match onto the plain icontains, via utils.search_utils.
     # Mirrors afc_team.search_teams + frontend lib/search.ts; this only ever widens results. (Deep
@@ -254,9 +280,15 @@ def admin_list_organizations(request):
             cond |= Q(_norm_name__icontains=norm_q) | Q(_norm_slug__icontains=norm_q)
         qs = qs.filter(cond)
 
-    # Paginate and serialize.
+    # Paginate and serialize. Each row also says how many of the six Verified rules it meets (the list's
+    # "n of 6"), computed for the page only.
     page, total_count, has_more = _paginate(request, qs)
-    results = [_serialize_org(org) for org in page]
+    from . import badges as _badges
+    results = []
+    for org in page:
+        row = _serialize_org(org)
+        row["rules_met"] = sum(1 for r in _badges.verified_rules(org) if r["met"])
+        results.append(row)
 
     return Response(
         {"results": results, "total_count": total_count, "has_more": has_more},
@@ -322,11 +354,21 @@ def admin_get_organization(request, slug):
         "socials": org.socials or {},
     })
 
+    # Open organizations: the six Verified rules with their values, and the badge history (newest first, last 50),
+    # for the admin page's side panel (OrgBadgePanel.tsx).
+    from . import badges as _badges
+    history = [{
+        "action": h.action, "from_badge": h.from_badge, "to_badge": h.to_badge, "note": h.note,
+        "by": h.by.username if h.by_id else None, "at": h.at.isoformat(),
+    } for h in org.badge_history.select_related("by")[:50]]
+
     return Response({
         "organization": org_dict,
         "members": members,
         "events": events,
         "reports": [],  # Phase 4 - kept present so the response shape is stable.
+        "verified_rules": _badges.verified_rules(org),
+        "badge_history": history,
     }, status=status.HTTP_200_OK)
 
 
@@ -594,3 +636,130 @@ def admin_manage_organization_member(request, slug):
     new_owner.save()
 
     return Response({"message": "Ownership transferred."}, status=status.HTTP_200_OK)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Open organizations (owner 16 Nov 2026, AFC inbox #582 to #601; plan tasks/open-organizations-plan-2026-11-21.md
+# Task 6): the badge, perk and rule-tick actions of the admin Organizations page (app/(a)/a/organizations,
+# OrgBadgePanel.tsx). AFC platform admins only. Every change goes through afc_organizers/badges.py, which logs it.
+# ──────────────────────────────────────────────────────────────────────────────
+def _refuse(message, code, http=status.HTTP_409_CONFLICT, **extra):
+    return Response({"message": message, "code": code, **extra}, status=http)
+
+
+def _notify_badge(org, to, note):
+    """Tell the organization's owners: an in-app notification (links to the organization) and an email from the
+    hand-written catalog (afc_auth/email_i18n.py "org_badge_changed"). Mail about an ORGANIZATION, not an event, so
+    send_email is called without event=. Best effort: a failed notice never undoes the decision."""
+    import html as _html
+    import logging
+    from afc_auth.email_i18n import copy_for, subject_for
+    from afc_auth.models import Notifications
+    from afc_auth.views import SITE_URL, _email_shell, send_email
+    from afc_support.notify import _shell_rows
+
+    log = logging.getLogger("afc_organizers")
+    owners = [m.user for m in org.members.select_related("user").filter(role="owner", status="active")]
+    titles = {"verified": "%s is Verified", "partner": "%s is an AFC Partner",
+              "community": "%s is a Community organization"}
+    try:
+        Notifications.objects.bulk_create([Notifications(
+            user=u, title=titles[to] % org.name,
+            message=("Note from AFC: " + note) if note else titles[to] % org.name,
+            notification_type="org_badge_changed", target_type="organization", target_id=str(org.slug),
+        ) for u in owners])
+    except Exception:  # noqa: BLE001
+        log.exception("badge notification failed for %s", org.slug)
+    for u in owners:
+        if not getattr(u, "email", None):
+            continue
+        try:
+            lang = getattr(u, "language", None) or "en"
+            c = copy_for("org_badge_changed", lang)
+            name = _html.escape(org.name)
+            paras = [c["intro_" + to].format(org=name)]
+            if note:
+                paras.append(c["note"].format(note=_html.escape(note)))
+            body = _email_shell(_shell_rows(c["heading_" + to].format(org=name), paras, f"{SITE_URL}/organizer",
+                                            c["cta"], c["disclaimer"]), "green")
+            send_email(u.email, subject_for("org_badge_changed", lang, org=org.name), body, language=lang,
+                       prelocalized=True)
+        except Exception:  # noqa: BLE001
+            log.exception("badge email failed for %s", org.slug)
+
+
+@api_view(["POST"])
+def admin_set_badge(request, slug):
+    """Give or take a badge. Body {badge: "verified" | "partner" | "community", note}.
+
+    verified  from community only when every Verified rule is met (409 badge_rules_not_met with the rules), or
+              from partner (ending a partnership keeps the tick);
+    partner   only from verified (409 badge_partner_needs_verified); switches every perk on;
+    community from verified or partner (removing the tick).
+    The owners get a notification and an email naming the new badge and the note."""
+    from . import badges
+    user, err = _require_platform_admin(request)
+    if err:
+        return err
+    org, err = _org_or_404(slug)
+    if err:
+        return err
+    to = str(request.data.get("badge") or "")
+    note = str(request.data.get("note") or "").strip()[:1000]
+    if to not in badges.BADGES:
+        return _refuse("Pick Community, Verified or AFC Partner.", "badge_invalid", status.HTTP_400_BAD_REQUEST)
+    if to == org.badge:
+        return _refuse("The organization already has that badge.", "badge_unchanged")
+    if to == "verified" and org.badge == "community":
+        rules = badges.verified_rules(org)
+        if not all(r["met"] for r in rules):
+            return _refuse("Every Verified rule must be met first.", "badge_rules_not_met", rules=rules)
+    if to == "partner" and org.badge != "verified":
+        return _refuse("An organization is Verified before it can be an AFC Partner.", "badge_partner_needs_verified")
+    badges.set_badge(org, to, user, note=note)
+    _notify_badge(org, to, note)
+    org.refresh_from_db()
+    return Response({"organization": _serialize_org(org)}, status=status.HTTP_200_OK)
+
+
+@api_view(["POST"])
+def admin_set_perk(request, slug):
+    """Switch one partner perk on or off. Body {perk, on}. AFC Partners only (409 perk_needs_partner)."""
+    from . import badges
+    user, err = _require_platform_admin(request)
+    if err:
+        return err
+    org, err = _org_or_404(slug)
+    if err:
+        return err
+    perk = str(request.data.get("perk") or "")
+    if perk not in badges.PERKS:
+        return _refuse("That perk does not exist.", "perk_invalid", status.HTTP_400_BAD_REQUEST)
+    if org.badge != "partner":
+        return _refuse("Perks belong to AFC Partners.", "perk_needs_partner")
+    on = str(request.data.get("on", "")).lower() in ("true", "1", "yes")
+    badges.set_perk(org, perk, on, user)
+    org.refresh_from_db()
+    return Response({"organization": _serialize_org(org)}, status=status.HTTP_200_OK)
+
+
+@api_view(["POST"])
+def admin_set_rule_tick(request, slug):
+    """Tick (or untick) one of the two Verified rules AFC checks by hand. Body {rule: "trophies" | "community", on,
+    note}: trophies handed over and confirmed; an AFC official joined the organization's community."""
+    from . import badges
+    user, err = _require_platform_admin(request)
+    if err:
+        return err
+    org, err = _org_or_404(slug)
+    if err:
+        return err
+    rule = str(request.data.get("rule") or "")
+    if rule not in badges.TICK_RULES:
+        return _refuse("Pick the trophies rule or the community rule.", "rule_tick_invalid",
+                       status.HTTP_400_BAD_REQUEST)
+    on = str(request.data.get("on", "")).lower() in ("true", "1", "yes")
+    badges.set_rule_tick(org, rule, on, user, note=str(request.data.get("note") or "").strip()[:500])
+    org.refresh_from_db()
+    return Response({"organization": _serialize_org(org), "verified_rules": badges.verified_rules(org)},
+                    status=status.HTTP_200_OK)

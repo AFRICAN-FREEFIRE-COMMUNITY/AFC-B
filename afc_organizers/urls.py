@@ -40,6 +40,11 @@ urlpatterns = [
     # F5 (owner 2026-06-19): admin restores a soft-deleted org (clean delete kept everything intact).
     path("admin/restore-organization/<slug:slug>/", views_admin.admin_restore_organization,
          name="organizers_admin_restore"),
+    # Open organizations (21 Nov 2026): badge, perk and Verified-rule ticks; the admin Organizations page.
+    path("admin/organization/<slug:slug>/badge/", views_admin.admin_set_badge, name="organizers_admin_set_badge"),
+    path("admin/organization/<slug:slug>/perk/", views_admin.admin_set_perk, name="organizers_admin_set_perk"),
+    path("admin/organization/<slug:slug>/rule-tick/", views_admin.admin_set_rule_tick,
+         name="organizers_admin_rule_tick"),
     path("admin/manage-organization-member/<slug:slug>/", views_admin.admin_manage_organization_member,
          name="organizers_admin_manage_member"),
 

@@ -109,6 +109,12 @@ def copy_for(template, lang):
 # placeholder the call site does not pass (see the COPY RULES above).
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
 SUBJECTS = {
+    # ── afc_organizers: an AFC admin changed the organization's badge (open organizations, 21 Nov 2026) ──
+    "org_badge_changed": {
+        "en": "{org}: your AFC badge changed",
+        "fr": "{org} : votre badge AFC a changé",
+        "pt": "{org}: o seu selo AFC mudou",
+    },
     # ── afc_auth ──
     "verify_account": {
         "en": "Verify your AFC account",
@@ -378,6 +384,46 @@ SUBJECTS = {
 # builder injects the HTML-wrapped dynamic value(s). Keys are shared in meaning across languages.
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
 COPY = {
+    # ── afc_organizers: badge changed (afc_organizers/views_admin.py admin_set_badge, open organizations) ──
+    # One heading and one sentence per badge the organization lands on; the admin's note, when there is one, follows
+    # on its own line. Badges are trust and reach only: the Community sentence says plainly that every tool still
+    # works, because that is true (owner, 16 Nov 2026).
+    "org_badge_changed": {
+        "en": {
+            "heading_verified": "{org} is Verified",
+            "intro_verified": "{org} now has the Verified tick on AFC. Its results count for the AFC rankings from today.",
+            "heading_partner": "{org} is an AFC Partner",
+            "intro_partner": "{org} is now an AFC Partner. Every partner perk is switched on, and the AFC team will be in touch about each one.",
+            "heading_community": "{org} is a Community organization",
+            "intro_community": "{org} is now a Community organization on AFC. Every tool works the same; its results no longer count for the AFC rankings.",
+            "note": "Note from AFC: {note}",
+            "cta": "Open your organization",
+            "disclaimer": "Questions about this decision? Write to AFC from the contact page.",
+        },
+        "fr": {
+            "heading_verified": "{org} est Vérifiée",
+            "intro_verified": "{org} a maintenant la coche Vérifiée sur AFC. Ses résultats comptent pour les classements AFC dès aujourd'hui.",
+            "heading_partner": "{org} est Partenaire AFC",
+            "intro_partner": "{org} est maintenant Partenaire AFC. Tous les avantages partenaires sont activés et l'équipe AFC vous contactera pour chacun d'eux.",
+            "heading_community": "{org} est une organisation Communauté",
+            "intro_community": "{org} est maintenant une organisation Communauté sur AFC. Tous les outils fonctionnent de la même façon ; ses résultats ne comptent plus pour les classements AFC.",
+            "note": "Note d'AFC : {note}",
+            "cta": "Ouvrir votre organisation",
+            "disclaimer": "Une question sur cette décision ? Écrivez à AFC depuis la page de contact.",
+        },
+        "pt": {
+            "heading_verified": "{org} está Verificada",
+            "intro_verified": "{org} tem agora o visto de Verificada na AFC. Os seus resultados contam para os rankings AFC a partir de hoje.",
+            "heading_partner": "{org} é Parceira AFC",
+            "intro_partner": "{org} é agora Parceira AFC. Todas as vantagens de parceiro estão ativas e a equipa da AFC vai entrar em contacto sobre cada uma.",
+            "heading_community": "{org} é uma organização Comunidade",
+            "intro_community": "{org} é agora uma organização Comunidade na AFC. Todas as ferramentas funcionam da mesma forma; os seus resultados deixam de contar para os rankings AFC.",
+            "note": "Nota da AFC: {note}",
+            "cta": "Abrir a sua organização",
+            "disclaimer": "Tem perguntas sobre esta decisão? Escreva à AFC a partir da página de contacto.",
+        },
+    },
+
     # ── afc_auth: verification code (signup + resend) ──
     # Rendered by afc_auth/views.py email_verification_code. The six-digit code sits in its own
     # green box BETWEEN "intro" and "expires", which is why the intro can just say where to type it
