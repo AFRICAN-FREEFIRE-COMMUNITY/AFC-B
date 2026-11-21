@@ -18,9 +18,14 @@ logger = logging.getLogger(__name__)
 
 
 @shared_task
-def send_draw_emails(user_ids, subject, lead_html, tail_text, event_url):
+def send_draw_emails(user_ids, subject, lead_html, tail_text, event_url, event_id=None):
+    """event_id (21 Nov 2026): the draw's event, so send_email's event gate applies (event email only for AFC's own
+    and AFC Partner events, afc_organizers/badges.py). Older queued messages without it send as before."""
     from afc_auth.models import User
     from afc_auth.views import _email_shell, send_email
+    from afc_tournament_and_scrims.models import Event
+
+    event = Event.objects.select_related("organization").filter(event_id=event_id).first() if event_id else None
 
     sent = 0
     users = list(User.objects.filter(user_id__in=user_ids))
@@ -35,7 +40,8 @@ def send_draw_emails(user_ids, subject, lead_html, tail_text, event_url):
             f'text-decoration:none;font-weight:700;border-radius:8px;">Open the event page</a></td></tr>'
         )
         try:
-            if send_email(u.email, subject, _email_shell(inner), language=getattr(u, "language", None) or "en"):
+            if send_email(u.email, subject, _email_shell(inner), language=getattr(u, "language", None) or "en",
+                          event=event):
                 sent += 1
         except Exception:  # noqa: BLE001 - one bad address must not stop the rest
             logger.exception("draw email failed for user %s", u.user_id)

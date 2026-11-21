@@ -237,6 +237,11 @@ def _clean_prize_distribution(raw):
     return raw
 
 
+def _sends_email(event):
+    from afc_organizers.badges import event_may_email
+    return event_may_email(event)
+
+
 def _clean_registration_type(raw):
     if raw not in ("free", "paid"):
         raise ValueError("registration_type must be 'free' or 'paid'.")
@@ -373,6 +378,13 @@ EVENT_FIELDS = [
         if (e.organization and e.organization.logo)
         else None
     )),
+    # Open organizations (owner 16 Nov 2026, inbox #582 to #601). organization_badge: "community" | "verified" |
+    # "partner" (None for AFC's own events), shown as a chip beside the organizer's name (components/OrgBadge.tsx).
+    # sends_email: whether AFC emails players about this event (afc_organizers/badges.event_may_email, the same rule
+    # send_email applies); when False the registration step says updates come as notifications on AFC, not email.
+    Field("organization_badge", read=PUBLIC,
+          get=lambda e, ctx: e.organization.badge if e.organization else None),
+    Field("sends_email", read=PUBLIC, get=lambda e, ctx: _sends_email(e)),
     Field("uploaded_rules_url", read=PUBLIC, get=lambda e, ctx: (
         ctx["request"].build_absolute_uri(e.uploaded_rules.url) if e.uploaded_rules else None
     )),

@@ -8292,7 +8292,7 @@ def check_and_activate_team(tournament_team):
 </body>
 </html>
 """
-        send_email(email, subject, message, language=owner_lang, prelocalized=True)
+        send_email(email, subject, message, language=owner_lang, prelocalized=True, event=tournament_team.event)
 
         # ---------------- PREPARE ROLE ASSIGNMENT ----------------
         stage = Stages.objects.filter(event=tournament_team.event).first()
@@ -8446,7 +8446,7 @@ def confirm_player(request):
 """
 
     try:
-        send_email(email, subject, player_message, language=player_lang, prelocalized=True)
+        send_email(email, subject, player_message, language=player_lang, prelocalized=True, event=event)
     except Exception as e:
         print(f"Player email failed: {e}")
 
@@ -8526,7 +8526,7 @@ def confirm_player(request):
 """
 
     try:
-        send_email(team_owner_email, subject, owner_message, language=owner_lang, prelocalized=True)
+        send_email(team_owner_email, subject, owner_message, language=owner_lang, prelocalized=True, event=event)
     except Exception as e:
         print(f"Owner email failed: {e}")
 
@@ -8743,7 +8743,7 @@ def reject_player(request):
 """
 
     try:
-        send_email(email, subject, player_message, language=player_lang, prelocalized=True)
+        send_email(email, subject, player_message, language=player_lang, prelocalized=True, event=event)
     except Exception as e:
         print(f"Player rejection email failed: {e}")
 
@@ -8826,7 +8826,7 @@ def reject_player(request):
 """
 
     try:
-        send_email(team_owner_email, subject, owner_message, language=owner_lang, prelocalized=True)
+        send_email(team_owner_email, subject, owner_message, language=owner_lang, prelocalized=True, event=event)
     except Exception as e:
         print(f"Owner rejection email failed: {e}")
 

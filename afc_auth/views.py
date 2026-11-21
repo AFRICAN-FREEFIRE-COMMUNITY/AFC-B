@@ -416,7 +416,7 @@ from email.mime.text import MIMEText
 
 
 def send_email(to_address, subject, html_body, language="en", prelocalized=False,
-               reply_to=None, from_name=None):
+               reply_to=None, from_name=None, event=None):
     """Send a branded HTML email over Office365 SMTP. THE single email chokepoint for the whole
     backend: afc_auth account mail, afc_shop order mail, afc_sponsors / afc_tournament_and_scrims /
     afc_player_market notifications, and the broadcast sender all go through here.
@@ -458,6 +458,21 @@ def send_email(to_address, subject, html_body, language="en", prelocalized=False
     if not is_deliverable_address(to_address):
         print(f"Invalid email address: {to_address!r}. Error: not shaped like an email address.")
         return False
+
+    # ── Event email only for AFC's own and AFC Partner events (owner 16 Nov 2026, inbox #599 to #601) ──────
+    # Every email ABOUT an event (registration accepted / rejected, team activated, invitations, draws) passes
+    # event=. For an organizer's event it goes out only when the organization is an AFC Partner with the `promo`
+    # perk on (afc_organizers/badges.py event_may_email); Community and Verified events reach players through site
+    # notifications instead, and the registration step says so. Gated HERE, at the one chokepoint, so no sender
+    # can forget it; afc_organizers/tests_email_gate.py fails any event sender that does not pass event=.
+    if event is not None:
+        import logging
+        from afc_organizers.badges import event_may_email
+        if not event_may_email(event):
+            org = getattr(event, "organization", None)
+            logging.getLogger("afc_auth").info("event email skipped: event %s, organization badge %s",
+                                               getattr(event, "event_id", "?"), getattr(org, "badge", "?"))
+            return False
 
     # ── Localize to the recipient's language (best-effort, never raises into the send) ───────────
     # translate()/translate_html() are no-ops when language == "en" or blank, and fall back to the
