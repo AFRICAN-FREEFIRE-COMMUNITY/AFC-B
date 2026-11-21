@@ -174,7 +174,8 @@ def event_final_standings(event):
       rank_by_tt       : {tournament_team_id: rank}  (1-based).
       reached_final_ids: set of tournament_team_id that actually PLAYED the final stage.
       final_stage      : the Stages row that decides the event (is_finals_stage, else the
-                         highest stage_order), or None if the event has no stages.
+                         last stage in the canonical order below), or None if the event has
+                         no stages. views._final_stage_for_event.
 
     Tiering: stages are ordered canonically (stage_order, start_date, stage_id); "deeper" =
     later in that order. Each team is placed in the tier of the DEEPEST stage it has any match

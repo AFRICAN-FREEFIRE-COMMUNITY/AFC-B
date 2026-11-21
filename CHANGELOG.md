@@ -18,6 +18,89 @@ At release time `node ~/.claude/skills/versioning/scripts/release.mjs next` prin
 rename `## Unreleased` to it, merge, then tag the merge commit. A version tag pushed with the wrong
 number is blocked before the push.
 
+## v7.21.1 - 2026-11-19
+
+### Fixed
+- An event no longer completes early because a stage was added to it late. The stage that decides the event is
+  the one marked as the finals, else the last stage in the event's running order (manual order, then start
+  date), the order every page already shows; it used to be the most recently created stage, so the NATIONAL
+  FREE FIRE PRO LEAGUE, whose QUARTER FINALS was added after its FINALS, read completed from 10 Nov with the
+  finals still to play. The same choice decides which teams "reached the final stage", when the event's prize
+  pool is attributed, and the partner API's final_stage. AFC inbox #627.
+
+## v7.21.0 - 2026-11-19
+
+### Changed
+- A stage (and an event, through its final stage) now completes only when ALL its results are in and confirmed:
+  every lobby holds its planned number of maps, each with a result (maps created one at a time no longer make it
+  read completed between games); every bracket is decided by its own rule (the final, plus the 3rd-place match
+  if any; a league when every match is played), so a stage with two brackets waits for both; and nothing is
+  waiting for an organizer (no parked AFC Capture upload, no team-submitted map or bracket result pending
+  review). AFC inbox #626.
+
+## v7.20.5 - 2026-11-19
+
+### Fixed
+- A stage now reads "completed" as soon as every one of its maps has its result, instead of staying "ongoing"
+  until the day after its end date (the Pro League semi finals read ongoing with all 18 maps scored). It uses
+  the same rule that already completes an event. A stage that gets a new map without a result goes back to
+  ongoing, and a stage an organizer paused is no longer switched back to ongoing by the five-minute sweep.
+
+## v7.20.4 - 2026-11-19
+
+### Fixed
+- Uploading a map's results (AFC Capture or the website) is fast again and no longer slows down as an event goes
+  on. Every upload re-saved every team result of the whole event, and each save queued a ranking recalculation
+  for that team and each of its players: one map of the Pro League semi finals queued 1,112 of them (5,556
+  database queries on a local copy; the server took about 20 s, which is what tripped AFC Capture's 30 s wait in
+  AFC inbox #623). Now only results that changed are saved, and the map just written queues its own 12 teams
+  and their players once (309 queries on the same copy). Stored results are identical.
+- The Broadcast Kit's HOW_TO_USE.txt now says to delete each folder the zip carries from Free Fire_64_Data
+  before copying (it names them), instead of "Overwrite when asked", which left an earlier kit's pictures
+  mixed in with the new ones (AFC inbox #621). None of those folders comes with the game.
+
+### Internal
+- The esport picture tests upload a real PNG again. Their hand-typed test picture did not decode, so
+  since every image upload checks the bytes (v7.17.0) 8 of them failed; real uploads were never affected.
+
+## v7.20.2 - 2026-11-18
+
+### Fixed
+- A game is counted once per event. An upload of a game the event already holds (same Free Fire game id
+  in the file name, or the same result when the file was renamed) is refused with code
+  `capture_duplicate_game`, naming the map that holds it; nothing is scored, parked or created. On 18 Nov
+  2026 AFC Capture gave up waiting after 30 s while the server was still scoring Day 3's first game, sent
+  it again, and it became MATCH 1 and MATCH 2 (AFC inbox #623). The check runs again under a lock, so a
+  retry that arrives while the first upload is still being scored is refused too.
+- A website upload into the map that already holds the game still re-scores it; into another map it is
+  refused. A parked ("decide later") copy of a game is retired when the game is scored, and resolving one
+  of a game already in is refused with the same code.
+- Clearing or deleting a scored map no longer hides the live board of the map being played (the live
+  map vanished from the site and AFC LIVE for four minutes on 18 Nov 2026, inbox #622).
+
+## v7.20.0 - 2026-11-18
+
+### Added
+- The Broadcast Kit zip now carries the in-map team flags (FlagLogos): each team's logo on an empty
+  banner the organizer uploads, sized and placed as they choose. Letters A to X only: the game has no
+  flag for Y and Z (AFC inbox #613 to #618).
+- Team billboards (TeamBillboard) and a "Room seating.txt" sheet in a one-lobby kit: each team gets a
+  room slot in letter order, and its billboard shows its logo and name on the organizer's art.
+- The sky title now lands in EnvWeather with the folder that switches the effect on (wide title
+  2048 x 256 or logo 2048 x 512). It used to go to PCTexture, where the game never read it.
+- Panel backgrounds (HUD_PIC) and map skins (PCTexture: billboards, plane, airdrops, vehicles) can be
+  added by the game's own file names; anything else is left out and listed in HOW_TO_USE.txt.
+- The name under each player can be the team name, the team's country (the game shows its flag
+  icon) or the player's role (role icon).
+- `GET /events/<id>/broadcast-kit/` answers each team's slot, flag letter, logo address and name tag
+  values, `one_room`, and the game's name lists.
+
+### Changed
+- PlayerNameOverwrite.json is written the way the last file that loaded was: Windows line endings,
+  only its 18 colours (the caster row is no longer white), names cut to 12 and team or country to
+  18, only characters a loaded file held (a lowercase f or w becomes its capital), at most 101 rows,
+  and no extra key for a caster without a UID.
+
 ## v7.19.0 - 2026-11-16
 
 ### Added

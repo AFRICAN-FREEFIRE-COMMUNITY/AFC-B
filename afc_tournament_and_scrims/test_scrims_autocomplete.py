@@ -19,6 +19,7 @@ from rest_framework.test import APITestCase
 from afc_auth.models import User, SessionToken
 from afc_tournament_and_scrims.models import Event, Stages, StageGroups, Match
 from afc_tournament_and_scrims.views import (
+    _final_stage_for_event,
     maybe_autocomplete_event,
     effective_event_status,
     update_event_and_stage_statuses,
@@ -167,6 +168,139 @@ class UpdateSweepTests(TestCase):
         self.assertNotEqual(ev.event_status, "completed")
 
 
+class StageSweepTests(TestCase):
+    """update_event_and_stage_statuses, stages inside their dates (owner 2026-11-19: the Pro League semi
+    finals read "ongoing" with all 18 maps scored, because the sweep set every in-window stage ongoing
+    until the day after its end_date). A stage whose results are all in (stage_results_all_in, the rule
+    maybe_autocomplete_event uses) is completed; otherwise ongoing; a paused stage stays paused."""
+
+    def setUp(self):
+        self.admin = User.objects.create(
+            username="stage_sweep", email="stage_sweep@example.com", full_name="Stage Sweep",
+            role="admin", password="x",
+        )
+        today = timezone.localdate()
+        # A long event (still running) with a stage whose window holds today, like the semis inside the league.
+        self.event = Event.objects.create(
+            competition_type="tournament", participant_type="squad", event_type="internal",
+            max_teams_or_players=12, event_name="Long League", event_mode="virtual",
+            start_date=today - datetime.timedelta(days=10), end_date=today + datetime.timedelta(days=20),
+            registration_open_date=today - datetime.timedelta(days=20),
+            registration_end_date=today - datetime.timedelta(days=11),
+            prizepool="0", event_rules="r", event_status="ongoing", registration_link="https://x",
+            number_of_stages=2, creator=self.admin, is_draft=False,
+        )
+        self.stage = Stages.objects.create(
+            event=self.event, stage_name="SEMI FINALS", start_date=today - datetime.timedelta(days=3),
+            end_date=today + datetime.timedelta(days=1), number_of_groups=1,
+            stage_format="br - round robin", teams_qualifying_from_stage=12, stage_status="ongoing",
+        )
+        self.group = StageGroups.objects.create(
+            stage=self.stage, group_name="Day 1", playing_date=today - datetime.timedelta(days=1),
+            playing_time=datetime.time(19, 0), teams_qualifying=12, match_count=2,
+        )
+
+    def _maps(self, *scored):
+        for i, done in enumerate(scored):
+            Match.objects.create(group=self.group, match_number=i + 1, match_map="bermuda", result_inputted=done)
+
+    def _status_after_sweep(self):
+        update_event_and_stage_statuses()
+        self.stage.refresh_from_db()
+        return self.stage.stage_status
+
+    def test_every_map_scored_completes_the_stage_inside_its_dates(self):
+        self._maps(True, True)
+        self.assertEqual(self._status_after_sweep(), "completed")
+        self.event.refresh_from_db()
+        self.assertEqual(self.event.event_status, "ongoing")   # the league itself is not over
+
+    def test_a_map_without_its_result_keeps_the_stage_ongoing(self):
+        self._maps(True, False)
+        self.assertEqual(self._status_after_sweep(), "ongoing")
+
+    def test_a_stage_with_no_maps_follows_the_dates(self):
+        Stages.objects.filter(pk=self.stage.pk).update(stage_status="upcoming")
+        self.assertEqual(self._status_after_sweep(), "ongoing")
+
+    def test_a_paused_stage_stays_paused(self):
+        self._maps(True, False)
+        Stages.objects.filter(pk=self.stage.pk).update(stage_status="paused")
+        self.assertEqual(self._status_after_sweep(), "paused")
+
+    def test_a_new_map_without_a_result_reopens_a_completed_stage(self):
+        self._maps(True, True)
+        self.assertEqual(self._status_after_sweep(), "completed")
+        Match.objects.create(group=self.group, match_number=3, match_map="bermuda", result_inputted=False)
+        self.assertEqual(self._status_after_sweep(), "ongoing")
+
+    # ── inbox #626 (owner 2026-11-19): all PLANNED maps, entered AND confirmed; brackets by their own rule ──
+    def test_fewer_maps_than_planned_keeps_the_stage_ongoing(self):
+        # Maps created one at a time as results arrive: 1 of the 2 planned exists and is scored.
+        self._maps(True)
+        self.assertEqual(self._status_after_sweep(), "ongoing")
+
+    def test_a_parked_capture_upload_keeps_the_stage_ongoing_until_decided(self):
+        from afc_tournament_and_scrims.models import PendingCaptureUpload
+        self._maps(True, True)
+        parked = PendingCaptureUpload.objects.create(event=self.event, stage=self.stage, group=self.group,
+                                                     file_name="MatchResult_1_x.log")
+        self.assertEqual(self._status_after_sweep(), "ongoing")
+        PendingCaptureUpload.objects.filter(pk=parked.pk).update(status="discarded")
+        self.assertEqual(self._status_after_sweep(), "completed")
+
+    def test_a_team_result_awaiting_review_keeps_the_stage_ongoing(self):
+        from afc_team.models import Team
+        from afc_tournament_and_scrims.models import TeamMapResultSubmission, TournamentTeam
+        self._maps(True, True)
+        team = Team.objects.create(team_name="Review FC", join_settings="open", team_creator=self.admin,
+                                   team_owner=self.admin, country="NG")
+        tt = TournamentTeam.objects.create(event=self.event, team=team)
+        sub = TeamMapResultSubmission.objects.create(
+            match=Match.objects.filter(group=self.group).first(), tournament_team=tt,
+            submitted_by=self.admin, submitted_payload={"placement": 1})
+        self.assertEqual(self._status_after_sweep(), "ongoing")
+        TeamMapResultSubmission.objects.filter(pk=sub.pk).update(status="approved")
+        self.assertEqual(self._status_after_sweep(), "completed")
+
+    def _bracket(self, name, done):
+        """A one-match knockout (its only match is the final) in its own group."""
+        from afc_team.models import Team
+        from afc_tournament_and_scrims.models import HeadToHeadMatch, TournamentTeam
+        g = StageGroups.objects.create(
+            stage=self.stage, group_name=name, playing_date=self.group.playing_date,
+            playing_time=datetime.time(19, 0), teams_qualifying=1, match_count=0, bracket_format="single_elim")
+        tts = []
+        for side in ("A", "B"):
+            team = Team.objects.create(team_name=f"{name} {side}", join_settings="open", team_creator=self.admin,
+                                       team_owner=self.admin, country="NG")
+            tts.append(TournamentTeam.objects.create(event=self.event, team=team))
+        HeadToHeadMatch.objects.create(
+            stage=self.stage, group=g, round_number=1, bracket="winners", position=0,
+            team_a=tts[0], team_b=tts[1], status="completed" if done else "pending",
+            winner=tts[0] if done else None, score_a=2 if done else 0)
+        return g
+
+    def test_two_brackets_finish_the_stage_only_when_both_are_decided(self):
+        self.group.delete()                       # a pure bracket stage
+        self._bracket("Group A", done=True)
+        b = self._bracket("Group B", done=False)
+        self.assertEqual(self._status_after_sweep(), "ongoing")
+        from afc_tournament_and_scrims.models import HeadToHeadMatch
+        final = HeadToHeadMatch.objects.get(group=b)
+        HeadToHeadMatch.objects.filter(pk=final.pk).update(status="completed", winner=final.team_a_id)
+        self.assertEqual(self._status_after_sweep(), "completed")
+
+    def test_a_finished_bracket_ignores_its_own_placement_map_but_not_the_other_brackets(self):
+        # The placement write of a finished bracket leaves a scored map in its group; that must not
+        # count as "the stage is done" while the other bracket plays (the v7.20.5 gap).
+        self.group.delete()
+        a = self._bracket("Group A", done=True)
+        Match.objects.create(group=a, match_number=0, match_map="clash_squad", result_inputted=True)
+        self._bracket("Group B", done=False)
+        self.assertEqual(self._status_after_sweep(), "ongoing")
+
+
 class ReopenEventTests(APITestCase):
     """reopen_event gates on effective_event_status, not the raw stored event_status (owner 2026-07-07:
     "LEGACY SCRIMS" showed completed + locked but reopen said "this one is upcoming"). A finished-by-date
@@ -225,3 +359,86 @@ class ReopenEventTests(APITestCase):
         d = timezone.localdate() - datetime.timedelta(days=2)
         ev = self._event(d, d, event_status="cancelled")
         self.assertEqual(self._reopen(ev.event_id).status_code, 400)
+
+
+class FinalStageChoiceTests(TestCase):
+    """Which stage decides the event (owner 2026-11-19, inbox #627).
+
+    The NATIONAL FREE FIRE PRO LEAGUE (event 373) read "completed" from 10 Nov with its FINALS still to play on
+    12 and 13 Dec. Its QUARTER FINALS stage was added after the FINALS stage, so it had the highest stage_id, and
+    _final_stage_for_event broke the tie between unordered, unflagged stages by stage_id alone. When the quarter
+    finals' last map was scored, maybe_autocomplete_event took that for the end of the tournament. Every other
+    surface orders stages by (stage_order, start_date, stage_id); the final stage is now the last stage in that
+    same order, so a stage created late but played early can no longer end the event.
+    """
+
+    def setUp(self):
+        self.admin = User.objects.create(
+            username="final_admin", email="final_admin@example.com", full_name="Final Admin",
+            role="admin", password="x",
+        )
+        today = timezone.localdate()
+        self.today = today
+        self.event = Event.objects.create(
+            competition_type="tournament", participant_type="squad", event_type="internal",
+            max_teams_or_players=48, event_name="Pro League", event_mode="virtual",
+            start_date=today - datetime.timedelta(days=20), end_date=today + datetime.timedelta(days=20),
+            registration_open_date=today - datetime.timedelta(days=30),
+            registration_end_date=today - datetime.timedelta(days=21),
+            prizepool="0", event_rules="r", event_status="ongoing", registration_link="https://x",
+            number_of_stages=3, creator=self.admin, is_draft=False,
+        )
+
+    def _stage(self, name, start_offset, end_offset, scored, maps=2, **over):
+        """A one-lobby stage played between today+start_offset and today+end_offset, `maps` planned, every map
+        scored or none. Created in call order, so a later call gets a higher stage_id."""
+        st = Stages.objects.create(
+            event=self.event, stage_name=name,
+            start_date=self.today + datetime.timedelta(days=start_offset),
+            end_date=self.today + datetime.timedelta(days=end_offset),
+            number_of_groups=1, stage_format="br - normal", teams_qualifying_from_stage=1, **over,
+        )
+        g = StageGroups.objects.create(
+            stage=st, group_name=name, playing_date=st.start_date, playing_time=datetime.time(18, 0),
+            teams_qualifying=1, match_count=maps,
+        )
+        for i in range(maps):
+            Match.objects.create(group=g, match_number=i + 1, match_map="bermuda", result_inputted=scored)
+        return st
+
+    def _league_with_late_quarter_finals(self):
+        """Event 373's shape: group stage, semis and finals created first, quarter finals added last with dates
+        between the group stage and the semis. Nothing flagged, nothing ordered by hand."""
+        self._stage("GROUP STAGE", -20, -17, scored=True)
+        self._stage("SEMI FINALS", -3, -1, scored=True)
+        finals = self._stage("FINALS", 10, 11, scored=False)
+        quarters = self._stage("QUARTER FINALS", -10, -8, scored=True)
+        self.assertGreater(quarters.stage_id, finals.stage_id)
+        return finals, quarters
+
+    def test_a_stage_added_last_but_played_earlier_is_not_the_final_stage(self):
+        finals, _quarters = self._league_with_late_quarter_finals()
+        self.assertEqual(_final_stage_for_event(self.event), finals)
+
+    def test_scoring_a_stage_added_last_does_not_complete_the_event_before_its_finals(self):
+        self._league_with_late_quarter_finals()
+        self.assertFalse(maybe_autocomplete_event(self.event, self.admin))
+        self.event.refresh_from_db()
+        self.assertEqual(self.event.event_status, "ongoing")
+
+    def test_the_event_completes_once_the_finals_are_scored(self):
+        finals, _quarters = self._league_with_late_quarter_finals()
+        Match.objects.filter(group__stage=finals).update(result_inputted=True)
+        self.assertTrue(maybe_autocomplete_event(self.event, self.admin))
+        self.event.refresh_from_db()
+        self.assertEqual(self.event.event_status, "completed")
+
+    def test_the_organizers_own_stage_order_still_wins_over_dates(self):
+        early = self._stage("Played first, ordered last", -10, -9, scored=True, stage_order=2)
+        self._stage("Played last, ordered first", 5, 6, scored=False, stage_order=1)
+        self.assertEqual(_final_stage_for_event(self.event), early)
+
+    def test_a_stage_marked_as_the_finals_still_wins(self):
+        marked = self._stage("Marked finals", -5, -4, scored=True, is_finals_stage=True)
+        self._stage("Later stage", 5, 6, scored=False)
+        self.assertEqual(_final_stage_for_event(self.event), marked)
