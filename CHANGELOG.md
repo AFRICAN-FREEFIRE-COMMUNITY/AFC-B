@@ -18,6 +18,20 @@ At release time `node ~/.claude/skills/versioning/scripts/release.mjs next` prin
 rename `## Unreleased` to it, merge, then tag the merge commit. A version tag pushed with the wrong
 number is blocked before the push.
 
+## Unreleased
+
+### Added
+- Game file archive: every game file of every map now reaches the server and is kept, filed under its event, stage,
+  group and map: the match result file, the debugger log, the replay (its .json and .bin), the safe zone log, the heat
+  map and the small marker files custom rooms write. AFC Capture 1.7.0 sends them (only those names; the account file
+  and the name file never leave the PC), the website's result upload and Game files box keep what they already
+  receive, and a file that arrives before its map is scored is filed under the map the moment it is. The same file is
+  stored once; a debugger log that grew during the evening replaces its shorter start. AFC admins (every event) and
+  the event's organizers (their own) can list, download one file, or ask for a zip of a map, a group, a stage or the
+  whole event, built in the background and kept 24 hours. Raw files are never served by their stored address. The
+  archive refuses new files when the server has under 15 GB free and never slows or fails a result upload.
+  AFC inbox #603, #606, #610, #611.
+
 ## v7.21.1 - 2026-11-19
 
 ### Fixed
