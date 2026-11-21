@@ -27,6 +27,7 @@ from afc_tournament_and_scrims import scoring as scoring_lib
 # submission approval endpoint so both produce identical rows. See result_writes.py.
 from afc_tournament_and_scrims import result_writes
 from afc_tournament_and_scrims import capture_rich_stats, kill_stats_fields
+from afc_tournament_and_scrims import board as live_board, duplicate_game
 # Open-roster events (owner 2026-09-11): the save-time side effect and the one-team-per-player
 # check every roster door shares. See afc_tournament_and_scrims/open_roster.py.
 from afc_tournament_and_scrims import open_roster
@@ -37,7 +38,8 @@ from afc_tournament_and_scrims.event_player_image import pic_for_event
 # earned instead of the role they hold today. See afc_tournament_and_scrims/roster_roles.py.
 from afc_tournament_and_scrims import roster_roles
 from .still_in import competitor_still_in
-from .models import Event, EventInviteToken, EventPageView, MatchResultImage, RegisteredCompetitors, RoundRobinGroup, SoloPlayerMatchStats, SponsorEvent, StageAdvancementRule, StageCompetitor, StageGroupCompetitor, StageGroups, Stages, StreamChannel, TournamentPlayerMatchStats, TournamentTeam, Leaderboard, TournamentTeamMatchStats, Match, TournamentTeamMember
+from .models import Event, EventInviteToken, EventPageView, MatchResultImage, RegisteredCompetitors, RoundRobinGroup, SoloPlayerMatchStats, SponsorEvent, StageAdvancementRule, StageCompetitor, StageGroupCompetitor, StageGroups, Stages, StageTeamLetter, StreamChannel, TournamentPlayerMatchStats, TournamentTeam, Leaderboard, TournamentTeamMatchStats, Match, TournamentTeamMember
+from .letter_rooms import LetterClash, apply_letters, stage_rooms
 # One answer to "what KIND of stage is this?" for all three generations of stage_format values
 # (owner item 21, 2026-08-13). create_event / edit_event branch on it below. See stage_formats.py.
 from .stage_formats import is_clash_squad
@@ -390,7 +392,19 @@ def update_event_and_stage_statuses():
     _live_stage = Stages.objects.filter(event__is_draft=False).exclude(
         event__event_status="cancelled").exclude(event__auto_complete_suppressed=True)
     _live_stage.filter(end_date__lt=today).exclude(stage_status="completed").update(stage_status="completed")
-    _live_stage.filter(start_date__lte=today, end_date__gte=today).exclude(stage_status="ongoing").update(stage_status="ongoing")
+    # INSIDE ITS DATES (owner 2026-11-19: "it still shows ongoing even though all 18 maps are scored ... check
+    # why and fix"). This used to set every stage inside its date window to "ongoing", so a stage stayed
+    # ongoing until the day after its end_date whatever its results said (the NATIONAL FREE FIRE PRO LEAGUE
+    # semi finals: end_date 19 Nov, every map scored on 18 Nov), and it also undid an organizer's Pause
+    # (set_stage_status) within five minutes. Now: a stage whose results are all in is completed, by the
+    # SAME rule maybe_autocomplete_event uses for an event (stage_results_all_in); otherwise it is ongoing,
+    # except a paused one, which stays paused. A completed stage that gets a new map without a result goes
+    # back to ongoing on the next run.
+    _in_window = _live_stage.filter(start_date__lte=today, end_date__gte=today)
+    _results_in = [st.stage_id for st in _in_window.only("stage_id") if stage_results_all_in(st)]
+    _in_window.filter(stage_id__in=_results_in).exclude(stage_status="completed").update(stage_status="completed")
+    _in_window.exclude(stage_id__in=_results_in).exclude(stage_status__in=["ongoing", "paused"]).update(
+        stage_status="ongoing")
     _live_stage.filter(start_date__gt=today).exclude(stage_status="upcoming").update(stage_status="upcoming")
 
     # ── Check-in relegation (owner 2026-07-04) ─────────────────────────────────────────────────
@@ -16803,6 +16817,10 @@ def delete_match(request):
                 group.match_count = max(0, group.match_count - 1)
                 group.save(update_fields=["match_count"])
 
+    # A deleted scored map lowers the group's result count: keep the live board showing (see clear_match_result).
+    if group is not None and _del_event is not None:
+        live_board.note_cleared(_del_event.event_id, group.group_id)
+
     return Response({
         "message": "Match deleted successfully.",
         "deleted_match_number": deleted_number,
@@ -16872,6 +16890,11 @@ def clear_match_result(request):
         match.leaderboard = None
         match.upload_method = None
         match.save(update_fields=["result_inputted", "leaderboard", "upload_method"])
+
+    # The group now holds one result fewer. A live board pushed for the map being played remembered the higher
+    # count, and would read as "already counted" and vanish (18 Nov 2026, inbox #622): lower it (board.py).
+    if match.group_id and _event is not None:
+        live_board.note_cleared(_event.event_id, match.group_id)
 
     return Response({"message": "Map results cleared. You can re-enter results for this map.",
                      "match_id": match.match_id}, status=200)
@@ -21826,6 +21849,12 @@ def upload_team_match_result(request):
     attribution = str(request.data.get("attribution") or "").strip().lower()
 
     match_id = request.data.get("match_id")
+    # ONE GAME, ONE MAP (inbox #623, duplicate_game.py): an AUTOMATIC upload (no match_id, the server picks the
+    # slot) may never score a game the event already holds; a person's chosen slot (match_id / replace:) may
+    # re-score the map that holds it and nothing else. _created_slot is the map attribution "new" made, removed
+    # again if the game turns out to be in already.
+    _auto_slot = not match_id and not attribution.startswith("replace:")
+    _created_slot = None
     # "replace:<id>" resolves to an explicit match_id and then flows the normal (overwrite) path below.
     if not match_id and attribution.startswith("replace:"):
         _rid = attribution.split(":", 1)[1].strip()
@@ -21855,6 +21884,18 @@ def upload_team_match_result(request):
         # Gate the Bearer path here (native org=None events stay admin-only), mirroring the match path.
         if upload_token is None and not (_is_event_admin(admin) or org_can_event(admin, "can_upload_results", _event)):
             return Response({"message": "You do not have permission to manage results for this event.", "code": "not_permission_manage_results"}, status=403)
+
+        # ONE GAME, ONE MAP (inbox #623): a game the event already holds is refused here, before it can be parked
+        # ("decide later" included), made into a new map or scored into the next slot. AFC Capture 1.6.1 reads the
+        # 409 as "already on the website". The same check runs again under a lock in the write block below.
+        _dup_file = request.FILES.get("file")
+        if _dup_file is not None:
+            _dup_text = _dup_file.read().decode("utf-8", errors="ignore")
+            _dup_file.seek(0)   # the paths below read the same upload again
+            _dup_name = getattr(_dup_file, "name", "") or ""
+            _holder = duplicate_game.scored_holder(_event, file_name=_dup_name, text=_dup_text)
+            if _holder is not None:
+                return Response(duplicate_game.duplicate_answer(_holder, _dup_name), status=409)
 
         # "decide later" -> park the raw upload verbatim in the pending bucket; score nothing. This is the
         # never-lose-data guarantee: the file text + set stage/group are stored so a human can re-score it.
@@ -21903,7 +21944,8 @@ def upload_team_match_result(request):
         if attribution == "new":
             # The ONLY path that auto-creates a slot now: the operator explicitly chose "new extra map".
             _num = (_grp.matches.aggregate(m=Max("match_number"))["m"] or 0) + 1
-            match_id = Match.objects.create(group=_grp, match_number=_num).match_id
+            _created_slot = Match.objects.create(group=_grp, match_number=_num)
+            match_id = _created_slot.match_id
         else:
             _next = (_grp.matches.filter(result_inputted=False)
                      .order_by("match_number", "match_id").first())
@@ -21996,6 +22038,15 @@ def upload_team_match_result(request):
     # be re-checked against the original game export.
     raw_bytes = uploaded_file.read()
     text = raw_bytes.decode("utf-8", errors="ignore")
+    _upload_name = getattr(uploaded_file, "name", "") or ""
+
+    # ONE GAME, ONE MAP (inbox #623): a person's chosen slot may re-score the map that already holds this game
+    # (excluded here), never put the same game into a second map. The automatic path was checked above.
+    if not _auto_slot:
+        _holder = duplicate_game.scored_holder(event, file_name=_upload_name, text=text,
+                                               exclude_match_id=match.match_id)
+        if _holder is not None:
+            return Response(duplicate_game.duplicate_answer(_holder, _upload_name), status=409)
 
     parsed_teams = []
 
@@ -22272,6 +22323,20 @@ def upload_team_match_result(request):
         team_data["_team_obj"] = resolved
 
     with transaction.atomic():
+
+        # ONE GAME, ONE MAP, UNDER A LOCK (inbox #623). The checks above read committed data, so a retry that
+        # arrives while the first request is still scoring (18 Nov 2026: Capture gave up after 30 s, the server
+        # finished MATCH 1, the retry filled MATCH 2) sees nothing yet. Locking the group's row makes the second
+        # request wait here until the first commits, then the same check sees the first one's map. Nothing has
+        # been written in this block yet, so the early return below writes nothing (except removing the empty
+        # map attribution "new" just made for it).
+        StageGroups.objects.select_for_update().filter(pk=match.group_id).first()
+        _holder = duplicate_game.scored_holder(event, file_name=_upload_name, text=text,
+                                               exclude_match_id=None if _auto_slot else match.match_id)
+        if _holder is not None:
+            if _created_slot is not None:
+                _created_slot.delete()
+            return Response(duplicate_game.duplicate_answer(_holder, _upload_name), status=409)
 
         # §1i snapshot (owner 2026-06-29): capture any per-flag approval/rejection (count_kills set to
         # True/False by an admin in the panel) BEFORE the idempotent clear wipes the rows, so a
@@ -22852,6 +22917,9 @@ def upload_team_match_result(request):
                 import logging
                 logging.getLogger("afc_tournament_and_scrims").exception(
                     "MatchResultLog store failed for match %s", match.match_id)
+            # inbox #623: a "decide later" copy of this game parked earlier (18 Nov: the same game parked under
+            # Day 2, then scored in Day 3) is retired now, so it can never be resolved into a second map.
+            duplicate_game.discard_pending_duplicates(event, _upload_name, match)
 
         # DRY-RUN: roll back EVERY write above (the idempotent clear, team/player stats, kill flags,
         # result_inputted) as the LAST act of the atomic block. All the summary lists were already
@@ -24103,21 +24171,24 @@ def assign_team_letter(request):
     """POST /events/assign-team-letter/  (admin / organizer)  - Letter Avatars feature #7, plan B5.
 
     Assign ONE A-Z letter to a registered team for in-game use in this event (e.g. each team flies a
-    distinct letter banner). OWNER DECISION (Open Q g, 2026-06-29): a letter is UNIQUE per team per
-    event - assigning a letter already held by ANOTHER team in this event is rejected with a friendly
-    409 naming that team; reassigning a team to a new letter frees its old one automatically (a single
-    column update). Admins/organizers may CHANGE an assignment at ANY time (no lock once set or once
-    the event starts).
+    distinct letter banner). LETTERS PER ROOM (inbox #602, owner 2026-11-16, replacing the old
+    one-letter-per-event rule of 2026-06-29): a letter only has to be distinct between teams that
+    share a lobby in a stage it applies to, so the same letter can serve teams in different groups.
+    The admin / organizer picks the stages: none = ALL STAGES (TournamentTeam.assigned_letter, kept
+    across stages, clears any per-stage override), a list = those stages only (StageTeamLetter).
+    Admins/organizers may CHANGE an assignment at ANY time (no lock once set or once the event starts).
 
     REQUEST (JSON)
       { "event_id": <int>, "team_id": <int>,
         "letter": "A",          # a single A-Z char; "" / null / "none" CLEARS the assignment (unassign)
+        "stage_ids": [<int>],   # optional; absent / [] = all stages
         "broadcast": false }    # optional: when true ALSO emails the team (push happens either way)
 
     RESPONSE
-      200 { tournament_team_id, team_id, team_name, assigned_letter, notified }
-      400 missing ids / invalid letter   403 not an event admin / org for this event
-      404 team not registered for this event   409 letter already taken by another team in this event
+      200 { tournament_team_id, team_id, team_name, assigned_letter, stage_ids, letter, notified }
+      400 missing ids / invalid letter / invalid_stage   403 not an event admin / org for this event
+      404 team not registered for this event
+      409 letter_taken: another team in the same lobby would hold it (both teams, stage, room named)
 
     GATE
       AFC event admin (_is_event_admin) OR organizer with can_manage_registrations on the event's
@@ -24156,85 +24227,218 @@ def assign_team_letter(request):
     if not tt:
         return Response({"message": "That team is not registered for this event.", "code": "team_not_registered_event"}, status=404)
 
-    # CLEAR (unassign): an empty / null / "none" letter frees this team's letter for reuse.
+    # Letters per room (inbox #602): which stages this letter applies to. Absent / [] = ALL STAGES
+    # (the team keeps it across stages); a list = only those stages (StageTeamLetter rows).
+    try:
+        stage_ids = _parse_letter_stage_ids(request.data.get("stage_ids"))
+    except ValueError:
+        return Response({"message": "stage_ids must be a list of this event's stages.", "code": "invalid_stage"}, status=400)
+
+    # CLEAR (unassign): an empty / null / "none" letter frees this team's letter for reuse (in the
+    # chosen stages, or everywhere when no stages are named).
     raw_letter = request.data.get("letter")
     if raw_letter in (None, "", "none", "None"):
-        tt.assigned_letter = None
-        tt.save(update_fields=["assigned_letter"])
-        return Response({
-            "tournament_team_id": tt.tournament_team_id, "team_id": tt.team_id,
-            "team_name": tt.display_name, "assigned_letter": None, "notified": 0,
-        }, status=200)
+        letter = None
+    else:
+        letter = _norm_letter_char(raw_letter)
+        if not letter:
+            return Response({"message": "letter must be a single A-Z character.", "code": "letter_single_character"}, status=400)
 
-    letter = _norm_letter_char(raw_letter)
-    if not letter:
-        return Response({"message": "letter must be a single A-Z character.", "code": "letter_single_character"}, status=400)
+    # Distinct per ROOM, not per event (inbox #602). apply_letters locks the event's registrations,
+    # writes, then checks the FINAL state of every room in the affected stages and rolls back on a
+    # clash, so two staff assigning at once cannot both pass.
+    try:
+        apply_letters(event, {tt.pk: letter}, stage_ids)
+    except ValueError:
+        return Response({"message": "stage_ids must be a list of this event's stages.", "code": "invalid_stage"}, status=400)
+    except LetterClash as clash:
+        return _letter_clash_response(clash.info)
+    tt.refresh_from_db()
 
-    # UNIQUE per event (Open Q g, HARD). The conditional DB UniqueConstraint
-    # (uniq_assigned_letter_per_event) is a NO-OP on MySQL, which has no partial indexes - so this
-    # check IS the real enforcement. To make it HARD even under concurrent assigns by two staff, we
-    # lock this event's TournamentTeam rows FOR UPDATE inside one transaction, re-read the clash under
-    # the lock, then write. Reassigning THIS team to a new letter is fine (exclude self) and frees its
-    # old letter automatically (a single column update). No data is written before any early return,
-    # so returning the 409 inside the atomic block is safe (only SELECTs ran).
-    with transaction.atomic():
-        locked = list(
-            TournamentTeam.objects
-            .select_for_update()
-            .filter(event=event)
-            .select_related("team", "ghost_team")
-        )
-        # Re-resolve tt from the locked snapshot (same row, now lock-held).
-        tt = next((x for x in locked if x.pk == tt.pk), tt)
-        # NOTE (owner 2026-08-20): this scans the WHOLE event's TournamentTeam rows, which now
-        # includes ghost rows too - a ghost can hold the clashing letter just as a real team can,
-        # so clash.display_name (not .team.team_name) is required here.
-        clash = next(
-            (x for x in locked if x.assigned_letter == letter and x.pk != tt.pk),
-            None,
-        )
-        if clash:
-            return Response({
-                "code": "letter_taken",
-                "message": f"Letter {letter} is already assigned to {clash.display_name} in this event.",
-                "conflicting_team_id": clash.team_id,
-                "conflicting_team_name": clash.display_name,
-            }, status=409)
-
-        tt.assigned_letter = letter
-        tt.save(update_fields=["assigned_letter"])
-
-    # Notify every member of the team (Open Q i). TeamMembers is the live team roster (not the event
-    # roster) so EVERY teammate hears about it. broadcast=true also emails; either way they get the
-    # in-app push. deliver_broadcast localizes the email per recipient + stamps the event deep link.
-    broadcast = _as_bool(request.data.get("broadcast"))
-    recipients = [
-        tm.member
-        for tm in TeamMembers.objects.filter(team=tt.team).select_related("member")
-        if tm.member
-    ]
     notified = 0
-    if recipients:
-        # English source line (broadcasts are stored in English; deliver_broadcast translate-on-reads
-        # the in-app row + localizes the email). No em/en dashes.
-        message = f"Your assigned letter for {event.event_name} is {letter}."
-        try:
-            pushed, _emailed = deliver_broadcast(
-                recipients, "Letter assignment", message,
-                delivery="both" if broadcast else "push",
-                notification_type="letter_assignment", related_event=event,
-                sender=user, scope="event", log=False,
-            )
-            notified = pushed
-        except Exception:
-            # A notification failure must never roll back an assignment that already persisted.
-            pass
+    if letter:
+        notified = _notify_letter_assignment(
+            user, event, tt, letter, stage_ids, _as_bool(request.data.get("broadcast")),
+        )
 
     return Response({
         "tournament_team_id": tt.tournament_team_id,
         "team_id": tt.team_id,
         "team_name": tt.display_name,
         "assigned_letter": tt.assigned_letter,
+        "stage_ids": stage_ids or [],
+        "letter": letter,
+        "notified": notified,
+    }, status=200)
+
+
+# ── Letters per room helpers (inbox #602, owner 2026-11-16) ─────────────────────────────────────
+# Shared by assign_team_letter (one team, the per-row Assign Select) and assign_team_letters_bulk
+# (the suggester's "Apply all"). The rule itself lives in letter_rooms.py.
+
+def _parse_letter_stage_ids(raw):
+    """[] / None -> None (ALL STAGES). A list of ints -> that list. Anything else -> ValueError.
+
+    apply_letters re-checks that every id is a stage of the event (ValueError -> 400 invalid_stage).
+    """
+    if raw in (None, "", []):
+        return None
+    if not isinstance(raw, (list, tuple)):
+        raise ValueError("stage_ids must be a list")
+    return [int(x) for x in raw]
+
+
+def _letter_clash_response(info):
+    """409 letter_taken naming both teams, the stage and the room, from a LetterClash.info."""
+    # display_name (not team.team_name): a ghost registration can hold a letter too (owner 2026-08-20).
+    rows = {
+        tt.pk: tt
+        for tt in TournamentTeam.objects.filter(
+            pk__in=[info["tournament_team_id"], info["other_tournament_team_id"]],
+        ).select_related("team", "ghost_team")
+    }
+    team = rows.get(info["tournament_team_id"])
+    other = rows.get(info["other_tournament_team_id"])
+    where = info["stage_name"] + (f", {info['group_name']}" if info["group_name"] else "")
+    return Response({
+        "code": "letter_taken",
+        "message": (
+            f"Letter {info['letter']} would be shared by {team.display_name if team else 'a team'} and "
+            f"{other.display_name if other else 'another team'} in {where}."
+        ),
+        "letter": info["letter"],
+        "stage_id": info["stage_id"],
+        "group_name": info["group_name"],
+        "team_id": team.team_id if team else None,
+        "conflicting_team_id": other.team_id if other else None,
+        "conflicting_team_name": other.display_name if other else None,
+    }, status=409)
+
+
+def _notify_letter_assignment(user, event, tt, letter, stage_ids, broadcast):
+    """Push (and with broadcast=True also email) every member of the team its new letter.
+
+    TeamMembers is the live team roster (not the event roster) so EVERY teammate hears about it.
+    deliver_broadcast localizes the email per recipient + stamps the event deep link. log=False so a
+    single assignment does not flood the broadcast-history audit. Returns the number pushed; a
+    notification failure never rolls back an assignment that already persisted.
+    """
+    recipients = [
+        tm.member
+        for tm in TeamMembers.objects.filter(team=tt.team).select_related("member")
+        if tm.member
+    ] if tt.team_id else []
+    if not recipients:
+        return 0
+    # English source line (broadcasts are stored in English; deliver_broadcast translate-on-reads
+    # the in-app row + localizes the email). No em/en dashes.
+    if stage_ids:
+        stage_names = ", ".join(
+            Stages.objects.filter(event=event, stage_id__in=stage_ids)
+            .values_list("stage_name", flat=True)
+        )
+        message = f"Your assigned letter for {event.event_name} ({stage_names}) is {letter}."
+    else:
+        message = f"Your assigned letter for {event.event_name} is {letter}."
+    try:
+        pushed, _emailed = deliver_broadcast(
+            recipients, "Letter assignment", message,
+            delivery="both" if broadcast else "push",
+            notification_type="letter_assignment", related_event=event,
+            sender=user, scope="event", log=False,
+        )
+        return pushed
+    except Exception:
+        return 0
+
+
+@api_view(["POST"])
+def assign_team_letters_bulk(request):
+    """POST /events/assign-team-letters/  (admin / organizer)  - letters per room, inbox #602.
+
+    The suggester's "Apply all": write many teams' letters in ONE transaction. The clash check reads
+    the FINAL state, so a swap (team X: A->B, team Y: B->A) passes, and a clash anywhere in the batch
+    writes nothing at all.
+
+    REQUEST (JSON)
+      { "event_id": <int>,
+        "stage_ids": [<int>, ...],   # [] / absent = ALL STAGES (kept across stages)
+        "assignments": [{"tournament_team_id": <int>} or {"team_id": <int>}, "letter": "A" or ""}],
+        "broadcast": false }         # optional: also email each team (push happens either way)
+
+    RESPONSE
+      200 { updated: [{tournament_team_id, team_id, letter}], stage_ids, notified }
+      400 bad body / letter (code invalid_letter) / stage (code invalid_stage)
+      403 not an event admin / org for this event   404 event not found
+      409 letter_taken (both teams, the stage and the room named; nothing written)
+
+    GATE
+      Same as assign_team_letter (AFC event admin OR org can_manage_registrations).
+
+    CONSUMED BY
+      frontend RegisteredTeamsTab.tsx, the Suggest letters panel ("Apply all").
+    """
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Bearer "):
+        return Response({"message": "Please sign in to continue.", "code": "invalid_missing_authorization_token"}, status=401)
+    user = validate_token(auth.split(" ")[1])
+    if not user:
+        return Response({"message": "Invalid or expired session token.", "code": "invalid_expired_session_token"}, status=401)
+
+    event_id = request.data.get("event_id")
+    if not event_id:
+        return Response({"message": "event_id is required.", "code": "event_required"}, status=400)
+    event = get_object_or_404(Event, event_id=event_id)
+    if not _is_event_admin(user) and not org_can_event(user, "can_manage_registrations", event):
+        return Response({"message": "You do not have permission to assign letters for this event.", "code": "not_permission_assign_letters"}, status=403)
+
+    try:
+        stage_ids = _parse_letter_stage_ids(request.data.get("stage_ids"))
+    except ValueError:
+        return Response({"message": "stage_ids must be a list of this event's stages.", "code": "invalid_stage"}, status=400)
+
+    raw = request.data.get("assignments")
+    if not isinstance(raw, list) or len(raw) > 200:
+        return Response({"message": "assignments must be a list of at most 200 teams.", "code": "invalid_assignments"}, status=400)
+
+    regs = list(TournamentTeam.objects.filter(event=event).select_related("team", "ghost_team"))
+    by_pk = {tt.pk: tt for tt in regs}
+    by_team = {tt.team_id: tt for tt in regs if tt.team_id}
+    changes = {}
+    for item in raw:
+        if not isinstance(item, dict):
+            return Response({"message": "Each assignment needs a team and a letter.", "code": "invalid_assignments"}, status=400)
+        tt = by_pk.get(item.get("tournament_team_id")) or by_team.get(item.get("team_id"))
+        if not tt:
+            return Response({"message": "A team in the list is not registered for this event.", "code": "team_not_registered_event"}, status=404)
+        raw_letter = item.get("letter")
+        if raw_letter in (None, "", "none", "None"):
+            changes[tt.pk] = None
+            continue
+        letter = _norm_letter_char(raw_letter)
+        if not letter:
+            return Response({"message": "letter must be a single A-Z character.", "code": "invalid_letter"}, status=400)
+        changes[tt.pk] = letter
+
+    try:
+        apply_letters(event, changes, stage_ids)
+    except ValueError:
+        return Response({"message": "stage_ids must be a list of this event's stages.", "code": "invalid_stage"}, status=400)
+    except LetterClash as clash:
+        return _letter_clash_response(clash.info)
+
+    broadcast = _as_bool(request.data.get("broadcast"))
+    notified = 0
+    for tt_pk, letter in changes.items():
+        if letter:
+            notified += _notify_letter_assignment(user, event, by_pk[tt_pk], letter, stage_ids, broadcast)
+
+    return Response({
+        "updated": [
+            {"tournament_team_id": pk, "team_id": by_pk[pk].team_id, "letter": letter}
+            for pk, letter in changes.items()
+        ],
+        "stage_ids": stage_ids or [],
         "notified": notified,
     }, status=200)
 
@@ -24254,7 +24458,9 @@ def get_event_team_letters(request):
 
     RESPONSE
       200 { event_id, min_letter_avatars,
-            teams: [{tournament_team_id, team_id, team_name, available_letters, assigned_letter, member_count}],
+            stages: [{stage_id, stage_name, rooms: [{group_id, group_name, tournament_team_ids}]}],
+            teams: [{tournament_team_id, team_id, team_name, available_letters, assigned_letter,
+                     stage_letters: {"<stage_id>": "A"}, member_count}],
             limit, offset, total_count, has_more, next_offset }
       400 missing event_id   403 not an event admin / org for this event   404 event not found
 
@@ -24301,6 +24507,15 @@ def get_event_team_letters(request):
     total_count = base_qs.count()
     page = base_qs[offset:offset + limit]
 
+    # Letters per room (inbox #602): every per-stage letter of the page's teams, keyed by stage id as
+    # a STRING (JSON object keys are strings on the wire anyway; the site reads them that way).
+    page = list(page)
+    stage_letters = {}
+    for tt_id, stage_id, letter in StageTeamLetter.objects.filter(
+        tournament_team__in=page,
+    ).values_list("tournament_team_id", "stage_id", "letter"):
+        stage_letters.setdefault(tt_id, {})[str(stage_id)] = letter
+
     teams = []
     for tt in page:
         # The team's event-roster member users feed the live union (+ the team's manual extras).
@@ -24313,12 +24528,33 @@ def get_event_team_letters(request):
             "team_name": tt.display_name,
             "available_letters": _letter_avatars_available(member_users, team=tt.team),
             "assigned_letter": tt.assigned_letter,
+            "stage_letters": stage_letters.get(tt.tournament_team_id, {}),
             "member_count": len(member_users),
         })
+
+    # The ROOMS of every stage (letter_rooms.stage_rooms), so the site can filter by stage / group,
+    # flag clashes and run the suggester on exactly the rooms the server checks. Small (a stage has a
+    # handful of lobbies), so it rides on every page rather than its own endpoint.
+    stages = [
+        {
+            "stage_id": stage.stage_id,
+            "stage_name": stage.stage_name,
+            "rooms": [
+                {
+                    "group_id": room["group_id"],
+                    "group_name": room["group_name"],
+                    "tournament_team_ids": sorted(room["team_ids"]),
+                }
+                for room in stage_rooms(stage)
+            ],
+        }
+        for stage in Stages.objects.filter(event=event)  # model ordering: stage_order, start_date
+    ]
 
     return Response({
         "event_id": event.event_id,
         "min_letter_avatars": event.min_letter_avatars,
+        "stages": stages,
         "teams": teams,
         "limit": limit,
         "offset": offset,
@@ -25788,15 +26024,23 @@ def complete_event_core(event, by_user, *, source="manual"):
 
 
 def _final_stage_for_event(event):
-    """The event's LAST stage: an explicit finals stage if any is marked, else the highest
-    stage_order (ties broken by stage_id). None when the event has no stages. Used to decide
-    'the tournament is over' for auto-complete (only the final stage finishing matters)."""
-    stages = list(Stages.objects.filter(event=event))
-    if not stages:
-        return None
-    finals = [s for s in stages if getattr(s, "is_finals_stage", False)]
-    pool = finals or stages
-    return max(pool, key=lambda s: ((s.stage_order or 0), s.stage_id))
+    """The stage that decides the event: a stage marked is_finals_stage if any, else the LAST stage in
+    the event's running order (stage_order, start_date, stage_id), the same order the event page, the
+    partner API, seeding and final_standings use. None when the event has no stages.
+
+    Read by maybe_autocomplete_event (the event completes when THIS stage's results are all in),
+    final_standings.event_final_standings (which teams reached the final stage, and so prize_sync),
+    and the partner API (final_stage, final_stage_has_results).
+
+    It used to be the highest stage_order with ties broken by stage_id, skipping start_date. A stage
+    nobody ordered by hand all share stage_order 0, so the most recently CREATED stage won: the
+    NATIONAL FREE FIRE PRO LEAGUE added its QUARTER FINALS after its FINALS, and scoring the quarter
+    finals' last map completed the whole event on 10 Nov 2026 with the finals a month away (owner
+    2026-11-19, inbox #627). Measured on production that day: event 373 was the only one of 176 whose
+    pick changes."""
+    stages = Stages.objects.filter(event=event)
+    finals = stages.filter(is_finals_stage=True)
+    return (finals if finals.exists() else stages).order_by("stage_order", "start_date", "stage_id").last()
 
 
 def maybe_autocomplete_event(event, by_user):
@@ -25819,14 +26063,75 @@ def maybe_autocomplete_event(event, by_user):
     # completion is still gated on EVERY final-stage match having result_inputted=True, so a scrims with
     # maps still to enter stays ongoing. A completed scrims can still be reopened (reopen_event).
     stage = _final_stage_for_event(event)
-    if stage is None:
-        return False
-    matches = Match.objects.filter(group__stage=stage)
-    if matches.count() == 0:
-        return False
-    if matches.filter(result_inputted=False).exists():
-        return False  # at least one final-stage match still has no result
+    if stage is None or not stage_results_all_in(stage):
+        return False  # no final stage, no maps yet, or at least one final-stage map still has no result
     return complete_event_core(event, by_user, source="auto-results")
+
+
+def stage_results_all_in(stage):
+    """True when every lobby and every bracket of `stage` is finished AND nothing is awaiting a decision.
+
+    THE one definition of "this stage's results are all in" (owner 2026-11-19). Read by
+    maybe_autocomplete_event (an event completes when its FINAL stage's results are all in) and by
+    update_event_and_stage_statuses (a stage inside its dates is completed once its results are all in,
+    instead of staying ongoing until the day after its end_date).
+
+    Owner, 19 Nov 2026 (inbox #626), on v7.20.5's first version (every existing map scored): "they should read
+    completed after all map results have been entered and confirmed", and brackets need a way too. So:
+      - A map LOBBY (a group with no bracket_format) is finished when it holds at least its PLANNED number of
+        maps (StageGroups.match_count, at least 1) and every one has its result. Maps created one at a time as
+        results arrive no longer make the stage read completed between two games.
+      - A BRACKET is finished by its own rule (head_to_head._bracket_complete: the final decided, plus the
+        3rd-place match when there is one; a league when every match is played). Each group bracket counts
+        separately, and the legacy stage-wide bracket (matches with no group) too. Finishing Group A's bracket
+        writes scored placement maps, which the first version read as "the whole stage is done" while Group B
+        was still playing; the bracket rule replaces that.
+      - CONFIRMED means nothing is waiting for an organizer: no parked AFC Capture upload for this stage or
+        one of its groups, no team-submitted map result and no team-reported bracket result pending review.
+    Bookkeeping groups (is_synthetic) are skipped, and so is a map-less group in a stage that runs a bracket
+    (an old Clash Squad stage's leftover group). A stage with nothing to finish is never "all in", so the
+    date rule decides it.
+    """
+    from .head_to_head import _bracket_complete, bracket_matches
+    from .models import H2HResultSubmission, PendingCaptureUpload, TeamMapResultSubmission
+
+    groups = [g for g in stage.groups.all() if not g.is_synthetic]
+    legacy_bracket = list(bracket_matches(stage, None))
+    has_bracket = bool(legacy_bracket) or any(g.bracket_format for g in groups)
+    finished_parts = 0
+
+    if legacy_bracket:
+        if not _bracket_complete(legacy_bracket):
+            return False
+        finished_parts += 1
+
+    for g in groups:
+        if g.bracket_format:
+            matches = list(bracket_matches(stage, g.group_id))
+            if not matches or not _bracket_complete(matches):
+                return False
+        else:
+            maps = Match.objects.filter(group=g)
+            if has_bracket and not maps.exists():
+                continue  # a map-less leftover group in a bracket stage is not a lobby
+            if maps.filter(result_inputted=False).exists():
+                return False
+            if maps.filter(result_inputted=True).count() < max(g.match_count or 0, 1):
+                return False
+        finished_parts += 1
+
+    if not finished_parts:
+        return False
+
+    # Confirmed: nothing awaiting a decision.
+    if PendingCaptureUpload.objects.filter(status="pending").filter(
+            Q(stage=stage) | Q(group__stage=stage)).exists():
+        return False
+    if TeamMapResultSubmission.objects.filter(status="pending", match__group__stage=stage).exists():
+        return False
+    if H2HResultSubmission.objects.filter(status="pending", h2h_match__stage=stage).exists():
+        return False
+    return True
 
 
 @api_view(["POST"])
@@ -26113,18 +26418,39 @@ def _recompute_team_kills_for_event(event):
     qs = (TournamentTeamMatchStats.objects
           .filter(tournament_team__event=event)
           .select_related("match"))
+    # Every team row's rostered kills in ONE grouped query (was one aggregate per row: a query per
+    # team per map of the whole event on every upload; open list item 5, 18 Nov 2026).
+    rostered_by_row = dict(
+        TournamentPlayerMatchStats.objects
+        .filter(team_stats__tournament_team__event=event)
+        .values("team_stats")
+        .annotate(s=Sum("kills"))
+        .values_list("team_stats", "s")
+    )
     for ts in qs:
         key = (ts.match_id, ts.tournament_team_id)
         seen.add(key)
-        rostered = ts.player_stats.aggregate(s=Sum("kills"))["s"] or 0
+        rostered = rostered_by_row.get(ts.team_stats_id) or 0
         new_kills = rostered + counted_by_key.get(key, 0) + attr_kills.get(key, 0)
         pts = _score(ts.match, ts.placement, new_kills, ts.damage, ts.assists,
                      ts.bonus_points or 0, ts.penalty_points or 0, ts.played)
+        updated += 1   # counts rows RECOMPUTED (the callers' team_rows_recomputed), written or not
+        # SAVE ONLY WHAT CHANGED (open list item 5, 18 Nov 2026). Every save fires afc_rankings'
+        # post_save receiver, which queues a ranking recalc for the team AND each of its players
+        # (after a season lookup per call). Saving every row of the event unconditionally made one
+        # Capture upload queue a recalc for every team and player of every map the event had ever
+        # scored, so each upload got slower as the event went on: on a local copy of event 373 one
+        # map queued 1,112 recalcs over 5,556 SQL queries (6.8 s); with this skip, 12 team and 42
+        # player recalcs. The server took about 20 s on the semi final uploads (inbox #623's 30 s
+        # Capture timeout); that figure was not measured on the server itself. An unchanged row needs
+        # no write and no recalc: the rankings would read the same numbers. The NEW map's players
+        # are queued by the writer (result_writes.write_team_result_row), not by this re-save.
+        if (ts.kills, ts.kill_points, ts.total_points) == (new_kills, pts["kill_points"], pts["total_points"]):
+            continue
         ts.kills = new_kills
         ts.kill_points = pts["kill_points"]
         ts.total_points = pts["total_points"]
         ts.save(update_fields=["kills", "kill_points", "total_points"])
-        updated += 1
 
     # Attributed block whose team has NO stats row in that match yet -> create one (placement from the
     # block, kills = its attributed total). This is how a team that only appears via the admin's

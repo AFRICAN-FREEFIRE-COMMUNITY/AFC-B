@@ -52,6 +52,28 @@ def _enqueue_player(player_id, match):
     tasks.enqueue_player(player_id, day.replace(day=1), season.season_id if season else None)
 
 
+def queue_player_recalcs(match, player_ids):
+    """Queue a recalc for each player of a team row that was just written, once the DB commits.
+
+    WHY (open list item 5, 18 Nov 2026). The one result writer
+    (afc_tournament_and_scrims.result_writes.write_team_result_row) creates the team row FIRST,
+    so on_team_stats_save below sees no player rows yet, and then bulk_creates the players, which
+    sends no post_save at all. Until now the players' recalcs only arrived because the log upload
+    re-saved every team row of the event afterwards (_recompute_team_kills_for_event); that
+    re-save now skips unchanged rows, so the writer asks for its players' recalcs itself.
+    Called by: write_team_result_row, after its bulk_create. Each id is queued once.
+    """
+    ids = [pid for pid in dict.fromkeys(player_ids or []) if pid]
+    if not ids:
+        return
+
+    def fire():
+        for pid in ids:
+            _enqueue_player(pid, match)
+
+    transaction.on_commit(fire)
+
+
 # ───────────────────────── receivers ─────────────────────────
 # Registered in apps.py AfcRankingsConfig.ready(). Senders live in
 # afc_tournament_and_scrims.models; each handler enqueues via
