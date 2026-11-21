@@ -2320,6 +2320,10 @@ def create_event(request):
     registration_fee = None
     if registration_type not in ("free", "paid"):
         return Response({"error": "registration_type must be 'free' or 'paid'.", "code": "create_event_refused"}, status=400)
+    # Open organizations (owner 16 Nov 2026, inbox #594): "organizers cannot charge entry fees through AFC for now;
+    # only AFC official events take payment". An organization's event is always free.
+    if registration_type == "paid" and org is not None:
+        return Response({"message": "Organizers cannot charge an entry fee on AFC for now. Only AFC's own events take payment.", "code": "org_paid_entry_off"}, status=400)
     if registration_type == "paid":
         try:
             registration_fee = Decimal(str(request.data.get("registration_fee")))
@@ -2404,6 +2408,12 @@ def create_event(request):
             # Organizer events are ALWAYS internal: off-platform "external" registration is an
             # AFC-admin-only concept, so an org event can never flip to it.
             event.event_type = "internal" if org else request.data.get("event_type")
+            # Open organizations (owner 16 Nov 2026, inbox #588): a Verified or AFC Partner organization's results
+            # count for the rankings, so its new event starts with the review flag on (an admin or an upheld report
+            # can still switch it off); a Community organization's never counts (afc_organizers/badges.py).
+            if org is not None:
+                from afc_organizers.badges import counts_for_rankings
+                event.rankings_verified = counts_for_rankings(org)
             event.is_waitlist_enabled = _wl_enabled
             event.waitlist_capacity = _wl_capacity
             event.waitlist_mode = _wl_mode
@@ -2818,6 +2828,7 @@ def duplicate_event(request, event_id):
         # dropping a field takes a deliberate line in event_contract.DUPLICATE_EXCLUDED. A new
         # field added to Event is carried here without this function being touched.
         # See test_duplicate_event_fields.py, which pins both halves.
+        from afc_organizers.badges import counts_for_rankings
         new_event = Event.objects.create(
             **duplicate_field_values(source),
             # " (Copy)" makes the clone obvious in the events list. A long source name is shortened,
@@ -2837,7 +2848,8 @@ def duplicate_event(request, event_id):
             creator=user,          # the actor owns the clone
             is_draft=True,         # always a draft
             is_public=False,       # private until the owner publishes
-            rankings_verified=False,   # reset the rankings gate
+            # the rankings gate follows the organization's badge, as on create (afc_organizers/badges.py, #588)
+            rankings_verified=bool(source.organization_id) and counts_for_rankings(source.organization),
             partner_published=False,   # reset the partner-API gate
         )
 
@@ -3680,6 +3692,9 @@ def edit_event(request):
     # rules uploads (request.FILES), is_sponsored and sponsor_usernames (they delete and re-create
     # SponsorEvent rows), event_type (it deletes registrations, and is forced to "internal" for org
     # events), and the cross-field validations that need every value applied first.
+    # Open organizations (inbox #594): an organization's event may not BECOME paid. One that was already paid
+    # before the rule stays editable (its players may have paid); see the check after the writes.
+    was_paid = event.registration_type == "paid"
     try:
         apply_event_writes(event, request.data, role=ADMIN)
     except WriteRefused as exc:
@@ -3707,6 +3722,9 @@ def edit_event(request):
     elif "prizepool" in request.data and not event.prize_currency:
         event.prize_currency = "USD"
 
+
+    if event.organization_id and event.registration_type == "paid" and not was_paid:
+        return Response({"message": "Organizers cannot charge an entry fee on AFC for now. Only AFC's own events take payment.", "code": "org_paid_entry_off"}, status=400)
 
     # A paid event must end up with a positive fee.
     if event.registration_type == "paid" and (event.registration_fee is None or event.registration_fee <= 0):
@@ -8284,7 +8302,7 @@ def check_and_activate_team(tournament_team):
 </body>
 </html>
 """
-        send_email(email, subject, message, language=owner_lang, prelocalized=True)
+        send_email(email, subject, message, language=owner_lang, prelocalized=True, event=tournament_team.event)
 
         # ---------------- PREPARE ROLE ASSIGNMENT ----------------
         stage = Stages.objects.filter(event=tournament_team.event).first()
@@ -8438,7 +8456,7 @@ def confirm_player(request):
 """
 
     try:
-        send_email(email, subject, player_message, language=player_lang, prelocalized=True)
+        send_email(email, subject, player_message, language=player_lang, prelocalized=True, event=event)
     except Exception as e:
         print(f"Player email failed: {e}")
 
@@ -8518,7 +8536,7 @@ def confirm_player(request):
 """
 
     try:
-        send_email(team_owner_email, subject, owner_message, language=owner_lang, prelocalized=True)
+        send_email(team_owner_email, subject, owner_message, language=owner_lang, prelocalized=True, event=event)
     except Exception as e:
         print(f"Owner email failed: {e}")
 
@@ -8735,7 +8753,7 @@ def reject_player(request):
 """
 
     try:
-        send_email(email, subject, player_message, language=player_lang, prelocalized=True)
+        send_email(email, subject, player_message, language=player_lang, prelocalized=True, event=event)
     except Exception as e:
         print(f"Player rejection email failed: {e}")
 
@@ -8818,7 +8836,7 @@ def reject_player(request):
 """
 
     try:
-        send_email(team_owner_email, subject, owner_message, language=owner_lang, prelocalized=True)
+        send_email(team_owner_email, subject, owner_message, language=owner_lang, prelocalized=True, event=event)
     except Exception as e:
         print(f"Owner rejection email failed: {e}")
 

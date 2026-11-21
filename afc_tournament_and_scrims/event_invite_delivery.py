@@ -275,6 +275,9 @@ def _send_invitation_emails(
                     # The copy arrived already localized from the hand-authored catalog, so the
                     # machine-translation block inside send_email is skipped.
                     prelocalized=True,
+                    # Event email goes out only for AFC's own and AFC Partner events (badges.py, #599 to #601);
+                    # the in-app notification and the WhatsApp message below are not affected.
+                    event=event,
                 )
             except Exception:
                 continue

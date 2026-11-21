@@ -42,6 +42,8 @@
   "organization_name": null,
   "organization_slug": null,
   "organization_logo": null,
+  "organization_badge": null,
+  "sends_email": true,
   "uploaded_rules_url": null,
   "number_of_stages": 1,
   "created_at": "<volatile>",

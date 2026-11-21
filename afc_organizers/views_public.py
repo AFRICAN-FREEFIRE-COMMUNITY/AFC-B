@@ -98,6 +98,8 @@ def get_organization_public(request, slug):
             "default_banner": request.build_absolute_uri(org.default_banner.url) if org.default_banner else None,
             "description": org.description,
             "socials": org.socials,
+            # Open organizations (21 Nov 2026): Community / Verified / AFC Partner, shown as a chip (OrgBadge.tsx).
+            "badge": org.badge,
             "events": events_data,
             "rating": None,
         },
@@ -194,6 +196,8 @@ def get_organizations_directory(request):
             "verified": org.verified_count > 0,
             # best tier label, or null when none of its events carry a tier.
             "tier": _tier_label(org.best_tier),
+            # Open organizations (21 Nov 2026): the organization's badge, shown as a chip on the directory card.
+            "badge": org.badge,
         })
 
     return Response({"organizations": organizations}, status=status.HTTP_200_OK)

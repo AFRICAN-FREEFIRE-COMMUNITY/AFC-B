@@ -643,7 +643,7 @@ def _email(users, event, subject, lead_html, tail_text):
             seen.add(u.user_id)
             ids.append(u.user_id)
     if ids:
-        send_draw_emails.delay(ids, subject, lead_html, tail_text, _event_url(event))
+        send_draw_emails.delay(ids, subject, lead_html, tail_text, _event_url(event), event.event_id)
     return len(ids)
 
 

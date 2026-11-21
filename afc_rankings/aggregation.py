@@ -166,10 +166,14 @@ def _unverified_org_event_ids(event_ids):
     counting in the rankings even after its org is removed. So the divergence from the _ACTIVE_ORG_EVENT
     list filter is deliberate retention, not an oversight; do not add an org-status filter here."""
     from afc_tournament_and_scrims.models import Event
+    # Open organizations (owner 16 Nov 2026, inbox #588): "Community results never count; Verified and Partner
+    # results do." So an org event is left out when its organization is a Community one (whatever its flag says),
+    # or when its own flag is off (the per-event review lever the reports flow uses). The badge rule itself lives in
+    # afc_organizers/badges.py (counts_for_rankings); this query is its database form.
     return set(
-        Event.objects.filter(
-            event_id__in=event_ids, organization__isnull=False, rankings_verified=False
-        ).values_list("event_id", flat=True)
+        Event.objects.filter(event_id__in=event_ids, organization__isnull=False)
+        .filter(Q(rankings_verified=False) | Q(organization__badge="community"))
+        .values_list("event_id", flat=True)
     )
 
 

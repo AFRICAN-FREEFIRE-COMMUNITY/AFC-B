@@ -93,8 +93,60 @@ class Organization(models.Model):
     paystack_recipient_code = models.CharField(max_length=120, blank=True, default="")
     stripe_account_id = models.CharField(max_length=120, blank=True, default="")
 
+    # ── Badges: Community, Verified, AFC Partner (open organizations, owner 16 Nov 2026, AFC inbox #582 to #601) ──
+    # TRUST AND REACH ONLY: no tool is ever gated by a badge (owner: "any organization can use the full features
+    # free"). What a badge decides lives in afc_organizers/badges.py, the one place every gate asks: whose results
+    # count for the rankings (afc_rankings/aggregation.py), which events may email players (afc_auth send_email),
+    # and whether an AFC admin may give the Verified tick (the six rules). The model default is "verified" ON
+    # PURPOSE: every organization that exists today was provisioned by an AFC admin, so `migrate` gives them the tick
+    # with no data step, and an admin-provisioned one keeps starting Verified; anyone starting an organization
+    # themselves (views_start.py) is set to "community" explicitly. History: OrganizationBadgeHistory.
+    BADGE_CHOICES = [("community", "Community"), ("verified", "Verified"), ("partner", "AFC Partner")]
+    badge = models.CharField(max_length=12, choices=BADGE_CHOICES, default="verified")
+    # AFC Partner perks, {perk key: on}. Keys: badges.PERKS. Making a Partner switches every one on.
+    perks = models.JSONField(default=dict, blank=True)
+    # Started by its owner through organizers/start/ (True) or provisioned by an AFC admin (False).
+    self_started = models.BooleanField(default=False)
+    # Where the organization is based, ISO 3166 alpha-2 ("NG"). Asked on step 1 of the start; blank for the ones
+    # AFC provisioned before 21 Nov 2026.
+    country = models.CharField(max_length=2, blank=True, default="")
+    # Two Verified rules nothing on the site records by itself, so an AFC admin ticks them (who and when):
+    # trophies handed over and confirmed, and an AFC official given access to the organization's community.
+    trophies_confirmed_at = models.DateTimeField(null=True, blank=True)
+    trophies_confirmed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="org_trophy_ticks",
+    )
+    community_access_at = models.DateTimeField(null=True, blank=True)
+    community_access_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="org_community_ticks",
+    )
+
     def __str__(self):
         return f"{self.name} ({self.slug})"
+
+
+class OrganizationBadgeHistory(models.Model):
+    """Every badge change, perk switch and admin tick on an organization, newest first: the History list on the
+    admin Organizations page and the audit trail of who gave what. Written only by afc_organizers/badges.py
+    (set_badge, set_perk, set_rule_tick) and views_start.py ("started")."""
+
+    organization = models.ForeignKey(Organization, on_delete=models.CASCADE, related_name="badge_history")
+    # badge | perk_on | perk_off | tick_on | tick_off | started
+    action = models.CharField(max_length=24)
+    from_badge = models.CharField(max_length=12, blank=True, default="")
+    to_badge = models.CharField(max_length=12, blank=True, default="")
+    note = models.TextField(blank=True, default="")
+    by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+                           related_name="org_badge_actions")
+    at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-at", "-pk"]
+
+    def __str__(self):
+        return f"{self.organization_id} {self.action} {self.from_badge}->{self.to_badge}"
 
 
 # Canonical list of the granular permission columns on OrganizationMember. Used by the
