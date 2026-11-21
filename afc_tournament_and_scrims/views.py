@@ -2404,6 +2404,12 @@ def create_event(request):
             # Organizer events are ALWAYS internal: off-platform "external" registration is an
             # AFC-admin-only concept, so an org event can never flip to it.
             event.event_type = "internal" if org else request.data.get("event_type")
+            # Open organizations (owner 16 Nov 2026, inbox #588): a Verified or AFC Partner organization's results
+            # count for the rankings, so its new event starts with the review flag on (an admin or an upheld report
+            # can still switch it off); a Community organization's never counts (afc_organizers/badges.py).
+            if org is not None:
+                from afc_organizers.badges import counts_for_rankings
+                event.rankings_verified = counts_for_rankings(org)
             event.is_waitlist_enabled = _wl_enabled
             event.waitlist_capacity = _wl_capacity
             event.waitlist_mode = _wl_mode
@@ -2818,6 +2824,7 @@ def duplicate_event(request, event_id):
         # dropping a field takes a deliberate line in event_contract.DUPLICATE_EXCLUDED. A new
         # field added to Event is carried here without this function being touched.
         # See test_duplicate_event_fields.py, which pins both halves.
+        from afc_organizers.badges import counts_for_rankings
         new_event = Event.objects.create(
             **duplicate_field_values(source),
             # " (Copy)" makes the clone obvious in the events list. A long source name is shortened,
@@ -2837,7 +2844,8 @@ def duplicate_event(request, event_id):
             creator=user,          # the actor owns the clone
             is_draft=True,         # always a draft
             is_public=False,       # private until the owner publishes
-            rankings_verified=False,   # reset the rankings gate
+            # the rankings gate follows the organization's badge, as on create (afc_organizers/badges.py, #588)
+            rankings_verified=bool(source.organization_id) and counts_for_rankings(source.organization),
             partner_published=False,   # reset the partner-API gate
         )
 
