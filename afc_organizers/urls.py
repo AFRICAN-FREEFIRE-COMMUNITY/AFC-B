@@ -16,10 +16,14 @@ from . import (
     views_admin, views_organizer, views_public,
     views_reviews, views_reports, views_blacklist, views_blacklist_lookup,
     views_ai_key,
-    views_leaderboard_design, co_organizers, payouts,
+    views_leaderboard_design, co_organizers, payouts, views_start,
 )
 
 urlpatterns = [
+    # ───────────────────────── anyone starts an organization (open organizations, 21 Nov 2026) ─────────────────
+    # views_start.py; called by the site's /organizations/start page (StartOrganization.tsx).
+    path("start/check-name/", views_start.check_organization_name, name="organizers_start_check_name"),
+    path("start/", views_start.start_organization, name="organizers_start"),
     # ───────────────────────── AFC staff: provisioning + oversight ─────────────────────────
     path("admin/create-organization/", views_admin.admin_create_organization,
          name="organizers_admin_create"),

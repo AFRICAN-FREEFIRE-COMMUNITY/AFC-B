@@ -107,6 +107,9 @@ class Organization(models.Model):
     perks = models.JSONField(default=dict, blank=True)
     # Started by its owner through organizers/start/ (True) or provisioned by an AFC admin (False).
     self_started = models.BooleanField(default=False)
+    # Where the organization is based, ISO 3166 alpha-2 ("NG"). Asked on step 1 of the start; blank for the ones
+    # AFC provisioned before 21 Nov 2026.
+    country = models.CharField(max_length=2, blank=True, default="")
     # Two Verified rules nothing on the site records by itself, so an AFC admin ticks them (who and when):
     # trophies handed over and confirmed, and an AFC official given access to the organization's community.
     trophies_confirmed_at = models.DateTimeField(null=True, blank=True)
