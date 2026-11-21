@@ -18,6 +18,33 @@ At release time `node ~/.claude/skills/versioning/scripts/release.mjs next` prin
 rename `## Unreleased` to it, merge, then tag the merge commit. A version tag pushed with the wrong
 number is blocked before the push.
 
+## Unreleased
+
+### Added
+- Anyone signed in can start an organization and host events on AFC (organizers/start/), as a Community
+  organization: every tool works the same for every organization, free. Names that belong to someone else (Garena,
+  Free Fire, AFC, Booyah, African Free Fire Community, as whole words) are refused, a name is taken whatever its
+  case or spacing, one person may start up to three, and the start is guarded by the bot check. AFC inbox #582,
+  #583.
+- Organization badges: Community, Verified and AFC Partner, with a history of every change. AFC admins give the
+  Verified tick when six rules are met (20 finished events, trophies confirmed, an average rating of 4 or more, no
+  upheld reports in 90 days, a complete profile, an AFC official in the organization's community; the trophies and
+  community rules are ticked by an admin), make a Verified organization an AFC Partner with seven perks (featured,
+  event email to players, stream-day help, qualifiers, a direct line, early tools, faster screenshot reading), and
+  switch perks. The owners get a notification and an email (en/fr/pt). AFC inbox #587, #590, #592, #593, #597.
+- Event payloads carry `organization_badge` and `sends_email`. AFC inbox #601.
+
+### Changed
+- Only Verified and AFC Partner organizations' results count for the AFC rankings; a Community organization's
+  never do. Every organization that exists today becomes Verified. A new event of a Verified or Partner
+  organization starts with its rankings review flag on, which an admin or an upheld report can still switch off.
+  AFC inbox #588.
+- Event email (registration accepted or rejected, team activated, invitations, draws) goes out only for AFC's own
+  events and AFC Partner events with the event email perk; other organizers' players get site notifications.
+  AFC inbox #599, #600, #601.
+- Organizers can no longer charge an entry fee: a paid organization event is refused (`org_paid_entry_off`); one
+  that was already paid stays editable. Only AFC's own events take payment. AFC inbox #594.
+
 ## v7.21.3 - 2026-11-21
 
 ### Fixed
