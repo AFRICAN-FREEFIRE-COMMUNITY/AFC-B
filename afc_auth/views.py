@@ -1168,6 +1168,16 @@ def deliver_broadcast(recipients, title, message, *, delivery="both",
     want_email = EMAIL in channels
     want_whatsapp = WHATSAPP in channels
 
+    # Event email only for AFC's own and AFC Partner events (owner 16 Nov 2026, inbox #599 to #601;
+    # afc_organizers/badges.py). Every broadcast ABOUT an event (announcements, room details, group and stage
+    # messages, waitlist promotion, letter assignments) passes related_event; for an organizer that may not email
+    # players the in-app notification (and WhatsApp, which this rule does not cover) still goes, the email does not.
+    # The same rule send_email(event=...) applies to single emails.
+    if want_email and related_event is not None:
+        from afc_organizers.badges import event_may_email
+        if not event_may_email(related_event):
+            want_email = False
+
     # Auto-link existing event broadcasts: no explicit target + a related_event -> point at the event.
     # Falls back to the numeric id if the event has no slug yet (build_notification_link handles either).
     target_type = (target_type or "").strip().lower()

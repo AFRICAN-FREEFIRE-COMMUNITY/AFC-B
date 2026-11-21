@@ -70,6 +70,29 @@ class EmailGateTests(TestCase):
         self.assertFalse(self.send(self.event))
         self.assertEqual(outbox.drain(), [])
 
+    def test_event_broadcast_keeps_the_notification_drops_the_email(self):
+        from afc_auth.models import Notifications, User
+        from afc_auth.views import deliver_broadcast
+        player = User.objects.create(username="dayo", email="dayo@gmail.com", full_name="Dayo", password="x")
+        pushed, emailed = deliver_broadcast([player], "Room details", "Room 1234, password 99", delivery="both",
+                                            related_event=self.event, scope="room_details", log=False)
+        self.assertEqual((pushed, emailed), (1, 0))
+        self.assertEqual(outbox.drain(), [])
+        self.assertTrue(Notifications.objects.filter(user=player, related_event=self.event).exists())
+        self.set_org("partner", {"promo": True})
+        pushed, emailed = deliver_broadcast([player], "Room details", "Room 1234, password 99", delivery="both",
+                                            related_event=self.event, scope="room_details", log=False)
+        self.assertEqual((pushed, emailed), (1, 1))
+        # deliver_broadcast sends its emails on a background thread: wait for it.
+        import time
+        sent = []
+        for _ in range(50):
+            sent += outbox.drain()
+            if sent:
+                break
+            time.sleep(0.1)
+        self.assertEqual(len(sent), 1)
+
     def test_mail_not_about_an_event_is_untouched(self):
         self.assertTrue(send_email("player@gmail.com", "Your code", "<p>123456</p>"))
         self.assertEqual(len(outbox.drain()), 1)
