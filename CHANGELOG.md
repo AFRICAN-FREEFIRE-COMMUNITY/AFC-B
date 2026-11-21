@@ -18,6 +18,13 @@ At release time `node ~/.claude/skills/versioning/scripts/release.mjs next` prin
 rename `## Unreleased` to it, merge, then tag the merge commit. A version tag pushed with the wrong
 number is blocked before the push.
 
+## Unreleased
+
+### Fixed
+- A guest registration (a team with no AFC account, added from imported results) can be given a letter from its
+  row on Registered Teams. Its letter picker was always greyed out, and the server only looked a team up by its
+  AFC team. From the 18 Nov 2026 open list.
+
 ## v7.21.3 - 2026-11-21
 
 ### Fixed
