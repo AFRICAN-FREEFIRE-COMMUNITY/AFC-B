@@ -39,8 +39,10 @@ number is blocked before the push.
   never do. Every organization that exists today becomes Verified. A new event of a Verified or Partner
   organization starts with its rankings review flag on, which an admin or an upheld report can still switch off.
   AFC inbox #588.
-- Event email (registration accepted or rejected, team activated, invitations, draws) goes out only for AFC's own
-  events and AFC Partner events with the event email perk; other organizers' players get site notifications.
+- Event email (registration accepted or rejected, team activated, invitations, draws, and every event broadcast:
+  announcements, room details, group and stage messages, waitlist promotion, letter assignments) goes out only for
+  AFC's own events and AFC Partner events with the event email perk; other organizers' players still get the site
+  notification (and WhatsApp where it is on), not the email.
   AFC inbox #599, #600, #601.
 - Organizers can no longer charge an entry fee: a paid organization event is refused (`org_paid_entry_off`); one
   that was already paid stays editable. Only AFC's own events take payment. AFC inbox #594.
