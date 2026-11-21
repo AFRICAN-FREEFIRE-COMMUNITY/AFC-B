@@ -222,6 +222,27 @@ class LetterEndpointTests(LetterRoomsFixture):
         self.assertEqual((r.status_code, r.json()["code"]), (409, "letter_taken"))
         self.assertIn("Group 1", r.json()["message"])
 
+    def test_a_guest_registration_takes_a_letter_by_its_registration_id(self):
+        """A ghost (guest) registration has no AFC team, so the row sends tournament_team_id (21 Nov 2026, from the
+        18 Nov open list: guest registrations could not be assigned from the row)."""
+        from afc_rankings.models import GhostTeam
+        ghost = GhostTeam.objects.create(team_name="Kano Kings", country="NG", created_by=self.admin)
+        tt = TournamentTeam.objects.create(event=self.event, ghost_team=ghost, status="active")
+        r = self.api.post("/events/assign-team-letter/", {"event_id": self.event.event_id,
+                          "tournament_team_id": tt.pk, "letter": "K"}, format="json", **self.auth)
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual((r.json()["team_id"], r.json()["team_name"], r.json()["notified"]), (None, "Kano Kings", 0))
+        tt.refresh_from_db()
+        self.assertEqual(tt.assigned_letter, "K")
+
+    def test_a_registration_of_another_event_is_not_found(self):
+        r = self.api.post("/events/assign-team-letter/", {"event_id": self.event.event_id,
+                          "tournament_team_id": 999999, "letter": "K"}, format="json", **self.auth)
+        self.assertEqual((r.status_code, r.json()["code"]), (404, "team_not_registered_event"))
+        r = self.api.post("/events/assign-team-letter/", {"event_id": self.event.event_id, "letter": "K"},
+                          format="json", **self.auth)
+        self.assertEqual((r.status_code, r.json()["code"]), (400, "event_team_required"))
+
     def test_assign_without_stage_ids_is_all_stages(self):
         self.assertEqual(self._assign(0, "U").status_code, 200)
         self.tts[0].refresh_from_db()

@@ -24215,7 +24215,10 @@ def assign_team_letter(request):
 
     event_id = request.data.get("event_id")
     team_id = request.data.get("team_id")
-    if not event_id or not team_id:
+    # A guest (ghost) registration has no AFC team, so the row sends its registration id instead (21 Nov 2026,
+    # from the 18 Nov open list: "ghost registrations still cannot be assigned from the row Select").
+    tt_id = request.data.get("tournament_team_id")
+    if not event_id or not (team_id or tt_id):
         return Response({"message": "event_id and team_id are required.", "code": "event_team_required"}, status=400)
     event = get_object_or_404(Event, event_id=event_id)
 
@@ -24223,7 +24226,8 @@ def assign_team_letter(request):
     if not _is_event_admin(user) and not org_can_event(user, "can_manage_registrations", event):
         return Response({"message": "You do not have permission to assign letters for this event.", "code": "not_permission_assign_letters"}, status=403)
 
-    tt = TournamentTeam.objects.filter(event=event, team_id=team_id).select_related("team").first()
+    regs = TournamentTeam.objects.filter(event=event).select_related("team")
+    tt = (regs.filter(tournament_team_id=tt_id) if tt_id else regs.filter(team_id=team_id)).first()
     if not tt:
         return Response({"message": "That team is not registered for this event.", "code": "team_not_registered_event"}, status=404)
 
