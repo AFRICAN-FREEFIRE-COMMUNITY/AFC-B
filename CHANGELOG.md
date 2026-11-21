@@ -18,6 +18,15 @@ At release time `node ~/.claude/skills/versioning/scripts/release.mjs next` prin
 rename `## Unreleased` to it, merge, then tag the merge commit. A version tag pushed with the wrong
 number is blocked before the push.
 
+## Unreleased
+
+### Internal
+- Every pull request now runs the Django tests of the parts of the server it touches, in up to six parallel jobs
+  (`tools/test_plan.py` picks them: a changed app plus every app whose code names it), and the whole suite runs every
+  night on main and opens an issue when it is red. Main stayed red twice for two days with nobody seeing it, because
+  CI ran no Django tests. The job is not a required check, so an urgent fix can still merge. The awards hall of fame
+  is now listed among the public answers (it shipped in v7.17.0 without that line). AFC inbox #580, #581.
+
 ## v7.21.1 - 2026-11-19
 
 ### Fixed
