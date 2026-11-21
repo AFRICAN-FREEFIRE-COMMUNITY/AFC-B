@@ -91,6 +91,14 @@ class StartTests(StartBase):
         self.assertTrue(UserRoles.objects.filter(user=self.user, role__role_name="organizer").exists())
         self.assertEqual(OrganizationBadgeHistory.objects.get(organization=org).action, "started")
 
+    def test_start_keeps_social_links_and_refuses_bad_ones(self):
+        r = self.start(instagram="https://instagram.com/kopa", discord="")
+        self.assertEqual(r.status_code, 201)
+        self.assertEqual(Organization.objects.get(slug="kopa-esports").socials,
+                         {"instagram": "https://instagram.com/kopa"})
+        r = self.start(name="Kopa Two", discord="discord.gg/kopa")
+        self.assertEqual((r.status_code, r.json()["code"]), (400, "org_social_invalid"))
+
     def test_start_refuses_without_rules(self):
         r = self.start(rules_accepted="")
         self.assertEqual((r.status_code, r.json()["code"]), (400, "org_rules_not_accepted"))

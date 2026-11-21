@@ -46,6 +46,7 @@ DESCRIPTION_MAX = 1000
 MAX_OWNED = 3          # self-started organizations one person may own
 MAX_PER_DAY = 3        # starts a day per person
 CHECKS_PER_MINUTE = 60
+SOCIAL_KEYS = ("instagram", "discord")
 
 _MESSAGES = {
     "org_name_reserved": "That name belongs to someone else, so it cannot be used. Pick another name.",
@@ -54,6 +55,7 @@ _MESSAGES = {
     "org_country_invalid": "Pick the country your organization is based in.",
     "org_description_too_long": "Keep the about text under 1,000 characters.",
     "org_email_invalid": "That email address does not look right.",
+    "org_social_invalid": "A social link must be a full https:// address.",
     "org_rules_not_accepted": "Read and accept the organizer rules to continue.",
     "org_start_limit": "You already run 3 organizations you started. Ask AFC if you need another one.",
     "org_start_rate_limited": "You started 3 organizations today. Try again tomorrow.",
@@ -144,7 +146,8 @@ def start_organization(request):
     """Start a Community organization owned by the signed-in person.
 
     Body (multipart): name, country (ISO 3166 alpha-2), description (optional, up to 1,000), email (optional),
-    logo (optional picture), rules_accepted ("true"), and the Turnstile token the bot check reads.
+    instagram and discord (optional https:// links), logo (optional picture), rules_accepted ("true"), and the
+    Turnstile token the bot check reads.
     201 {organization: {slug, name, badge}}; refusals carry a code (see _MESSAGES, plus bot_check_failed and the
     picture gate's not_an_image / image_too_large)."""
     user, err = _signed_in(request)
@@ -161,6 +164,14 @@ def start_organization(request):
     country = str(data.get("country") or "").strip().upper()
     description = str(data.get("description") or "").strip()
     email = str(data.get("email") or "").strip()
+    # Optional links on step 2 (the mockup's Instagram and Discord); one of them completes the profile rule.
+    socials = {}
+    for key in SOCIAL_KEYS:
+        link = str(data.get(key) or "").strip()
+        if link:
+            if len(link) > 200 or not link.lower().startswith("https://"):
+                return _refuse("org_social_invalid")
+            socials[key] = link
     try:
         import pycountry
         if len(country) != 2 or pycountry.countries.get(alpha_2=country) is None:
@@ -202,6 +213,7 @@ def start_organization(request):
             org = Organization.objects.create(
                 name=name, slug=_unique_slug(name), country=country, description=description,
                 email=email or None, badge="community", self_started=True, created_by=user, logo=logo,
+                socials=socials,
             )
             OrganizationMember.objects.create(organization=org, user=user, role="owner", status="active",
                                               invited_by=user)
