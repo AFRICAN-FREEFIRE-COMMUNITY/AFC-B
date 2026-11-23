@@ -13841,6 +13841,9 @@ def upload_solo_match_result(request):
             import logging
             logging.getLogger("afc_tournament_and_scrims").exception(
                 "MatchResultLog store failed for solo match %s", match.match_id)
+        # GAME FILE ARCHIVE (inbox #603 #611): kept in the event's archive too (game_archive.archive_scored_result).
+        from . import game_archive
+        game_archive.archive_scored_result(match, getattr(uploaded_file, "name", "") or "", _raw_bytes, admin)
 
     # Auto-complete the event if this upload finished its final stage (owner 2026-06-16). Best-effort.
     # Skipped on a dry-run preview: nothing was saved, so the event state must not change.
@@ -22917,6 +22920,10 @@ def upload_team_match_result(request):
                 import logging
                 logging.getLogger("afc_tournament_and_scrims").exception(
                     "MatchResultLog store failed for match %s", match.match_id)
+            # GAME FILE ARCHIVE (inbox #603 #611): the same file is kept in the event's archive, and every replay,
+            # safe zone or log of this game that arrived first is filed under this map. Own savepoint; never raises.
+            from . import game_archive
+            game_archive.archive_scored_result(match, getattr(uploaded_file, "name", "") or "", raw_bytes, admin)
             # inbox #623: a "decide later" copy of this game parked earlier (18 Nov: the same game parked under
             # Day 2, then scored in Day 3) is retired now, so it can never be resolved into a second map.
             duplicate_game.discard_pending_duplicates(event, _upload_name, match)

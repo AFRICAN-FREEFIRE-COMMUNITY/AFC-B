@@ -69,6 +69,21 @@ def discord_reminder_sweep():
 
 
 
+# ── GAME FILE ARCHIVE zips (owner 2026-11-18, inbox #603): the work lives in game_archive.py ──────────────────
+@shared_task
+def build_archive_zip(zip_id):
+    """Build the zip views_game_archive.archive_zips froze. Queued on request; the page polls its state."""
+    from . import game_archive
+    return game_archive.build_zip(zip_id)
+
+
+@shared_task
+def purge_archive_zips():
+    """Hourly (afc/celery_config.py 'purge_archive_zips_hourly'): delete archive zips older than 24 hours."""
+    from . import game_archive
+    return game_archive.purge_zips()
+
+
 # ── Match MVP sync (owner 14 Nov 2026, AFC inbox #579) ──────────────────────────────────────────────────────────────
 # Match.mvp holds each map's MVP by the event's saved MVP rule; the player profile, rankings and the partner API read
 # it. The decision and the write live in mvp_sync.py; these two are the schedule (afc/celery_config.py).

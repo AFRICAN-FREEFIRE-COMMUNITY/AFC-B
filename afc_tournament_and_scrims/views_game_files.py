@@ -13,8 +13,10 @@
 #   POST events/<event_id>/game-files/debugger/      {file_ids, key, match_id}
 #        -> {updated_rows, kill_events}: knocks, deaths, revives, headshots, survival + the kill feed
 #
-# Files are parsed once and kept in the cache for game_files.BATCH_TTL under an opaque id; nothing of
-# the file itself is stored. An id that has expired is refused with `game_files_expired`.
+# Files are parsed once and kept in the cache for game_files.BATCH_TTL under an opaque id; that cache copy is what
+# the box works from, and an id that has expired is refused with `game_files_expired`. Since 18 Nov 2026 (inbox
+# #603 #611) each file the box reads is ALSO kept, as its original bytes, in the event's game file archive
+# (game_archive.py, _archive_box_file below).
 
 import gzip
 import io
@@ -27,7 +29,10 @@ from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.response import Response
 
 from . import capture_apply
+from . import game_archive
 from . import game_files as gf
+from afc_auth.views import validate_token
+
 from .views import _broadcast_gate
 
 MAX_FILES = 60   # an evening is a handful of debugger files and one result file per game
@@ -58,6 +63,18 @@ def _unpack_bytes(data):
             if out.tell() > MAX_REPLAY_BYTES:
                 raise ValueError("too_large")
     return out.getvalue()
+
+
+def _archive_box_file(request, event, name, data, kind):
+    """GAME FILE ARCHIVE (inbox #603 #611): keep the file the box just read, as its original bytes, in the event's
+    archive (game_archive.archive_box_file). Best-effort: the box works exactly as before if this fails."""
+    auth = request.headers.get("Authorization") or ""
+    user = validate_token(auth.split(" ")[1]) if auth.startswith("Bearer ") else None
+    try:
+        original = _unpack_bytes(data)
+    except (ValueError, OSError, EOFError):
+        return
+    game_archive.archive_box_file(event, name, original, kind, user)
 
 
 def _game_logs(files, item):
@@ -165,6 +182,7 @@ def game_files_read(request, event_id):
             return _refuse("Keep the replay file's own name (ReplayInfo_<match>_<date>.bin) so it can be paired "
                            "with its map.", "replay_name_needed")
         entry = {"id": gf.new_file_id(), "name": name, "kind": "replay", "replay": replay}
+        _archive_box_file(request, event, name, data, "replay")
         cache.set(_key(event, entry["id"]), entry, gf.BATCH_TTL)
         return Response({"file_id": entry["id"], "name": name, "kind": "replay", "games": 1,
                          "match_id": replay["ff_match_id"], "players": len(replay["damage"])})
@@ -194,6 +212,7 @@ def game_files_read(request, event_id):
         out.update(games=1, match_id=entry["result"]["match_id"], start=entry["result"]["played_at"],
                    teams=len(entry["result"]["teams"]))
     cache.set(_key(event, entry["id"]), entry, gf.BATCH_TTL)
+    _archive_box_file(request, event, name, data, kind)
     return Response(out)
 
 
