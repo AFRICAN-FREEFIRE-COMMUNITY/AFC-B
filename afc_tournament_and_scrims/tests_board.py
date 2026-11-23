@@ -201,6 +201,33 @@ class BoardTests(TestCase):
         self.assertEqual(tk["3001"], (0, 4, 4))           # CHARLIE's player, live only
         self.assertEqual((live["map_mvp"]["uid"], live["map_mvp"]["kills"]), ("3001", 4))   # kills first rule
 
+    # ── the live map's MVP follows the WHOLE saved rule, scope included (owner 14 Nov 2026, inbox #577:
+    # "the mvp of each map should be picked based off what was set by the organizer or admin on the website") ──
+    def _live_mvp(self, rows):
+        self.push(rows)
+        body = self.client.get("/events/capture/context/", {"group": self.group.group_id, "standings": "1"},
+                               HTTP_X_UPLOAD_TOKEN=self.upload.token).json()
+        return body["live"]["map_mvp"]
+
+    def _decided_map(self):
+        """Map 3 decided but not uploaded yet: CHARLIE the last team standing, ALPHA's player the top killer."""
+        rows = self.final_map()
+        rows[1].update({"kills": 6, "players": [{"name": "A1", "uid": "1001", "kills": 6}]})
+        return rows
+
+    def test_live_map_mvp_winning_team_waits_while_several_teams_are_in(self):
+        Event.objects.filter(pk=self.event.pk).update(mvp_config={"criteria": ["kills"], "scope": "winning_team"})
+        self.assertIsNone(self._live_mvp(self.live_map()))          # 3 teams still in: no winning team yet
+
+    def test_live_map_mvp_winning_team_comes_from_the_last_team_standing(self):
+        Event.objects.filter(pk=self.event.pk).update(mvp_config={"criteria": ["kills"], "scope": "winning_team"})
+        mvp = self._live_mvp(self._decided_map())
+        self.assertEqual((mvp["uid"], mvp["team_name"]), ("3001", "CHARLIE ESPORTS"))   # not A1's 6 kills
+
+    def test_live_map_mvp_overall_scope_takes_the_whole_lobby(self):
+        Event.objects.filter(pk=self.event.pk).update(mvp_config={"criteria": ["kills"], "scope": "overall"})
+        self.assertEqual(self._live_mvp(self._decided_map())["uid"], "1001")
+
     # ── players and maps ──
     def test_flagged_player_is_on_the_player_board_with_his_stats(self):
         ts = TournamentTeamMatchStats.objects.get(match=self.maps[0], tournament_team=self.tts["BRAVO"])

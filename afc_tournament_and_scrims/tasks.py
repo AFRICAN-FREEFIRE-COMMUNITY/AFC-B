@@ -82,3 +82,21 @@ def purge_archive_zips():
     """Hourly (afc/celery_config.py 'purge_archive_zips_hourly'): delete archive zips older than 24 hours."""
     from . import game_archive
     return game_archive.purge_zips()
+
+
+# ── Match MVP sync (owner 14 Nov 2026, AFC inbox #579) ──────────────────────────────────────────────────────────────
+# Match.mvp holds each map's MVP by the event's saved MVP rule; the player profile, rankings and the partner API read
+# it. The decision and the write live in mvp_sync.py; these two are the schedule (afc/celery_config.py).
+@shared_task
+def sync_match_mvps_recent():
+    """Every 10 minutes: ongoing events and events that ended in the last few days (mvp_sync.RECENT_DAYS), so a
+    result entered by any path is stored as an MVP within 10 minutes."""
+    from .mvp_sync import recent_events, sync_many
+    return sync_many(recent_events())
+
+
+@shared_task
+def sync_match_mvps_all():
+    """03:45 every day, every event with results: the backstop, before the 04:00 rankings sweep reads Match.mvp."""
+    from .mvp_sync import events_with_results, sync_many
+    return sync_many(events_with_results())

@@ -134,7 +134,10 @@ def _player_match_qs(event, group_ids):
     qs = TournamentPlayerMatchStats.objects.select_related(
         "player", "team_stats", "team_stats__match", "team_stats__match__group",
         "team_stats__match__group__stage", "team_stats__tournament_team__team",
-    )
+    ).order_by("pk")
+    # order_by("pk") (14 Nov 2026, inbox #579): a full tie on every criterion goes to the first line max() meets,
+    # so the order must be fixed. Without it the database's order decided, and the MVP stored on Match.mvp
+    # (mvp_sync.py) could flip between two sweeps while nothing changed.
     if group_ids is None:
         return qs.filter(team_stats__match__group__stage__event=event)
     return qs.filter(team_stats__match__group_id__in=group_ids)
@@ -433,6 +436,10 @@ def event_mvp(request, event_id):
         scope = scope if scope in ("overall", "winning_team") else DEFAULT_SCOPE
         event.mvp_config = {"criteria": criteria or DEFAULT_CRITERIA, "scope": scope}
         event.save(update_fields=["mvp_config"])
+        # A new rule re-decides every map of the event: store the winners at once (Match.mvp, read by the player
+        # profile, rankings and the partner API). See mvp_sync.py. Owner 14 Nov 2026, inbox #579.
+        from .mvp_sync import sync_event_match_mvps
+        sync_event_match_mvps(event)
 
     group_ids, stage_ids = _read_scope_params(request)
     scope_group_ids = _resolve_player_scope(event, group_ids, stage_ids)

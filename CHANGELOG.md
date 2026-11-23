@@ -18,7 +18,7 @@ At release time `node ~/.claude/skills/versioning/scripts/release.mjs next` prin
 rename `## Unreleased` to it, merge, then tag the merge commit. A version tag pushed with the wrong
 number is blocked before the push.
 
-## Unreleased
+## v7.22.0 - 2026-11-23
 
 ### Added
 - Game file archive: every game file of every map now reaches the server and is kept, filed under its event, stage,
@@ -30,7 +30,35 @@ number is blocked before the push.
   the event's organizers (their own) can list, download one file, or ask for a zip of a map, a group, a stage or the
   whole event, built in the background and kept 24 hours. Raw files are never served by their stored address. The
   archive refuses new files when the server has under 15 GB free and never slows or fails a result upload.
-  AFC inbox #603, #606, #610, #611.
+  The Archive tab that shows all this on the leaderboard page comes in a later release; until then the files are
+  kept and reachable through the download addresses. AFC inbox #603, #606, #610, #611.
+
+### Fixed
+- A guest registration (a team with no AFC account, added from imported results) can be given a letter from its
+  row on Registered Teams. Its letter picker was always greyed out, and the server only looked a team up by its
+  AFC team. From the 18 Nov 2026 open list.
+
+## v7.21.3 - 2026-11-21
+
+### Fixed
+- The live map's MVP that AFC LIVE receives now follows the whole MVP rule the organizer or admin saved
+  on the leaderboard's MVPs tab, the "winning team" choice included. With "winning team" there is no
+  MVP while two or more teams are still in, and once one team is left the MVP comes only from that
+  team, the same way a finished map's MVP is picked. It used to look at every player in the lobby
+  (AFC inbox #577).
+- Each map's MVP is now stored by that same rule, so player profiles and the players list count a
+  player's MVPs, the rankings score them, and the partner API's map `mvp` names the player. All three
+  read 0 or empty before, because nothing stored a map's MVP. A new result gets its MVP within 10
+  minutes, saving a new rule on the MVPs tab updates the event's maps at once, and every event is
+  checked again at 03:45, before the rankings run at 04:00, so maps already played get theirs the
+  first night (292 maps, 36 events). Rankings move for players with MVPs (AFC inbox #579).
+
+### Internal
+- Every pull request now runs the Django tests of the parts of the server it touches, in up to six parallel jobs
+  (`tools/test_plan.py` picks them: a changed app plus every app whose code names it), and the whole suite runs every
+  night on main and opens an issue when it is red. Main stayed red twice for two days with nobody seeing it, because
+  CI ran no Django tests. The job is not a required check, so an urgent fix can still merge. The awards hall of fame
+  is now listed among the public answers (it shipped in v7.17.0 without that line). AFC inbox #580, #581.
 
 ## v7.21.1 - 2026-11-19
 
