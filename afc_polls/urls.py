@@ -70,6 +70,8 @@ urlpatterns = [
     # The KOL creators' nomination round (inbox #633 / #634): a personal code, then a cookie. See kol_nominations.py.
     path("kol-nominations/<slug:edition_slug>/door/", kol_nominations.door, name="polls_kol_door"),       # POST
     path("kol-nominations/<slug:edition_slug>/ballot/", kol_nominations.ballot, name="polls_kol_ballot"),  # GET, PUT
+    path("kol-nominations/<slug:edition_slug>/write-in/", kol_nominations.write_in,
+         name="polls_kol_write_in"),                                                                  # POST (#637)
     path("kol-nominations/<slug:edition_slug>/signout/", kol_nominations.signout,
          name="polls_kol_signout"),                                                                   # POST
 

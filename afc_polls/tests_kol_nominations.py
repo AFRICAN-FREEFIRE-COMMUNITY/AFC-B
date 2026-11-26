@@ -9,7 +9,10 @@ WHAT IS WORTH TESTING HERE
   2. ONE CODE, ONE CREATOR, ONE BALLOT. Codes are stored hashed, typed sloppily they still work, a wrong one is
      counted and limited, a replaced one stops working, and the ballot belongs to the CREATOR (a new code keeps the
      picks).
-  3. NEVER YOURSELF, AT MOST SIX, NO COUNTS. The server refuses a self-pick and a seventh pick whatever the page sent.
+  3. AT MOST SIX, ONE PERSON ONCE, NO COUNTS. The server refuses a seventh pick whatever the page sent and keeps a
+     person once per award. Self-picks are allowed (owner, 26 Nov 2026, #637).
+  5. WRITE-INS. Anybody added by handle is a candidate for every creator, never a voter, capped per creator, and a
+     duplicate merges into the person it repeats.
   4. THE ADMIN SIDE never stores an email and never writes AFC into the message a creator receives.
 
 Run (see memory reference_backend_tests_in_worktree):
@@ -278,13 +281,15 @@ class KolBallotTests(TestCase):
     def q(self, index=0):
         return str(self.awards[index].question_id)
 
-    def test_ballot_hides_me_and_switched_off(self):
+    def test_ballot_lists_me_and_hides_switched_off(self):
+        # Owner, 26 Nov 2026 (#637): "they should be able to nominate themselves now". The creator is on their own list.
         KolCreator.objects.filter(pk=self.others[0].pk).update(active=False)
         data = ballot(self.client, self.edition).json()
         ids = [c["creator_id"] for c in data["candidates"]]
-        self.assertNotIn(self.me.pk, ids)
+        self.assertIn(self.me.pk, ids)
         self.assertNotIn(self.others[0].pk, ids)
-        self.assertEqual(len(ids), len(self.NAMES) - 2)
+        self.assertEqual(len(ids), len(self.NAMES) - 1)
+        self.assertTrue(all(c["write_in"] is False for c in data["candidates"]))
         self.assertEqual([a["name"] for a in data["awards"]], list(AWARDS))
         self.assertTrue(all(a["max"] == 6 for a in data["awards"]))
         self.assertNotIn("option", str(data))           # option ids never leave the server
@@ -312,11 +317,17 @@ class KolBallotTests(TestCase):
         self.assertEqual(answer.json()["code"], "kol_too_many_picks")
         self.assertEqual(save(self.client, self.edition, {self.q(0): [c.pk for c in self.others[:6]]}).status_code, 200)
 
-    def test_self_pick_refused_even_if_posted(self):
+    def test_self_pick_allowed(self):
         answer = save(self.client, self.edition, {self.q(2): [self.me.pk, self.others[0].pk]})
-        self.assertEqual(answer.status_code, 400)
-        self.assertEqual(answer.json()["code"], "kol_self_pick")
-        self.assertFalse(PollResponse.objects.filter(poll=self.round.poll).exists())
+        self.assertEqual(answer.status_code, 200, answer.content)
+        self.assertEqual(answer.json()["picks"][self.q(2)], [self.me.pk, self.others[0].pk])
+        self.assertEqual(tally(self.round)[self.awards[2].question_id][0]["picks"], 1)
+
+    def test_same_person_twice_in_one_award_saved_once(self):
+        answer = save(self.client, self.edition, {self.q(0): [self.others[0].pk, self.others[0].pk, self.others[1].pk]})
+        self.assertEqual(answer.status_code, 200, answer.content)
+        self.assertEqual(answer.json()["picks"][self.q(0)], [self.others[0].pk, self.others[1].pk])
+        self.assertEqual(tally(self.round)[self.awards[0].question_id][0]["picks"], 1)
 
     def test_bad_picks_refused(self):
         for bad in ({"999999": [self.others[0].pk]}, {self.q(0): ["x"]}, {self.q(0): [999999]}, ["nope"]):
@@ -531,6 +542,9 @@ class KolAdminTests(TestCase):
                                "KOL Awards 2026")
             self.assertIn(word, text, country)
             self.assertIn("KOL-AAAA-BBBB", text)
+            # #637: self-nomination is allowed now, so no language may still tell them "never yourself".
+            for old in ("never yourself", "jamais vous-même", "nunca a si"):
+                self.assertNotIn(old, text, country)
             self.assertNotIn("AFC", text)
             self.assertNotIn("African", text)
             for dash in (chr(0x2013), chr(0x2014)):
@@ -562,7 +576,7 @@ class KolAdminTests(TestCase):
 class KolRoundPollIsSealedTests(TestCase):
     """The round's poll is reachable ONLY through the code door. Found in the Chrome walk on 26 Nov: it was listed
     in /a/polls, so an admin could open it in the poll builder and publish it, and a published poll takes votes
-    through the ordinary submit door from anybody signed in, with no code and no self-exclusion."""
+    through the ordinary submit door from anybody signed in, with no code and none of the round's rules."""
 
     def setUp(self):
         cache.clear()
@@ -628,3 +642,254 @@ class KolDoorIgnoresDjangoSessionTests(TestCase):
         answer = save(client, edition, {str(question.question_id): [other.pk]})
         self.assertEqual(answer.status_code, 200, answer.content)
         self.assertEqual(client.post(f"/polls/kol-nominations/{edition.slug}/signout/").status_code, 200)
+
+
+# ── WRITE-INS (owner, 26 Nov 2026, inbox #636 / #637) ────────────────────────────────────────────────────────────────
+# "creators can add and nominate anybody ... If a new person is aded by one creator, everyone else should be able to
+# see that person. obviously shouldnt be able to nominate a person more than once per category."
+
+
+def write_in(client, edition, handle, name=None):
+    body = {"handle": handle} if name is None else {"handle": handle, "name": name}
+    return client.post(f"/polls/kol-nominations/{edition.slug}/write-in/", body, format="json")
+
+
+class KolWriteInTests(TestCase):
+    NAMES = ("Jokkie", "Lord Rex", "Ama Plays", "Kwame FF")
+
+    def setUp(self):
+        cache.clear()
+        self.edition = kol_edition()
+        self.me, self.rex, self.ama, self.kwame = add_creators(self.edition, names=self.NAMES)
+        self.round = open_round(self.edition)
+        self.awards = list(self.round.poll.questions.order_by("order"))
+        self.client = APIClient()
+        self.assertEqual(door(self.client, self.edition, new_code(self.me)).status_code, 200)
+
+    def q(self, index=0):
+        return str(self.awards[index].question_id)
+
+    def test_write_in_becomes_a_shared_candidate(self):
+        answer = write_in(self.client, self.edition, "@New_Guy", "New Guy")
+        self.assertEqual(answer.status_code, 200, answer.content)
+        body = answer.json()
+        self.assertTrue(body["created"])
+        self.assertEqual(body["candidate"]["handle"], "new_guy")
+        self.assertEqual(body["candidate"]["name"], "New Guy")
+        self.assertTrue(body["candidate"]["write_in"])
+        row = KolCreator.objects.get(edition=self.edition, tiktok_handle="new_guy")
+        self.assertEqual((row.origin, row.added_by_id, row.active), (KolCreator.WRITE_IN, self.me.pk, True))
+        self.assertEqual(row.options.count(), 6)                        # a candidate in every award
+        self.assertFalse(KolVoterCode.objects.filter(creator=row).exists())
+        # another creator sees the person, with nothing about who added them and no count
+        other = APIClient()
+        door(other, self.edition, new_code(self.rex))
+        seen = [c for c in ballot(other, self.edition).json()["candidates"] if c["handle"] == "new_guy"]
+        self.assertEqual(len(seen), 1)
+        self.assertEqual(set(seen[0].keys()), {"creator_id", "name", "handle", "country", "write_in"})
+        self.assertNotIn(self.me.name, json.dumps(seen))
+
+    def test_profile_link_is_read_as_the_handle(self):
+        answer = write_in(self.client, self.edition, "https://www.tiktok.com/@Lord.Rex_FF?lang=en")
+        self.assertEqual(answer.status_code, 200, answer.content)
+        self.assertEqual(answer.json()["candidate"]["handle"], "lord.rex_ff")
+
+    def test_handle_on_the_list_is_that_candidate(self):
+        answer = write_in(self.client, self.edition, " @Lord_Rex ")
+        self.assertEqual(answer.status_code, 200, answer.content)
+        self.assertFalse(answer.json()["created"])
+        self.assertEqual(answer.json()["candidate"]["creator_id"], self.rex.pk)
+        self.assertFalse(answer.json()["candidate"]["write_in"])
+        self.assertEqual(KolCreator.objects.filter(edition=self.edition).count(), 4)
+
+    def test_own_handle_is_my_own_candidate(self):
+        answer = write_in(self.client, self.edition, "@jokkie")
+        self.assertEqual(answer.status_code, 200, answer.content)
+        self.assertEqual(answer.json()["candidate"]["creator_id"], self.me.pk)
+
+    def test_same_write_in_twice_is_one_person(self):
+        first = write_in(self.client, self.edition, "new_guy").json()["candidate"]
+        other = APIClient()
+        door(other, self.edition, new_code(self.rex))
+        second = write_in(other, self.edition, "@NEW_GUY", "Another Spelling").json()
+        self.assertFalse(second["created"])
+        self.assertEqual(second["candidate"]["creator_id"], first["creator_id"])
+        self.assertEqual(KolCreator.objects.filter(edition=self.edition, tiktok_handle="new_guy").count(), 1)
+        self.assertEqual(KolCreator.objects.get(tiktok_handle="new_guy").name, "new_guy")   # the first one stays
+
+    def test_write_in_picks_save_and_count(self):
+        new_id = write_in(self.client, self.edition, "new_guy").json()["candidate"]["creator_id"]
+        answer = save(self.client, self.edition, {self.q(0): [new_id, self.rex.pk]})
+        self.assertEqual(answer.status_code, 200, answer.content)
+        other = APIClient()
+        door(other, self.edition, new_code(self.ama))
+        save(other, self.edition, {self.q(0): [new_id]})
+        top = tally(self.round)[self.awards[0].question_id][0]
+        self.assertEqual((top["creator_id"], top["picks"]), (new_id, 2))
+
+    def test_bad_handles_refused(self):
+        for bad in ("", "   ", "@", "a", "x" * 25, "bad handle!", "no/slash", "émile", None, 12):
+            answer = write_in(self.client, self.edition, bad)
+            self.assertEqual(answer.status_code, 400, bad)
+            self.assertEqual(answer.json()["code"], "kol_bad_handle", bad)
+        self.assertEqual(KolCreator.objects.filter(edition=self.edition).count(), 4)
+
+    def test_name_is_cleaned_and_defaults_to_the_handle(self):
+        long_name = "  Big   Name\u0007 " + "y" * 80
+        made = write_in(self.client, self.edition, "big_name", long_name).json()["candidate"]
+        self.assertTrue(made["name"].startswith("Big Name "))
+        self.assertLessEqual(len(made["name"]), 60)
+        self.assertNotIn("\u0007", made["name"])
+        self.assertEqual(write_in(self.client, self.edition, "no_name").json()["candidate"]["name"], "no_name")
+
+    def test_write_in_needs_the_cookie(self):
+        answer = write_in(APIClient(), self.edition, "new_guy")
+        self.assertEqual(answer.status_code, 401)
+        self.assertEqual(answer.json()["code"], "kol_code_needed")
+
+    def test_write_in_only_while_open(self):
+        KolNominationRound.objects.filter(pk=self.round.pk).update(closes_at=timezone.now() - timedelta(minutes=1))
+        self.assertEqual(write_in(self.client, self.edition, "new_guy").json()["code"], "kol_round_closed")
+        KolNominationRound.objects.filter(pk=self.round.pk).update(
+            opens_at=timezone.now() + timedelta(days=1), closes_at=timezone.now() + timedelta(days=2))
+        answer = write_in(self.client, self.edition, "new_guy")
+        self.assertEqual(answer.status_code, 403)
+        self.assertEqual(answer.json()["code"], "kol_round_not_open")
+        self.assertFalse(KolCreator.objects.filter(tiktok_handle="new_guy").exists())
+
+    def test_additions_capped_per_creator(self):
+        with mock.patch("afc_polls.kol_nominations.WRITE_INS_PER_CREATOR", 2):
+            self.assertEqual(write_in(self.client, self.edition, "one_new").status_code, 200)
+            self.assertEqual(write_in(self.client, self.edition, "two_new").status_code, 200)
+            answer = write_in(self.client, self.edition, "three_new")
+            self.assertEqual(answer.status_code, 429)
+            self.assertEqual(answer.json()["code"], "kol_write_ins_too_many")
+            # someone already a candidate is never an addition, so the cap does not stop picking them
+            self.assertEqual(write_in(self.client, self.edition, "lord_rex").status_code, 200)
+            self.assertEqual(write_in(self.client, self.edition, "one_new").status_code, 200)
+
+    def test_additions_rate_limited_per_minute(self):
+        with mock.patch("afc_polls.kol_nominations.WRITE_INS_PER_MINUTE", 2):
+            self.assertEqual(write_in(self.client, self.edition, "one_new").status_code, 200)
+            self.assertEqual(write_in(self.client, self.edition, "two_new").status_code, 200)
+            answer = write_in(self.client, self.edition, "three_new")
+        self.assertEqual(answer.status_code, 429)
+        self.assertEqual(answer.json()["code"], "kol_write_in_too_fast")
+
+    def test_switched_off_handle_is_refused(self):
+        made = write_in(self.client, self.edition, "junk_name").json()["candidate"]
+        KolCreator.objects.filter(pk=made["creator_id"]).update(active=False)
+        answer = write_in(self.client, self.edition, "junk_name")
+        self.assertEqual(answer.status_code, 400)
+        self.assertEqual(answer.json()["code"], "kol_handle_unavailable")
+        ids = [c["creator_id"] for c in ballot(self.client, self.edition).json()["candidates"]]
+        self.assertNotIn(made["creator_id"], ids)
+
+    def test_merged_handle_leads_to_the_person_it_was_merged_into(self):
+        made = write_in(self.client, self.edition, "lordrex").json()["candidate"]
+        KolCreator.objects.filter(pk=made["creator_id"]).update(active=False, merged_into=self.rex)
+        answer = write_in(self.client, self.edition, "@lordrex")
+        self.assertEqual(answer.status_code, 200, answer.content)
+        self.assertEqual(answer.json()["candidate"]["creator_id"], self.rex.pk)
+
+    def test_a_write_in_cannot_vote(self):
+        made = write_in(self.client, self.edition, "new_guy").json()["candidate"]
+        admin = APIClient()
+        admin.credentials(**token_for(make_user("kolwiboss", role="admin")))
+        base = f"/polls/admin/kol-nominations/{self.edition.slug}/"
+        everyone = read_csv(admin.post(f"{base}codes/", {}, format="json"))
+        self.assertNotIn("new_guy", [row["tiktok_handle"] for row in everyone])
+        chosen = read_csv(admin.post(f"{base}codes/", {"creator_ids": [made["creator_id"]]}, format="json"))
+        self.assertEqual(chosen, [])
+        # even a code made by hand for a write-in does not open the door
+        code = new_code(KolCreator.objects.get(pk=made["creator_id"]))
+        self.assertEqual(door(APIClient(), self.edition, code).json()["code"], "kol_code_wrong")
+
+
+class KolWriteInAdminTests(TestCase):
+    """Admin side of write-ins: listed with their origin, switched off like anybody, and merged into the person they
+    duplicate so that one person is never counted twice in one award (#637)."""
+
+    def setUp(self):
+        cache.clear()
+        self.edition = kol_edition()
+        self.me, self.rex, self.ama, self.kwame = add_creators(self.edition)
+        self.round = open_round(self.edition)
+        self.awards = list(self.round.poll.questions.order_by("order"))
+        self.admin = APIClient()
+        self.admin.credentials(**token_for(make_user("kolmergeboss", role="admin")))
+        self.base = f"/polls/admin/kol-nominations/{self.edition.slug}/"
+        self.mine = APIClient()
+        door(self.mine, self.edition, new_code(self.me))
+        self.dup = write_in(self.mine, self.edition, "lordrex", "Lord Rex").json()["candidate"]["creator_id"]
+
+    def q(self, index=0):
+        return str(self.awards[index].question_id)
+
+    def row(self, creator_id):
+        return next(c for c in self.admin.get(self.base).json()["creators"] if c["creator_id"] == creator_id)
+
+    def test_admin_lists_write_ins(self):
+        dup = self.row(self.dup)
+        self.assertEqual(dup["origin"], "write-in")
+        self.assertFalse(dup["has_code"])
+        self.assertFalse(dup["voted"])
+        self.assertIsNone(dup["merged_into"])
+        self.assertNotIn("added_by", dup)                    # who added whom stays private, like who picked whom
+        self.assertEqual(self.row(self.me.pk)["origin"], "list")
+        self.assertEqual(self.row(self.me.pk)["write_ins_added"], 1)
+        self.assertEqual(self.row(self.rex.pk)["write_ins_added"], 0)
+
+    def test_merge_moves_picks_and_never_counts_one_person_twice(self):
+        save(self.mine, self.edition, {self.q(0): [self.dup, self.rex.pk], self.q(1): [self.dup]})
+        theirs = APIClient()
+        door(theirs, self.edition, new_code(self.ama))
+        save(theirs, self.edition, {self.q(0): [self.dup]})
+        answer = self.admin.patch(f"{self.base}creators/{self.dup}/", {"merge_into": self.rex.pk}, format="json")
+        self.assertEqual(answer.status_code, 200, answer.content)
+        dup = KolCreator.objects.get(pk=self.dup)
+        self.assertEqual((dup.active, dup.merged_into_id), (False, self.rex.pk))
+        mine = ballot(self.mine, self.edition).json()
+        self.assertEqual(mine["picks"][self.q(0)], [self.rex.pk])          # held both: one left
+        self.assertEqual(mine["picks"][self.q(1)], [self.rex.pk])          # held the duplicate only: moved
+        self.assertNotIn(self.dup, [c["creator_id"] for c in mine["candidates"]])
+        self.assertEqual(ballot(theirs, self.edition).json()["picks"][self.q(0)], [self.rex.pk])
+        top = tally(self.round)[self.awards[0].question_id]
+        self.assertEqual(top, [{"creator_id": self.rex.pk, "name": self.rex.name, "picks": 2}])
+        self.assertEqual(self.row(self.dup)["merged_into"], self.rex.pk)
+
+    def test_merge_refusals(self):
+        other = kol_edition(slug="kol-merge-elsewhere")
+        stranger = add_creators(other, names=("Far Away",))[0]
+        KolCreator.objects.filter(pk=self.kwame.pk).update(active=False)
+        cases = [
+            (self.rex.pk, self.ama.pk, "kol_merge_not_write_in"),     # a creator on the list is never merged away
+            (self.dup, self.dup, "kol_bad_merge"),
+            (self.dup, self.kwame.pk, "kol_bad_merge"),                # switched off
+            (self.dup, stranger.pk, "kol_bad_merge"),                  # another edition
+            (self.dup, 999999, "kol_bad_merge"),
+            (self.dup, "x", "kol_bad_merge"),
+        ]
+        for source, target, code in cases:
+            answer = self.admin.patch(f"{self.base}creators/{source}/", {"merge_into": target}, format="json")
+            self.assertEqual(answer.status_code, 400, (source, target))
+            self.assertEqual(answer.json()["code"], code, (source, target))
+        self.assertTrue(KolCreator.objects.get(pk=self.dup).active)
+
+    def test_switch_off_write_in(self):
+        answer = self.admin.patch(f"{self.base}creators/{self.dup}/", {"active": False}, format="json")
+        self.assertEqual(answer.status_code, 200, answer.content)
+        self.assertNotIn(self.dup, [c["creator_id"] for c in ballot(self.mine, self.edition).json()["candidates"]])
+        # switched back on, it is a plain candidate again (a merge undone by hand starts clean)
+        KolCreator.objects.filter(pk=self.dup).update(merged_into=self.rex)
+        self.admin.patch(f"{self.base}creators/{self.dup}/", {"active": True}, format="json")
+        self.assertIsNone(KolCreator.objects.get(pk=self.dup).merged_into_id)
+        self.assertIn(self.dup, [c["creator_id"] for c in ballot(self.mine, self.edition).json()["candidates"]])
+
+    def test_import_turns_a_write_in_into_a_list_creator(self):
+        path = pathlib.Path(tempfile.mkdtemp()) / "kol.json"
+        path.write_text(json.dumps([{"name": "Lord Rex Two", "tiktok_handle": "@lordrex", "country": "Ghana"}]),
+                        encoding="utf-8")
+        call_command("kol_import_creators", str(path), "--edition", self.edition.slug, stdout=io.StringIO())
+        row = KolCreator.objects.get(pk=self.dup)
+        self.assertEqual((row.origin, row.country), (KolCreator.LIST, "Ghana"))

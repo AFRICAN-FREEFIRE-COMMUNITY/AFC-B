@@ -8,8 +8,9 @@ THE FILE is made on a workstation from the private master sheet by tools/kol_she
 stores a creator's email (design 6; the emails stay in Garena's sheet).
 
 Upserts by TikTok handle (lower case, "@" dropped), so running it twice changes nothing and a corrected sheet
-updates names, countries and statuses in place. It never deletes and never switches anybody on or off: that is the
-admin tab's job. When the edition already has its round, every new creator also gets an option in each award.
+updates names, countries and statuses in place. A write-in (a person a creator added, #637) whose handle is on the
+sheet becomes a list creator. It never deletes and never switches anybody on or off: that is the admin tab's job.
+When the edition already has its round, every new creator also gets an option in each award.
 
 CONNECTS TO: afc_polls.models.KolCreator, afc_polls.kol_nominations.ensure_round.
 """
@@ -61,6 +62,9 @@ class Command(BaseCommand):
                 "country": str(row.get("country") or "").strip()[:FIELDS["country"]],
                 "sheet_status": str(row.get("status") or "").strip()[:FIELDS["status"]],
                 "tiktok_id": str(row.get("tiktok_id") or "").strip()[:FIELDS["tiktok_id"]],
+                # Somebody a creator added by hand (a write-in, #637) who turns out to be on the sheet becomes a
+                # creator of the list: a voter too, codes and all.
+                "origin": KolCreator.LIST,
             }
             creator = KolCreator.objects.filter(edition=edition, tiktok_handle=handle_).first()
             if creator is None:

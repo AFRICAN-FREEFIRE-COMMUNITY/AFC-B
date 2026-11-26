@@ -1253,7 +1253,8 @@ class VoterWhatsAppCode(models.Model):
 
 # THE KOL CREATORS' NOMINATION ROUND (owner, 25 to 26 Nov 2026, AFC inbox #633 / #634)
 # Design: WEBSITE/tasks/kol-nominations-design-2026-11-25.md. The creators on Garena's KOL List nominate each other
-# (up to 6 per award, never themselves) with a PERSONAL CODE each: no account. The round's ballots are an ordinary
+# (up to 6 per award, themselves allowed, and anybody they add by TikTok handle: #637) with a PERSONAL CODE each:
+# no account. The round's ballots are an ordinary
 # Poll (six multiple-choice questions), written only through afc_polls.kol_nominations, which owns every rule below.
 
 
@@ -1296,11 +1297,21 @@ class KolNominationRound(models.Model):
 
 
 class KolCreator(models.Model):
-    """One creator on Garena's KOL List: a voter and a candidate. Never an email (they stay in Garena's sheet).
+    """A candidate of the round. Never an email (they stay in Garena's sheet). Two origins:
 
-    Imported by `manage.py kol_import_creators` from a JSON made out of the private sheet
-    (tools/kol_sheet_to_json.py). `active = False` switches a creator off: their code stops working, the ballot
-    stops listing them, and picks of them leave the tally."""
+    - LIST: a creator on Garena's KOL List, a voter AND a candidate. Imported by `manage.py kol_import_creators`
+      from a JSON made out of the private sheet (tools/kol_sheet_to_json.py).
+    - WRITE_IN: somebody a creator typed in by TikTok handle (owner, 26 Nov 2026, #636 / #637: "creators can add and
+      nominate anybody ... everyone else should be able to see that person"). A candidate on EVERY creator's ballot,
+      never a voter: no code is made for them and the door refuses one (kol_nominations.live_code).
+
+    `active = False` switches a candidate off: their code stops working, the ballot stops listing them, and picks of
+    them leave the tally. A duplicate write-in is MERGED into the person it duplicates (kol_nominations.merge_write_in):
+    its picks move there, it is switched off, and `merged_into` remembers where they went."""
+
+    LIST = "list"
+    WRITE_IN = "write-in"
+    ORIGIN_CHOICES = [(LIST, "On Garena's KOL List"), (WRITE_IN, "Added by a creator")]
 
     creator_id = models.AutoField(primary_key=True)
     edition = models.ForeignKey(AwardsEdition, on_delete=models.CASCADE, related_name="kol_creators")
@@ -1311,6 +1322,12 @@ class KolCreator(models.Model):
     sheet_status = models.CharField(max_length=20, blank=True, default="")    # the sheet's Added / Probation / ...
     tiktok_id = models.CharField(max_length=40, blank=True, default="")      # the sheet's TT ID, for the stats join
     active = models.BooleanField(default=True)
+    origin = models.CharField(max_length=10, choices=ORIGIN_CHOICES, default=LIST)
+    # The list creator who typed this write-in in. Kept for the per-creator cap on additions; never shown to anybody,
+    # because who added whom says who nominated whom (the admin sees only a count per creator).
+    added_by = models.ForeignKey("self", null=True, blank=True, on_delete=models.SET_NULL, related_name="write_ins")
+    merged_into = models.ForeignKey("self", null=True, blank=True, on_delete=models.SET_NULL,
+                                    related_name="merged_from")
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

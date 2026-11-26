@@ -96,7 +96,7 @@ SMALL_CELL_FLOOR = 5
 
 
 # THE KOL NOMINATION ROUND'S POLL IS NOT AN ORDINARY POLL (inbox #634, found in the Chrome walk 26 Nov 2026). Its
-# ballots are written ONLY by afc_polls.kol_nominations, behind a personal code, with self-exclusion. If any door
+# ballots are written ONLY by afc_polls.kol_nominations, behind a personal code, under the round's own rules. If any door
 # below could find it, an admin could open it in the poll builder and publish it, and then anybody signed in could
 # vote in it through submit_response with no code. So every lookup in this file starts from _ordinary_polls(),
 # never from Poll.objects (one answer at every door, owner rule R45); kol_nominations reads its poll by the round.

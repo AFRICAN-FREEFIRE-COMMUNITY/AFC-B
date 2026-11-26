@@ -25,22 +25,26 @@ MONTHS = {
            "novembro", "dezembro"],
 }
 
+# #637 (owner, 26 Nov 2026): self-nomination is allowed and a creator can add anybody who is not on the list, so the
+# message says both, in place of the old line that ruled self-picks out.
 TEMPLATES = {
     "en": (
         "Hi {name}, you are one of the creators in the {title}. Nominate the creators you think deserve each award: "
-        "up to 6 per award, and never yourself.\n"
+        "up to 6 per award. You can pick anyone, yourself included, and add someone who is not on the list.\n"
         "Open your personal ballot here: {link}\n"
         "Your code: {code} (it works for you only, so keep it to yourself). {until}"
     ),
     "fr": (
         "Bonjour {name}, vous faites partie des créateurs des {title}. Nominez les créateurs qui "
-        "méritent chaque prix : jusqu'à 6 par prix, et jamais vous-même.\n"
+        "méritent chaque prix : jusqu'à 6 par prix. Vous pouvez choisir n'importe qui, y compris vous-même, et ajouter "
+        "quelqu'un qui n'est pas sur la liste.\n"
         "Ouvrez votre bulletin personnel ici : {link}\n"
         "Votre code : {code} (il ne fonctionne que pour vous, gardez-le pour vous). {until}"
     ),
     "pt": (
         "Olá {name}, é um dos criadores dos {title}. Nomeie os criadores que merecem cada prémio: "
-        "até 6 por prémio, e nunca a si próprio.\n"
+        "até 6 por prémio. Pode escolher qualquer pessoa, incluindo a si próprio, e acrescentar alguém que não "
+        "esteja na lista.\n"
         "Abra o seu boletim pessoal aqui: {link}\n"
         "O seu código: {code} (só funciona para si, guarde-o só para si). {until}"
     ),

@@ -3,16 +3,25 @@ afc_polls.kol_nominations - the KOL creators' nomination round (owner, 25 to 26 
 
 THE ASK
     Garena's KOL Awards need five nominees per award. The creators on Garena's KOL List nominate each other: up to
-    6 picks per award, never themselves, only creators may vote (owner's pick: "a personal code"). Their picks are
-    half of each award's shortlist; the other half is the creators' own numbers, worked out offline.
-    Design: WEBSITE/tasks/kol-nominations-design-2026-11-25.md. Plan: WEBSITE/tasks/plan-kol-nominations-2026-11-26.md.
+    6 picks per award, only creators may vote (owner's pick: "a personal code"). Their picks are half of each
+    award's shortlist; the other half is the creators' own numbers, worked out offline.
+    Owner, 26 Nov 2026 (#637), on top: "they should be able to nominate themselves now", "creators can add and
+    nominate anybody", "If a new person is aded by one creator, everyone else should be able to see that person",
+    "shouldnt be able to nominate a person more than once per category". So a creator is on their own list, may add
+    anybody by TikTok handle (a WRITE-IN, see write_in below), and one person counts at most once per award.
+    Design: WEBSITE/tasks/kol-nominations-design-2026-11-25.md (sections 10 and 11 for the write-ins).
+    Plan: WEBSITE/tasks/plan-kol-nominations-2026-11-26.md.
 
 THE SHAPE (tables in afc_polls.models, bottom of the file)
     KolNominationRound: one per KOL edition, owns the dates  ->  Poll (DRAFT, no edition, six questions)
-    KolCreator: one per creator on the KOL List  ->  KolCreatorOption  ->  PollOption (one per award)
-        and KolVoterCode (hashed; a new one revokes the old)
+    KolCreator: one per candidate  ->  KolCreatorOption  ->  PollOption (one per award)
+        origin LIST: on the KOL List, a voter too, with KolVoterCode (hashed; a new one revokes the old)
+        origin WRITE_IN: added by a creator, a candidate for everyone, never a voter (no code)
     A ballot is ONE PollResponse with respondent = NULL and respondent_key = respondent_key_for(round, creator),
     so the engine's unique (poll, respondent_key) index is what makes it one ballot per creator.
+    ONE PERSON ONCE PER AWARD: a pick is a creator id, so an award's list is de-duplicated on save; a typed handle
+    that is already a candidate IS that candidate (never a second row); and a write-in that turns out to be somebody
+    already in the round under another handle is merged into them by an admin (merge_write_in).
 
 WHY THE ENGINE'S OWN DOORS NEVER SEE THIS POLL
     It is a DRAFT with no edition: list_polls lists only PUBLIC, edition_detail reads edition.polls, poll_detail
@@ -106,13 +115,20 @@ def ensure_round(edition, opens_at=None, closes_at=None):
     have = set(
         KolCreatorOption.objects.filter(option__question__poll=poll).values_list("creator_id", "option__question_id")
     )
+    ordered = [question for _, question in sorted(questions.items())]
     for creator in KolCreator.objects.filter(edition=edition).order_by("creator_id"):
-        for order, question in sorted(questions.items()):
-            if (creator.pk, question.pk) in have:
-                continue
-            option = PollOption.objects.create(question=question, order=creator.pk, label=creator.name)
-            KolCreatorOption.objects.create(creator=creator, option=option)
+        _add_options(creator, ordered, have)
     return round_
+
+
+def _add_options(creator, questions, have=frozenset()):
+    """One PollOption per award for `creator`, skipping the (creator_id, question_id) pairs in `have`. Shared by
+    ensure_round (everybody) and write_in (the one person just added)."""
+    for question in questions:
+        if (creator.pk, question.pk) in have:
+            continue
+        option = PollOption.objects.create(question=question, order=creator.pk, label=creator.name)
+        KolCreatorOption.objects.create(creator=creator, option=option)
 
 
 def respondent_key_for(round_, creator):
@@ -167,15 +183,15 @@ def new_code(creator):
 
 
 def live_code(round_, raw):
-    """The live KolVoterCode this text opens in `round_`, or None: wrong, revoked, another edition's, or a
-    switched-off creator's."""
+    """The live KolVoterCode this text opens in `round_`, or None: wrong, revoked, another edition's, a
+    switched-off creator's, or a write-in's (a write-in is a candidate, never a voter, whatever code exists)."""
     normalized = normalize_code(raw)
     if len(normalized) != CODE_LENGTH:
         return None
     return (
         KolVoterCode.objects.select_related("creator")
         .filter(code_hash=_code_hash(normalized), revoked_at__isnull=True,
-                creator__edition_id=round_.edition_id, creator__active=True)
+                creator__edition_id=round_.edition_id, creator__active=True, creator__origin=KolCreator.LIST)
         .first()
     )
 
@@ -243,7 +259,8 @@ def code_from_cookie(request, round_):
     except Exception:
         return None, "kol_code_needed"
     code = KolVoterCode.objects.select_related("creator").filter(pk=code_id).first()
-    if code is None or code.creator.edition_id != round_.edition_id or not code.creator.active:
+    if (code is None or code.creator.edition_id != round_.edition_id or not code.creator.active
+            or code.creator.origin != KolCreator.LIST):
         return None, "kol_code_needed"
     if code.revoked_at is not None:
         return None, "kol_code_replaced"
@@ -259,13 +276,21 @@ def _no_round():
 
 
 # THE BALLOT, as the page reads it. Speaks in creator ids only: option ids never leave the server.
+def candidate_row(candidate):
+    """One candidate as every creator's page sees it. `write_in` says somebody added them (the page labels it);
+    WHO added them is never sent, to anybody (it would say who nominated whom)."""
+    return {
+        "creator_id": candidate.pk, "name": candidate.name, "handle": candidate.tiktok_handle,
+        "country": candidate.country, "write_in": candidate.origin == KolCreator.WRITE_IN,
+    }
+
+
 def ballot_payload(round_, creator):
-    """{round, me, awards, candidates, picks, saved_at} for `creator`. Candidates are the round's ACTIVE creators
-    other than `creator`, by name; picks hold only active creators (a switched-off one simply disappears)."""
+    """{round, me, awards, candidates, picks, saved_at} for `creator`. Candidates are ALL the round's active
+    candidates by name, the creator included (#637: self-nomination is allowed) and every write-in any creator
+    added; picks hold only active candidates (a switched-off one simply disappears)."""
     questions = list(round_.poll.questions.order_by("order"))
-    candidates = list(
-        KolCreator.objects.filter(edition_id=round_.edition_id, active=True).exclude(pk=creator.pk).order_by("name")
-    )
+    candidates = list(KolCreator.objects.filter(edition_id=round_.edition_id, active=True).order_by("name"))
     response = PollResponse.objects.filter(
         poll=round_.poll, respondent_key=respondent_key_for(round_, creator)
     ).first()
@@ -289,9 +314,7 @@ def ballot_payload(round_, creator):
         "awards": [
             {"question_id": question.question_id, "name": question.prompt, "max": MAX_PICKS} for question in questions
         ],
-        "candidates": [
-            {"creator_id": c.pk, "name": c.name, "handle": c.tiktok_handle, "country": c.country} for c in candidates
-        ],
+        "candidates": [candidate_row(c) for c in candidates],
         "picks": picks,
         "saved_at": response.submitted_at if response is not None else None,
     }
@@ -333,9 +356,10 @@ def ballot(request, edition_slug):
     """GET / PUT polls/kol-nominations/<edition_slug>/ballot/  (kol_ballot cookie)
 
     GET 200 the ballot payload. PUT {picks: {"<question_id>": [creator_id]}, device_key?} saves the whole sheet
-    and answers the payload plus `dropped` (switched-off creators left out); 400 kol_bad_picks / kol_self_pick /
-    kol_too_many_picks, 403 kol_round_closed / kol_round_not_open, 429 kol_save_too_many. Both: 401 kol_code_needed (no or bad cookie) or kol_code_replaced (a newer code revoked
-    this one); 404 kol_round_not_found."""
+    and answers the payload plus `dropped` (switched-off creators left out); 400 kol_bad_picks /
+    kol_too_many_picks, 403 kol_round_closed / kol_round_not_open, 429 kol_save_too_many. Both: 401
+    kol_code_needed (no or bad cookie) or kol_code_replaced (a newer code revoked this one); 404
+    kol_round_not_found."""
     round_ = round_for_edition_slug(edition_slug)
     if round_ is None:
         return _no_round()
@@ -371,14 +395,26 @@ class CodeVoter:
     date_joined: object = None
 
 
-def _save_limited(code):
+def _minute_limited(prefix, code, limit):
+    """True once `code` has gone past `limit` calls of `prefix` in this clock minute. Fails OPEN like the door limit:
+    a cache outage must not stop 110 creators saving."""
     try:
-        key = f"kol_save:{code.code_id}:{int(time.time() // 60)}"
+        key = f"{prefix}:{code.code_id}:{int(time.time() // 60)}"
         if cache.add(key, 1, timeout=60):
             return False
-        return cache.incr(key) > SAVES_PER_MINUTE
+        return cache.incr(key) > limit
     except Exception:
         return False
+
+
+def _closed_refusal(round_):
+    """The refusal for a change while the round is not open, or None. Read on every change (save, write-in)."""
+    state = round_.state()
+    if state == KolNominationRound.CLOSED:
+        return _refuse("Nominations are closed.", "kol_round_closed", status.HTTP_403_FORBIDDEN)
+    if state == KolNominationRound.NOT_OPEN:
+        return _refuse("Nominations have not opened yet.", "kol_round_not_open", status.HTTP_403_FORBIDDEN)
+    return None
 
 
 class _BadPicks(ValueError):
@@ -391,9 +427,10 @@ def _clean_picks(round_, creator, raw):
     """({question_id: [creator_id]}, dropped creator ids) from the posted picks, or raise _BadPicks.
 
     The posted shape is {"<question_id>": [creator_id, ...]}. A question left out is saved empty (the page always
-    sends all six). Unknown awards or creators and non-numbers are kol_bad_picks; the creator's own id anywhere is
-    kol_self_pick; a switched-off creator is DROPPED (a page opened before the switch-off still saves the rest)
-    and reported back; more than MAX_PICKS active picks in one award is kol_too_many_picks."""
+    sends all six). Unknown awards or creators and non-numbers are kol_bad_picks; the creator's own id is a pick
+    like any other (#637); the same person twice in one award is kept once (#637: never more than once per
+    category); a switched-off creator is DROPPED (a page opened before the switch-off still saves the rest) and
+    reported back; more than MAX_PICKS active picks in one award is kol_too_many_picks."""
     if not isinstance(raw, dict):
         raise _BadPicks("Picks must be grouped by award", "kol_bad_picks")
     question_ids = set(round_.poll.questions.values_list("question_id", flat=True))
@@ -407,8 +444,6 @@ def _clean_picks(round_, creator, raw):
             raise _BadPicks("Picks must be numbers", "kol_bad_picks")
         if question_id not in question_ids or any(value not in known for value in ids):
             raise _BadPicks("That pick is not on this ballot", "kol_bad_picks")
-        if creator.pk in ids:
-            raise _BadPicks("You cannot nominate yourself", "kol_self_pick")
         ids = list(dict.fromkeys(ids))
         dropped.extend(value for value in ids if not known[value])
         ids = [value for value in ids if known[value]]
@@ -497,12 +532,10 @@ def _write_ballot(request, round_, creator, picks):
 
 def _save(request, round_, code):
     """PUT body {picks: {"<question_id>": [creator_id]}, device_key?} for the creator behind `code`."""
-    state = round_.state()
-    if state == KolNominationRound.CLOSED:
-        return _refuse("Nominations are closed.", "kol_round_closed", status.HTTP_403_FORBIDDEN)
-    if state == KolNominationRound.NOT_OPEN:
-        return _refuse("Nominations have not opened yet.", "kol_round_not_open", status.HTTP_403_FORBIDDEN)
-    if _save_limited(code):
+    refusal = _closed_refusal(round_)
+    if refusal:
+        return refusal
+    if _minute_limited("kol_save", code, SAVES_PER_MINUTE):
         return _refuse("Saving too fast. Wait a moment.", "kol_save_too_many", status.HTTP_429_TOO_MANY_REQUESTS)
     data = request.data if isinstance(request.data, dict) else {}
     try:
@@ -512,6 +545,145 @@ def _save(request, round_, code):
         return _refuse(str(refusal), refusal.code)
     KolVoterCode.objects.filter(pk=code.pk).update(last_used_at=timezone.now())
     return Response({**ballot_payload(round_, code.creator), "dropped": dropped}, status=status.HTTP_200_OK)
+
+
+# WRITE-INS (owner, 26 Nov 2026, #636 / #637: "creators can add and nominate anybody ... If a new person is aded by
+# one creator, everyone else should be able to see that person"). A creator types a TikTok @handle (or pastes a
+# profile link) and, if they like, a name. Nobody in the round has that handle yet: the person becomes a KolCreator
+# of origin WRITE_IN with an option in every award, so from then on they are a candidate on EVERY creator's ballot,
+# picked, saved, capped, tallied and switched off exactly like a creator from the list. The page then picks them
+# through the ordinary save (PUT ballot), so "at most 6 per award" and "one person once per award" stay in ONE place
+# (_clean_picks). A handle that IS somebody in the round answers that candidate: never a second row for one handle.
+#
+# ANTI-SPAM (R59). An addition is seen by every creator, so one creator may ADD at most WRITE_INS_PER_CREATOR new
+# people in the whole round (36 = six awards x six picks, every pick a newcomer: more is never needed) and may call
+# the door at most WRITE_INS_PER_MINUTE times a minute. Typing somebody already in the round is not an addition and
+# never counts toward the 36. An admin switches junk off or merges a duplicate (admin_creator, merge_write_in).
+WRITE_INS_PER_CREATOR = MAX_PICKS * len(AWARDS)
+WRITE_INS_PER_MINUTE = 10
+WRITE_IN_NAME_MAX = 60
+# TikTok usernames are letters, numbers, underscores and periods, at most 24 characters (TikTok's own rule; the floor
+# of 2 keeps a stray letter from becoming a person). TikTok ignores case, so the key is lower case like the import's.
+HANDLE_RE = re.compile(r"^[a-z0-9._]{2,24}$")
+_PROFILE_LINK = re.compile(r"tiktok\.com/@([^/?#\s]+)", re.IGNORECASE)
+_CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def handle_from_text(raw):
+    """What a creator typed, as a handle key: a pasted profile link (tiktok.com/@name) gives its name; then spaces
+    and a leading "@" go and the rest is lower case, the same as kol_import_creators.clean_handle. "" for anything
+    that is not text. Not validated here: a handle already in the round matches however the sheet spells it."""
+    if not isinstance(raw, str):
+        return ""
+    text = raw.strip()
+    link = _PROFILE_LINK.search(text)
+    if link:
+        text = link.group(1)
+    return text.strip().lstrip("@").strip().lower()
+
+
+def _clean_name(raw, handle):
+    """The display name of a write-in: control characters out, runs of spaces folded, at most WRITE_IN_NAME_MAX
+    characters; the handle when nothing is left. Shown to every creator, as text only (React escapes it)."""
+    text = _CONTROL_CHARS.sub("", raw) if isinstance(raw, str) else ""
+    return " ".join(text.split())[:WRITE_IN_NAME_MAX].strip() or handle
+
+
+def _candidate_for_handle(round_, handle):
+    """(candidate or None, refusal code or "") for a handle already in the round. A write-in merged into somebody
+    leads to that somebody (so the duplicate handle typed again finds the right person); a switched-off candidate is
+    kol_handle_unavailable (an admin took them out, and typing them must not bring them back). (None, "") means
+    nobody in the round has this handle."""
+    candidate = KolCreator.objects.filter(edition_id=round_.edition_id, tiktok_handle=handle).first()
+    if candidate is None:
+        return None, ""
+    for _ in range(5):                               # a merge chain is one hop in practice; never loop forever
+        if candidate.active or not candidate.merged_into_id:
+            break
+        target = KolCreator.objects.filter(pk=candidate.merged_into_id, edition_id=round_.edition_id).first()
+        if target is None:
+            break
+        candidate = target
+    if not candidate.active:
+        return None, "kol_handle_unavailable"
+    return candidate, ""
+
+
+@transaction.atomic
+def _create_write_in(round_, adder, handle, name):
+    candidate = KolCreator.objects.create(
+        edition_id=round_.edition_id, name=name, tiktok_handle=handle, origin=KolCreator.WRITE_IN, added_by=adder,
+    )
+    _add_options(candidate, list(round_.poll.questions.order_by("order")))
+    return candidate
+
+
+@api_view(["POST"])
+@authentication_classes([])
+def write_in(request, edition_slug):
+    """POST polls/kol-nominations/<edition_slug>/write-in/  {handle, name?}  (kol_ballot cookie)
+
+    200 {candidate, created}: the candidate this handle is in the round, made now when nobody had it (created =
+    true). The page adds them to the award's picks and saves the sheet as usual (PUT ballot). 400 kol_bad_handle
+    (not a TikTok handle) / kol_handle_unavailable (an admin took that person out); 403 kol_round_closed /
+    kol_round_not_open; 429 kol_write_in_too_fast / kol_write_ins_too_many; 401 kol_code_needed /
+    kol_code_replaced; 404 kol_round_not_found. Consumed by KolNominate.tsx (lib/kolNominations addWriteIn)."""
+    round_ = round_for_edition_slug(edition_slug)
+    if round_ is None:
+        return _no_round()
+    code, reason = code_from_cookie(request, round_)
+    if code is None:
+        return _refuse("Enter your code to open your ballot.", reason, status.HTTP_401_UNAUTHORIZED)
+    refusal = _closed_refusal(round_)
+    if refusal:
+        return refusal
+    if _minute_limited("kol_write_in", code, WRITE_INS_PER_MINUTE):
+        return _refuse("Adding too fast. Wait a moment.", "kol_write_in_too_fast", status.HTTP_429_TOO_MANY_REQUESTS)
+
+    data = request.data if isinstance(request.data, dict) else {}
+    handle = handle_from_text(data.get("handle"))
+    bad_handle = _refuse("Type their TikTok @handle: letters, numbers, _ and . only.", "kol_bad_handle")
+    if not handle:
+        return bad_handle
+    candidate, unavailable = _candidate_for_handle(round_, handle)
+    if unavailable:
+        return _refuse("That person cannot be nominated in this round.", unavailable)
+    created = False
+    if candidate is None:
+        if not HANDLE_RE.match(handle):
+            return bad_handle
+        if KolCreator.objects.filter(added_by=code.creator).count() >= WRITE_INS_PER_CREATOR:
+            return _refuse(f"You have added {WRITE_INS_PER_CREATOR} people already, the most one creator can add.",
+                           "kol_write_ins_too_many", status.HTTP_429_TOO_MANY_REQUESTS)
+        try:
+            candidate, created = _create_write_in(round_, code.creator, handle, _clean_name(data.get("name"), handle)), True
+        except IntegrityError:                       # two creators adding one person in the same instant: one row
+            candidate, unavailable = _candidate_for_handle(round_, handle)
+            if candidate is None:
+                return _refuse("That person cannot be nominated in this round.", "kol_handle_unavailable")
+    KolVoterCode.objects.filter(pk=code.pk).update(last_used_at=timezone.now())
+    return Response({"candidate": candidate_row(candidate), "created": created}, status=status.HTTP_200_OK)
+
+
+@transaction.atomic
+def merge_write_in(source, target):
+    """The write-in `source` is `target` under another handle: every pick of `source` moves to `target`, award by
+    award; a ballot that already held `target` in that award keeps it ONCE (the source pick goes), so one person is
+    never counted twice in one category (#637). Then `source` is switched off and remembers `target`. Picks are
+    PollAnswer rows whose option belongs to a creator (KolCreatorOption), and a multiple-choice answer's `value` is
+    empty, so repointing `option` is the whole move. Called by admin_creator; ensure_round has run first."""
+    options = {}
+    for option_id, question_id, creator_id in KolCreatorOption.objects.filter(
+            creator_id__in=[source.pk, target.pk]).values_list("option_id", "option__question_id", "creator_id"):
+        options.setdefault(question_id, {})[creator_id] = option_id
+    for by_creator in options.values():
+        source_option, target_option = by_creator.get(source.pk), by_creator.get(target.pk)
+        if not source_option or not target_option:
+            continue
+        holding_target = list(PollAnswer.objects.filter(option_id=target_option).values_list("response_id", flat=True))
+        PollAnswer.objects.filter(option_id=source_option, response_id__in=holding_target).delete()
+        PollAnswer.objects.filter(option_id=source_option).update(option_id=target_option)
+    KolCreator.objects.filter(pk=source.pk).update(active=False, merged_into=target)
 
 
 def tally(round_):
@@ -544,8 +716,10 @@ def tally(round_):
 #   GET   polls/admin/kol-nominations/<edition_slug>/                          the round, the creators, the tally
 #   POST  polls/admin/kol-nominations/<edition_slug>/                          {opens_at, closes_at}: set the round up
 #   POST  polls/admin/kol-nominations/<edition_slug>/codes/                    {creator_ids?}: new codes as a CSV
-#   PATCH polls/admin/kol-nominations/<edition_slug>/creators/<creator_id>/    {active}: switch a creator on or off
-# An admin sees WHO has voted and how many picks each creator got, never which creator picked whom.
+#   PATCH polls/admin/kol-nominations/<edition_slug>/creators/<creator_id>/    {active} switch a candidate on or off,
+#                                                                              {merge_into} merge a duplicate write-in
+# An admin sees WHO has voted and how many picks each creator got, never which creator picked whom. For the same
+# reason a write-in row never says who added it: only a count of additions per list creator, to spot a spammer.
 
 
 def _require_polls_admin(request):
@@ -573,7 +747,7 @@ def _admin_edition(request, edition_slug):
     return edition, None
 
 
-def _creator_row(creator, live_codes, voted_keys, round_):
+def _creator_row(creator, live_codes, voted_keys, round_, added_counts):
     last_used = (
         KolVoterCode.objects.filter(creator=creator).exclude(last_used_at=None)
         .order_by("-last_used_at").values_list("last_used_at", flat=True).first()
@@ -585,6 +759,9 @@ def _creator_row(creator, live_codes, voted_keys, round_):
         "country": creator.country,
         "sheet_status": creator.sheet_status,
         "active": creator.active,
+        "origin": creator.origin,                                    # "list" or "write-in"
+        "merged_into": creator.merged_into_id,
+        "write_ins_added": added_counts.get(creator.pk, 0),          # how many people this creator added
         "has_code": creator.pk in live_codes,
         "voted": bool(round_) and respondent_key_for(round_, creator) in voted_keys,
         "last_used_at": last_used,
@@ -601,13 +778,17 @@ def _admin_payload(edition):
     if round_ is not None:
         voted_keys = set(PollResponse.objects.filter(poll=round_.poll, status=PollResponse.SUBMITTED)
                          .values_list("respondent_key", flat=True))
+    added_counts = dict(
+        KolCreator.objects.filter(edition=edition, added_by__isnull=False)
+        .values("added_by").annotate(n=Count("creator_id")).values_list("added_by", "n")
+    )
     return {
         "edition": {"slug": edition.slug, "title": edition.title, "hidden": edition.hidden},
         "round": None if round_ is None else {
             "state": round_.state(), "opens_at": round_.opens_at, "closes_at": round_.closes_at,
             "awards": list(round_.poll.questions.order_by("order").values("question_id", "prompt")),
         },
-        "creators": [_creator_row(creator, live_codes, voted_keys, round_) for creator in creators],
+        "creators": [_creator_row(creator, live_codes, voted_keys, round_, added_counts) for creator in creators],
         "tally": tally(round_) if round_ is not None else {},
         "failed_attempts": round_.failed_attempts if round_ is not None else 0,
     }
@@ -646,8 +827,9 @@ def _frontend_origin():
 def admin_codes(request, edition_slug):
     """POST {creator_ids?: [int]} -> text/csv attachment, one row per creator: name, tiktok_handle, country, code,
     link, message. With no ids: every switched-on creator who has no live code (so a second click after a full run
-    is empty). With ids: those creators get NEW codes, which revokes their old ones. The codes exist in plain text
-    only in this answer: it is never stored, logged or cached (Cache-Control: no-store)."""
+    is empty). With ids: those creators get NEW codes, which revokes their old ones. Only creators on the KOL List
+    ever get a code: a write-in is a candidate, never a voter (#637). The codes exist in plain text only in this
+    answer: it is never stored, logged or cached (Cache-Control: no-store)."""
     import csv
     import io
 
@@ -662,7 +844,7 @@ def admin_codes(request, edition_slug):
     if round_ is None:
         return _refuse("Set the round up first.", "kol_round_missing")
     data = request.data if isinstance(request.data, dict) else {}
-    creators = KolCreator.objects.filter(edition=edition, active=True).order_by("name")
+    creators = KolCreator.objects.filter(edition=edition, active=True, origin=KolCreator.LIST).order_by("name")
     if data.get("creator_ids") is not None:
         try:
             ids = [int(value) for value in data.get("creator_ids")]
@@ -692,19 +874,30 @@ def admin_codes(request, edition_slug):
 
 @api_view(["PATCH"])
 def admin_creator(request, edition_slug, creator_id):
-    """PATCH {active: bool}. Switching a creator off revokes their live codes at once (their cookie stops working),
-    takes them off every ballot and out of the tally. 404 for a creator of another edition."""
+    """PATCH {active: bool} or {merge_into: creator_id}.
+
+    active: switching a candidate off revokes their live codes at once (their cookie stops working), takes them off
+    every ballot and out of the tally; switching one back on makes them a plain candidate again (a merge undone by
+    hand starts clean: merged_into is forgotten, the moved picks stay where they went).
+    merge_into: the write-in at this address is the same person as that candidate (merge_write_in): 400
+    kol_merge_not_write_in for a creator on the KOL List (never merged away), kol_bad_merge for a target that is not
+    another switched-on candidate of this edition. 404 for a creator of another edition."""
     edition, refusal = _admin_edition(request, edition_slug)
     if refusal:
         return refusal
     creator = KolCreator.objects.filter(pk=creator_id, edition=edition).first()
     if creator is None:
         return _refuse("Creator not found", "kol_creator_not_found", status.HTTP_404_NOT_FOUND)
-    active = (request.data if isinstance(request.data, dict) else {}).get("active")
+    data = request.data if isinstance(request.data, dict) else {}
+    if "merge_into" in data:
+        return _merge(edition, creator, data.get("merge_into"))
+    active = data.get("active")
     if not isinstance(active, bool):
         return _refuse("active must be true or false", "kol_bad_active")
     creator.active = active
-    creator.save(update_fields=["active"])
+    if active:
+        creator.merged_into = None
+    creator.save(update_fields=["active", "merged_into"])
     if not active:
         KolVoterCode.objects.filter(creator=creator, revoked_at__isnull=True).update(revoked_at=timezone.now())
     if active:
@@ -712,3 +905,23 @@ def admin_creator(request, edition_slug, creator_id):
         if round_ is not None:
             ensure_round(edition)          # a creator switched on later still needs an option in every award
     return Response({"message": "Saved", "active": creator.active}, status=status.HTTP_200_OK)
+
+
+def _merge(edition, source, raw_target):
+    """admin_creator's merge branch. See merge_write_in for what moves."""
+    if source.origin != KolCreator.WRITE_IN:
+        return _refuse("Only a person added by a creator can be merged into another.", "kol_merge_not_write_in")
+    bad = _refuse("Choose another person in this round to merge into.", "kol_bad_merge")
+    if isinstance(raw_target, bool):
+        return bad
+    try:
+        target_id = int(raw_target)
+    except (TypeError, ValueError):
+        return bad
+    target = KolCreator.objects.filter(pk=target_id, edition=edition, active=True).exclude(pk=source.pk).first()
+    if target is None:
+        return bad
+    if KolNominationRound.objects.filter(edition=edition).exists():
+        ensure_round(edition)              # both have an option in every award before picks move
+    merge_write_in(source, target)
+    return Response({"message": "Merged", "active": False, "merged_into": target.pk}, status=status.HTTP_200_OK)
