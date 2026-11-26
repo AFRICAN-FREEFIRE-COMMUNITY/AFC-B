@@ -22,12 +22,14 @@ from django.utils import timezone
 from rest_framework.test import APIClient
 
 import re
+from unittest import mock
 
 from django.core.cache import cache
 
-from .kol_nominations import AWARDS, COOKIE_NAME, ensure_round, new_code, normalize_code, respondent_key_for
+from .kol_nominations import AWARDS, COOKIE_NAME, ensure_round, new_code, normalize_code, respondent_key_for, tally
 from .models import (
-    AwardsEdition, KolCreator, KolCreatorOption, KolNominationRound, KolVoterCode, Poll, PollOption, PollQuestion,
+    AwardsEdition, KolCreator, KolCreatorOption, KolNominationRound, KolVoterCode, Poll, PollOption, PollPickSwitch,
+    PollQuestion, PollResponse,
 )
 from .tests import make_user, token_for
 
@@ -246,3 +248,154 @@ class KolDoorTests(TestCase):
         self.assertEqual(answer.status_code, 200)
         self.assertEqual(answer.cookies[COOKIE_NAME].value, "")
         self.assertEqual(ballot(client, self.edition).status_code, 401)
+
+
+def save(client, edition, picks, **extra):
+    return client.put(f"/polls/kol-nominations/{edition.slug}/ballot/", {"picks": picks, **extra}, format="json")
+
+
+class KolBallotTests(TestCase):
+    NAMES = ("Jokkie", "Lord Rex", "Ama Plays", "Kwame FF", "Zara Clips", "Bisi Live", "Tunde X", "Nana Q", "Femi B")
+
+    def setUp(self):
+        cache.clear()
+        self.edition = kol_edition()
+        self.creators = add_creators(self.edition, names=self.NAMES)
+        self.me = self.creators[0]
+        self.others = self.creators[1:]
+        self.round = open_round(self.edition)
+        self.awards = list(self.round.poll.questions.order_by("order"))
+        self.client = APIClient()
+        self.assertEqual(door(self.client, self.edition, new_code(self.me)).status_code, 200)
+
+    def q(self, index=0):
+        return str(self.awards[index].question_id)
+
+    def test_ballot_hides_me_and_switched_off(self):
+        KolCreator.objects.filter(pk=self.others[0].pk).update(active=False)
+        data = ballot(self.client, self.edition).json()
+        ids = [c["creator_id"] for c in data["candidates"]]
+        self.assertNotIn(self.me.pk, ids)
+        self.assertNotIn(self.others[0].pk, ids)
+        self.assertEqual(len(ids), len(self.NAMES) - 2)
+        self.assertEqual([a["name"] for a in data["awards"]], list(AWARDS))
+        self.assertTrue(all(a["max"] == 6 for a in data["awards"]))
+        self.assertNotIn("option", str(data))           # option ids never leave the server
+
+    def test_save_and_reload_picks(self):
+        picks = {self.q(0): [self.others[0].pk, self.others[1].pk], self.q(5): [self.others[2].pk]}
+        answer = save(self.client, self.edition, picks)
+        self.assertEqual(answer.status_code, 200, answer.content)
+        self.assertEqual(answer.json()["dropped"], [])
+        again = ballot(self.client, self.edition).json()
+        self.assertEqual(again["picks"][self.q(0)], [self.others[0].pk, self.others[1].pk])
+        self.assertEqual(again["picks"][self.q(5)], [self.others[2].pk])
+        self.assertEqual(again["picks"][self.q(1)], [])
+        self.assertIsNotNone(again["saved_at"])
+
+    def test_zero_picks_allowed(self):
+        save(self.client, self.edition, {self.q(0): [self.others[0].pk]})
+        answer = save(self.client, self.edition, {})
+        self.assertEqual(answer.status_code, 200, answer.content)
+        self.assertEqual(ballot(self.client, self.edition).json()["picks"][self.q(0)], [])
+
+    def test_seventh_pick_refused(self):
+        answer = save(self.client, self.edition, {self.q(0): [c.pk for c in self.others[:7]]})
+        self.assertEqual(answer.status_code, 400)
+        self.assertEqual(answer.json()["code"], "kol_too_many_picks")
+        self.assertEqual(save(self.client, self.edition, {self.q(0): [c.pk for c in self.others[:6]]}).status_code, 200)
+
+    def test_self_pick_refused_even_if_posted(self):
+        answer = save(self.client, self.edition, {self.q(2): [self.me.pk, self.others[0].pk]})
+        self.assertEqual(answer.status_code, 400)
+        self.assertEqual(answer.json()["code"], "kol_self_pick")
+        self.assertFalse(PollResponse.objects.filter(poll=self.round.poll).exists())
+
+    def test_bad_picks_refused(self):
+        for bad in ({"999999": [self.others[0].pk]}, {self.q(0): ["x"]}, {self.q(0): [999999]}, ["nope"]):
+            answer = save(self.client, self.edition, bad)
+            self.assertEqual(answer.status_code, 400, bad)
+            self.assertEqual(answer.json()["code"], "kol_bad_picks", bad)
+
+    def test_switched_off_pick_dropped(self):
+        gone = self.others[0]
+        KolCreator.objects.filter(pk=gone.pk).update(active=False)
+        answer = save(self.client, self.edition, {self.q(0): [gone.pk, self.others[1].pk]})
+        self.assertEqual(answer.status_code, 200, answer.content)
+        self.assertEqual(answer.json()["dropped"], [gone.pk])
+        self.assertEqual(answer.json()["picks"][self.q(0)], [self.others[1].pk])
+
+    def test_closed_round_read_only(self):
+        save(self.client, self.edition, {self.q(0): [self.others[0].pk]})
+        KolNominationRound.objects.filter(pk=self.round.pk).update(closes_at=timezone.now() - timedelta(minutes=1))
+        data = ballot(self.client, self.edition).json()
+        self.assertEqual(data["round"]["state"], "closed")
+        self.assertEqual(data["picks"][self.q(0)], [self.others[0].pk])
+        answer = save(self.client, self.edition, {self.q(0): []})
+        self.assertEqual(answer.status_code, 403)
+        self.assertEqual(answer.json()["code"], "kol_round_closed")
+
+    def test_not_open_round_refuses_save(self):
+        KolNominationRound.objects.filter(pk=self.round.pk).update(opens_at=timezone.now() + timedelta(days=1))
+        answer = save(self.client, self.edition, {self.q(0): [self.others[0].pk]})
+        self.assertEqual(answer.status_code, 403)
+        self.assertEqual(answer.json()["code"], "kol_round_not_open")
+
+    def test_save_needs_the_cookie(self):
+        answer = save(APIClient(), self.edition, {self.q(0): [self.others[0].pk]})
+        self.assertEqual(answer.status_code, 401)
+        self.assertEqual(answer.json()["code"], "kol_code_needed")
+
+    def test_one_row_per_creator_across_codes(self):
+        save(self.client, self.edition, {self.q(0): [self.others[0].pk]})
+        fresh = APIClient()
+        door(fresh, self.edition, new_code(self.me))
+        self.assertEqual(ballot(fresh, self.edition).json()["picks"][self.q(0)], [self.others[0].pk])
+        save(fresh, self.edition, {self.q(0): [self.others[3].pk]})
+        rows = PollResponse.objects.filter(poll=self.round.poll)
+        self.assertEqual(rows.count(), 1)
+        self.assertIsNone(rows.first().respondent_id)
+        self.assertEqual(rows.first().respondent_key, respondent_key_for(self.round, self.me))
+        self.assertEqual(ballot(fresh, self.edition).json()["picks"][self.q(0)], [self.others[3].pk])
+
+    def test_pick_switch_recorded(self):
+        save(self.client, self.edition, {self.q(0): [self.others[0].pk]})
+        save(self.client, self.edition, {self.q(0): [self.others[1].pk]})
+        self.assertEqual(PollPickSwitch.objects.filter(poll=self.round.poll).count(), 1)
+
+    def test_tracking_stamped_without_a_user(self):
+        save(self.client, self.edition, {self.q(0): [self.others[0].pk]}, device_key="devkey-abcdefghijklmnop")
+        row = PollResponse.objects.get(poll=self.round.poll)
+        self.assertEqual(len(row.voter_key), 64)
+        self.assertEqual(len(row.device_hash), 64)
+        self.assertIsNone(row.account_age_days)
+
+    def test_normal_submit_door_refuses_round_poll(self):
+        voter = make_user("kolnomsneak")
+        option = PollOption.objects.filter(question=self.awards[0]).first()
+        answer = APIClient().post(
+            f"/polls/{self.round.poll.slug}/responses/",
+            {"answers": [{"question_id": self.awards[0].question_id, "option_ids": [option.option_id]}]},
+            format="json", **token_for(voter),
+        )
+        self.assertIn(answer.status_code, (403, 404))
+        self.assertFalse(PollResponse.objects.filter(poll=self.round.poll).exists())
+        self.assertEqual(APIClient().get(f"/polls/{self.round.poll.slug}/", **token_for(voter)).status_code, 404)
+
+    def test_save_rate_limited(self):
+        with mock.patch("afc_polls.kol_nominations.SAVES_PER_MINUTE", 2):
+            self.assertEqual(save(self.client, self.edition, {}).status_code, 200)
+            self.assertEqual(save(self.client, self.edition, {}).status_code, 200)
+            answer = save(self.client, self.edition, {})
+        self.assertEqual(answer.status_code, 429)
+        self.assertEqual(answer.json()["code"], "kol_save_too_many")
+
+    def test_tally_counts_active_only(self):
+        save(self.client, self.edition, {self.q(0): [self.others[0].pk, self.others[1].pk]})
+        second = APIClient()
+        door(second, self.edition, new_code(self.others[2]))
+        save(second, self.edition, {self.q(0): [self.others[0].pk]})
+        KolCreator.objects.filter(pk=self.others[1].pk).update(active=False)
+        rows = tally(self.round)[self.awards[0].question_id]
+        self.assertEqual(rows, [{"creator_id": self.others[0].pk, "name": self.others[0].name, "picks": 2}])
+        self.assertEqual(tally(self.round)[self.awards[1].question_id], [])
