@@ -531,3 +531,178 @@ def tally(round_):
     for entries in result.values():
         entries.sort(key=lambda entry: (-entry["picks"], entry["name"].lower()))
     return result
+
+
+# ADMIN (AFC poll admins only: afc_polls.permissions.is_polls_admin). Consumed by frontend
+# app/(a)/a/polls/_components/KolNominationsAdmin.tsx through lib/kolNominations.ts.
+#   GET   polls/admin/kol-nominations/<edition_slug>/                          the round, the creators, the tally
+#   POST  polls/admin/kol-nominations/<edition_slug>/                          {opens_at, closes_at}: set the round up
+#   POST  polls/admin/kol-nominations/<edition_slug>/codes/                    {creator_ids?}: new codes as a CSV
+#   PATCH polls/admin/kol-nominations/<edition_slug>/creators/<creator_id>/    {active}: switch a creator on or off
+# An admin sees WHO has voted and how many picks each creator got, never which creator picked whom.
+
+
+def _require_polls_admin(request):
+    """(user, refusal). The same Bearer session and the same admin gate as every other afc_polls admin page."""
+    from .permissions import is_polls_admin
+    from .views import _user_from_request
+
+    user = _user_from_request(request)
+    if not user:
+        return None, _refuse("You need to be signed in to do this", "need_signed", status.HTTP_401_UNAUTHORIZED)
+    if not is_polls_admin(user):
+        return None, _refuse("Only AFC poll admins can run the nominations.", "kol_admin_only",
+                             status.HTTP_403_FORBIDDEN)
+    return user, None
+
+
+def _admin_edition(request, edition_slug):
+    """(edition, refusal) for an admin address."""
+    _, refusal = _require_polls_admin(request)
+    if refusal:
+        return None, refusal
+    edition = AwardsEdition.objects.filter(slug=edition_slug).first()
+    if edition is None:
+        return None, _refuse("Awards edition not found", "awards_edition_not_found", status.HTTP_404_NOT_FOUND)
+    return edition, None
+
+
+def _creator_row(creator, live_codes, voted_keys, round_):
+    last_used = (
+        KolVoterCode.objects.filter(creator=creator).exclude(last_used_at=None)
+        .order_by("-last_used_at").values_list("last_used_at", flat=True).first()
+    )
+    return {
+        "creator_id": creator.pk,
+        "name": creator.name,
+        "handle": creator.tiktok_handle,
+        "country": creator.country,
+        "sheet_status": creator.sheet_status,
+        "active": creator.active,
+        "has_code": creator.pk in live_codes,
+        "voted": bool(round_) and respondent_key_for(round_, creator) in voted_keys,
+        "last_used_at": last_used,
+    }
+
+
+def _admin_payload(edition):
+    round_ = KolNominationRound.objects.select_related("poll", "edition").filter(edition=edition).first()
+    creators = list(KolCreator.objects.filter(edition=edition).order_by("name"))
+    live_codes = set(
+        KolVoterCode.objects.filter(creator__edition=edition, revoked_at__isnull=True).values_list("creator_id", flat=True)
+    )
+    voted_keys = set()
+    if round_ is not None:
+        voted_keys = set(PollResponse.objects.filter(poll=round_.poll, status=PollResponse.SUBMITTED)
+                         .values_list("respondent_key", flat=True))
+    return {
+        "edition": {"slug": edition.slug, "title": edition.title, "hidden": edition.hidden},
+        "round": None if round_ is None else {
+            "state": round_.state(), "opens_at": round_.opens_at, "closes_at": round_.closes_at,
+            "awards": list(round_.poll.questions.order_by("order").values("question_id", "prompt")),
+        },
+        "creators": [_creator_row(creator, live_codes, voted_keys, round_) for creator in creators],
+        "tally": tally(round_) if round_ is not None else {},
+        "failed_attempts": round_.failed_attempts if round_ is not None else 0,
+    }
+
+
+@api_view(["GET", "POST"])
+def admin_round(request, edition_slug):
+    """GET the round, its creators (has a code, has voted, last used) and the tally. POST {opens_at, closes_at}
+    sets the round up (idempotent, ensure_round) and writes the dates; 400 kol_bad_dates for an unreadable date or
+    a close before the open."""
+    edition, refusal = _admin_edition(request, edition_slug)
+    if refusal:
+        return refusal
+    if request.method == "POST":
+        from .views import PollFieldError, _parse_moment
+
+        data = request.data if isinstance(request.data, dict) else {}
+        try:
+            opens_at = _parse_moment(data.get("opens_at"), "opens_at")
+            closes_at = _parse_moment(data.get("closes_at"), "closes_at")
+        except PollFieldError as error:
+            return _refuse(str(error), "kol_bad_dates")
+        if opens_at and closes_at and closes_at <= opens_at:
+            return _refuse("Nominations must close after they open.", "kol_bad_dates")
+        ensure_round(edition, opens_at=opens_at, closes_at=closes_at)
+    return Response(_admin_payload(edition), status=status.HTTP_200_OK)
+
+
+def _frontend_origin():
+    from django.conf import settings as dj_settings
+
+    return dj_settings.FRONTEND_URL_LOCAL if dj_settings.DEBUG else dj_settings.FRONTEND_URL
+
+
+@api_view(["POST"])
+def admin_codes(request, edition_slug):
+    """POST {creator_ids?: [int]} -> text/csv attachment, one row per creator: name, tiktok_handle, country, code,
+    link, message. With no ids: every switched-on creator who has no live code (so a second click after a full run
+    is empty). With ids: those creators get NEW codes, which revokes their old ones. The codes exist in plain text
+    only in this answer: it is never stored, logged or cached (Cache-Control: no-store)."""
+    import csv
+    import io
+
+    from django.http import HttpResponse
+
+    from .kol_messages import message_for
+
+    edition, refusal = _admin_edition(request, edition_slug)
+    if refusal:
+        return refusal
+    round_ = KolNominationRound.objects.filter(edition=edition).first()
+    if round_ is None:
+        return _refuse("Set the round up first.", "kol_round_missing")
+    data = request.data if isinstance(request.data, dict) else {}
+    creators = KolCreator.objects.filter(edition=edition, active=True).order_by("name")
+    if data.get("creator_ids") is not None:
+        try:
+            ids = [int(value) for value in data.get("creator_ids")]
+        except (TypeError, ValueError):
+            return _refuse("creator_ids must be numbers", "kol_bad_creator_ids")
+        creators = creators.filter(pk__in=ids)
+    else:
+        with_live_code = KolVoterCode.objects.filter(
+            creator__edition=edition, revoked_at__isnull=True).values_list("creator_id", flat=True)
+        creators = creators.exclude(pk__in=list(with_live_code))
+
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow(["name", "tiktok_handle", "country", "code", "link", "message"])
+    base = f"{_frontend_origin()}/awards/{edition.slug}/nominate"
+    for creator in creators:
+        code = new_code(creator)
+        link = f"{base}#{code}"
+        writer.writerow([creator.name, creator.tiktok_handle, creator.country, code, link,
+                         message_for(creator, code, link, round_.closes_at, edition.title)])
+    # A byte-order mark so Excel opens the names (emoji, accents) as UTF-8 rather than as mojibake.
+    answer = HttpResponse("﻿" + buffer.getvalue(), content_type="text/csv; charset=utf-8")
+    answer["Content-Disposition"] = f'attachment; filename="kol-codes-{edition.slug}.csv"'
+    answer["Cache-Control"] = "no-store"
+    return answer
+
+
+@api_view(["PATCH"])
+def admin_creator(request, edition_slug, creator_id):
+    """PATCH {active: bool}. Switching a creator off revokes their live codes at once (their cookie stops working),
+    takes them off every ballot and out of the tally. 404 for a creator of another edition."""
+    edition, refusal = _admin_edition(request, edition_slug)
+    if refusal:
+        return refusal
+    creator = KolCreator.objects.filter(pk=creator_id, edition=edition).first()
+    if creator is None:
+        return _refuse("Creator not found", "kol_creator_not_found", status.HTTP_404_NOT_FOUND)
+    active = (request.data if isinstance(request.data, dict) else {}).get("active")
+    if not isinstance(active, bool):
+        return _refuse("active must be true or false", "kol_bad_active")
+    creator.active = active
+    creator.save(update_fields=["active"])
+    if not active:
+        KolVoterCode.objects.filter(creator=creator, revoked_at__isnull=True).update(revoked_at=timezone.now())
+    if active:
+        round_ = KolNominationRound.objects.filter(edition=edition).first()
+        if round_ is not None:
+            ensure_round(edition)          # a creator switched on later still needs an option in every award
+    return Response({"message": "Saved", "active": creator.active}, status=status.HTTP_200_OK)

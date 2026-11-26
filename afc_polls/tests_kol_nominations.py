@@ -21,11 +21,18 @@ from django.test import TestCase
 from django.utils import timezone
 from rest_framework.test import APIClient
 
+import csv
+import io
+import json
+import pathlib
 import re
+import tempfile
 from unittest import mock
 
 from django.core.cache import cache
+from django.core.management import call_command
 
+from .kol_messages import message_for
 from .kol_nominations import AWARDS, COOKIE_NAME, ensure_round, new_code, normalize_code, respondent_key_for, tally
 from .models import (
     AwardsEdition, KolCreator, KolCreatorOption, KolNominationRound, KolVoterCode, Poll, PollOption, PollPickSwitch,
@@ -399,3 +406,154 @@ class KolBallotTests(TestCase):
         rows = tally(self.round)[self.awards[0].question_id]
         self.assertEqual(rows, [{"creator_id": self.others[0].pk, "name": self.others[0].name, "picks": 2}])
         self.assertEqual(tally(self.round)[self.awards[1].question_id], [])
+
+
+def read_csv(answer):
+    text = b"".join(answer.streaming_content).decode("utf-8") if answer.streaming else answer.content.decode("utf-8")
+    return list(csv.DictReader(io.StringIO(text.lstrip("﻿"))))
+
+
+class KolAdminTests(TestCase):
+    def setUp(self):
+        cache.clear()
+        self.edition = kol_edition()
+        self.creators = add_creators(self.edition)
+        self.admin = make_user("kolnomboss", role="admin")
+        self.client = APIClient()
+        self.client.credentials(**token_for(self.admin))
+        self.base = f"/polls/admin/kol-nominations/{self.edition.slug}/"
+
+    def setup_round(self, **body):
+        now = timezone.now()
+        body = {"opens_at": (now - timedelta(hours=1)).isoformat(), "closes_at": (now + timedelta(days=5)).isoformat(),
+                **body}
+        return self.client.post(self.base, body, format="json")
+
+    def test_admin_only(self):
+        self.assertEqual(APIClient().get(self.base).status_code, 401)
+        player = APIClient()
+        player.credentials(**token_for(make_user("kolnomplayer")))
+        answer = player.get(self.base)
+        self.assertEqual(answer.status_code, 403)
+        self.assertEqual(answer.json()["code"], "kol_admin_only")
+        self.assertEqual(player.post(f"{self.base}codes/", {}, format="json").status_code, 403)
+        self.assertEqual(
+            player.patch(f"{self.base}creators/{self.creators[0].pk}/", {"active": False}, format="json").status_code,
+            403)
+
+    def test_setup_round_with_dates(self):
+        self.assertIsNone(self.client.get(self.base).json()["round"])
+        answer = self.setup_round()
+        self.assertEqual(answer.status_code, 200, answer.content)
+        data = self.client.get(self.base).json()
+        self.assertEqual(data["round"]["state"], "open")
+        self.assertEqual(len(data["creators"]), 4)
+        self.assertEqual(KolNominationRound.objects.get(edition=self.edition).poll.questions.count(), 6)
+        later = (timezone.now() + timedelta(days=9)).isoformat()
+        earlier = (timezone.now() + timedelta(days=1)).isoformat()
+        bad = self.setup_round(opens_at=later, closes_at=earlier)
+        self.assertEqual(bad.status_code, 400)
+        self.assertEqual(bad.json()["code"], "kol_bad_dates")
+        self.assertEqual(self.setup_round(opens_at="not a date").json()["code"], "kol_bad_dates")
+
+    def test_csv_has_codes_once(self):
+        self.setup_round()
+        first = self.client.post(f"{self.base}codes/", {}, format="json")
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(first["Content-Type"].split(";")[0], "text/csv")
+        self.assertIn("attachment", first["Content-Disposition"])
+        self.assertEqual(first["Cache-Control"], "no-store")
+        rows = read_csv(first)
+        self.assertEqual(len(rows), 4)
+        self.assertEqual(list(rows[0].keys()), ["name", "tiktok_handle", "country", "code", "link", "message"])
+        for row in rows:
+            self.assertRegex(row["code"], CODE_RE)
+            self.assertTrue(row["link"].endswith(f"/awards/{self.edition.slug}/nominate#{row['code']}"))
+            self.assertIn(row["code"], row["message"])
+        # every code works at the door
+        self.assertEqual(door(APIClient(), self.edition, rows[0]["code"]).status_code, 200)
+        # nobody is left without a code, so a second export is empty
+        self.assertEqual(read_csv(self.client.post(f"{self.base}codes/", {}, format="json")), [])
+        data = self.client.get(self.base).json()
+        self.assertTrue(all(c["has_code"] for c in data["creators"]))
+
+    def test_csv_for_chosen_creators_reissues(self):
+        self.setup_round()
+        old = read_csv(self.client.post(f"{self.base}codes/", {}, format="json"))
+        target = self.creators[1]
+        rows = read_csv(self.client.post(f"{self.base}codes/", {"creator_ids": [target.pk]}, format="json"))
+        self.assertEqual([row["tiktok_handle"] for row in rows], [target.tiktok_handle])
+        old_code = next(row["code"] for row in old if row["tiktok_handle"] == target.tiktok_handle)
+        self.assertEqual(door(APIClient(), self.edition, old_code).json()["code"], "kol_code_wrong")
+        self.assertEqual(door(APIClient(), self.edition, rows[0]["code"]).status_code, 200)
+
+    def test_voted_shows_after_a_save(self):
+        self.setup_round()
+        rows = read_csv(self.client.post(f"{self.base}codes/", {}, format="json"))
+        creator = APIClient()
+        door(creator, self.edition, rows[0]["code"])
+        question = KolNominationRound.objects.get(edition=self.edition).poll.questions.order_by("order").first()
+        me = KolCreator.objects.get(tiktok_handle=rows[0]["tiktok_handle"])
+        other = KolCreator.objects.exclude(pk=me.pk).first()
+        save(creator, self.edition, {str(question.question_id): [other.pk]})
+        data = self.client.get(self.base).json()
+        voted = {c["creator_id"]: c["voted"] for c in data["creators"]}
+        self.assertTrue(voted[me.pk])
+        self.assertEqual(sum(voted.values()), 1)
+        self.assertEqual(data["tally"][str(question.question_id)][0]["creator_id"], other.pk)
+        self.assertNotIn("picks_by_voter", str(data))
+
+    def test_switch_off_revokes_code(self):
+        self.setup_round()
+        rows = read_csv(self.client.post(f"{self.base}codes/", {}, format="json"))
+        target = KolCreator.objects.get(tiktok_handle=rows[0]["tiktok_handle"])
+        answer = self.client.patch(f"{self.base}creators/{target.pk}/", {"active": False}, format="json")
+        self.assertEqual(answer.status_code, 200)
+        self.assertFalse(KolCreator.objects.get(pk=target.pk).active)
+        self.assertEqual(door(APIClient(), self.edition, rows[0]["code"]).json()["code"], "kol_code_wrong")
+        self.assertEqual(self.client.patch(f"{self.base}creators/999999/", {"active": True}, format="json").status_code,
+                         404)
+        self.assertEqual(
+            self.client.patch(f"{self.base}creators/{target.pk}/", {"active": "yes"}, format="json").status_code, 400)
+
+    def test_creator_of_another_edition_unreachable(self):
+        other = kol_edition(slug="kol-elsewhere")
+        stranger = add_creators(other, names=("Far Away",))[0]
+        answer = self.client.patch(f"{self.base}creators/{stranger.pk}/", {"active": False}, format="json")
+        self.assertEqual(answer.status_code, 404)
+        self.assertTrue(KolCreator.objects.get(pk=stranger.pk).active)
+
+    def test_message_language_by_country(self):
+        expect = {"Mozambique": "boletim", "Togo": "bulletin", "Ivory Coast": "bulletin", "Nigeria": "ballot"}
+        for country, word in expect.items():
+            creator = KolCreator(name="Ama", tiktok_handle="ama", country=country, edition=self.edition)
+            text = message_for(creator, "KOL-AAAA-BBBB", "https://x.test/n#KOL-AAAA-BBBB", timezone.now(),
+                               "KOL Awards 2026")
+            self.assertIn(word, text, country)
+            self.assertIn("KOL-AAAA-BBBB", text)
+            self.assertNotIn("AFC", text)
+            self.assertNotIn("African", text)
+            for dash in (chr(0x2013), chr(0x2014)):
+                self.assertNotIn(dash, text)
+
+    def test_import_is_idempotent_and_never_stores_email(self):
+        rows = [
+            {"name": "Jokkie", "tiktok_handle": "@Jokkie", "country": "Nigeria", "status": "Added", "tiktok_id": "123",
+             "email": "jokkie@example.com"},
+            {"name": "Brand New", "tiktok_handle": "brand_new", "country": "Togo", "status": "New", "tiktok_id": "",
+             "email": "new@example.com"},
+        ]
+        path = pathlib.Path(tempfile.mkdtemp()) / "kol.json"
+        path.write_text(json.dumps(rows), encoding="utf-8")
+        out = io.StringIO()
+        call_command("kol_import_creators", str(path), "--edition", self.edition.slug, stdout=out)
+        call_command("kol_import_creators", str(path), "--edition", self.edition.slug, stdout=out)
+        self.assertEqual(KolCreator.objects.filter(edition=self.edition).count(), 5)
+        jokkie = KolCreator.objects.get(edition=self.edition, tiktok_handle="jokkie")
+        self.assertEqual((jokkie.sheet_status, jokkie.tiktok_id), ("Added", "123"))
+        self.assertIn("1 created", out.getvalue())
+        stored = json.dumps(list(KolCreator.objects.values()), default=str)
+        self.assertNotIn("@example.com", stored)
+        self.setup_round()
+        rows = read_csv(self.client.post(f"{self.base}codes/", {}, format="json"))
+        self.assertNotIn("@example.com", json.dumps(rows))

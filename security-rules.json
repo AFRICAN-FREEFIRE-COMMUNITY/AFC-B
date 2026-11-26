@@ -50,7 +50,8 @@
           "/auth/two-factor/resend/",
           "/auth/two-factor/send-code/",
           "/auth/two-factor/switch-method/",
-          "/auth/recovery/whatsapp/start/"
+          "/auth/recovery/whatsapp/start/",
+          "/polls/kol-nominations/<edition>/door/"
         ],
         "verified": "2026-09-17"
       }

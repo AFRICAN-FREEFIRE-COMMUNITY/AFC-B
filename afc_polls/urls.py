@@ -40,6 +40,13 @@ urlpatterns = [
          name="polls_admin_edition_live_link"),                                     # POST, DELETE
     path("admin/legacy-ballot-metrics/", views.admin_legacy_ballot_metrics,
          name="polls_admin_legacy_ballot_metrics"),                                  # GET
+    # The KOL creators' nomination round, admin side (inbox #633 / #634). See kol_nominations.py.
+    path("admin/kol-nominations/<slug:edition_slug>/", kol_nominations.admin_round,
+         name="polls_admin_kol_round"),                                                    # GET, POST
+    path("admin/kol-nominations/<slug:edition_slug>/codes/", kol_nominations.admin_codes,
+         name="polls_admin_kol_codes"),                                                         # POST
+    path("admin/kol-nominations/<slug:edition_slug>/creators/<int:creator_id>/", kol_nominations.admin_creator,
+         name="polls_admin_kol_creator"),                                                      # PATCH
     path("admin/editions/", views.admin_editions, name="polls_admin_editions"),        # GET, POST
     path("admin/editions/<slug:slug>/", views.admin_edition_detail,
          name="polls_admin_edition_detail"),                                          # PATCH, DELETE

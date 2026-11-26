@@ -18,6 +18,11 @@ At release time `node ~/.claude/skills/versioning/scripts/release.mjs next` prin
 rename `## Unreleased` to it, merge, then tag the merge commit. A version tag pushed with the wrong
 number is blocked before the push.
 
+## Unreleased
+
+### Added
+- KOL creators' nominations: the creators on Garena's KOL List nominate each other for the six KOL Awards with a personal code each (no account), up to 6 per award and never themselves, and can change their picks until the round closes. Codes are stored hashed, a wrong code is limited to ten tries a connection a quarter hour (and nginx's code zone), a new code replaces the old one at once. AFC poll admins set the round's dates, load the creators (`manage.py kol_import_creators`, made from the private sheet by `tools/kol_sheet_to_json.py`, never an email), download the codes with a ready-to-send message in English, French or Portuguese, switch a creator off, and see who has voted and the picks per creator, never who picked whom.
+
 ## v7.22.0 - 2026-11-23
 
 ### Added
