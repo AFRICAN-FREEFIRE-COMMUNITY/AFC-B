@@ -312,6 +312,10 @@
     "POST auth/check-discord-membership-v2/": {
       "status": 200,
       "reason": "public content, decided 2026-09-13"
+    },
+    "POST polls/kol-nominations/<slug:edition_slug>/signout/": {
+      "status": 200,
+      "reason": "clears only the caller's own kol_ballot cookie, nothing to gate; KOL nominations, decided 2026-11-26 (#634)"
     }
   },
   "errors_on_anonymous_call": [

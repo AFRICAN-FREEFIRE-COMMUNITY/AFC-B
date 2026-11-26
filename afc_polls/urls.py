@@ -8,7 +8,7 @@ each endpoint.
 """
 from django.urls import path
 
-from . import views, views_hof, whatsapp_votes
+from . import kol_nominations, views, views_hof, whatsapp_votes
 
 urlpatterns = [
     # ── admin (declared first: literal prefix before the <slug:slug> patterns) ──
@@ -40,6 +40,13 @@ urlpatterns = [
          name="polls_admin_edition_live_link"),                                     # POST, DELETE
     path("admin/legacy-ballot-metrics/", views.admin_legacy_ballot_metrics,
          name="polls_admin_legacy_ballot_metrics"),                                  # GET
+    # The KOL creators' nomination round, admin side (inbox #633 / #634). See kol_nominations.py.
+    path("admin/kol-nominations/<slug:edition_slug>/", kol_nominations.admin_round,
+         name="polls_admin_kol_round"),                                                    # GET, POST
+    path("admin/kol-nominations/<slug:edition_slug>/codes/", kol_nominations.admin_codes,
+         name="polls_admin_kol_codes"),                                                         # POST
+    path("admin/kol-nominations/<slug:edition_slug>/creators/<int:creator_id>/", kol_nominations.admin_creator,
+         name="polls_admin_kol_creator"),                                                      # PATCH
     path("admin/editions/", views.admin_editions, name="polls_admin_editions"),        # GET, POST
     path("admin/editions/<slug:slug>/", views.admin_edition_detail,
          name="polls_admin_edition_detail"),                                          # PATCH, DELETE
@@ -59,6 +66,14 @@ urlpatterns = [
     # Garena's private live page reads by its token (live_view). Two segments, so it could never be
     # a poll slug, but it sits with the other literal prefixes all the same.
     path("live/<str:token>/", views.live_view, name="polls_live_view"),                      # GET
+
+    # The KOL creators' nomination round (inbox #633 / #634): a personal code, then a cookie. See kol_nominations.py.
+    path("kol-nominations/<slug:edition_slug>/door/", kol_nominations.door, name="polls_kol_door"),       # POST
+    path("kol-nominations/<slug:edition_slug>/ballot/", kol_nominations.ballot, name="polls_kol_ballot"),  # GET, PUT
+    path("kol-nominations/<slug:edition_slug>/write-in/", kol_nominations.write_in,
+         name="polls_kol_write_in"),                                                                  # POST (#637)
+    path("kol-nominations/<slug:edition_slug>/signout/", kol_nominations.signout,
+         name="polls_kol_signout"),                                                                   # POST
 
     # ── public ──
     path("", views.list_polls, name="polls_list"),                                           # GET

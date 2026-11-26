@@ -95,6 +95,16 @@ MAX_LIMIT = 100
 SMALL_CELL_FLOOR = 5
 
 
+# THE KOL NOMINATION ROUND'S POLL IS NOT AN ORDINARY POLL (inbox #634, found in the Chrome walk 26 Nov 2026). Its
+# ballots are written ONLY by afc_polls.kol_nominations, behind a personal code, under the round's own rules. If any door
+# below could find it, an admin could open it in the poll builder and publish it, and then anybody signed in could
+# vote in it through submit_response with no code. So every lookup in this file starts from _ordinary_polls(),
+# never from Poll.objects (one answer at every door, owner rule R45); kol_nominations reads its poll by the round.
+def _ordinary_polls():
+    """Every poll except a KOL nomination round's."""
+    return Poll.objects.filter(kol_round__isnull=True)
+
+
 # ── auth helpers ──────────────────────────────────────────────────────────────────────────────
 
 
@@ -355,7 +365,7 @@ def list_polls(request):
     """
     locale = get_locale(request)
     queryset = (
-        Poll.objects.filter(visibility=Poll.PUBLIC)
+        _ordinary_polls().filter(visibility=Poll.PUBLIC)
         .exclude(edition__hidden=True)        # hidden until release (#543): never listed, to anybody
         .annotate(
             question_count=Count("questions", distinct=True),
@@ -420,7 +430,7 @@ def poll_detail(request, slug):
     locale = get_locale(request)
     user = _user_from_request(request)
     poll = (
-        Poll.objects.filter(slug=slug)
+        _ordinary_polls().filter(slug=slug)
         .prefetch_related("questions__options", "branch_rules", "sections")
         .select_related("eligibility", "edition")
         .first()
@@ -593,7 +603,7 @@ def submit_response(request, slug):
     if error:
         return error
 
-    poll = Poll.objects.filter(slug=slug).prefetch_related("questions__options").select_related("edition").first()
+    poll = _ordinary_polls().filter(slug=slug).prefetch_related("questions__options").select_related("edition").first()
     # A hidden edition takes no votes from anybody, an admin previewing it included (#543).
     if not poll or (poll.edition_id and poll.edition.hidden):
         return Response({"message": "Poll not found", "code": "poll_not_found"}, status=status.HTTP_404_NOT_FOUND)
@@ -909,7 +919,7 @@ def _manageable_polls(user):
     the events they can already edit, which is the same set can_manage_poll would admit one at a
     time, expressed as a queryset so the listing is one query."""
     if is_polls_admin(user):
-        return Poll.objects.all()
+        return _ordinary_polls()
     from afc_organizers.models import EventCoOrganizer, OrganizationMember
 
     org_ids = list(
@@ -921,7 +931,7 @@ def _manageable_polls(user):
     co_event_ids = EventCoOrganizer.objects.filter(
         organization_id__in=org_ids, status="accepted", can_edit_events=True
     ).values("event_id")
-    return Poll.objects.filter(
+    return _ordinary_polls().filter(
         Q(event__organization_id__in=org_ids) | Q(event_id__in=co_event_ids)
     )
 
@@ -999,7 +1009,7 @@ def _unique_slug(source):
     collision is two different polls, not the same one twice."""
     base = slugify(source)[:120] or "poll"
     slug, counter = base, 2
-    while Poll.objects.filter(slug=slug).exists():
+    while Poll.objects.filter(slug=slug).exists():  # uniqueness: every poll counts, the KOL round's too
         slug = f"{base}-{counter}"
         counter += 1
     return slug
@@ -1144,7 +1154,7 @@ def admin_poll_detail(request, slug):
     if error:
         return error
 
-    poll = Poll.objects.filter(slug=slug).select_related("eligibility", "event").first()
+    poll = _ordinary_polls().filter(slug=slug).select_related("eligibility", "event").first()
     if not poll:
         return Response({"message": "Poll not found", "code": "poll_not_found"}, status=status.HTTP_404_NOT_FOUND)
     if not can_manage_poll(user, poll):
@@ -1258,7 +1268,7 @@ def admin_save_questions(request, slug):
     if error:
         return error
 
-    poll = Poll.objects.filter(slug=slug).first()
+    poll = _ordinary_polls().filter(slug=slug).first()
     if not poll:
         return Response({"message": "Poll not found", "code": "poll_not_found"}, status=status.HTTP_404_NOT_FOUND)
     if not can_manage_poll(user, poll):
@@ -1380,7 +1390,7 @@ def admin_option_film(request, slug, option_id, field="film"):
     user, error = _require_user(request)
     if error:
         return error
-    poll = Poll.objects.filter(slug=slug).first()
+    poll = _ordinary_polls().filter(slug=slug).first()
     if not poll:
         return Response({"message": "Poll not found", "code": "poll_not_found"}, status=status.HTTP_404_NOT_FOUND)
     if not can_manage_poll(user, poll):
@@ -1462,7 +1472,7 @@ def admin_option_image(request, slug, option_id):
     user, error = _require_user(request)
     if error:
         return error
-    poll = Poll.objects.filter(slug=slug).first()
+    poll = _ordinary_polls().filter(slug=slug).first()
     if not poll:
         return Response({"message": "Poll not found", "code": "poll_not_found"}, status=status.HTTP_404_NOT_FOUND)
     if not can_manage_poll(user, poll):
@@ -1570,7 +1580,7 @@ def admin_results(request, slug):
     if error:
         return error
 
-    poll = Poll.objects.filter(slug=slug).prefetch_related("questions__options").first()
+    poll = _ordinary_polls().filter(slug=slug).prefetch_related("questions__options").first()
     if not poll:
         return Response({"message": "Poll not found", "code": "poll_not_found"}, status=status.HTTP_404_NOT_FOUND)
     if not can_manage_poll(user, poll):
@@ -1825,7 +1835,7 @@ def watch(request):
     if reason not in dict(PollWatch.REASON_CHOICES):
         return Response({"message": "Unknown watch reason", "code": "unknown_watch_reason"}, status=status.HTTP_400_BAD_REQUEST)
 
-    poll = Poll.objects.filter(slug=data.get("poll_slug")).first() if data.get("poll_slug") else None
+    poll = _ordinary_polls().filter(slug=data.get("poll_slug")).first() if data.get("poll_slug") else None
     edition = (
         AwardsEdition.objects.filter(slug=data.get("edition_slug")).first()
         if data.get("edition_slug") else None
@@ -1865,7 +1875,7 @@ def captain_override(request, slug):
     if error:
         return error
 
-    poll = Poll.objects.filter(slug=slug).prefetch_related("questions__options").first()
+    poll = _ordinary_polls().filter(slug=slug).prefetch_related("questions__options").first()
     if not poll:
         return Response({"message": "Poll not found", "code": "poll_not_found"}, status=status.HTTP_404_NOT_FOUND)
     if poll.subject != Poll.TEAM:
@@ -1927,7 +1937,7 @@ def admin_publish_winner(request, slug):
     if error:
         return error
 
-    poll = Poll.objects.filter(slug=slug).first()
+    poll = _ordinary_polls().filter(slug=slug).first()
     if not poll:
         return Response({"message": "Poll not found", "code": "poll_not_found"}, status=status.HTTP_404_NOT_FOUND)
     if not can_manage_poll(user, poll):
@@ -2126,7 +2136,7 @@ def admin_announce(request, slug):
     if error:
         return error
 
-    poll = Poll.objects.filter(slug=slug).select_related("eligibility").first()
+    poll = _ordinary_polls().filter(slug=slug).select_related("eligibility").first()
     if not poll:
         return Response({"message": "Poll not found", "code": "poll_not_found"}, status=status.HTTP_404_NOT_FOUND)
     if not can_manage_poll(user, poll):
@@ -2366,7 +2376,7 @@ def sheet_opened(request, slug):
     user, error = _require_user(request)
     if error:
         return error
-    poll = Poll.objects.filter(slug=slug).select_related("edition").first()
+    poll = _ordinary_polls().filter(slug=slug).select_related("edition").first()
     if not poll or edition_hidden_from(poll.edition, user) or (
             poll.visibility == Poll.DRAFT and not can_manage_poll(user, poll)):
         return Response({"message": "Poll not found", "code": "poll_not_found"}, status=status.HTTP_404_NOT_FOUND)
@@ -2525,7 +2535,7 @@ def admin_poll_flags(request, slug):
     if not is_polls_admin(user):
         return Response({"message": "You do not have permission to see awards metrics", "code": "not_permission_see_results"},
                         status=status.HTTP_403_FORBIDDEN)
-    poll = Poll.objects.filter(slug=slug).first()
+    poll = _ordinary_polls().filter(slug=slug).first()
     if not poll:
         return Response({"message": "Poll not found", "code": "poll_not_found"}, status=status.HTTP_404_NOT_FOUND)
 
