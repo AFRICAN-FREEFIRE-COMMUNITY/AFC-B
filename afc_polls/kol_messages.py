@@ -84,3 +84,38 @@ def message_for(creator, code, link, closes_at, edition_title):
     with_date, without_date = UNTIL[language]
     until = with_date.format(date=_date(closes_at, language)) if closes_at else without_date
     return TEMPLATES[language].format(name=creator.name, title=edition_title, link=link, code=code, until=until)
+
+
+# A SPARE code's message (#639, owner 26 Nov 2026): it goes to a creator found after the list was made, so it has no
+# name, and it tells them that the first time they open it they say who they are. The admin tab picks the language.
+SPARE_TEMPLATES = {
+    "en": (
+        "Hi, you are invited to nominate creators for the {title}: up to 6 per award, yourself included, and you can "
+        "add someone who is not on the list.\n"
+        "Open your ballot here: {link}\n"
+        "Your code: {code}. The first time you open it, you say who you are (your name and TikTok @handle); from then "
+        "on it is yours only, so keep it to yourself. {until}"
+    ),
+    "fr": (
+        "Bonjour, vous êtes invité à nominer des créateurs pour les {title} : jusqu'à 6 par prix, y compris "
+        "vous-même, et vous pouvez ajouter quelqu'un qui n'est pas sur la liste.\n"
+        "Ouvrez votre bulletin ici : {link}\n"
+        "Votre code : {code}. La première fois que vous l'ouvrez, vous dites qui vous êtes (votre nom et votre "
+        "@pseudo TikTok) ; ensuite il n'est qu'à vous, gardez-le pour vous. {until}"
+    ),
+    "pt": (
+        "Olá, está convidado a nomear criadores para os {title}: até 6 por prémio, incluindo a si próprio, e pode "
+        "acrescentar alguém que não esteja na lista.\n"
+        "Abra o seu boletim aqui: {link}\n"
+        "O seu código: {code}. Da primeira vez que o abrir, diz quem é (o seu nome e o seu @utilizador do TikTok); a "
+        "partir daí é só seu, guarde-o para si. {until}"
+    ),
+}
+
+
+def spare_message_for(code, link, closes_at, edition_title, language="en"):
+    """The message for a spare `code` in `language` ("en", "fr" or "pt")."""
+    language = language if language in SPARE_TEMPLATES else "en"
+    with_date, without_date = UNTIL[language]
+    until = with_date.format(date=_date(closes_at, language)) if closes_at else without_date
+    return SPARE_TEMPLATES[language].format(title=edition_title, link=link, code=code, until=until)

@@ -9,6 +9,9 @@ THE ASK
     nominate anybody", "If a new person is aded by one creator, everyone else should be able to see that person",
     "shouldnt be able to nominate a person more than once per category". So a creator is on their own list, may add
     anybody by TikTok handle (a WRITE-IN, see write_in below), and one person counts at most once per award.
+    Owner, later on 26 Nov (#638 to #640): every award explained on the page (AWARD_KEYS: the page writes the
+    explanation in the reader's language), SPARE codes with nobody behind them for creators found later (claim),
+    and codes readable by poll admins so they can be copied from the site (code_sealed, admin_code).
     Design: WEBSITE/tasks/kol-nominations-design-2026-11-25.md (sections 10 and 11 for the write-ins).
     Plan: WEBSITE/tasks/plan-kol-nominations-2026-11-26.md.
 
@@ -37,6 +40,7 @@ HOW THIS CONNECTS
     - Frontend: app/(user)/awards/[edition]/nominate (the creators' page, lib/kolNominations.ts) and
       app/(a)/a/polls (the Nominations tab, KolNominationsAdmin.tsx).
 """
+import base64
 import hashlib
 import hmac
 import re
@@ -49,7 +53,10 @@ from django.conf import settings
 from django.core import signing
 from django.core.cache import cache
 from django.db import IntegrityError, transaction
-from django.db.models import Count, F
+from cryptography.fernet import Fernet, InvalidToken
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+from django.db.models import Count, F, Q
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.decorators import api_view, authentication_classes
@@ -71,7 +78,15 @@ AWARDS = (
     "Best Voice Over Creator of the Year",
     "Funniest Creator of the Year",
 )
+# A stable key per award, in the same order (#638). The pages explain each award by its key in the reader's
+# language (awardsKol.nominate.awardHelp.<key>, adminPolls.kolNom.awardHelp.<key>), so a renamed award keeps its text.
+AWARD_KEYS = ("creator", "breakthrough", "educational", "streamer", "voice", "funniest")
 MAX_PICKS = 6
+
+
+def award_key(question):
+    """The AWARD_KEYS entry of a round question, by its position ("" for anything past the six)."""
+    return AWARD_KEYS[question.order] if 0 <= question.order < len(AWARD_KEYS) else ""
 
 
 def round_poll_slug(edition):
@@ -167,31 +182,78 @@ def _code_hash(normalized):
     return hmac.new(key, f"kolcode:{normalized}".encode("utf-8"), hashlib.sha256).hexdigest()
 
 
+# THE SEALED COPY (#640, owner 26 Nov 2026: "Should be able to copy codes from the site"). The hash above is what the
+# door looks a code up by; this Fernet copy is what a poll admin reads back (admin_code) to copy a code or its ready
+# message. Its key is derived from SECRET_KEY by HKDF with a label of its own, the same way afc_auth.two_factor seals
+# TOTP secrets, so it cannot collide with any other key made from SECRET_KEY (R63: encrypted at rest).
+_CODE_BOX = None
+
+
+def _code_box():
+    global _CODE_BOX
+    if _CODE_BOX is None:
+        base = getattr(settings, "KOL_CODE_ENCRYPTION_KEY", None) or settings.SECRET_KEY
+        if not base:
+            raise RuntimeError("KOL codes cannot be sealed: SECRET_KEY is not set.")
+        material = HKDF(algorithm=hashes.SHA256(), length=32, salt=None, info=b"afc-kol-voter-code-v1").derive(
+            str(base).encode("utf-8"))
+        _CODE_BOX = Fernet(base64.urlsafe_b64encode(material))
+    return _CODE_BOX
+
+
+def _seal(body):
+    return _code_box().encrypt(body.encode("utf-8")).decode("ascii")
+
+
+def unseal_code(sealed):
+    """The code a sealed copy holds, as KOL-XXXX-XXXX, or "" when there is none or it cannot be opened (a code
+    made before copying existed, or a rotated SECRET_KEY): the admin is then told to make a new one."""
+    if not sealed:
+        return ""
+    try:
+        body = _code_box().decrypt(sealed.encode("ascii")).decode("utf-8")
+    except (InvalidToken, ValueError):
+        return ""
+    return format_code(body)
+
+
+def format_code(body):
+    return f"KOL-{body[:4]}-{body[4:]}"
+
+
 @transaction.atomic
-def new_code(creator):
-    """A fresh code for `creator`, returned in plain text ONCE (the admin export is the only place it is shown).
-    Revokes every live code the creator had, so a forwarded old code and its cookie stop working at once."""
+def new_code(creator, edition=None):
+    """A fresh code for `creator`, returned in plain text. Revokes every live code the creator had, so a forwarded old
+    code and its cookie stop working at once. With creator None it is a SPARE code of `edition` (#639): nobody
+    behind it until the first person to open it says who they are (claim)."""
     now = timezone.now()
-    KolVoterCode.objects.filter(creator=creator, revoked_at__isnull=True).update(revoked_at=now)
+    if creator is not None:
+        KolVoterCode.objects.filter(creator=creator, revoked_at__isnull=True).update(revoked_at=now)
+        edition_id = creator.edition_id
+    else:
+        edition_id = edition.pk
     while True:
         body = "".join(secrets.choice(CODE_ALPHABET) for _ in range(CODE_LENGTH))
         digest = _code_hash(body)
         if not KolVoterCode.objects.filter(code_hash=digest).exists():
             break
-    KolVoterCode.objects.create(creator=creator, code_hash=digest)
-    return f"KOL-{body[:4]}-{body[4:]}"
+    KolVoterCode.objects.create(creator=creator, edition_id=edition_id, spare=creator is None, code_hash=digest,
+                                code_sealed=_seal(body))
+    return format_code(body)
 
 
 def live_code(round_, raw):
     """The live KolVoterCode this text opens in `round_`, or None: wrong, revoked, another edition's, a
-    switched-off creator's, or a write-in's (a write-in is a candidate, never a voter, whatever code exists)."""
+    switched-off creator's, or a write-in's (a write-in is a candidate, never a voter, whatever code exists). An
+    unclaimed SPARE code of this round opens too: the door then asks who they are."""
     normalized = normalize_code(raw)
     if len(normalized) != CODE_LENGTH:
         return None
     return (
         KolVoterCode.objects.select_related("creator")
-        .filter(code_hash=_code_hash(normalized), revoked_at__isnull=True,
-                creator__edition_id=round_.edition_id, creator__active=True, creator__origin=KolCreator.LIST)
+        .filter(code_hash=_code_hash(normalized), revoked_at__isnull=True)
+        .filter(Q(creator__isnull=True, spare=True, edition_id=round_.edition_id)
+                | Q(creator__edition_id=round_.edition_id, creator__active=True, creator__origin=KolCreator.LIST))
         .first()
     )
 
@@ -259,7 +321,13 @@ def code_from_cookie(request, round_):
     except Exception:
         return None, "kol_code_needed"
     code = KolVoterCode.objects.select_related("creator").filter(pk=code_id).first()
-    if (code is None or code.creator.edition_id != round_.edition_id or not code.creator.active
+    if code is None:
+        return None, "kol_code_needed"
+    if code.creator_id is None:
+        # An unclaimed spare code (#639): it is the caller's job to ask who they are (claim) before a ballot.
+        if not code.spare or code.edition_id != round_.edition_id:
+            return None, "kol_code_needed"
+    elif (code.creator.edition_id != round_.edition_id or not code.creator.active
             or code.creator.origin != KolCreator.LIST):
         return None, "kol_code_needed"
     if code.revoked_at is not None:
@@ -275,7 +343,21 @@ def _no_round():
     return _refuse("Nominations not found", "kol_round_not_found", status.HTTP_404_NOT_FOUND)
 
 
+def _claim_needed():
+    return _refuse("Tell us who you are first.", "kol_claim_needed", status.HTTP_409_CONFLICT)
+
+
 # THE BALLOT, as the page reads it. Speaks in creator ids only: option ids never leave the server.
+def round_info(round_):
+    """The round as every creator page reads it: title, state, dates."""
+    return {
+        "edition_title": round_.edition.title,
+        "state": round_.state(),
+        "opens_at": round_.opens_at,
+        "closes_at": round_.closes_at,
+    }
+
+
 def candidate_row(candidate):
     """One candidate as every creator's page sees it. `write_in` says somebody added them (the page labels it);
     WHO added them is never sent, to anybody (it would say who nominated whom)."""
@@ -304,15 +386,12 @@ def ballot_payload(round_, creator):
         for question_id, creator_id in rows:
             picks.setdefault(str(question_id), []).append(creator_id)
     return {
-        "round": {
-            "edition_title": round_.edition.title,
-            "state": round_.state(),
-            "opens_at": round_.opens_at,
-            "closes_at": round_.closes_at,
-        },
+        "round": round_info(round_),
         "me": {"creator_id": creator.pk, "name": creator.name, "handle": creator.tiktok_handle},
         "awards": [
-            {"question_id": question.question_id, "name": question.prompt, "max": MAX_PICKS} for question in questions
+            {"question_id": question.question_id, "name": question.prompt, "key": award_key(question),
+             "max": MAX_PICKS}
+            for question in questions
         ],
         "candidates": [candidate_row(c) for c in candidates],
         "picks": picks,
@@ -347,6 +426,10 @@ def door(request, edition_slug):
         KolNominationRound.objects.filter(pk=round_.pk).update(failed_attempts=F("failed_attempts") + 1)
         return _refuse("That code does not open a ballot. Check it and try again.", "kol_code_wrong")
     KolVoterCode.objects.filter(pk=code.pk).update(last_used_at=timezone.now())
+    if code.creator_id is None:
+        # A spare code nobody has claimed yet (#639): the page asks who they are, then POSTs claim/.
+        return _set_cookie(Response({"needs_claim": True, "round": round_info(round_)}, status=status.HTTP_200_OK),
+                           round_, code)
     return _set_cookie(Response(ballot_payload(round_, code.creator), status=status.HTTP_200_OK), round_, code)
 
 
@@ -366,6 +449,8 @@ def ballot(request, edition_slug):
     code, reason = code_from_cookie(request, round_)
     if code is None:
         return _refuse("Enter your code to open your ballot.", reason, status.HTTP_401_UNAUTHORIZED)
+    if code.creator_id is None:
+        return _claim_needed()
     if request.method == "PUT":
         return _save(request, round_, code)
     return Response(ballot_payload(round_, code.creator), status=status.HTTP_200_OK)
@@ -634,6 +719,8 @@ def write_in(request, edition_slug):
     code, reason = code_from_cookie(request, round_)
     if code is None:
         return _refuse("Enter your code to open your ballot.", reason, status.HTTP_401_UNAUTHORIZED)
+    if code.creator_id is None:
+        return _claim_needed()
     refusal = _closed_refusal(round_)
     if refusal:
         return refusal
@@ -663,6 +750,80 @@ def write_in(request, edition_slug):
                 return _refuse("That person cannot be nominated in this round.", "kol_handle_unavailable")
     KolVoterCode.objects.filter(pk=code.pk).update(last_used_at=timezone.now())
     return Response({"candidate": candidate_row(candidate), "created": created}, status=status.HTTP_200_OK)
+
+
+# CLAIMING A SPARE CODE (#639, owner 26 Nov 2026: "in case of we find creators who should be able to vote, but are
+# not on the list"; answer: "They enter name + handle"). The first person to open a spare code tells us their name,
+# TikTok @handle and country. A handle nobody has yet becomes a new creator of the list (a voter AND a candidate,
+# with an option in every award); a handle somebody added as a write-in becomes that same person, now a voter; a
+# handle already on the KOL List is refused (that creator has, or will get, a personal code of their own: a spare
+# code must not take over somebody else's ballot). From then on the code is that creator's, on any phone.
+COUNTRY_MAX = 80
+
+
+def _clean_country(raw):
+    text = _CONTROL_CHARS.sub("", raw) if isinstance(raw, str) else ""
+    return " ".join(text.split())[:COUNTRY_MAX]
+
+
+@api_view(["POST"])
+@authentication_classes([])
+def claim(request, edition_slug):
+    """POST polls/kol-nominations/<edition_slug>/claim/  {name?, handle, country?}  (kol_ballot cookie of a SPARE code)
+
+    200 the ballot payload of the creator the code now belongs to. 400 kol_bad_handle / kol_claim_listed (that handle
+    is on the KOL List) / kol_handle_unavailable (an admin took that person out) / kol_already_claimed (this code
+    already belongs to somebody); 403 kol_round_closed; 429 kol_claim_too_fast; 401 kol_code_needed /
+    kol_code_replaced; 404 kol_round_not_found. Consumed by KolNominate.tsx (lib/kolNominations claim)."""
+    round_ = round_for_edition_slug(edition_slug)
+    if round_ is None:
+        return _no_round()
+    code, reason = code_from_cookie(request, round_)
+    if code is None:
+        return _refuse("Enter your code to open your ballot.", reason, status.HTTP_401_UNAUTHORIZED)
+    already = _refuse("This code already belongs to a creator.", "kol_already_claimed")
+    if code.creator_id is not None:
+        return already
+    if round_.state() == KolNominationRound.CLOSED:
+        return _refuse("Nominations are closed.", "kol_round_closed", status.HTTP_403_FORBIDDEN)
+    if _minute_limited("kol_claim", code, WRITE_INS_PER_MINUTE):
+        return _refuse("Too many tries. Wait a moment.", "kol_claim_too_fast", status.HTTP_429_TOO_MANY_REQUESTS)
+
+    data = request.data if isinstance(request.data, dict) else {}
+    handle = handle_from_text(data.get("handle"))
+    bad_handle = _refuse("Type your TikTok @handle: letters, numbers, _ and . only.", "kol_bad_handle")
+    if not handle:
+        return bad_handle
+    existing = KolCreator.objects.filter(edition_id=round_.edition_id, tiktok_handle=handle).first()
+    if existing is not None and existing.origin == KolCreator.LIST:
+        return _refuse("That creator is already on the list. Ask for your own personal code.", "kol_claim_listed")
+    if existing is not None and not existing.active:
+        return _refuse("That person cannot be nominated in this round.", "kol_handle_unavailable")
+    if existing is None and not HANDLE_RE.match(handle):
+        return bad_handle
+    typed_name = _clean_name(data.get("name"), "")
+    country = _clean_country(data.get("country"))
+
+    with transaction.atomic():
+        locked = KolVoterCode.objects.select_for_update().get(pk=code.pk)
+        if locked.creator_id is not None:            # the same code claimed from two phones at once
+            return already
+        if existing is not None:
+            existing.origin = KolCreator.LIST
+            existing.name = typed_name or existing.name
+            existing.country = country or existing.country
+            existing.save(update_fields=["origin", "name", "country"])
+            creator = existing
+        else:
+            creator = KolCreator.objects.create(
+                edition_id=round_.edition_id, name=typed_name or handle, tiktok_handle=handle, country=country,
+                sheet_status="Spare code", origin=KolCreator.LIST,
+            )
+            _add_options(creator, list(round_.poll.questions.order_by("order")))
+        locked.creator = creator
+        locked.last_used_at = timezone.now()
+        locked.save(update_fields=["creator", "last_used_at"])
+    return Response(ballot_payload(round_, creator), status=status.HTTP_200_OK)
 
 
 @transaction.atomic
@@ -748,6 +909,8 @@ def _admin_edition(request, edition_slug):
 
 
 def _creator_row(creator, live_codes, voted_keys, round_, added_counts):
+    """One creator on the admin tab. `live_codes` maps creator_id to their live code's id, which the tab passes to
+    admin_code to copy the code (#640)."""
     last_used = (
         KolVoterCode.objects.filter(creator=creator).exclude(last_used_at=None)
         .order_by("-last_used_at").values_list("last_used_at", flat=True).first()
@@ -763,6 +926,7 @@ def _creator_row(creator, live_codes, voted_keys, round_, added_counts):
         "merged_into": creator.merged_into_id,
         "write_ins_added": added_counts.get(creator.pk, 0),          # how many people this creator added
         "has_code": creator.pk in live_codes,
+        "code_id": live_codes.get(creator.pk),
         "voted": bool(round_) and respondent_key_for(round_, creator) in voted_keys,
         "last_used_at": last_used,
     }
@@ -771,8 +935,9 @@ def _creator_row(creator, live_codes, voted_keys, round_, added_counts):
 def _admin_payload(edition):
     round_ = KolNominationRound.objects.select_related("poll", "edition").filter(edition=edition).first()
     creators = list(KolCreator.objects.filter(edition=edition).order_by("name"))
-    live_codes = set(
-        KolVoterCode.objects.filter(creator__edition=edition, revoked_at__isnull=True).values_list("creator_id", flat=True)
+    live_codes = dict(
+        KolVoterCode.objects.filter(creator__edition=edition, revoked_at__isnull=True)
+        .values_list("creator_id", "code_id")
     )
     voted_keys = set()
     if round_ is not None:
@@ -786,11 +951,22 @@ def _admin_payload(edition):
         "edition": {"slug": edition.slug, "title": edition.title, "hidden": edition.hidden},
         "round": None if round_ is None else {
             "state": round_.state(), "opens_at": round_.opens_at, "closes_at": round_.closes_at,
-            "awards": list(round_.poll.questions.order_by("order").values("question_id", "prompt")),
+            "awards": [{"question_id": q.question_id, "prompt": q.prompt, "key": award_key(q)}
+                       for q in round_.poll.questions.order_by("order")],
         },
         "creators": [_creator_row(creator, live_codes, voted_keys, round_, added_counts) for creator in creators],
         "tally": tally(round_) if round_ is not None else {},
         "failed_attempts": round_.failed_attempts if round_ is not None else 0,
+        # Spare codes (#639), live ones only, oldest first; claimed_by once somebody has said who they are.
+        "spare_codes": [
+            {
+                "code_id": code.code_id, "created_at": code.created_at, "last_used_at": code.last_used_at,
+                "claimed_by": None if code.creator is None else {
+                    "creator_id": code.creator.pk, "name": code.creator.name, "handle": code.creator.tiktok_handle},
+            }
+            for code in KolVoterCode.objects.filter(edition=edition, spare=True, revoked_at__isnull=True)
+            .select_related("creator").order_by("created_at", "code_id")
+        ],
     }
 
 
@@ -825,16 +1001,12 @@ def _frontend_origin():
 
 @api_view(["POST"])
 def admin_codes(request, edition_slug):
-    """POST {creator_ids?: [int]} -> text/csv attachment, one row per creator: name, tiktok_handle, country, code,
-    link, message. With no ids: every switched-on creator who has no live code (so a second click after a full run
+    """POST {creator_ids?: [int]} or {spare: n} -> text/csv attachment, one row per code: name, tiktok_handle,
+    country, code, link, message. {spare: n} (1 to MAX_SPARE) makes n SPARE codes with nobody behind them (#639): name,
+    handle and country empty, the message the English spare one (the tab copies it in French or Portuguese). With no ids: every switched-on creator who has no live code (so a second click after a full run
     is empty). With ids: those creators get NEW codes, which revokes their old ones. Only creators on the KOL List
     ever get a code: a write-in is a candidate, never a voter (#637). The codes exist in plain text only in this
-    answer: it is never stored, logged or cached (Cache-Control: no-store)."""
-    import csv
-    import io
-
-    from django.http import HttpResponse
-
+    answer and, sealed, in the database for admin_code (#640); never logged or cached (Cache-Control: no-store)."""
     from .kol_messages import message_for
 
     edition, refusal = _admin_edition(request, edition_slug)
@@ -844,6 +1016,8 @@ def admin_codes(request, edition_slug):
     if round_ is None:
         return _refuse("Set the round up first.", "kol_round_missing")
     data = request.data if isinstance(request.data, dict) else {}
+    if "spare" in data:
+        return _spare_codes(edition, round_, data.get("spare"))
     creators = KolCreator.objects.filter(edition=edition, active=True, origin=KolCreator.LIST).order_by("name")
     if data.get("creator_ids") is not None:
         try:
@@ -856,18 +1030,99 @@ def admin_codes(request, edition_slug):
             creator__edition=edition, revoked_at__isnull=True).values_list("creator_id", flat=True)
         creators = creators.exclude(pk__in=list(with_live_code))
 
+    rows = []
+    for creator in creators:
+        code = new_code(creator)
+        link = ballot_link(edition, code)
+        rows.append([creator.name, creator.tiktok_handle, creator.country, code, link,
+                     message_for(creator, code, link, round_.closes_at, edition.title)])
+    return _codes_csv(edition, rows)
+
+
+MAX_SPARE = 50
+
+
+def ballot_link(edition, code):
+    """A creator's personal link: the code after "#" so it never reaches a server log (design 5.4)."""
+    return f"{_frontend_origin()}/awards/{edition.slug}/nominate#{code}"
+
+
+def _codes_csv(edition, rows):
+    import csv
+    import io
+
+    from django.http import HttpResponse
+
     buffer = io.StringIO()
     writer = csv.writer(buffer)
     writer.writerow(["name", "tiktok_handle", "country", "code", "link", "message"])
-    base = f"{_frontend_origin()}/awards/{edition.slug}/nominate"
-    for creator in creators:
-        code = new_code(creator)
-        link = f"{base}#{code}"
-        writer.writerow([creator.name, creator.tiktok_handle, creator.country, code, link,
-                         message_for(creator, code, link, round_.closes_at, edition.title)])
+    writer.writerows(rows)
     # A byte-order mark so Excel opens the names (emoji, accents) as UTF-8 rather than as mojibake.
-    answer = HttpResponse("﻿" + buffer.getvalue(), content_type="text/csv; charset=utf-8")
+    answer = HttpResponse("\ufeff" + buffer.getvalue(), content_type="text/csv; charset=utf-8")
     answer["Content-Disposition"] = f'attachment; filename="kol-codes-{edition.slug}.csv"'
+    answer["Cache-Control"] = "no-store"
+    return answer
+
+
+def _spare_codes(edition, round_, raw_count):
+    from .kol_messages import spare_message_for
+
+    if isinstance(raw_count, bool):
+        raw_count = None
+    try:
+        count = int(raw_count)
+    except (TypeError, ValueError):
+        count = 0
+    if not 1 <= count <= MAX_SPARE:
+        return _refuse(f"Make between 1 and {MAX_SPARE} spare codes at a time.", "kol_bad_spare_count")
+    rows = []
+    for _ in range(count):
+        code = new_code(None, edition=edition)
+        link = ballot_link(edition, code)
+        rows.append(["", "", "", code, link, spare_message_for(code, link, round_.closes_at, edition.title, "en")])
+    return _codes_csv(edition, rows)
+
+
+@api_view(["GET", "DELETE"])
+def admin_code(request, edition_slug, code_id):
+    """GET / DELETE polls/admin/kol-nominations/<edition_slug>/codes/<code_id>/  (AFC poll admins)
+
+    GET {code, link, message, language}: one LIVE code read back from its sealed copy so the tab can copy it (#640);
+    a creator's message is in their language, a spare code's in ?lang=en|fr|pt (default en). Cache-Control: no-store,
+    and nothing here is logged. 404 kol_code_not_found (unknown, revoked or another edition's), kol_code_unreadable
+    (made before copying existed: make a new one). DELETE revokes the code (a spare one leaves the spare list; a
+    creator's leaves them without a code until a new one is made). Consumed by KolNominationsAdmin.tsx."""
+    from .kol_messages import language_for, message_for, spare_message_for
+
+    edition, refusal = _admin_edition(request, edition_slug)
+    if refusal:
+        return refusal
+    code = (
+        KolVoterCode.objects.select_related("creator")
+        .filter(pk=code_id, revoked_at__isnull=True)
+        .filter(Q(edition=edition) | Q(creator__edition=edition))
+        .first()
+    )
+    if code is None:
+        return _refuse("Code not found", "kol_code_not_found", status.HTTP_404_NOT_FOUND)
+    if request.method == "DELETE":
+        KolVoterCode.objects.filter(pk=code.pk).update(revoked_at=timezone.now())
+        return Response({"message": "Revoked"}, status=status.HTTP_200_OK)
+    plain = unseal_code(code.code_sealed)
+    if not plain:
+        return _refuse("This code was made before codes could be copied. Make a new one to copy it.",
+                       "kol_code_unreadable", status.HTTP_404_NOT_FOUND)
+    round_ = KolNominationRound.objects.filter(edition=edition).first()
+    closes_at = round_.closes_at if round_ is not None else None
+    link = ballot_link(edition, plain)
+    if code.creator is not None:
+        language = language_for(code.creator.country)
+        message = message_for(code.creator, plain, link, closes_at, edition.title)
+    else:
+        language = request.query_params.get("lang") if request.query_params.get("lang") in ("en", "fr", "pt") else "en"
+        message = spare_message_for(plain, link, closes_at, edition.title, language)
+    answer = Response({"code": plain, "link": link, "message": message, "language": language},
+                      status=status.HTTP_200_OK)
     answer["Cache-Control"] = "no-store"
     return answer
 

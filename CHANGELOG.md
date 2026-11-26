@@ -18,6 +18,13 @@ At release time `node ~/.claude/skills/versioning/scripts/release.mjs next` prin
 rename `## Unreleased` to it, merge, then tag the merge commit. A version tag pushed with the wrong
 number is blocked before the push.
 
+## v7.24.0 - 2026-11-26
+
+### Added
+- KOL nominations: spare codes with nobody behind them, for creators found after the list was made. An admin makes up to 50 at a time; the first person to open one gives their name, TikTok @handle and country and becomes a creator in the round (a voter and a candidate), or the same person when somebody had already added them by handle. A handle already on the KOL List is refused, so a spare code never takes over another creator's ballot.
+- KOL nominations: poll admins can read a live code back and copy it with its ready message (in the creator's language, or the language chosen for a spare code), and revoke one code. Codes are now also kept encrypted (their own key derived from SECRET_KEY), besides the hash the door looks them up by.
+- KOL nominations: each award carries a stable key (creator, breakthrough, educational, streamer, voice, funniest) so the pages can explain it in the reader's language.
+
 ## v7.23.0 - 2026-11-26
 
 ### Added
