@@ -27,6 +27,7 @@ from sympy import Q
 from .history_text import describe_history, event_names, humanize_action
 from .models import AdminHistory, AuditLog, DiscordRoleAssignment, LoginHistory, LoginHistory, NewsDislike, NewsLike, NewsViews, Notifications, Roles, SentBroadcast, SessionToken, User, UserProfile, BannedPlayer, News, PasswordResetToken, UserRoles, EmailChangeRequest
 from .models import canonical_profile  # dup-safe UserProfile resolution (see models.py)
+from .models import staff_role_rows  # granular roles that make AFC staff, a partner's excepted (#641)
 # set_audit lets these admin views supply a SPECIFIC human audit summary (entity name + before/after)
 # that the AuditLogMiddleware records instead of its generic "Edited ... #id" fallback.
 from afc_auth.audit import set_audit
@@ -321,7 +322,9 @@ def _user_role_names(user):
 # member, not AFC staff, and used to turn anybody given it into an admin as well.
 # Frontend twin: lib/adminRoles.ts ADMIN_GRANULAR_ROLES. Callers: assign_roles_to_user,
 # edit_user_roles.
-NON_STAFF_ROLE_NAMES = {"organizer"}
+# A partner role (Roles.PARTNER_ROLE_NAMES, Garena's kol_admin, #641) is not staff either: it must not turn a
+# Garena person into an "admin", which every AFC admin gate reads.
+NON_STAFF_ROLE_NAMES = {"organizer"} | Roles.PARTNER_ROLE_NAMES
 
 
 def _coarse_role_after_grant(current_role, role_names):
@@ -5073,8 +5076,9 @@ def search_users(request):
     except (TypeError, ValueError):
         limit = 10
 
-    # Admin = base role "admin" OR any granular UserRoles row (mirrors the audit-log predicate).
-    is_admin = requester.role == "admin" or requester.userroles.exists()
+    # Admin = base role "admin" OR any granular UserRoles row (mirrors the audit-log predicate), a partner's
+    # role excepted (staff_role_rows, #641: Garena's KOL staff do not look players up by email).
+    is_admin = requester.role == "admin" or staff_role_rows(requester).exists()
 
     # Everyone matches by username (= IGN), full_name and uid. Admins additionally match by email.
     # A deleted account (inbox #20) is not in the directory: its columns are tombstones anyway,

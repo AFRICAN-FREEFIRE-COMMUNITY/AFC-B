@@ -383,7 +383,17 @@ class Roles(models.Model):
         ("support_admin", "Support Admin"),
         ("organizer", "Organizer"),              # granted to any active OrganizationMember
         ("organizer_admin", "Organizer Admin"),  # AFC staff who oversee organizations
+        # Garena's KOL staff (inbox #641, owner 26 Nov 2026): the KOL creators' nomination round on /a/polls and
+        # nothing else (afc_polls.permissions.is_kol_admin). A PARTNER role, see PARTNER_ROLE_NAMES.
+        # The label is also the description Settings shows on first seeding (afc_auth.views.ensure_role_rows).
+        ("kol_admin", "KOL Admin: Garena KOL staff, the KOL nominations only"),
     ]
+
+    # Roles held by people OUTSIDE AFC (a partner's staff). They open only the admin pages that name them, and
+    # they never make anybody AFC staff: granting one leaves the coarse User.role alone
+    # (afc_auth.views.NON_STAFF_ROLE_NAMES) and they never count in an "any granular role = staff" read
+    # (staff_role_rows below). Frontend twin: lib/adminRoles.ts PARTNER_ROLES.
+    PARTNER_ROLE_NAMES = frozenset({"kol_admin"})
 
     role_id = models.AutoField(primary_key=True)
     role_name = models.CharField(max_length=20, choices=ROLES, unique=True)
@@ -399,6 +409,15 @@ class UserRoles(models.Model):
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="userroles")
     role = models.ForeignKey(Roles, on_delete=models.CASCADE)
     date_assigned = models.DateTimeField(auto_now=True)
+
+
+def staff_role_rows(user):
+    """The user's granular roles that make them AFC staff: every role except a partner's (Roles.PARTNER_ROLE_NAMES).
+
+    Read by the admin reads that used to say "any UserRoles row = staff" (#641): afc_auth.views.search_users (email
+    match), afc_auth.views_dashboard._is_admin, afc_player.views._admin_or_refusal and get_player_details. Without
+    it, Garena's KOL staff would read player emails and the AFC dashboard."""
+    return user.userroles.exclude(role__role_name__in=Roles.PARTNER_ROLE_NAMES)
 
 
 class PasswordResetToken(models.Model):

@@ -1114,3 +1114,223 @@ class KolSpareCodeTests(TestCase):
     def test_bulk_codes_never_make_spares(self):
         self.admin.post(f"{self.base}codes/", {}, format="json")
         self.assertFalse(KolVoterCode.objects.filter(creator__isnull=True).exists())
+
+
+# ── Garena's access (#641, owner 26 Nov 2026: "How do i give the garena admins access to the backend or their own
+# page?" then "Both"): the kol_admin role (Garena's KOL staff run the round from /a/polls) and the round on
+# Garena's private live page (/awards/live/<token>). ──
+
+def kol_admin_user(username, *extra_roles):
+    """A Garena KOL admin: a plain player account holding the kol_admin role, granted the way /a/settings does."""
+    from afc_auth.models import Roles, UserRoles
+
+    user = make_user(username)
+    for name in ("kol_admin", *extra_roles):
+        role, _ = Roles.objects.get_or_create(role_name=name, defaults={"description": name})
+        UserRoles.objects.create(user=user, role=role)
+    return user
+
+
+def client_for(user):
+    client = APIClient()
+    client.credentials(**token_for(user))
+    return client
+
+
+class KolAdminRoleGrantTests(TestCase):
+    """The role exists, Settings can grant it, and granting it never makes anybody AFC staff."""
+
+    def setUp(self):
+        from afc_auth.models import Roles, UserRoles
+
+        self.head = make_user("rolesboss", role="admin")
+        head_role, _ = Roles.objects.get_or_create(role_name="head_admin", defaults={"description": "Head Admin"})
+        UserRoles.objects.create(user=self.head, role=head_role)
+        self.garena = make_user("garenastaff")
+
+    def grant(self, *names):
+        from afc_auth.models import Roles
+        from afc_auth.views import ensure_role_rows
+
+        ensure_role_rows()
+        ids = list(Roles.objects.filter(role_name__in=names).values_list("role_id", flat=True))
+        self.assertEqual(len(ids), len(names))
+        return client_for(self.head).post("/auth/edit-user-roles/", {
+            "username": self.garena.username, "email": self.garena.email, "new_role_ids": ids}, format="json")
+
+    def test_role_is_seeded(self):
+        from afc_auth.models import Roles
+        from afc_auth.views import ensure_role_rows
+
+        ensure_role_rows()
+        self.assertTrue(Roles.objects.filter(role_name="kol_admin").exists())
+
+    def test_granting_kol_admin_keeps_the_player_role(self):
+        answer = self.grant("kol_admin")
+        self.assertEqual(answer.status_code, 200, answer.content)
+        self.garena.refresh_from_db()
+        self.assertEqual(self.garena.role, "player")
+
+    def test_a_staff_role_beside_it_still_makes_an_admin(self):
+        self.assertEqual(self.grant("kol_admin", "news_admin").status_code, 200)
+        self.garena.refresh_from_db()
+        self.assertEqual(self.garena.role, "admin")
+
+
+class KolAdminRoleTests(TestCase):
+    """A kol_admin runs the round on an edition that has one, and reaches nothing else in polls."""
+
+    def setUp(self):
+        cache.clear()
+        self.edition = kol_edition()
+        self.creators = add_creators(self.edition)
+        self.round = open_round(self.edition)
+        self.other = AwardsEdition.objects.create(slug="afc-awards-2026", title="AFC Awards 2026", year=2026)
+        self.garena = client_for(kol_admin_user("garenakol"))
+        self.base = f"/polls/admin/kol-nominations/{self.edition.slug}/"
+
+    def test_runs_the_round(self):
+        data = self.garena.get(self.base)
+        self.assertEqual(data.status_code, 200, data.content)
+        self.assertEqual(len(data.json()["creators"]), 4)
+        later = timezone.now() + timedelta(days=4)
+        dates = self.garena.post(self.base, {"opens_at": (timezone.now() - timedelta(hours=1)).isoformat(),
+                                             "closes_at": later.isoformat()}, format="json")
+        self.assertEqual(dates.status_code, 200, dates.content)
+        self.assertEqual(len(read_csv(self.garena.post(f"{self.base}codes/", {}, format="json"))), 4)
+        row = next(c for c in self.garena.get(self.base).json()["creators"] if c["handle"] == "jokkie")
+        copy = self.garena.get(f"{self.base}codes/{row['code_id']}/")
+        self.assertEqual(copy.status_code, 200, copy.content)
+        self.assertTrue(copy.json()["code"].startswith("KOL-"))
+        self.assertEqual(len(read_csv(self.garena.post(f"{self.base}codes/", {"spare": 2}, format="json"))), 2)
+        switch = self.garena.patch(f"{self.base}creators/{self.creators[1].pk}/", {"active": False}, format="json")
+        self.assertEqual(switch.status_code, 200, switch.content)
+        self.assertEqual(self.garena.delete(f"{self.base}codes/{row['code_id']}/").status_code, 200)
+
+    def test_only_editions_with_a_round(self):
+        for slug in (self.other.slug, "no-such-edition"):
+            answer = self.garena.get(f"/polls/admin/kol-nominations/{slug}/")
+            self.assertEqual(answer.status_code, 404, slug)
+            self.assertEqual(answer.json()["code"], "awards_edition_not_found")
+        setup = self.garena.post(f"/polls/admin/kol-nominations/{self.other.slug}/", {}, format="json")
+        self.assertEqual(setup.status_code, 404)
+        self.assertFalse(KolNominationRound.objects.filter(edition=self.other).exists())
+        listed = self.garena.get("/polls/admin/kol-nominations/")
+        self.assertEqual(listed.status_code, 200, listed.content)
+        self.assertEqual([e["slug"] for e in listed.json()["results"]], [self.edition.slug])
+        self.assertEqual(listed.json()["results"][0]["theme"], AwardsEdition.THEME_DETTY_ROYALE)
+
+    def test_editions_list_is_admin_only(self):
+        self.assertEqual(APIClient().get("/polls/admin/kol-nominations/").status_code, 401)
+        player = client_for(make_user("kollistplayer"))
+        answer = player.get("/polls/admin/kol-nominations/")
+        self.assertEqual(answer.status_code, 403)
+        self.assertEqual(answer.json()["code"], "kol_admin_only")
+        self.assertEqual(admin_client("kollistboss").get("/polls/admin/kol-nominations/").status_code, 200)
+
+    def test_nothing_else_in_polls(self):
+        self.assertEqual(self.garena.get("/polls/admin/polls/").json().get("results", []), [])
+        self.assertEqual(self.garena.get("/polls/admin/editions/").status_code, 403)
+        self.assertEqual(self.garena.get(f"/polls/admin/editions/{self.edition.slug}/metrics/").status_code, 403)
+        self.assertEqual(self.garena.post(f"/polls/admin/editions/{self.other.slug}/live-link/").status_code, 403)
+
+    def test_live_link_of_the_round_edition(self):
+        made = self.garena.post(f"/polls/admin/editions/{self.edition.slug}/live-link/")
+        self.assertEqual(made.status_code, 200, made.content)
+        token = made.json()["live_view_token"]
+        self.assertTrue(token.startswith("lv_"))
+        self.assertEqual(self.garena.get(self.base).json()["edition"]["live_view_token"], token)
+        off = self.garena.delete(f"/polls/admin/editions/{self.edition.slug}/live-link/")
+        self.assertEqual(off.json()["live_view_token"], "")
+
+
+class KolPartnerIsNotStaffTests(TestCase):
+    """The four admin reads that let in "any granular role" do not let in a partner role."""
+
+    def setUp(self):
+        self.garena = client_for(kol_admin_user("garenaread"))
+        self.target = make_user("someplayer")
+
+    def test_player_details_refused(self):
+        answer = self.garena.post("/player/get-player-details/", {"player_id": self.target.pk}, format="json")
+        self.assertEqual(answer.status_code, 403)
+        self.assertNotIn("someplayer@example.com", answer.content.decode())
+
+    def test_admin_player_list_refused(self):
+        self.assertEqual(self.garena.get("/player/admin/list-players/").status_code, 401)
+
+    def test_search_does_not_match_by_email(self):
+        found = self.garena.get("/auth/search-users/", {"q": "example.com"}).json()
+        self.assertEqual(found["results"], [])
+        staff = admin_client("searchboss").get("/auth/search-users/", {"q": "example.com"}).json()
+        self.assertTrue(staff["results"])
+
+    def test_dashboard_refused(self):
+        self.assertEqual(self.garena.get("/auth/admin/dashboard-stats/").status_code, 403)
+
+
+class KolLivePageTests(TestCase):
+    """The round on Garena's private live page: counts per candidate, nothing about voters."""
+
+    def setUp(self):
+        cache.clear()
+        self.edition = kol_edition()
+        self.creators = add_creators(self.edition, names=("Jokkie", "Lord Rex", "Ama Plays", "Kwame FF"))
+        self.jokkie, self.rex, self.ama, self.kwame = self.creators
+        self.round = open_round(self.edition)
+        self.awards = list(self.round.poll.questions.order_by("order"))
+        AwardsEdition.objects.filter(pk=self.edition.pk).update(live_view_token="lv_" + "a" * 32)
+        self.url = f"/polls/live/lv_{'a' * 32}/"
+
+    def vote(self, voter, picks):
+        client = APIClient()
+        self.assertEqual(door(client, self.edition, new_code(voter)).status_code, 200)
+        answer = save(client, self.edition, picks)
+        self.assertEqual(answer.status_code, 200, answer.content)
+        return client
+
+    def test_no_picks_yet(self):
+        block = APIClient().get(self.url).json()["nominations"]
+        self.assertEqual(block["state"], "open")
+        self.assertEqual(block["ballots"], 0)
+        self.assertEqual(block["voters"], 4)
+        self.assertEqual([a["key"] for a in block["awards"]], AWARD_KEYS_EXPECTED)
+        self.assertTrue(all(a["total_picks"] == 0 and a["candidates"] == [] for a in block["awards"]))
+
+    def test_counts_per_award(self):
+        first = str(self.awards[0].question_id)
+        self.vote(self.jokkie, {first: [self.rex.pk, self.ama.pk]})
+        client = self.vote(self.kwame, {first: [self.rex.pk]})
+        write_in(client, self.edition, "new_star", "New Star")
+        star = KolCreator.objects.get(tiktok_handle="new_star")
+        save(client, self.edition, {first: [self.rex.pk, star.pk]})
+        data = APIClient().get(self.url).json()
+        block = data["nominations"]
+        self.assertEqual(block["ballots"], 2)
+        self.assertEqual(block["voters"], 4)                       # write-ins never vote
+        award = block["awards"][0]
+        self.assertEqual(award["total_picks"], 4)
+        self.assertEqual([(c["name"], c["picks"]) for c in award["candidates"]],
+                         [("Lord Rex", 2), ("Ama Plays", 1), ("New Star", 1)])
+        star_row = award["candidates"][2]
+        self.assertEqual((star_row["handle"], star_row["write_in"]), ("new_star", True))
+        self.assertEqual(award["candidates"][0]["country"], "Nigeria")
+        text = json.dumps(data)
+        for leak in ("creator_id", "option", "respondent", "code", "jokkie\"", "kwame"):
+            self.assertNotIn(leak, text, leak)
+
+    def test_removed_ballots_and_switched_off_creators_not_counted(self):
+        first = str(self.awards[0].question_id)
+        self.vote(self.jokkie, {first: [self.rex.pk, self.ama.pk]})
+        self.vote(self.kwame, {first: [self.rex.pk]})
+        PollResponse.objects.filter(respondent_key=respondent_key_for(self.round, self.kwame)).update(
+            review_state=PollResponse.REVIEW_REMOVED)
+        KolCreator.objects.filter(pk=self.ama.pk).update(active=False)
+        block = APIClient().get(self.url).json()["nominations"]
+        self.assertEqual(block["ballots"], 1)
+        self.assertEqual([(c["name"], c["picks"]) for c in block["awards"][0]["candidates"]], [("Lord Rex", 1)])
+
+    def test_edition_without_a_round(self):
+        other = AwardsEdition.objects.create(slug="afc-awards-2026", title="AFC Awards 2026", year=2026,
+                                             live_view_token="lv_" + "b" * 32)
+        self.assertIsNone(APIClient().get(f"/polls/live/{other.live_view_token}/").json()["nominations"])

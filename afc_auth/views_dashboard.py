@@ -56,7 +56,7 @@ from afc_tournament_and_scrims.models import (
 )
 
 from .history_text import describe_history, event_names, humanize_action
-from .models import AdminHistory, News, User
+from .models import AdminHistory, News, User, staff_role_rows
 
 
 def _is_admin(user):
@@ -66,7 +66,8 @@ def _is_admin(user):
         return False
     if getattr(user, "is_superuser", False) or getattr(user, "role", None) == "admin":
         return True
-    return user.userroles.exists()
+    # Any AFC admin role; a partner's role (Garena's kol_admin, #641) is not one.
+    return staff_role_rows(user).exists()
 
 
 def _money(value):
