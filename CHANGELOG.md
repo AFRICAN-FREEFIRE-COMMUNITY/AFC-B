@@ -18,7 +18,7 @@ At release time `node ~/.claude/skills/versioning/scripts/release.mjs next` prin
 rename `## Unreleased` to it, merge, then tag the merge commit. A version tag pushed with the wrong
 number is blocked before the push.
 
-## Unreleased
+## v7.24.0 - 2026-11-26
 
 ### Added
 - KOL nominations: spare codes with nobody behind them, for creators found after the list was made. An admin makes up to 50 at a time; the first person to open one gives their name, TikTok @handle and country and becomes a creator in the round (a voter and a candidate), or the same person when somebody had already added them by handle. A handle already on the KOL List is refused, so a spare code never takes over another creator's ballot.
