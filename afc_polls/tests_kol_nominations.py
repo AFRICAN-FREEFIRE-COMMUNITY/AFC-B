@@ -21,8 +21,14 @@ from django.test import TestCase
 from django.utils import timezone
 from rest_framework.test import APIClient
 
-from .kol_nominations import AWARDS, ensure_round, respondent_key_for
-from .models import AwardsEdition, KolCreator, KolCreatorOption, KolNominationRound, Poll, PollOption, PollQuestion
+import re
+
+from django.core.cache import cache
+
+from .kol_nominations import AWARDS, COOKIE_NAME, ensure_round, new_code, normalize_code, respondent_key_for
+from .models import (
+    AwardsEdition, KolCreator, KolCreatorOption, KolNominationRound, KolVoterCode, Poll, PollOption, PollQuestion,
+)
 from .tests import make_user, token_for
 
 
@@ -117,3 +123,126 @@ class KolRoundBuildTests(TestCase):
         self.assertEqual(respondent_key_for(round_, jokkie), respondent_key_for(round_, jokkie))
         self.assertNotEqual(respondent_key_for(round_, jokkie), respondent_key_for(round_, rex))
         self.assertEqual(len(respondent_key_for(round_, jokkie)), 64)
+
+
+CODE_RE = re.compile(r"^KOL-[ABCDEFGHJKMNPQRSTUVWXYZ23456789]{4}-[ABCDEFGHJKMNPQRSTUVWXYZ23456789]{4}$")
+
+
+def door(client, edition, code, ip="198.51.100.7"):
+    return client.post(f"/polls/kol-nominations/{edition.slug}/door/", {"code": code}, format="json", REMOTE_ADDR=ip)
+
+
+def ballot(client, edition):
+    return client.get(f"/polls/kol-nominations/{edition.slug}/ballot/")
+
+
+class KolDoorTests(TestCase):
+    def setUp(self):
+        cache.clear()
+        self.edition = kol_edition()
+        self.jokkie, self.rex, *_ = add_creators(self.edition)
+        self.round = open_round(self.edition)
+
+    def test_code_shape_and_alphabet(self):
+        codes = {new_code(self.jokkie) for _ in range(200)}
+        self.assertEqual(len(codes), 200)
+        for code in codes:
+            self.assertRegex(code, CODE_RE)
+
+    def test_new_code_revokes_the_old_one(self):
+        new_code(self.jokkie)
+        new_code(self.jokkie)
+        self.assertEqual(KolVoterCode.objects.filter(creator=self.jokkie, revoked_at__isnull=True).count(), 1)
+        self.assertEqual(KolVoterCode.objects.filter(creator=self.jokkie).count(), 2)
+
+    def test_code_stored_hashed(self):
+        code = new_code(self.jokkie)
+        row = KolVoterCode.objects.get(creator=self.jokkie)
+        stored = " ".join(str(value) for value in KolVoterCode.objects.filter(pk=row.pk).values_list().first())
+        self.assertNotIn(code, stored)
+        self.assertNotIn(normalize_code(code), stored)
+        self.assertEqual(len(row.code_hash), 64)
+
+    def test_door_accepts_sloppy_code(self):
+        code = new_code(self.jokkie)
+        sloppy = " " + code.lower().replace("-", " ") + " "
+        answer = door(APIClient(), self.edition, sloppy)
+        self.assertEqual(answer.status_code, 200, answer.content)
+        self.assertEqual(answer.json()["me"]["creator_id"], self.jokkie.pk)
+        bare = code.replace("KOL-", "").replace("-", "")
+        self.assertEqual(door(APIClient(), self.edition, bare).status_code, 200)
+
+    def test_door_sets_httponly_cookie(self):
+        code = new_code(self.jokkie)
+        client = APIClient()
+        answer = door(client, self.edition, code)
+        cookie = answer.cookies[COOKIE_NAME]
+        self.assertTrue(cookie["httponly"])
+        self.assertEqual(cookie["samesite"], "Lax")
+        self.assertEqual(cookie["path"], "/polls/kol-nominations/")
+        self.assertNotIn(normalize_code(code), cookie.value.upper().replace("-", ""))
+        self.assertGreater(int(cookie["max-age"]), 0)
+        self.assertEqual(ballot(client, self.edition).status_code, 200)    # the cookie alone opens it
+
+    def test_wrong_code_counts_and_refuses(self):
+        new_code(self.jokkie)
+        answer = door(APIClient(), self.edition, "KOL-AAAA-BBBB")
+        self.assertEqual(answer.status_code, 400)
+        self.assertEqual(answer.json()["code"], "kol_code_wrong")
+        self.round.refresh_from_db()
+        self.assertEqual(self.round.failed_attempts, 1)
+
+    def test_eleventh_wrong_try_is_429(self):
+        client = APIClient()
+        for _ in range(10):
+            self.assertEqual(door(client, self.edition, "KOL-AAAA-BBBB").status_code, 400)
+        answer = door(client, self.edition, "KOL-AAAA-BBBB")
+        self.assertEqual(answer.status_code, 429)
+        self.assertEqual(answer.json()["code"], "kol_code_too_many")
+        # a right code from that connection is held too, and another connection is untouched
+        self.assertEqual(door(client, self.edition, new_code(self.jokkie)).status_code, 429)
+        self.assertEqual(door(APIClient(), self.edition, "KOL-AAAA-BBBB", ip="203.0.113.9").status_code, 400)
+
+    def test_reissued_code_kills_old_cookie(self):
+        client = APIClient()
+        self.assertEqual(door(client, self.edition, new_code(self.jokkie)).status_code, 200)
+        new_code(self.jokkie)
+        answer = ballot(client, self.edition)
+        self.assertEqual(answer.status_code, 401)
+        self.assertEqual(answer.json()["code"], "kol_code_replaced")
+
+    def test_no_cookie_asks_for_a_code(self):
+        answer = ballot(APIClient(), self.edition)
+        self.assertEqual(answer.status_code, 401)
+        self.assertEqual(answer.json()["code"], "kol_code_needed")
+
+    def test_forged_cookie_asks_for_a_code(self):
+        client = APIClient()
+        client.cookies[COOKIE_NAME] = "eyJjIjoxfQ:forged:signature"
+        self.assertEqual(ballot(client, self.edition).json()["code"], "kol_code_needed")
+
+    def test_switched_off_creator_code_refused(self):
+        code = new_code(self.jokkie)
+        KolCreator.objects.filter(pk=self.jokkie.pk).update(active=False)
+        answer = door(APIClient(), self.edition, code)
+        self.assertEqual(answer.status_code, 400)
+        self.assertEqual(answer.json()["code"], "kol_code_wrong")
+
+    def test_code_of_another_edition_refused(self):
+        other = kol_edition(slug="kol-other")
+        stranger = add_creators(other, names=("Other Guy",))[0]
+        open_round(other)
+        self.assertEqual(door(APIClient(), self.edition, new_code(stranger)).json()["code"], "kol_code_wrong")
+
+    def test_unknown_edition_is_404(self):
+        answer = APIClient().post("/polls/kol-nominations/nope/door/", {"code": "x"}, format="json")
+        self.assertEqual(answer.status_code, 404)
+        self.assertEqual(answer.json()["code"], "kol_round_not_found")
+
+    def test_signout_clears_cookie(self):
+        client = APIClient()
+        door(client, self.edition, new_code(self.jokkie))
+        answer = client.post(f"/polls/kol-nominations/{self.edition.slug}/signout/")
+        self.assertEqual(answer.status_code, 200)
+        self.assertEqual(answer.cookies[COOKIE_NAME].value, "")
+        self.assertEqual(ballot(client, self.edition).status_code, 401)

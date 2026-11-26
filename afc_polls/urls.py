@@ -8,7 +8,7 @@ each endpoint.
 """
 from django.urls import path
 
-from . import views, views_hof, whatsapp_votes
+from . import kol_nominations, views, views_hof, whatsapp_votes
 
 urlpatterns = [
     # ── admin (declared first: literal prefix before the <slug:slug> patterns) ──
@@ -59,6 +59,12 @@ urlpatterns = [
     # Garena's private live page reads by its token (live_view). Two segments, so it could never be
     # a poll slug, but it sits with the other literal prefixes all the same.
     path("live/<str:token>/", views.live_view, name="polls_live_view"),                      # GET
+
+    # The KOL creators' nomination round (inbox #633 / #634): a personal code, then a cookie. See kol_nominations.py.
+    path("kol-nominations/<slug:edition_slug>/door/", kol_nominations.door, name="polls_kol_door"),       # POST
+    path("kol-nominations/<slug:edition_slug>/ballot/", kol_nominations.ballot, name="polls_kol_ballot"),  # GET, PUT
+    path("kol-nominations/<slug:edition_slug>/signout/", kol_nominations.signout,
+         name="polls_kol_signout"),                                                                   # POST
 
     # ── public ──
     path("", views.list_polls, name="polls_list"),                                           # GET
