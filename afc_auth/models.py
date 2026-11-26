@@ -385,7 +385,8 @@ class Roles(models.Model):
         ("organizer_admin", "Organizer Admin"),  # AFC staff who oversee organizations
         # Garena's KOL staff (inbox #641, owner 26 Nov 2026): the KOL creators' nomination round on /a/polls and
         # nothing else (afc_polls.permissions.is_kol_admin). A PARTNER role, see PARTNER_ROLE_NAMES.
-        ("kol_admin", "KOL Admin"),
+        # The label is also the description Settings shows on first seeding (afc_auth.views.ensure_role_rows).
+        ("kol_admin", "KOL Admin: Garena KOL staff, the KOL nominations only"),
     ]
 
     # Roles held by people OUTSIDE AFC (a partner's staff). They open only the admin pages that name them, and
