@@ -43,7 +43,7 @@ from django.db import IntegrityError, transaction
 from django.db.models import Count, F
 from django.utils import timezone
 from rest_framework import status
-from rest_framework.decorators import api_view
+from rest_framework.decorators import api_view, authentication_classes
 from rest_framework.response import Response
 
 from afc_auth.client_ip import client_ip
@@ -298,10 +298,14 @@ def ballot_payload(round_, creator):
 
 
 # ENDPOINTS (afc_polls/urls.py, prefix polls/). No Bearer token: the creator is known by the code, then the cookie.
+# @authentication_classes([]): DRF's default SessionAuthentication would demand a CSRF token from a browser that
+# also holds a Django admin session on the API host, and these views never use DRF's user anyway. The cookie is
+# SameSite=Lax and the bodies are JSON (a cross-site form cannot send them), which is the CSRF guard here.
 # Consumed by frontend app/(user)/awards/_kol/KolNominate.tsx through lib/kolNominations.ts.
 
 
 @api_view(["POST"])
+@authentication_classes([])
 def door(request, edition_slug):
     """POST polls/kol-nominations/<edition_slug>/door/  {code}
 
@@ -324,6 +328,7 @@ def door(request, edition_slug):
 
 
 @api_view(["GET", "PUT"])
+@authentication_classes([])
 def ballot(request, edition_slug):
     """GET / PUT polls/kol-nominations/<edition_slug>/ballot/  (kol_ballot cookie)
 
@@ -343,6 +348,7 @@ def ballot(request, edition_slug):
 
 
 @api_view(["POST"])
+@authentication_classes([])
 def signout(request, edition_slug):
     """POST polls/kol-nominations/<edition_slug>/signout/: forgets the cookie ("Not you? Use another code")."""
     response = Response({"message": "Signed out of the ballot"}, status=status.HTTP_200_OK)

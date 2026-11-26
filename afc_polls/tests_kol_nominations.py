@@ -609,3 +609,22 @@ class KolRoundPollIsSealedTests(TestCase):
                                     opens_at=timezone.now() - timedelta(hours=1))
         self.assertEqual(APIClient().get(f"/polls/{plain.slug}/").status_code, 200)
         self.assertEqual(self.admin.get(f"/polls/admin/polls/{plain.slug}/").status_code, 200)
+
+
+class KolDoorIgnoresDjangoSessionTests(TestCase):
+    """The code endpoints know the creator by the code and the kol_ballot cookie only. A browser that ALSO holds a
+    Django admin session on the API host (Layo testing, say) must not be asked for a CSRF token on save: DRF's
+    default SessionAuthentication would, so these views carry no DRF authentication at all."""
+
+    def test_save_works_with_a_django_session_and_csrf_checks_on(self):
+        cache.clear()
+        edition = kol_edition()
+        me, other, *_ = add_creators(edition)
+        round_ = open_round(edition)
+        client = APIClient(enforce_csrf_checks=True)
+        client.force_login(make_user("kolcsrfstaff", role="admin"))
+        self.assertEqual(door(client, edition, new_code(me)).status_code, 200)
+        question = round_.poll.questions.order_by("order").first()
+        answer = save(client, edition, {str(question.question_id): [other.pk]})
+        self.assertEqual(answer.status_code, 200, answer.content)
+        self.assertEqual(client.post(f"/polls/kol-nominations/{edition.slug}/signout/").status_code, 200)
