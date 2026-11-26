@@ -2658,15 +2658,19 @@ def admin_edition_live_link(request, slug):
     DELETE turns it off. Response 200: {"live_view_token": "lv_..." | ""}
     The page it opens is /awards/live/<token> (live_view below): votes per nominee with country and
     region, no voter data. Owner's choice, 2 Nov 2026 (inbox #457): "Private link, no sign-in".
-    Auth: AFC poll admin only. Consumed by frontend app/(a)/a/polls/_components/GarenaLiveLink.tsx.
+    Auth: AFC poll admin, or a kol_admin (Garena's KOL staff, #641) on an edition that has a nomination round
+    (permissions.can_run_kol_round; any other edition, real or missing, is the same 403 for them).
+    Consumed by frontend app/(a)/a/polls/_components/GarenaLiveLink.tsx (Metrics tab and Nominations tab).
     """
+    from .permissions import can_run_kol_round
+
     user, error = _require_user(request)
     if error:
         return error
-    if not is_polls_admin(user):
+    edition = AwardsEdition.objects.filter(slug=slug).first()
+    if not is_polls_admin(user) and not can_run_kol_round(user, edition):
         return Response({"message": "You do not have permission to manage this link", "code": "not_permission_live_link"},
                         status=status.HTTP_403_FORBIDDEN)
-    edition = AwardsEdition.objects.filter(slug=slug).first()
     if not edition:
         return Response({"message": "Awards edition not found", "code": "awards_edition_not_found"},
                         status=status.HTTP_404_NOT_FOUND)
@@ -2693,7 +2697,10 @@ def live_view(request, token):
     Response: {edition: {title, phase, voting_opens_at, voting_closes_at}, updated_at,
                polls: [{title, ballots, questions: [{prompt, total_votes, options: [{label, votes,
                percent, countries: [{code, votes} | {other, votes}], regions: [{country, region,
-               votes} | {other, votes}], by_day: [{date, votes}]}]}]}]}
+               votes} | {other, votes}], by_day: [{date, votes}]}]}]}],
+               nominations: null | {state, opens_at, closes_at, ballots, voters, awards: [...]}}
+    `nominations` is the KOL creators' nomination round of the edition (#641, kol_nominations.live_block):
+    picks per candidate per award, counts only. Its poll is a DRAFT with no edition, so it is never in `polls`.
     No voter data, no flags, no removed ballots. A country or region with fewer than five votes is
     folded into "other" (SMALL_CELL_FLOOR), because a small cell next to a nominee can name a voter.
     Auth: the token IS the access (owner, 2 Nov 2026, inbox #457). A malformed, unknown or turned-off
@@ -2738,6 +2745,9 @@ def live_view(request, token):
             "ballots": PollResponse.objects.filter(COUNTED, poll=poll, status=PollResponse.SUBMITTED).count(),
             "questions": questions,
         })
+    # Imported here, not at the top: kol_nominations reads helpers from this module inside its own functions.
+    from .kol_nominations import live_block
+
     return Response({
         "edition": {
             "title": edition.title,
@@ -2747,4 +2757,5 @@ def live_view(request, token):
         },
         "updated_at": now,
         "polls": polls_payload,
+        "nominations": live_block(edition),
     }, status=status.HTTP_200_OK)

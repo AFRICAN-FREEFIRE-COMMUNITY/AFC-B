@@ -5,7 +5,7 @@ from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.decorators import api_view
 
-from afc_auth.models import User, BannedPlayer
+from afc_auth.models import User, BannedPlayer, staff_role_rows
 from afc_team.models import TeamMembers
 from afc_tournament_and_scrims.models import Match, TournamentPlayerMatchStats
 from rest_framework.decorators import api_view
@@ -263,7 +263,8 @@ def _admin_or_refusal(request):
     """
     auth = request.headers.get("Authorization") or ""
     user = validate_token(auth.split(" ", 1)[1].strip()) if auth.startswith("Bearer ") else None
-    if not user or not (user.role == "admin" or user.userroles.exists()):
+    # staff_role_rows: a partner's role (Garena's kol_admin, #641) is not an admin role.
+    if not user or not (user.role == "admin" or staff_role_rows(user).exists()):
         return None, Response({"message": "Admin access required.", "code": "admin_access_required"},
                               status=status.HTTP_401_UNAUTHORIZED)
     return user, None
@@ -376,7 +377,8 @@ def get_player_details(request):
     caller = validate_token(auth.split(" ")[1])
     if not caller:
         return Response({"message": "Invalid session.", "code": "invalid_session"}, status=401)
-    if caller.role not in ("admin", "moderator", "support") and not caller.userroles.exists():
+    # staff_role_rows: a partner's role (Garena's kol_admin, #641) never reads a player's email.
+    if caller.role not in ("admin", "moderator", "support") and not staff_role_rows(caller).exists():
         return Response({"message": "Unauthorized.", "code": "get_player_details_unauthorized"}, status=403)
 
     # `ref` is the player's username or a legacy numeric id (owner rule R22: the admin address

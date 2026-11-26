@@ -41,6 +41,8 @@ urlpatterns = [
     path("admin/legacy-ballot-metrics/", views.admin_legacy_ballot_metrics,
          name="polls_admin_legacy_ballot_metrics"),                                  # GET
     # The KOL creators' nomination round, admin side (inbox #633 / #634). See kol_nominations.py.
+    path("admin/kol-nominations/", kol_nominations.admin_editions,
+         name="polls_admin_kol_editions"),                                         # GET: editions with a round (#641)
     path("admin/kol-nominations/<slug:edition_slug>/", kol_nominations.admin_round,
          name="polls_admin_kol_round"),                                                    # GET, POST
     path("admin/kol-nominations/<slug:edition_slug>/codes/", kol_nominations.admin_codes,

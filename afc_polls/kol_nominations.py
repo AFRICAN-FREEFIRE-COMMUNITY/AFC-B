@@ -872,8 +872,49 @@ def tally(round_):
     return result
 
 
-# ADMIN (AFC poll admins only: afc_polls.permissions.is_polls_admin). Consumed by frontend
-# app/(a)/a/polls/_components/KolNominationsAdmin.tsx through lib/kolNominations.ts.
+def live_block(edition):
+    """The nomination round on Garena's private live page (#641, owner 26 Nov 2026: "Both"), or None when the edition
+    has no round. Read by afc_polls.views.live_view (GET polls/live/<token>/), drawn by frontend
+    app/(user)/awards/live/[token]/LiveView.tsx.
+
+    {state, opens_at, closes_at, ballots, voters, awards: [{key, name, total_picks,
+     candidates: [{name, handle, country, write_in, picks}]}]}
+
+    Counts only, the same ones the admin tab shows (tally): no creator id, no voter, no code, nothing that says who
+    nominated whom. `ballots` = creators who have saved a ballot an admin has not removed; `voters` = creators on the
+    KOL List who may vote (a write-in is a candidate, never a voter). A candidate with no pick is left out."""
+    from .vote_tracking import COUNTED
+
+    round_ = KolNominationRound.objects.select_related("poll").filter(edition=edition).first()
+    if round_ is None:
+        return None
+    counts = tally(round_)
+    candidates = {creator.pk: creator for creator in KolCreator.objects.filter(edition=edition, active=True)}
+    awards = []
+    for question in round_.poll.questions.order_by("order"):
+        rows = []
+        for entry in counts.get(question.question_id, []):
+            creator = candidates.get(entry["creator_id"])
+            if creator is None:
+                continue
+            rows.append({"name": creator.name, "handle": creator.tiktok_handle, "country": creator.country,
+                         "write_in": creator.origin == KolCreator.WRITE_IN, "picks": entry["picks"]})
+        awards.append({"key": award_key(question), "name": question.prompt,
+                       "total_picks": sum(row["picks"] for row in rows), "candidates": rows})
+    return {
+        "state": round_.state(),
+        "opens_at": round_.opens_at,
+        "closes_at": round_.closes_at,
+        "ballots": PollResponse.objects.filter(COUNTED, poll=round_.poll, status=PollResponse.SUBMITTED).count(),
+        "voters": KolCreator.objects.filter(edition=edition, active=True, origin=KolCreator.LIST).count(),
+        "awards": awards,
+    }
+
+
+# ADMIN (AFC poll admins, and Garena's KOL staff on an edition that has a round: afc_polls.permissions
+# .can_run_kol_round, #641). Consumed by frontend app/(a)/a/polls/_components/KolNominationsAdmin.tsx through
+# lib/kolNominations.ts.
+#   GET   polls/admin/kol-nominations/                                         the editions that have a round (#641)
 #   GET   polls/admin/kol-nominations/<edition_slug>/                          the round, the creators, the tally
 #   POST  polls/admin/kol-nominations/<edition_slug>/                          {opens_at, closes_at}: set the round up
 #   POST  polls/admin/kol-nominations/<edition_slug>/codes/                    {creator_ids?}: new codes as a CSV
@@ -883,29 +924,50 @@ def tally(round_):
 # reason a write-in row never says who added it: only a count of additions per list creator, to spot a spammer.
 
 
-def _require_polls_admin(request):
-    """(user, refusal). The same Bearer session and the same admin gate as every other afc_polls admin page."""
-    from .permissions import is_polls_admin
+def _require_kol_admin(request):
+    """(user, refusal). The same Bearer session as every other afc_polls admin page; an AFC poll admin or a
+    kol_admin (Garena's KOL staff, #641) passes. Which edition a kol_admin may reach is _admin_edition's call."""
+    from .permissions import holds_kol_admin_role, is_polls_admin
     from .views import _user_from_request
 
     user = _user_from_request(request)
     if not user:
         return None, _refuse("You need to be signed in to do this", "need_signed", status.HTTP_401_UNAUTHORIZED)
-    if not is_polls_admin(user):
-        return None, _refuse("Only AFC poll admins can run the nominations.", "kol_admin_only",
+    if not (is_polls_admin(user) or holds_kol_admin_role(user)):
+        return None, _refuse("Only AFC poll admins and KOL admins can run the nominations.", "kol_admin_only",
                              status.HTTP_403_FORBIDDEN)
     return user, None
 
 
 def _admin_edition(request, edition_slug):
-    """(edition, refusal) for an admin address."""
-    _, refusal = _require_polls_admin(request)
+    """(edition, refusal) for an admin address. A kol_admin reaches only an edition that already has a round
+    (afc_polls.permissions.can_run_kol_round); any other edition answers the same 404 as a missing one, so the
+    address cannot be used to learn which editions exist (R88)."""
+    from .permissions import can_run_kol_round
+
+    user, refusal = _require_kol_admin(request)
     if refusal:
         return None, refusal
     edition = AwardsEdition.objects.filter(slug=edition_slug).first()
-    if edition is None:
+    if edition is None or not can_run_kol_round(user, edition):
         return None, _refuse("Awards edition not found", "awards_edition_not_found", status.HTTP_404_NOT_FOUND)
     return edition, None
+
+
+@api_view(["GET"])
+def admin_editions(request):
+    """GET polls/admin/kol-nominations/ -> {results: [{slug, title, theme, hidden}]}: the editions that have a
+    nomination round, newest first. The edition picker of a kol_admin's Nominations tab (#641), who is refused the
+    full editions list (polls/admin/editions/). Auth: an AFC poll admin or a kol_admin; 401 signed out, 403
+    kol_admin_only otherwise. Consumed by frontend app/(a)/a/polls/page.tsx (kolNominationsAdminApi.editions)."""
+    _, refusal = _require_kol_admin(request)
+    if refusal:
+        return refusal
+    editions = AwardsEdition.objects.filter(kol_round__isnull=False).order_by("-year", "-pk")
+    return Response({"results": [
+        {"slug": edition.slug, "title": edition.title, "theme": edition.theme, "hidden": edition.hidden}
+        for edition in editions
+    ]}, status=status.HTTP_200_OK)
 
 
 def _creator_row(creator, live_codes, voted_keys, round_, added_counts):
@@ -948,7 +1010,10 @@ def _admin_payload(edition):
         .values("added_by").annotate(n=Count("creator_id")).values_list("added_by", "n")
     )
     return {
-        "edition": {"slug": edition.slug, "title": edition.title, "hidden": edition.hidden},
+        # live_view_token: Garena's private live link of this edition (#641), which the tab can make, copy,
+        # replace or turn off (views.admin_edition_live_link); "" when it is off.
+        "edition": {"slug": edition.slug, "title": edition.title, "hidden": edition.hidden,
+                    "live_view_token": edition.live_view_token or ""},
         "round": None if round_ is None else {
             "state": round_.state(), "opens_at": round_.opens_at, "closes_at": round_.closes_at,
             "awards": [{"question_id": q.question_id, "prompt": q.prompt, "key": award_key(q)}

@@ -4845,7 +4845,27 @@
       }
     },
     {
-      "name": "B cannot read or set up the KOL nomination round (polls/admin/kol-nominations/<slug>/, inbox #634). AFC poll admins only",
+      "name": "B cannot list the editions that have a KOL nomination round (polls/admin/kol-nominations/, inbox #641). AFC poll admins and KOL admins only",
+      "route": "polls/admin/kol-nominations/",
+      "attempt": {
+        "as": "b",
+        "method": "GET",
+        "path": "/polls/admin/kol-nominations/",
+        "expect": [
+          401,
+          403
+        ]
+      },
+      "r88": {
+        "skip": [
+          "existence",
+          "neighbours"
+        ],
+        "reason": "no id in the address; the KOL admin gate answers 403 for anybody who is neither a poll admin nor a kol_admin"
+      }
+    },
+    {
+      "name": "B cannot read or set up the KOL nomination round (polls/admin/kol-nominations/<slug>/, inbox #634). AFC poll admins and KOL admins only",
       "route": "polls/admin/kol-nominations/<slug:edition_slug>/",
       "attempt": {
         "as": "b",
@@ -4861,11 +4881,11 @@
           "existence",
           "neighbours"
         ],
-        "reason": "the poll admin gate (is_polls_admin) answers 403 before the edition or creator is looked up, so a real and a missing id answer the same"
+        "reason": "the KOL admin gate (an AFC poll admin or a kol_admin, #641) answers 403 before the edition or creator is looked up, so a real and a missing id answer the same; a kol_admin on an edition with no round gets the same 404 as a missing edition"
       }
     },
     {
-      "name": "B cannot make KOL nomination codes (polls/admin/kol-nominations/<slug>/codes/, inbox #634). AFC poll admins only",
+      "name": "B cannot make KOL nomination codes (polls/admin/kol-nominations/<slug>/codes/, inbox #634). AFC poll admins and KOL admins only",
       "route": "polls/admin/kol-nominations/<slug:edition_slug>/codes/",
       "attempt": {
         "as": "b",
@@ -4881,11 +4901,11 @@
           "existence",
           "neighbours"
         ],
-        "reason": "the poll admin gate (is_polls_admin) answers 403 before the edition or creator is looked up, so a real and a missing id answer the same"
+        "reason": "the KOL admin gate (an AFC poll admin or a kol_admin, #641) answers 403 before the edition or creator is looked up, so a real and a missing id answer the same; a kol_admin on an edition with no round gets the same 404 as a missing edition"
       }
     },
     {
-      "name": "B cannot read or revoke a KOL nomination code (polls/admin/kol-nominations/<slug>/codes/<id>/, inbox #640). AFC poll admins only",
+      "name": "B cannot read or revoke a KOL nomination code (polls/admin/kol-nominations/<slug>/codes/<id>/, inbox #640). AFC poll admins and KOL admins only",
       "route": "polls/admin/kol-nominations/<slug:edition_slug>/codes/<int:code_id>/",
       "attempt": {
         "as": "b",
@@ -4901,11 +4921,11 @@
           "existence",
           "neighbours"
         ],
-        "reason": "the poll admin gate (is_polls_admin) answers 403 before the edition or creator is looked up, so a real and a missing id answer the same"
+        "reason": "the KOL admin gate (an AFC poll admin or a kol_admin, #641) answers 403 before the edition or creator is looked up, so a real and a missing id answer the same; a kol_admin on an edition with no round gets the same 404 as a missing edition"
       }
     },
     {
-      "name": "B cannot switch a KOL creator on or off (polls/admin/kol-nominations/<slug>/creators/<id>/, inbox #634). AFC poll admins only",
+      "name": "B cannot switch a KOL creator on or off (polls/admin/kol-nominations/<slug>/creators/<id>/, inbox #634). AFC poll admins and KOL admins only",
       "route": "polls/admin/kol-nominations/<slug:edition_slug>/creators/<int:creator_id>/",
       "attempt": {
         "as": "b",
@@ -4921,7 +4941,7 @@
           "existence",
           "neighbours"
         ],
-        "reason": "the poll admin gate (is_polls_admin) answers 403 before the edition or creator is looked up, so a real and a missing id answer the same"
+        "reason": "the KOL admin gate (an AFC poll admin or a kol_admin, #641) answers 403 before the edition or creator is looked up, so a real and a missing id answer the same; a kol_admin on an edition with no round gets the same 404 as a missing edition"
       }
     },
     {

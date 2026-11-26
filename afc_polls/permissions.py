@@ -41,6 +41,31 @@ def is_polls_admin(user):
     return bool(user) and _is_event_admin(user)
 
 
+# ── Garena's KOL staff (inbox #641, owner 26 Nov 2026: "How do i give the garena admins access to the backend or
+# their own page?", then "Both") ──
+# The kol_admin role (afc_auth.models.Roles, a PARTNER role) runs the KOL creators' nomination round on an edition
+# that AFC has already set a round up on, and nothing else: no other poll, no edition, no metrics, no event.
+# Callers: afc_polls.kol_nominations (every admin address of the round) and afc_polls.views.admin_edition_live_link
+# (Garena's private live link of that same edition).
+KOL_ADMIN_ROLE = "kol_admin"
+
+
+def holds_kol_admin_role(user):
+    return bool(user) and user.userroles.filter(role__role_name=KOL_ADMIN_ROLE).exists()
+
+
+def can_run_kol_round(user, edition):
+    """Whether `user` may run the nomination round of `edition`: any AFC poll admin, or a kol_admin when the
+    edition already has a round (so a kol_admin can never start a round on AFC's own awards)."""
+    if not user or edition is None:
+        return False
+    if is_polls_admin(user):
+        return True
+    from .models import KolNominationRound
+
+    return holds_kol_admin_role(user) and KolNominationRound.objects.filter(edition=edition).exists()
+
+
 def can_manage_poll(user, poll):
     """Whether `user` may edit, publish, delete or read the results of `poll`.
 

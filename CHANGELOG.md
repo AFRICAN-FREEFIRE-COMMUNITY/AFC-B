@@ -18,6 +18,15 @@ At release time `node ~/.claude/skills/versioning/scripts/release.mjs next` prin
 rename `## Unreleased` to it, merge, then tag the merge commit. A version tag pushed with the wrong
 number is blocked before the push.
 
+## v7.25.0 - 2026-11-26
+
+### Added
+- KOL nominations: a new role, KOL Admin, for Garena's KOL staff. Granted in Settings like any role, it opens the admin panel on the KOL nominations of an edition AFC has set a round up on, and nothing else: codes, spare codes, copying, switching people off, merging, the round's dates and Garena's live link. It never makes the person AFC staff (their account stays a player account), so it reaches no other poll, edition, event, dashboard or player detail. New address GET polls/admin/kol-nominations/ lists the editions that have a round.
+- Garena's private live page (polls/live/<token>/) now carries the creators' nomination round: picks per candidate in each award, ballots in out of the creators who may vote. Counts only, nothing about who picked whom.
+
+### Security
+- The admin reads that let in anybody holding any role (player details with email, the admin player list, email search, dashboard counts) no longer count a partner's role as AFC staff.
+
 ## v7.24.0 - 2026-11-26
 
 ### Added
