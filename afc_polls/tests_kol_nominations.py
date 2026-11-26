@@ -893,3 +893,224 @@ class KolWriteInAdminTests(TestCase):
         call_command("kol_import_creators", str(path), "--edition", self.edition.slug, stdout=io.StringIO())
         row = KolCreator.objects.get(pk=self.dup)
         self.assertEqual((row.origin, row.country), (KolCreator.LIST, "Ghana"))
+
+
+# ── AWARD KEYS (#638), COPY CODES (#640), SPARE CODES (#639): owner, 26 Nov 2026 ─────────────────────────────────────
+# "Can there be an explanation for what each of ten categories mean." (the six awards, explained by key on the page)
+# "Should be able to copy codes from the site." (codes kept ENCRYPTED as well, read back by poll admins only)
+# "generate new codes that are not linked to anybody in case of we find creators who should be able to vote, but are
+#  not on the list." (SPARE codes: the first person to open one says who they are and becomes a creator)
+
+AWARD_KEYS_EXPECTED = ["creator", "breakthrough", "educational", "streamer", "voice", "funniest"]
+
+
+def admin_client(username):
+    client = APIClient()
+    client.credentials(**token_for(make_user(username, role="admin")))
+    return client
+
+
+class KolAwardKeyTests(TestCase):
+    def test_awards_carry_stable_keys(self):
+        cache.clear()
+        edition = kol_edition()
+        me, *_ = add_creators(edition)
+        open_round(edition)
+        client = APIClient()
+        door(client, edition, new_code(me))
+        self.assertEqual([a["key"] for a in ballot(client, edition).json()["awards"]], AWARD_KEYS_EXPECTED)
+        admin = admin_client("kolkeyboss")
+        round_awards = admin.get(f"/polls/admin/kol-nominations/{edition.slug}/").json()["round"]["awards"]
+        self.assertEqual([a["key"] for a in round_awards], AWARD_KEYS_EXPECTED)
+
+
+class KolCopyCodeTests(TestCase):
+    def setUp(self):
+        cache.clear()
+        self.edition = kol_edition()
+        self.creators = add_creators(self.edition, names=("Jokkie", "Lord Rex", "Ines Jogos"))
+        KolCreator.objects.filter(name="Ines Jogos").update(country="Mozambique")
+        self.round = open_round(self.edition)
+        self.admin = admin_client("kolcopyboss")
+        self.base = f"/polls/admin/kol-nominations/{self.edition.slug}/"
+
+    def row(self, handle):
+        return next(c for c in self.admin.get(self.base).json()["creators"] if c["handle"] == handle)
+
+    def test_admin_reads_back_a_live_code_with_its_message(self):
+        rows = {r["tiktok_handle"]: r for r in read_csv(self.admin.post(f"{self.base}codes/", {}, format="json"))}
+        for handle in ("jokkie", "ines_jogos"):
+            answer = self.admin.get(f"{self.base}codes/{self.row(handle)['code_id']}/")
+            self.assertEqual(answer.status_code, 200, answer.content)
+            self.assertEqual(answer["Cache-Control"], "no-store")
+            body = answer.json()
+            self.assertEqual(body["code"], rows[handle]["code"])
+            self.assertEqual(body["link"], rows[handle]["link"])
+            self.assertEqual(body["message"], rows[handle]["message"])
+        self.assertIn("boletim", self.admin.get(f"{self.base}codes/{self.row('ines_jogos')['code_id']}/").json()["message"])
+
+    def test_code_stored_encrypted_never_plain(self):
+        code = new_code(self.creators[0])
+        row = KolVoterCode.objects.get(creator=self.creators[0], revoked_at__isnull=True)
+        self.assertTrue(row.code_sealed)
+        stored = " ".join(str(v) for v in KolVoterCode.objects.filter(pk=row.pk).values_list().first())
+        self.assertNotIn(code, stored)
+        self.assertNotIn(normalize_code(code), stored)
+
+    def test_a_replaced_code_cannot_be_read(self):
+        new_code(self.creators[0])
+        old_id = self.row("jokkie")["code_id"]
+        new_code(self.creators[0])
+        answer = self.admin.get(f"{self.base}codes/{old_id}/")
+        self.assertEqual(answer.status_code, 404)
+        self.assertEqual(answer.json()["code"], "kol_code_not_found")
+        self.assertNotEqual(self.row("jokkie")["code_id"], old_id)
+
+    def test_only_poll_admins(self):
+        new_code(self.creators[0])
+        code_id = self.row("jokkie")["code_id"]
+        self.assertEqual(APIClient().get(f"{self.base}codes/{code_id}/").status_code, 401)
+        player = APIClient()
+        player.credentials(**token_for(make_user("kolcopyplayer")))
+        self.assertEqual(player.get(f"{self.base}codes/{code_id}/").status_code, 403)
+        self.assertEqual(player.delete(f"{self.base}codes/{code_id}/").status_code, 403)
+
+    def test_a_code_of_another_edition_is_404(self):
+        other = kol_edition(slug="kol-copy-elsewhere")
+        stranger = add_creators(other, names=("Far Away",))[0]
+        new_code(stranger)
+        code_id = KolVoterCode.objects.get(creator=stranger).code_id
+        self.assertEqual(self.admin.get(f"{self.base}codes/{code_id}/").status_code, 404)
+
+    def test_a_code_made_before_copying_existed_says_so(self):
+        new_code(self.creators[0])
+        KolVoterCode.objects.filter(creator=self.creators[0]).update(code_sealed="")
+        answer = self.admin.get(f"{self.base}codes/{self.row('jokkie')['code_id']}/")
+        self.assertEqual(answer.status_code, 404)
+        self.assertEqual(answer.json()["code"], "kol_code_unreadable")
+
+    def test_admin_revokes_a_code(self):
+        code = new_code(self.creators[0])
+        code_id = self.row("jokkie")["code_id"]
+        self.assertEqual(self.admin.delete(f"{self.base}codes/{code_id}/").status_code, 200)
+        self.assertEqual(door(APIClient(), self.edition, code).json()["code"], "kol_code_wrong")
+        self.assertFalse(self.row("jokkie")["has_code"])
+
+
+class KolSpareCodeTests(TestCase):
+    def setUp(self):
+        cache.clear()
+        self.edition = kol_edition()
+        self.me, self.rex, *_ = add_creators(self.edition)
+        self.round = open_round(self.edition)
+        self.awards = list(self.round.poll.questions.order_by("order"))
+        self.admin = admin_client("kolspareboss")
+        self.base = f"/polls/admin/kol-nominations/{self.edition.slug}/"
+
+    def spares(self, n):
+        return read_csv(self.admin.post(f"{self.base}codes/", {"spare": n}, format="json"))
+
+    def claim(self, client, **body):
+        return client.post(f"/polls/kol-nominations/{self.edition.slug}/claim/", body, format="json")
+
+    def test_admin_makes_spare_codes(self):
+        rows = self.spares(3)
+        self.assertEqual(len(rows), 3)
+        for row in rows:
+            self.assertRegex(row["code"], CODE_RE)
+            self.assertEqual((row["name"], row["tiktok_handle"]), ("", ""))
+            self.assertIn(row["code"], row["message"])
+            self.assertNotIn("AFC", row["message"])
+        self.assertEqual(KolVoterCode.objects.filter(creator__isnull=True, spare=True).count(), 3)
+        spare = self.admin.get(self.base).json()["spare_codes"]
+        self.assertEqual(len(spare), 3)
+        self.assertTrue(all(s["claimed_by"] is None for s in spare))
+        copied = self.admin.get(f"{self.base}codes/{spare[0]['code_id']}/?lang=fr").json()
+        self.assertIn(copied["code"], {r["code"] for r in rows})
+        self.assertIn("Bonjour", copied["message"])
+
+    def test_spare_count_bounds(self):
+        for bad in (0, 51, "x", True):
+            answer = self.admin.post(f"{self.base}codes/", {"spare": bad}, format="json")
+            self.assertEqual(answer.status_code, 400, bad)
+            self.assertEqual(answer.json()["code"], "kol_bad_spare_count", bad)
+
+    def test_a_spare_code_asks_who_you_are(self):
+        code = self.spares(1)[0]["code"]
+        client = APIClient()
+        answer = door(client, self.edition, code)
+        self.assertEqual(answer.status_code, 200, answer.content)
+        self.assertTrue(answer.json()["needs_claim"])
+        self.assertIn(COOKIE_NAME, answer.cookies)
+        again = ballot(client, self.edition)
+        self.assertEqual(again.status_code, 409)
+        self.assertEqual(again.json()["code"], "kol_claim_needed")
+        self.assertEqual(write_in(client, self.edition, "someone").json()["code"], "kol_claim_needed")
+
+    def test_claim_makes_a_new_creator_who_votes(self):
+        code = self.spares(1)[0]["code"]
+        client = APIClient()
+        door(client, self.edition, code)
+        answer = self.claim(client, name="New Star", handle="@New_Star", country="Ghana")
+        self.assertEqual(answer.status_code, 200, answer.content)
+        self.assertEqual(answer.json()["me"]["name"], "New Star")
+        star = KolCreator.objects.get(edition=self.edition, tiktok_handle="new_star")
+        self.assertEqual((star.origin, star.country, star.active), (KolCreator.LIST, "Ghana", True))
+        self.assertEqual(star.options.count(), 6)
+        self.assertEqual(KolVoterCode.objects.get(spare=True).creator_id, star.pk)
+        saved = save(client, self.edition, {str(self.awards[0].question_id): [self.rex.pk, star.pk]})
+        self.assertEqual(saved.status_code, 200, saved.content)
+        # the same code opens that creator's ballot from now on, on any phone, without asking again
+        other_phone = door(APIClient(), self.edition, code)
+        self.assertEqual(other_phone.json()["me"]["creator_id"], star.pk)
+        self.assertNotIn("needs_claim", other_phone.json())
+        spare = self.admin.get(self.base).json()["spare_codes"][0]
+        self.assertEqual(spare["claimed_by"]["handle"], "new_star")
+        self.assertIn("new_star", [c["handle"] for c in self.admin.get(self.base).json()["creators"]])
+
+    def test_claim_joins_a_write_in_of_that_handle(self):
+        mine = APIClient()
+        door(mine, self.edition, new_code(self.me))
+        added = write_in(mine, self.edition, "new_star", "New Star").json()["candidate"]["creator_id"]
+        client = APIClient()
+        door(client, self.edition, self.spares(1)[0]["code"])
+        answer = self.claim(client, name="Star Official", handle="new_star", country="Ghana")
+        self.assertEqual(answer.status_code, 200, answer.content)
+        self.assertEqual(answer.json()["me"]["creator_id"], added)
+        row = KolCreator.objects.get(pk=added)
+        self.assertEqual((row.origin, row.country), (KolCreator.LIST, "Ghana"))
+        self.assertEqual(KolCreator.objects.filter(tiktok_handle="new_star").count(), 1)
+
+    def test_claim_refusals(self):
+        client = APIClient()
+        door(client, self.edition, self.spares(1)[0]["code"])
+        listed = self.claim(client, name="Fake Rex", handle="lord_rex")
+        self.assertEqual(listed.status_code, 400)
+        self.assertEqual(listed.json()["code"], "kol_claim_listed")
+        self.assertEqual(self.claim(client, name="x", handle="bad handle!").json()["code"], "kol_bad_handle")
+        self.assertEqual(self.claim(APIClient(), name="x", handle="ok_handle").status_code, 401)
+        self.assertIsNone(KolVoterCode.objects.get(spare=True).creator_id)
+        linked = APIClient()
+        door(linked, self.edition, new_code(self.me))
+        already = self.claim(linked, name="x", handle="ok_handle")
+        self.assertEqual(already.status_code, 400)
+        self.assertEqual(already.json()["code"], "kol_already_claimed")
+
+    def test_claim_closed_round(self):
+        client = APIClient()
+        door(client, self.edition, self.spares(1)[0]["code"])
+        KolNominationRound.objects.filter(pk=self.round.pk).update(closes_at=timezone.now() - timedelta(minutes=1))
+        answer = self.claim(client, name="Late", handle="late_one")
+        self.assertEqual(answer.status_code, 403)
+        self.assertEqual(answer.json()["code"], "kol_round_closed")
+
+    def test_a_revoked_spare_code_stops(self):
+        code = self.spares(1)[0]["code"]
+        code_id = self.admin.get(self.base).json()["spare_codes"][0]["code_id"]
+        self.assertEqual(self.admin.delete(f"{self.base}codes/{code_id}/").status_code, 200)
+        self.assertEqual(door(APIClient(), self.edition, code).json()["code"], "kol_code_wrong")
+        self.assertEqual(self.admin.get(self.base).json()["spare_codes"], [])
+
+    def test_bulk_codes_never_make_spares(self):
+        self.admin.post(f"{self.base}codes/", {}, format="json")
+        self.assertFalse(KolVoterCode.objects.filter(creator__isnull=True).exists())

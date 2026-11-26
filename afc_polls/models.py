@@ -1350,12 +1350,23 @@ class KolCreatorOption(models.Model):
 
 
 class KolVoterCode(models.Model):
-    """A creator's personal code, stored only as a keyed hash (R63). A new code revokes the old one; the ballot
-    belongs to the creator, not the code, so the picks survive (kol_nominations.respondent_key_for)."""
+    """A creator's personal code. Found by a keyed hash (R63); also kept ENCRYPTED (code_sealed, its own Fernet key)
+    so a poll admin can copy it from the site (owner, 26 Nov 2026, #640: "Should be able to copy codes from the
+    site"). A new code revokes the old one; the ballot belongs to the creator, not the code, so the picks survive
+    (kol_nominations.respondent_key_for).
+
+    SPARE codes (#639: "codes that are not linked to anybody in case of we find creators who should be able to vote,
+    but are not on the list") are made with no creator (`spare = True`, `creator = NULL`); the first person to open
+    one says who they are (kol_nominations.claim) and the code is theirs from then on. `edition` says which round a
+    code belongs to, which a spare code cannot read off a creator."""
 
     code_id = models.AutoField(primary_key=True)
-    creator = models.ForeignKey(KolCreator, on_delete=models.CASCADE, related_name="codes")
+    creator = models.ForeignKey(KolCreator, on_delete=models.CASCADE, related_name="codes", null=True, blank=True)
+    edition = models.ForeignKey(AwardsEdition, on_delete=models.CASCADE, related_name="kol_codes", null=True,
+                                blank=True)
+    spare = models.BooleanField(default=False)
     code_hash = models.CharField(max_length=64, unique=True)
+    code_sealed = models.TextField(blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)
     revoked_at = models.DateTimeField(null=True, blank=True)
     last_used_at = models.DateTimeField(null=True, blank=True)
