@@ -557,3 +557,55 @@ class KolAdminTests(TestCase):
         self.setup_round()
         rows = read_csv(self.client.post(f"{self.base}codes/", {}, format="json"))
         self.assertNotIn("@example.com", json.dumps(rows))
+
+
+class KolRoundPollIsSealedTests(TestCase):
+    """The round's poll is reachable ONLY through the code door. Found in the Chrome walk on 26 Nov: it was listed
+    in /a/polls, so an admin could open it in the poll builder and publish it, and a published poll takes votes
+    through the ordinary submit door from anybody signed in, with no code and no self-exclusion."""
+
+    def setUp(self):
+        cache.clear()
+        self.edition = kol_edition()
+        self.creators = add_creators(self.edition)
+        self.round = open_round(self.edition)
+        self.poll = self.round.poll
+        self.admin = APIClient()
+        self.admin.credentials(**token_for(make_user("kolsealadmin", role="admin")))
+
+    def test_not_in_admin_poll_list(self):
+        answer = self.admin.get("/polls/admin/polls/?limit=100")
+        self.assertEqual(answer.status_code, 200)
+        self.assertNotIn(self.poll.slug, [row["slug"] for row in answer.json()["results"]])
+
+    def test_poll_builder_cannot_reach_it(self):
+        base = f"/polls/admin/polls/{self.poll.slug}/"
+        self.assertEqual(self.admin.get(base).status_code, 404)
+        self.assertEqual(self.admin.patch(base, {"visibility": "public"}, format="json").status_code, 404)
+        self.assertEqual(self.admin.put(f"{base}questions/", {"questions": []}, format="json").status_code, 404)
+        self.assertEqual(self.admin.get(f"{base}results/").status_code, 404)
+        self.assertEqual(self.admin.delete(base).status_code, 404)
+        self.poll.refresh_from_db()
+        self.assertEqual(self.poll.visibility, Poll.DRAFT)
+        self.assertEqual(self.poll.questions.count(), 6)
+
+    def test_published_by_hand_it_still_takes_no_ordinary_vote(self):
+        Poll.objects.filter(pk=self.poll.pk).update(visibility=Poll.PUBLIC, opens_at=timezone.now() - timedelta(hours=1))
+        voter = make_user("kolsealvoter")
+        question = self.poll.questions.order_by("order").first()
+        option = question.options.first()
+        answer = APIClient().post(
+            f"/polls/{self.poll.slug}/responses/",
+            {"answers": [{"question_id": question.question_id, "option_ids": [option.option_id]}]},
+            format="json", **token_for(voter),
+        )
+        self.assertEqual(answer.status_code, 404)
+        self.assertFalse(PollResponse.objects.filter(poll=self.poll).exists())
+        self.assertEqual(APIClient().get(f"/polls/{self.poll.slug}/").status_code, 404)
+        self.assertNotIn(self.poll.slug, [row["slug"] for row in APIClient().get("/polls/").json()["results"]])
+
+    def test_ordinary_polls_still_work(self):
+        plain = Poll.objects.create(slug="plain-poll", title="Plain", visibility=Poll.PUBLIC,
+                                    opens_at=timezone.now() - timedelta(hours=1))
+        self.assertEqual(APIClient().get(f"/polls/{plain.slug}/").status_code, 200)
+        self.assertEqual(self.admin.get(f"/polls/admin/polls/{plain.slug}/").status_code, 200)
