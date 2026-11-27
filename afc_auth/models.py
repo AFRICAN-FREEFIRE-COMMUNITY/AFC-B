@@ -1284,6 +1284,10 @@ class ProfileSentiment(models.Model):
 class FxRate(models.Model):
     currency = models.CharField(max_length=3, unique=True, db_index=True)  # ISO-4217, e.g. "NGN"
     rate = models.DecimalField(max_digits=20, decimal_places=8)            # units per 1 USD
+    # Where this row's rate came from: "cbn" (Central Bank of Nigeria, owner 2026-11-27) or "provider"
+    # (the USD-base FX API). rate_date is the CBN's publication day for a cbn row, null for a provider row.
+    source = models.CharField(max_length=16, default="provider")
+    rate_date = models.DateField(null=True, blank=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     def __str__(self):
