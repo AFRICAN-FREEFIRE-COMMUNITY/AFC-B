@@ -8179,15 +8179,21 @@ def get_news_likes_dislikes_count(request):
 #   "rates": { "NGN": "1378.20", "GHS": "11.27", ... },   # units per 1 USD (string decimals)
 #   "currency": "NGN",        # the VIEWER's resolved display currency (auth optional)
 #   "charge_markup": "0.03",  # FX buffer applied to CHARGES (display uses the raw rate)
-#   "updated_at": "..."
+#   "updated_at": "...",
+#   "sources": { "NGN": {"source": "cbn", "date": "2026-11-26"}, "GHS": {"source": "provider", "date": null} },
+#   "credit": "Source: Central Bank of Nigeria (www.cbn.gov.ng)"
 # }
+# `sources` and `credit` are ADDITIVE (owner 2026-11-27, inbox #649): per currency, where the rate came
+# from ("cbn" = Central Bank of Nigeria official rate, "provider" = the USD-base FX API) and the CBN's
+# rate date (null for provider rows). `credit` is the line the CBN's terms require wherever a CBN rate
+# or a converted amount is shown. `rates` is unchanged, so the existing reader keeps working.
 # The frontend lib/fx.ts fetches + caches this; lib/money.ts formatMoney() converts USD->currency.
 # No auth required (rates are public); if a Bearer token is present we also return that user's
 # resolved display currency so the FE can default the picker. Never errors (rates fail-soft).
 # ─────────────────────────────────────────────────────────────────────────────
 @api_view(["GET"])
 def fx_rates(request):
-    from . import fx
+    from . import cbn, fx
     rates = fx.get_rates()
     viewer_currency = "USD"
     auth = request.headers.get("Authorization", "")
@@ -8202,6 +8208,11 @@ def fx_rates(request):
         "currency": viewer_currency,
         "charge_markup": str(fx.FX_CHARGE_MARKUP),
         "updated_at": newest.updated_at.isoformat() if newest else None,
+        "sources": {
+            r.currency: {"source": r.source, "date": r.rate_date.isoformat() if r.rate_date else None}
+            for r in FxRate.objects.all()
+        },
+        "credit": cbn.CBN_CREDIT,
     }, status=200)
 
 

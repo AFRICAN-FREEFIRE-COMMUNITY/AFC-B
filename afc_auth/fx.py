@@ -7,6 +7,11 @@ resolves a user's display currency from their country.
 
 Design:
   - Rates come from a FREE, no-key FX API (open.er-api.com, "USD base"), cached in the FxRate table.
+  - CBN OVERRIDE (owner 2026-11-27, inbox #649, "CBN where it can"): every currency the Central Bank
+    of Nigeria publishes (afc_auth.cbn) takes the CBN rate instead of the provider's, stored with
+    source="cbn" and the CBN's rate date; every other currency keeps the provider, source="provider".
+    The FxRate convention is unchanged (units of the currency per 1 USD), so every consumer (convert,
+    checkout, the frontend) keeps working: NGN = naira per USD, code X = (naira per USD) / (naira per X).
   - get_rates() refreshes LAZILY: it re-fetches only when the newest row is older than FX_TTL, so no
     Celery-beat / cron is needed. Fail-soft: a fetch error keeps the last-good rows (or returns an
     empty/USD-only map) so a money render NEVER crashes on FX downtime.
@@ -27,10 +32,17 @@ from decimal import Decimal, InvalidOperation
 import requests
 from django.utils import timezone
 
+from . import cbn
 from .models import FxRate
 
-# How long cached rates stay fresh before a lazy re-fetch (≈ daily, per owner decision 1).
-FX_TTL = timedelta(hours=12)
+# How long cached rates stay fresh before a lazy re-fetch. The CBN publishes once per business day and
+# can revise a published day, so an hourly refresh catches both without ever calling it per request
+# (was 12 hours when the provider was the only source).
+FX_TTL = timedelta(hours=1)
+# A CBN row older than this (by its CBN rate date) no longer blocks the provider: a currency the CBN stops
+# publishing goes back to the provider instead of keeping a stale CBN rate for ever. The CBN publishes every
+# business day, so 10 days is a long holiday plus a margin.
+CBN_STALE_DAYS = 10
 # DISPLAY rate source. Default = the FREE, no-key exchangerate-api "open" endpoint (USD base;
 # payload.rates = units per USD; 99.99% uptime). Env-overridable so the owner can swap to a KEYED,
 # production-grade provider (Open Exchange Rates / Fixer / ExchangeRate-API Pro) for an SLA WITHOUT a
@@ -91,26 +103,68 @@ _COUNTRY_CCY = {
 }
 
 
+def _cbn_as_usd_rates(cbn_rates):
+    """CBN {code: (naira per 1 unit, date)} -> {code: (units per 1 USD, date)}, the FxRate convention.
+
+    NGN = naira per USD; code X = (naira per USD) / (naira per X); USD = 1. Needs the CBN's own USD
+    rate: without it nothing can be expressed per dollar, so nothing is returned.
+    """
+    usd = cbn_rates.get("USD")
+    if not usd:
+        return {}
+    ngn_per_usd, usd_date = usd
+    out = {"NGN": (ngn_per_usd, usd_date), "USD": (Decimal("1"), usd_date)}
+    for code, (ngn_per_unit, rate_date) in cbn_rates.items():
+        if code == "USD" or not ngn_per_unit:
+            continue
+        out[code] = ((ngn_per_usd / ngn_per_unit).quantize(Decimal("0.00000001")), rate_date)
+    return out
+
+
 def refresh_fx_rates():
     """Fetch fresh USD->currency rates and upsert them into FxRate. Returns the rates dict or {}.
 
-    Fail-soft: any network/parse error returns {} and leaves the existing rows untouched, so callers
-    fall back to the last-good cached rates.
+    Two sources, each fail-soft on its own: the provider (every currency) then the CBN (overrides the
+    currencies it publishes). A CBN failure keeps the last good CBN rows and the provider never
+    overwrites a CBN row; a provider failure still lets the CBN rows update.
     """
+    out = {}
+    cbn_rates = _cbn_as_usd_rates(_safe_fetch_cbn())
+    # ── provider: every currency except the ones the CBN covers this round, and never over a CBN row ──
     try:
         resp = requests.get(FX_API_URL, timeout=FX_API_TIMEOUT)
         data = resp.json()
-        if data.get("result") != "success":
-            return {}
-        rates = data.get("rates") or {}
-        for ccy, rate in rates.items():
-            try:
-                FxRate.objects.update_or_create(
-                    currency=ccy.upper(), defaults={"rate": Decimal(str(rate))},
-                )
-            except (InvalidOperation, TypeError, ValueError):
-                continue
-        return rates
+        if data.get("result") == "success":
+            rates = data.get("rates") or {}
+            fresh_since = timezone.localdate() - timedelta(days=CBN_STALE_DAYS)
+            cbn_held = set(FxRate.objects.filter(source="cbn", rate_date__gte=fresh_since)
+                           .values_list("currency", flat=True))
+            for ccy, rate in rates.items():
+                code = ccy.upper()
+                if code in cbn_rates or code in cbn_held:
+                    continue
+                try:
+                    FxRate.objects.update_or_create(
+                        currency=code,
+                        defaults={"rate": Decimal(str(rate)), "source": "provider", "rate_date": None},
+                    )
+                    out[code] = rate
+                except (InvalidOperation, TypeError, ValueError):
+                    continue
+    except Exception:
+        pass
+    # ── CBN: override ──
+    for code, (rate, rate_date) in cbn_rates.items():
+        FxRate.objects.update_or_create(
+            currency=code, defaults={"rate": rate, "source": "cbn", "rate_date": rate_date},
+        )
+        out[code] = rate
+    return out
+
+
+def _safe_fetch_cbn():
+    try:
+        return cbn.fetch_cbn_rates()
     except Exception:
         return {}
 
