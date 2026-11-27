@@ -39,6 +39,10 @@ from .models import FxRate
 # can revise a published day, so an hourly refresh catches both without ever calling it per request
 # (was 12 hours when the provider was the only source).
 FX_TTL = timedelta(hours=1)
+# A CBN row older than this (by its CBN rate date) no longer blocks the provider: a currency the CBN stops
+# publishing goes back to the provider instead of keeping a stale CBN rate for ever. The CBN publishes every
+# business day, so 10 days is a long holiday plus a margin.
+CBN_STALE_DAYS = 10
 # DISPLAY rate source. Default = the FREE, no-key exchangerate-api "open" endpoint (USD base;
 # payload.rates = units per USD; 99.99% uptime). Env-overridable so the owner can swap to a KEYED,
 # production-grade provider (Open Exchange Rates / Fixer / ExchangeRate-API Pro) for an SLA WITHOUT a
@@ -132,7 +136,9 @@ def refresh_fx_rates():
         data = resp.json()
         if data.get("result") == "success":
             rates = data.get("rates") or {}
-            cbn_held = set(FxRate.objects.filter(source="cbn").values_list("currency", flat=True))
+            fresh_since = timezone.localdate() - timedelta(days=CBN_STALE_DAYS)
+            cbn_held = set(FxRate.objects.filter(source="cbn", rate_date__gte=fresh_since)
+                           .values_list("currency", flat=True))
             for ccy, rate in rates.items():
                 code = ccy.upper()
                 if code in cbn_rates or code in cbn_held:

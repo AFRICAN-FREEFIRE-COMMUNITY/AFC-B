@@ -16,6 +16,7 @@ from decimal import Decimal
 from unittest import mock
 
 from django.test import TestCase
+from django.utils import timezone
 
 from afc_auth import cbn, fx
 from afc_auth.models import FxRate
@@ -126,6 +127,17 @@ class RefreshTests(TestCase):
         ngn = FxRate.objects.get(currency="NGN")
         self.assertEqual((ngn.rate, ngn.source), (Decimal("1387.00000000"), "cbn"))  # provider's 1500 did not win
         self.assertEqual(FxRate.objects.get(currency="EUR").source, "cbn")
+
+    def test_a_cbn_row_the_cbn_stopped_publishing_goes_back_to_the_provider(self):
+        # A CBN row dated weeks ago, for a currency today's CBN feed does not carry: the provider takes it over.
+        FxRate.objects.create(currency="GHS", rate=Decimal("9.9"), source="cbn",
+                              rate_date=timezone.localdate() - timedelta(days=fx.CBN_STALE_DAYS + 5))
+        self._refresh(RATES, NFEM, self.PROVIDER)
+        self.assertEqual(FxRate.objects.get(currency="GHS").source, "provider")
+        # a recent CBN row for a currency missing today still holds (a short gap keeps the last good rate)
+        FxRate.objects.filter(currency="GHS").update(source="cbn", rate=Decimal("9.9"), rate_date=timezone.localdate())
+        self._refresh(RATES, NFEM, self.PROVIDER)
+        self.assertEqual(FxRate.objects.get(currency="GHS").rate, Decimal("9.90000000"))
 
     def test_provider_down_still_writes_cbn_rows(self):
         self._refresh(RATES, NFEM, None)
