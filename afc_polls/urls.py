@@ -8,7 +8,7 @@ each endpoint.
 """
 from django.urls import path
 
-from . import kol_nominations, views, views_hof, whatsapp_votes
+from . import kol_metrics, kol_nominations, views, views_hof, whatsapp_votes
 
 urlpatterns = [
     # ── admin (declared first: literal prefix before the <slug:slug> patterns) ──
@@ -53,6 +53,8 @@ urlpatterns = [
          name="polls_admin_kol_creator"),                                                      # PATCH
     path("admin/kol-nominations/<slug:edition_slug>/emails/", kol_nominations.admin_emails,
          name="polls_admin_kol_emails"),                                                        # POST (#646)
+    path("admin/kol-nominations/<slug:edition_slug>/metrics/", kol_metrics.admin_metrics,
+         name="polls_admin_kol_metrics"),                                                        # GET (#653)
     path("admin/editions/", views.admin_editions, name="polls_admin_editions"),        # GET, POST
     path("admin/editions/<slug:slug>/", views.admin_edition_detail,
          name="polls_admin_edition_detail"),                                          # PATCH, DELETE
@@ -86,6 +88,8 @@ urlpatterns = [
          name="polls_kol_contact"),                                                                   # PUT (#644)
     path("kol-nominations/<slug:edition_slug>/email-me/", kol_nominations.email_me,
          name="polls_kol_email_me"),                                                                  # POST (#648)
+    path("kol-nominations/<slug:edition_slug>/search/", kol_metrics.search_log,
+         name="polls_kol_search"),                                                                    # POST (#653)
 
     # ── public ──
     path("", views.list_polls, name="polls_list"),                                           # GET

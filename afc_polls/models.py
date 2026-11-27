@@ -1423,3 +1423,49 @@ class KolEmail(models.Model):
 
     def __str__(self):
         return f"kol email {self.email_id} ({self.kind}, {self.status})"
+
+
+class KolBallotEvent(models.Model):
+    """One moment on a KOL nomination ballot that the saved picks cannot tell afterwards (inbox #653, owner 27 Nov
+    2026: "the metrics page should show very very detailed info, who was most searched (how many times), average time
+    to nominate, stuff like that"). Four kinds:
+
+    - OPENED: the ballot was opened with a code (the door, or the cookie's GET), at most once per code per
+      OPEN_GAP so a visit is one row however many times the page reloads. Gives first open and visits.
+    - SEARCH: the creator searched the candidates in one award. `query` is what they typed (trimmed, lower case,
+      at most 60 characters), `result_count` how many names came up, `picked` who they then picked from the results
+      (NULL when they picked nobody). Sent by the ballot page when a search ends (afc_polls.kol_metrics.search_log).
+    - COMPLETE: the first save after which the ballot counted (every award holds somebody other than the voter).
+    - CHANGED: a save that swapped or removed picks; `result_count` is how many (the same count as the
+      PollPickSwitch rows it wrote, which carry no ballot). Gives changes per ballot and changes after counting.
+
+    Written by afc_polls.kol_metrics (record_open / record_complete / search_log); read only by
+    kol_metrics.metrics for the admin Metrics tab (GET polls/admin/kol-nominations/<edition>/metrics/). Never shown
+    to a creator. Holds no address and no device id: the device TYPE only, like PollResponse.device_type."""
+
+    OPENED = "opened"
+    SEARCH = "search"
+    COMPLETE = "complete"
+    CHANGED = "changed"
+    KIND_CHOICES = [(OPENED, "Opened"), (SEARCH, "Searched"), (COMPLETE, "Counted"), (CHANGED, "Changed picks")]
+
+    event_id = models.AutoField(primary_key=True)
+    edition = models.ForeignKey(AwardsEdition, on_delete=models.CASCADE, related_name="kol_ballot_events")
+    # The code that made the call, and the creator behind it (NULL for a spare code nobody has claimed yet).
+    code = models.ForeignKey(KolVoterCode, on_delete=models.SET_NULL, null=True, blank=True, related_name="events")
+    creator = models.ForeignKey(KolCreator, on_delete=models.CASCADE, null=True, blank=True,
+                                related_name="ballot_events")
+    kind = models.CharField(max_length=8, choices=KIND_CHOICES)
+    question = models.ForeignKey(PollQuestion, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+    query = models.CharField(max_length=60, blank=True, default="")
+    result_count = models.IntegerField(null=True, blank=True)
+    picked = models.ForeignKey(KolCreator, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+    device_type = models.CharField(max_length=10, blank=True, default="")
+    at = models.DateTimeField(default=timezone.now, db_index=True)
+
+    class Meta:
+        ordering = ["at", "event_id"]
+        indexes = [models.Index(fields=["edition", "kind", "at"])]
+
+    def __str__(self):
+        return f"kol ballot event {self.event_id} ({self.kind})"

@@ -68,6 +68,8 @@ from rest_framework.response import Response
 
 from afc_auth.client_ip import client_ip
 
+from . import kol_metrics
+
 from .models import (
     AwardsEdition, KolCreator, KolCreatorOption, KolNominationRound, KolVoterCode, Poll, PollAnswer, PollOption,
     PollPickSwitch, PollQuestion, PollResponse,
@@ -499,6 +501,7 @@ def door(request, edition_slug):
         KolNominationRound.objects.filter(pk=round_.pk).update(failed_attempts=F("failed_attempts") + 1)
         return _refuse("That code does not open a ballot. Check it and try again.", "kol_code_wrong")
     KolVoterCode.objects.filter(pk=code.pk).update(last_used_at=timezone.now())
+    kol_metrics.record_open(round_, code, request)          # #653: first open and visits for the Metrics tab
     if code.creator_id is None:
         # A spare code nobody has claimed yet (#639): the page asks who they are, then POSTs claim/.
         return _set_cookie(Response({"needs_claim": True, "round": round_info(round_)}, status=status.HTTP_200_OK),
@@ -526,6 +529,7 @@ def ballot(request, edition_slug):
         return _claim_needed()
     if request.method == "PUT":
         return _save(request, round_, code)
+    kol_metrics.record_open(round_, code, request)          # #653 (one row per visit, kol_metrics.OPEN_GAP)
     return Response(ballot_payload(round_, code.creator), status=status.HTTP_200_OK)
 
 
@@ -683,8 +687,8 @@ def _clean_picks(round_, creator, raw):
 
 @transaction.atomic
 def _write_ballot(request, round_, creator, picks):
-    """Write `picks` ({question_id: [creator_id]}) as this creator's one ballot. Returns nothing; refusals have all
-    happened before this point."""
+    """Write `picks` ({question_id: [creator_id]}) as this creator's one ballot. Returns how many pick switches the
+    save wrote (#653: the Metrics tab's changes per ballot); refusals have all happened before this point."""
     from .views import _validate_answers       # the engine's own answer check; imported late, views imports a lot
     from . import vote_tracking
 
@@ -756,6 +760,7 @@ def _write_ballot(request, round_, creator, picks):
         for question_id, rows in cleaned.items()
         for row in rows
     ])
+    return len(switches)
 
 
 def _save(request, round_, code):
@@ -771,11 +776,13 @@ def _save(request, round_, code):
     data = request.data if isinstance(request.data, dict) else {}
     try:
         picks, dropped = _clean_picks(round_, code.creator, data.get("picks", {}))
-        _write_ballot(request, round_, code.creator, picks)
+        changed = _write_ballot(request, round_, code.creator, picks)
     except _BadPicks as refusal:
         return _refuse(str(refusal), refusal.code)
     KolVoterCode.objects.filter(pk=code.pk).update(last_used_at=timezone.now())
-    return Response({**ballot_payload(round_, code.creator), "dropped": dropped}, status=status.HTTP_200_OK)
+    payload = ballot_payload(round_, code.creator)
+    kol_metrics.record_save(round_, code, changed, payload["complete"], request)     # #653: changes, first count
+    return Response({**payload, "dropped": dropped}, status=status.HTTP_200_OK)
 
 
 # WRITE-INS (owner, 26 Nov 2026, #636 / #637: "creators can add and nominate anybody ... If a new person is aded by
