@@ -18,6 +18,12 @@ At release time `node ~/.claude/skills/versioning/scripts/release.mjs next` prin
 rename `## Unreleased` to it, merge, then tag the merge commit. A version tag pushed with the wrong
 number is blocked before the push.
 
+## v7.31.0 - 2026-11-27
+
+### Changed
+
+- The KOL code email and the "email me my picks" email are laid out as real emails (#660): a greeting, short paragraphs, the code in a block of its own with the Open my ballot button straight after it, the rules as a numbered list, the private note on its own surface, and the hosted-on line as a small footer. The long personal link is no longer printed; it lives in the button. The picks email lists each award in its own block, says until when picks can change, and has a button to the nominations page (never the code). English, French and Portuguese hand-written. The copied WhatsApp message is unchanged.
+
 ## v7.30.0 - 2026-11-27
 
 ### Added

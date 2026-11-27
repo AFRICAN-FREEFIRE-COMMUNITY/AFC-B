@@ -619,15 +619,23 @@ def _email_note(text, accent="gold"):
             f'{text}</div>')
 
 
-def _email_shell(body_inner_html, accent="green"):
+def _email_shell(body_inner_html, accent="green", preheader="", lang="en"):
     """Wrap an email's inner table rows in the shared AFC surface. `body_inner_html` is the
     <tr>...</tr> content; `accent` is 'green' (default) or 'gold'.
 
+    `preheader` (optional) is the hidden line a mail app shows beside the subject in the inbox list;
+    `lang` is the email's language for <html lang>. Both were added for the KOL code and picks emails
+    (#660, afc_polls.kol_messages); every other caller keeps the defaults and is unchanged.
+
     Deliberately edge-free: no card, no borders, no rules. See the note above _GRADIENTS."""
+    from html import escape as html_escape   # local: this module uses `html` as a variable name elsewhere
+
     page_grad, page_solid, a, _wash = _GRADIENTS.get(accent, _GRADIENTS["green"])
+    hidden = (f'<div style="display:none;max-height:0;overflow:hidden;mso-hide:all;font-size:1px;line-height:1px;'
+              f'color:{page_solid};opacity:0;">{html_escape(preheader)}</div>' if preheader else "")
     return f"""<!DOCTYPE html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"></head>
-<body style="margin:0;padding:0;background-color:{page_solid};font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;">
+<html lang="{html_escape(lang or 'en', quote=True)}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"></head>
+<body style="margin:0;padding:0;background-color:{page_solid};font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;">{hidden}
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" bgcolor="{page_solid}" style="background-color:{page_solid};background-image:{page_grad};">
 <tr><td align="center" style="padding:0;">
 <table role="presentation" width="600" cellpadding="0" cellspacing="0" style="max-width:600px;width:100%;">
