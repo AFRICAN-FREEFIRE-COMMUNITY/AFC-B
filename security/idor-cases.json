@@ -4905,6 +4905,26 @@
       }
     },
     {
+      "name": "B cannot email the KOL creators their codes (polls/admin/kol-nominations/<slug>/emails/, inbox #646). AFC poll admins and KOL admins only",
+      "route": "polls/admin/kol-nominations/<slug:edition_slug>/emails/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/polls/admin/kol-nominations/kol-awards-2026/emails/",
+        "expect": [
+          401,
+          403
+        ]
+      },
+      "r88": {
+        "skip": [
+          "existence",
+          "neighbours"
+        ],
+        "reason": "the KOL admin gate (an AFC poll admin or a kol_admin, #641) answers 403 before the edition or creator is looked up, so a real and a missing id answer the same; a kol_admin on an edition with no round gets the same 404 as a missing edition"
+      }
+    },
+    {
       "name": "B cannot read or revoke a KOL nomination code (polls/admin/kol-nominations/<slug>/codes/<id>/, inbox #640). AFC poll admins and KOL admins only",
       "route": "polls/admin/kol-nominations/<slug:edition_slug>/codes/<int:code_id>/",
       "attempt": {
@@ -4971,6 +4991,46 @@
         "as": "b",
         "method": "GET",
         "path": "/polls/kol-nominations/kol-awards-2026/ballot/",
+        "expect": [
+          401,
+          404
+        ]
+      },
+      "r88": {
+        "skip": [
+          "existence",
+          "neighbours"
+        ],
+        "reason": "the creator is known by a personal code and then a signed cookie, never by the session or an id in the address; a signed-in player without a code is a stranger here. The slug is the KOL edition's, carried in every creator's own link, so a round existing is not a secret: the ballot is"
+      }
+    },
+    {
+      "name": "B without a KOL code's cookie cannot have a creator's picks emailed (polls/kol-nominations/<slug>/email-me/, inbox #648)",
+      "route": "polls/kol-nominations/<slug:edition_slug>/email-me/",
+      "attempt": {
+        "as": "b",
+        "method": "POST",
+        "path": "/polls/kol-nominations/kol-awards-2026/email-me/",
+        "expect": [
+          401,
+          404
+        ]
+      },
+      "r88": {
+        "skip": [
+          "existence",
+          "neighbours"
+        ],
+        "reason": "the creator is known by a personal code and then a signed cookie, never by the session or an id in the address; a signed-in player without a code is a stranger here. The slug is the KOL edition's, carried in every creator's own link, so a round existing is not a secret: the ballot is"
+      }
+    },
+    {
+      "name": "B without a KOL code's cookie cannot write a creator's email and WhatsApp (polls/kol-nominations/<slug>/contact/, inbox #644)",
+      "route": "polls/kol-nominations/<slug:edition_slug>/contact/",
+      "attempt": {
+        "as": "b",
+        "method": "PUT",
+        "path": "/polls/kol-nominations/kol-awards-2026/contact/",
         "expect": [
           401,
           404

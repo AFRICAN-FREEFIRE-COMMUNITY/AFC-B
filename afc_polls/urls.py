@@ -51,6 +51,8 @@ urlpatterns = [
          name="polls_admin_kol_code"),                                                        # GET, DELETE (#640)
     path("admin/kol-nominations/<slug:edition_slug>/creators/<int:creator_id>/", kol_nominations.admin_creator,
          name="polls_admin_kol_creator"),                                                      # PATCH
+    path("admin/kol-nominations/<slug:edition_slug>/emails/", kol_nominations.admin_emails,
+         name="polls_admin_kol_emails"),                                                        # POST (#646)
     path("admin/editions/", views.admin_editions, name="polls_admin_editions"),        # GET, POST
     path("admin/editions/<slug:slug>/", views.admin_edition_detail,
          name="polls_admin_edition_detail"),                                          # PATCH, DELETE
@@ -80,6 +82,10 @@ urlpatterns = [
          name="polls_kol_claim"),                                                                     # POST (#639)
     path("kol-nominations/<slug:edition_slug>/signout/", kol_nominations.signout,
          name="polls_kol_signout"),                                                                   # POST
+    path("kol-nominations/<slug:edition_slug>/contact/", kol_nominations.contact,
+         name="polls_kol_contact"),                                                                   # PUT (#644)
+    path("kol-nominations/<slug:edition_slug>/email-me/", kol_nominations.email_me,
+         name="polls_kol_email_me"),                                                                  # POST (#648)
 
     # ── public ──
     path("", views.list_polls, name="polls_list"),                                           # GET

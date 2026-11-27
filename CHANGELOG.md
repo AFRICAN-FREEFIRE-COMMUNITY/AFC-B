@@ -18,6 +18,17 @@ At release time `node ~/.claude/skills/versioning/scripts/release.mjs next` prin
 rename `## Unreleased` to it, merge, then tag the merge commit. A version tag pushed with the wrong
 number is blocked before the push.
 
+## v7.26.0 - 2026-11-27
+
+### Added
+- KOL nominations: every creator gives an email and a WhatsApp number on the ballot before their first pick (new address PUT polls/kol-nominations/<edition>/contact/), and admins and KOL admins can type or fix them per creator. `manage.py kol_import_contacts` loads the emails Garena's sheet already holds without overwriting any.
+- KOL nominations: the codes go out by email from the admin tab, to one creator, the ticked ones or everyone with an address (new address POST polls/admin/kol-nominations/<edition>/emails/), paced for the mailbox, from info@ as African Freefire Community, in each creator's language; the tab shows sent or not sent per creator.
+- KOL nominations: a creator can email themselves their picks (new address POST polls/kol-nominations/<edition>/email-me/), with no code in the email.
+
+### Changed
+- KOL nominations: a ballot counts only once every award has at least one pick. A ballot saved with an empty award (or whose only pick in an award was switched off) stays saved but leaves the picks so far, "Have nominated" and Garena's live page until it is filled. The admin rows show how many awards a started ballot fills.
+- The code messages (copied and emailed) say the link and code belong to that creator alone and that anyone they share it with replaces their picks, and that every award needs at least one pick.
+
 ## v7.25.0 - 2026-11-26
 
 ### Added

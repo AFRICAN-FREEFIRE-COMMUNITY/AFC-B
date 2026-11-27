@@ -7,8 +7,14 @@ a sender (standing rule: the KOL Awards are Garena's event), and it is hand-writ
 picked from the country on Garena's KOL List: Portuguese for Mozambique, French for the French-speaking countries
 on the list, English for everyone else. Same register as the KOL pages: "vous" in French, "a sua" in Portuguese.
 
-CONSUMED BY: afc_polls.kol_nominations.admin_codes (the CSV's `message` column).
+CONSUMED BY: afc_polls.kol_nominations.admin_codes (the CSV's `message` column) and admin_code (Copy message), and
+afc_polls.kol_emails (the same text as an email: code_email, and the creator's own picks: picks_email).
+
+Owner, 27 Nov 2026: every message says the link and code are the creator's alone and that whoever they share them
+with replaces their picks (#645: "if they share It to others, what the others vote for, will just replace theirs"),
+and that every award needs at least one pick (#643: "tell them that they must vote in each").
 """
+import html
 
 PORTUGUESE_COUNTRIES = {"mozambique", "angola", "cape verde", "cabo verde", "guinea-bissau", "sao tome and principe"}
 FRENCH_COUNTRIES = {
@@ -26,28 +32,43 @@ MONTHS = {
 }
 
 # #637 (owner, 26 Nov 2026): self-nomination is allowed and a creator can add anybody who is not on the list, so the
-# message says both, in place of the old line that ruled self-picks out.
+# message says both, in place of the old line that ruled self-picks out. #643 / #645 (27 Nov): every award needs a
+# pick, and PRIVATE says what sharing the link does.
 TEMPLATES = {
     "en": (
         "Hi {name}, you are one of the creators in the {title}. Nominate the creators you think deserve each award: "
-        "up to 6 per award. You can pick anyone, yourself included, and add someone who is not on the list.\n"
+        "at least 1 and up to 6 in every award. You can pick anyone, yourself included, and add someone who is not "
+        "on the list.\n"
         "Open your personal ballot here: {link}\n"
-        "Your code: {code} (it works for you only, so keep it to yourself). {until}"
+        "Your code: {code}\n"
+        "{private} {until}"
     ),
     "fr": (
         "Bonjour {name}, vous faites partie des créateurs des {title}. Nominez les créateurs qui "
-        "méritent chaque prix : jusqu'à 6 par prix. Vous pouvez choisir n'importe qui, y compris vous-même, et ajouter "
-        "quelqu'un qui n'est pas sur la liste.\n"
+        "méritent chaque prix : au moins 1 et jusqu'à 6 dans chaque prix. Vous pouvez choisir n'importe qui, y compris "
+        "vous-même, et ajouter quelqu'un qui n'est pas sur la liste.\n"
         "Ouvrez votre bulletin personnel ici : {link}\n"
-        "Votre code : {code} (il ne fonctionne que pour vous, gardez-le pour vous). {until}"
+        "Votre code : {code}\n"
+        "{private} {until}"
     ),
     "pt": (
         "Olá {name}, é um dos criadores dos {title}. Nomeie os criadores que merecem cada prémio: "
-        "até 6 por prémio. Pode escolher qualquer pessoa, incluindo a si próprio, e acrescentar alguém que não "
-        "esteja na lista.\n"
+        "pelo menos 1 e até 6 em cada prémio. Pode escolher qualquer pessoa, incluindo a si próprio, e acrescentar "
+        "alguém que não esteja na lista.\n"
         "Abra o seu boletim pessoal aqui: {link}\n"
-        "O seu código: {code} (só funciona para si, guarde-o só para si). {until}"
+        "O seu código: {code}\n"
+        "{private} {until}"
     ),
+}
+
+# #645 (owner, 27 Nov 2026): the link works only for them, and whoever they share it with replaces their picks.
+PRIVATE = {
+    "en": ("This link and code are yours alone: if you share them, whoever opens them can change your nominations, "
+           "and what they pick replaces yours."),
+    "fr": ("Ce lien et ce code ne sont qu'à vous : si vous les partagez, la personne qui les ouvre peut modifier vos "
+           "nominations, et ce qu'elle choisit remplace vos choix."),
+    "pt": ("Este link e este código são só seus: se os partilhar, quem os abrir pode alterar as suas nomeações, e o que "
+           "essa pessoa escolher substitui as suas escolhas."),
 }
 
 UNTIL = {
@@ -83,32 +104,36 @@ def message_for(creator, code, link, closes_at, edition_title):
     language = language_for(creator.country)
     with_date, without_date = UNTIL[language]
     until = with_date.format(date=_date(closes_at, language)) if closes_at else without_date
-    return TEMPLATES[language].format(name=creator.name, title=edition_title, link=link, code=code, until=until)
+    return TEMPLATES[language].format(name=creator.name, title=edition_title, link=link, code=code, until=until,
+                                      private=PRIVATE[language])
 
 
 # A SPARE code's message (#639, owner 26 Nov 2026): it goes to a creator found after the list was made, so it has no
 # name, and it tells them that the first time they open it they say who they are. The admin tab picks the language.
 SPARE_TEMPLATES = {
     "en": (
-        "Hi, you are invited to nominate creators for the {title}: up to 6 per award, yourself included, and you can "
-        "add someone who is not on the list.\n"
+        "Hi, you are invited to nominate creators for the {title}: at least 1 and up to 6 in every award, yourself "
+        "included, and you can add someone who is not on the list.\n"
         "Open your ballot here: {link}\n"
         "Your code: {code}. The first time you open it, you say who you are (your name and TikTok @handle); from then "
-        "on it is yours only, so keep it to yourself. {until}"
+        "on it is yours.\n"
+        "{private} {until}"
     ),
     "fr": (
-        "Bonjour, vous êtes invité à nominer des créateurs pour les {title} : jusqu'à 6 par prix, y compris "
-        "vous-même, et vous pouvez ajouter quelqu'un qui n'est pas sur la liste.\n"
+        "Bonjour, vous êtes invité à nominer des créateurs pour les {title} : au moins 1 et jusqu'à 6 dans chaque "
+        "prix, y compris vous-même, et vous pouvez ajouter quelqu'un qui n'est pas sur la liste.\n"
         "Ouvrez votre bulletin ici : {link}\n"
         "Votre code : {code}. La première fois que vous l'ouvrez, vous dites qui vous êtes (votre nom et votre "
-        "@pseudo TikTok) ; ensuite il n'est qu'à vous, gardez-le pour vous. {until}"
+        "@pseudo TikTok) ; ensuite il est à vous.\n"
+        "{private} {until}"
     ),
     "pt": (
-        "Olá, está convidado a nomear criadores para os {title}: até 6 por prémio, incluindo a si próprio, e pode "
-        "acrescentar alguém que não esteja na lista.\n"
+        "Olá, está convidado a nomear criadores para os {title}: pelo menos 1 e até 6 em cada prémio, incluindo a si "
+        "próprio, e pode acrescentar alguém que não esteja na lista.\n"
         "Abra o seu boletim aqui: {link}\n"
         "O seu código: {code}. Da primeira vez que o abrir, diz quem é (o seu nome e o seu @utilizador do TikTok); a "
-        "partir daí é só seu, guarde-o para si. {until}"
+        "partir daí é seu.\n"
+        "{private} {until}"
     ),
 }
 
@@ -118,4 +143,112 @@ def spare_message_for(code, link, closes_at, edition_title, language="en"):
     language = language if language in SPARE_TEMPLATES else "en"
     with_date, without_date = UNTIL[language]
     until = with_date.format(date=_date(closes_at, language)) if closes_at else without_date
-    return SPARE_TEMPLATES[language].format(title=edition_title, link=link, code=code, until=until)
+    return SPARE_TEMPLATES[language].format(title=edition_title, link=link, code=code, until=until,
+                                            private=PRIVATE[language])
+
+
+# ── EMAILS (owner, 27 Nov 2026) ──────────────────────────────────────────────────────────────────────────────────
+# #646: the code message as an email ("send an email to the KOLs ... individually or ... selected ... or all"), from
+# info@ as "African Freefire Community" (owner's answer). #648: the creator's own picks ("request to send their own
+# votes to their mails"). Hand-written per language and sent with prelocalized=True, so send_email never machine-
+# translates them. Every value that comes from a person (names, handles) is HTML-escaped: a spare code's claimer types
+# their own name. Built here, sent by afc_polls.kol_emails.
+
+CODE_SUBJECT = {
+    "en": "Your personal ballot for the {title} nominations",
+    "fr": "Votre bulletin personnel pour les nominations des {title}",
+    "pt": "O seu boletim pessoal para as nomeações dos {title}",
+}
+CODE_BUTTON = {"en": "Open my ballot", "fr": "Ouvrir mon bulletin", "pt": "Abrir o meu boletim"}
+
+PICKS_SUBJECT = {
+    "en": "Your nominations for the {title}",
+    "fr": "Vos nominations pour les {title}",
+    "pt": "As suas nomeações para os {title}",
+}
+PICKS_TEXT = {
+    "en": {
+        "hi": "Hi {name}, here are your nominations as they are saved now.",
+        "none": "No pick yet",
+        "counts": "Every award has a pick, so your nominations count.",
+        "missing": ("{n} of the {total} awards still have no pick. Your nominations count only once every award has "
+                    "at least one."),
+        "change": "Open your ballot with your personal link or code to change them.",
+    },
+    "fr": {
+        "hi": "Bonjour {name}, voici vos nominations telles qu'elles sont enregistrées.",
+        "none": "Aucun choix pour l'instant",
+        "counts": "Chaque prix a au moins un choix : vos nominations comptent.",
+        "missing": ("{n} des {total} prix n'ont encore aucun choix. Vos nominations ne comptent qu'une fois que chaque "
+                    "prix en a au moins un."),
+        "change": "Ouvrez votre bulletin avec votre lien ou votre code personnel pour les modifier.",
+    },
+    "pt": {
+        "hi": "Olá {name}, aqui estão as suas nomeações tal como estão guardadas.",
+        "none": "Ainda sem escolha",
+        "counts": "Todos os prémios têm uma escolha, por isso as suas nomeações contam.",
+        "missing": ("{n} dos {total} prémios ainda não têm escolha. As suas nomeações só contam quando todos os prémios "
+                    "tiverem pelo menos uma."),
+        "change": "Abra o seu boletim com o seu link ou código pessoal para as alterar.",
+    },
+}
+
+
+def _text_html(text):
+    """Plain text as safe HTML, line breaks kept."""
+    return html.escape(text).replace("\n", "<br>")
+
+
+def _shell(heading, rows_html):
+    from afc_auth.views import _email_shell
+
+    return _email_shell(f"""
+  <tr><td style="padding:38px 44px 8px;">
+    <div style="font-size:21px;font-weight:700;color:#ffffff;">{html.escape(heading)}</div>
+  </td></tr>{rows_html}""", "green")
+
+
+def code_email(creator, code, link, closes_at, edition_title):
+    """(subject, html, language) of the email carrying `creator`'s personal code: the same words as message_for,
+    with the link as a button too."""
+    language = language_for(creator.country)
+    subject = CODE_SUBJECT[language].format(title=edition_title)
+    body = message_for(creator, code, link, closes_at, edition_title)
+    rows = f"""
+  <tr><td style="padding:6px 44px 18px;">
+    <div style="font-size:15px;line-height:1.7;color:#cdd6cf;">{_text_html(body)}</div>
+  </td></tr>
+  <tr><td style="padding:6px 44px 34px;" align="center">
+    <table role="presentation" cellpadding="0" cellspacing="0"><tr><td style="background:#34d27b;border-radius:10px;">
+      <a href="{html.escape(link, quote=True)}" style="display:inline-block;padding:14px 40px;font-size:15px;font-weight:700;color:#062012;text-decoration:none;">{CODE_BUTTON[language]}</a>
+    </td></tr></table>
+  </td></tr>"""
+    return subject, _shell(subject, rows), language
+
+
+def picks_email(creator, edition_title, awards):
+    """(subject, html, language) of the email with `creator`'s own picks. `awards` = [(award name, [(name, handle)])]
+    in ballot order. No code and no link with a code in it: the email may be forwarded."""
+    language = language_for(creator.country)
+    words = PICKS_TEXT[language]
+    subject = PICKS_SUBJECT[language].format(title=edition_title)
+    missing = sum(1 for _name, picks in awards if not picks)
+    blocks = []
+    for name, picks in awards:
+        lines = "<br>".join(f"{html.escape(person)} <span style=\"color:#8a978f;\">@{html.escape(handle)}</span>"
+                            for person, handle in picks) or f'<span style="color:#f5c518;">{words["none"]}</span>'
+        blocks.append(f"""
+  <tr><td style="padding:10px 44px 4px;">
+    <div style="font-size:14px;font-weight:700;color:#ffffff;">{html.escape(name)}</div>
+    <div style="font-size:14px;line-height:1.7;color:#cdd6cf;">{lines}</div>
+  </td></tr>""")
+    verdict = words["counts"] if not missing else words["missing"].format(n=missing, total=len(awards))
+    rows = f"""
+  <tr><td style="padding:6px 44px 8px;">
+    <div style="font-size:15px;line-height:1.7;color:#cdd6cf;">{html.escape(words["hi"].format(name=creator.name))}</div>
+  </td></tr>{"".join(blocks)}
+  <tr><td style="padding:18px 44px 34px;">
+    <div style="font-size:15px;line-height:1.7;color:{"#34d27b" if not missing else "#f5c518"};font-weight:600;">{html.escape(verdict)}</div>
+    <div style="font-size:14px;line-height:1.7;color:#aab5ae;margin-top:8px;">{html.escape(words["change"])}</div>
+  </td></tr>"""
+    return subject, _shell(subject, rows), language
