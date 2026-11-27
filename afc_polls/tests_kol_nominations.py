@@ -1544,7 +1544,8 @@ class KolCodeEmailTests(TestCase):
             plain = unseal_code(code.code_sealed)
             self.assertIn(plain, sent[creator.email]["body"])
             self.assertIn(f"/awards/{self.edition.slug}/nominate#{plain}", sent[creator.email]["body"])
-        self.assertIn("boletim pessoal", sent["ines_jogos@example.com"]["subject"])
+        self.assertIn("Convite oficial", sent["ines_jogos@example.com"]["subject"])
+        self.assertIn("Garena KOL Awards 2026", sent["ines_jogos@example.com"]["subject"])
         self.assertIn("Este link e este código são só seus", sent["ines_jogos@example.com"]["body"])
         self.assertEqual(set(KolEmail.objects.values_list("status", flat=True)), {KolEmail.SENT})
 
@@ -1657,6 +1658,33 @@ class KolMessageWordingTests(TestCase):
             spare = spare_message_for("KOL-AAAA-BBBB", "https://x.test/l", None, edition.title, language)
             self.assertIn(PRIVATE[language], spare)
         self.assertIn("replaces yours", PRIVATE["en"])
+
+
+class KolOfficialWordingTests(TestCase):
+    """#650: "clear that this is an official nomination for the official Garena awards is not a third party one"."""
+
+    def test_messages_and_emails_say_official_garena(self):
+        from .kol_messages import code_email, event_name, picks_email
+        edition = kol_edition()
+        jokkie, = add_creators(edition, names=("Jokkie",))
+        self.assertEqual(event_name("KOL Awards 2026"), "Garena KOL Awards 2026")
+        self.assertEqual(event_name("Garena KOL Awards 2026"), "Garena KOL Awards 2026")
+        for country, words in (("Nigeria", ("official invitation", "Garena KOL Awards 2026", "not a third-party award")),
+                               ("Benin", ("invitation officielle", "Garena KOL Awards 2026", "pas un prix organisé par un tiers")),
+                               ("Mozambique", ("convite oficial", "Garena KOL Awards 2026", "não é um prémio de terceiros"))):
+            jokkie.country = country
+            text = message_for(jokkie, "KOL-AAAA-BBBB", "https://x.test/l", None, edition.title).lower()
+            spare = spare_message_for("KOL-AAAA-BBBB", "https://x.test/l", None, edition.title,
+                                      {"Nigeria": "en", "Benin": "fr", "Mozambique": "pt"}[country]).lower()
+            for word in words:
+                self.assertIn(word.lower(), text, (country, word))
+                self.assertIn(word.lower(), spare, (country, word))
+            self.assertNotIn("african", text)             # the copied message still never names AFC
+            subject, body, _ = code_email(jokkie, "KOL-AAAA-BBBB", "https://x.test/l", None, edition.title)
+            self.assertIn("Garena KOL Awards 2026", subject)
+            self.assertIn("africanfreefirecommunity.com", body)    # the email says where it is hosted
+        subject, _body, _ = picks_email(jokkie, edition.title, [])
+        self.assertIn("Garena KOL Awards 2026", subject)
 
 
 class KolImportContactsTests(TestCase):
