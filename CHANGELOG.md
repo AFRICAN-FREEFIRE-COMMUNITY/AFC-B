@@ -18,6 +18,11 @@ At release time `node ~/.claude/skills/versioning/scripts/release.mjs next` prin
 rename `## Unreleased` to it, merge, then tag the merge commit. A version tag pushed with the wrong
 number is blocked before the push.
 
+## v7.30.0 - 2026-11-27
+
+### Added
+- KOL nominations: a separate "Ballot counts" switch per creator (PATCH creators/<id>/ {ballot_counts}). Off leaves that creator's own saved ballot out of the tally, "Have nominated" and Garena's live page, without switching them off as a nominee or stopping their code.
+
 ## v7.29.0 - 2026-11-27
 
 ### Changed

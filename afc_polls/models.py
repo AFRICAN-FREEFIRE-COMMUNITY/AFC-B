@@ -1339,6 +1339,10 @@ class KolCreator(models.Model):
     email = models.EmailField(max_length=254, blank=True, default="")
     whatsapp = models.CharField(max_length=20, blank=True, default="")
     contact_given_at = models.DateTimeField(null=True, blank=True)
+    # #657 (owner, 27 Nov 2026: "do a separate switch for that"): whether this creator's OWN saved ballot counts. Separate
+    # from `active` (which takes them out as a voter AND as a nominee, but leaves a ballot already saved counting). Off:
+    # their ballot stays saved and visible to admins, but leaves the tally, "Have nominated" and Garena's live page.
+    ballot_counts = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

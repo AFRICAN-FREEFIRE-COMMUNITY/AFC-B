@@ -1009,10 +1009,10 @@ def _ballot_rows(round_):
     somebody else there. A self-pick beside others still counts in the tally like any pick."""
     from .vote_tracking import COUNTED_ANSWER
 
-    voter_of = {
-        respondent_key_for(round_, creator): creator.pk
-        for creator in KolCreator.objects.filter(edition_id=round_.edition_id, origin=KolCreator.LIST)
-    }
+    voters = list(KolCreator.objects.filter(edition_id=round_.edition_id, origin=KolCreator.LIST))
+    voter_of = {respondent_key_for(round_, creator): creator.pk for creator in voters}
+    # #657: a creator whose "Ballot counts" switch is off has their own ballot left out entirely.
+    not_counted = {respondent_key_for(round_, creator) for creator in voters if not creator.ballot_counts}
     rows = (
         PollAnswer.objects.filter(response__poll=round_.poll, response__status=PollResponse.SUBMITTED,
                                   option__kol_creator_link__creator__active=True)
@@ -1021,6 +1021,8 @@ def _ballot_rows(round_):
     )
     ballots = {}
     for response_id, key, question_id, creator_id in rows:
+        if key in not_counted:
+            continue
         entry = ballots.setdefault(response_id, {"key": key, "with_others": set()})
         if creator_id != voter_of.get(key):
             entry["with_others"].add(question_id)
@@ -1189,6 +1191,7 @@ def _creator_row(creator, live_codes, voted_keys, round_, added_counts, awards_d
         "email": creator.email,
         "whatsapp": creator.whatsapp,
         "contact_given_at": creator.contact_given_at,
+        "ballot_counts": creator.ballot_counts,                     # #657: their own ballot counts (separate switch)
         "last_email": emails.get(creator.pk),                        # {status, at, error, to} or None
     }
 
@@ -1399,7 +1402,11 @@ def admin_code(request, edition_slug, code_id):
 
 @api_view(["PATCH"])
 def admin_creator(request, edition_slug, creator_id):
-    """PATCH {active: bool}, {merge_into: creator_id} or {email?, whatsapp?}.
+    """PATCH {active: bool}, {merge_into: creator_id}, {email?, whatsapp?} or {ballot_counts: bool}.
+
+    ballot_counts (#657, owner 27 Nov 2026: "do a separate switch for that"): whether this creator's own saved ballot
+    counts. Off leaves their ballot saved but out of the tally, "Have nominated" and Garena's live page; it does not
+    switch them off as a nominee or revoke their code. 400 kol_bad_ballot_counts for a non-boolean.
 
     email / whatsapp (#644): the creator's contact as an admin types it, validated like the ballot's (clean_email,
     clean_whatsapp); "" clears one. 400 kol_bad_email / kol_bad_whatsapp / kol_whatsapp_country_code. It does not
@@ -1422,6 +1429,13 @@ def admin_creator(request, edition_slug, creator_id):
         return _merge(edition, creator, data.get("merge_into"))
     if "email" in data or "whatsapp" in data:
         return _admin_contact(creator, data)
+    if "ballot_counts" in data:
+        # #657: the separate "Ballot counts" switch; it never touches `active`, codes or the creator as a nominee.
+        value = data.get("ballot_counts")
+        if not isinstance(value, bool):
+            return _refuse("ballot_counts must be true or false", "kol_bad_ballot_counts")
+        KolCreator.objects.filter(pk=creator.pk).update(ballot_counts=value)
+        return Response({"message": "Saved", "ballot_counts": value}, status=status.HTTP_200_OK)
     active = data.get("active")
     if not isinstance(active, bool):
         return _refuse("active must be true or false", "kol_bad_active")
