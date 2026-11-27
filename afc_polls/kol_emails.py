@@ -163,6 +163,7 @@ def email_picks(round_, creator, picks, *, send=None):
     """Email `creator` their own `picks` ({question_id: [creator_id]}, as ballot_payload answers them) to the address
     they gave, now (one message: no thread). Returns the KolEmail row, SENT or FAILED."""
     from .kol_messages import picks_email
+    from .kol_nominations import ballot_link
 
     send = send or _send
     names = {c.pk: (c.name, c.tiktok_handle) for c in KolCreator.objects.filter(edition_id=round_.edition_id)}
@@ -172,7 +173,11 @@ def email_picks(round_, creator, picks, *, send=None):
         # #652: an award counts only with somebody other than the creator in it
         awards.append((question.prompt, [names[cid] for cid in ids], any(cid != creator.pk for cid in ids)))
     row = KolEmail.objects.create(creator=creator, kind=KolEmail.PICKS, to_address=creator.email)
-    subject, body, language = picks_email(creator, round_.edition.title, awards)
+    # #660: the email says until when picks can change, and its button opens the nominations page WITHOUT a code
+    # (ballot_link minus the "#code" part), because this email may be forwarded.
+    page = ballot_link(round_.edition, "").split("#", 1)[0]
+    subject, body, language = picks_email(creator, round_.edition.title, awards, closes_at=round_.closes_at,
+                                          page_link=page)
     try:
         ok = bool(send(creator.email, subject, body, language))
     except Exception:

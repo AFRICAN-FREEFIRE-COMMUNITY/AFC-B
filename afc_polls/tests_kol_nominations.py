@@ -27,6 +27,7 @@ from django.utils import timezone
 from rest_framework.test import APIClient
 
 import csv
+import html as html_lib
 import io
 import json
 import pathlib
@@ -1735,6 +1736,76 @@ class KolOfficialWordingTests(TestCase):
             self.assertIn("africanfreefirecommunity.com", body)    # the email says where it is hosted
         subject, _body, _ = picks_email(jokkie, edition.title, [])
         self.assertIn("Garena KOL Awards 2026", subject)
+
+
+class KolEmailLayoutTests(TestCase):
+    """#660 (owner, 27 Nov 2026: "why is the email ugly like this?"): the code and picks emails are laid out as emails,
+    not the copied chat message pasted with <br>. The link never prints, the code sits in a block of its own with the
+    button straight after it, then the rules, the private note, and the hosted-on footer; in the creator's language."""
+
+    LINK = "https://x.test/awards/kol-awards-2026/nominate#KOL-AAAA-BBBB"
+
+    @staticmethod
+    def visible(body):
+        """The text a reader sees: tags and the hidden preheader stripped."""
+        import re
+        body = re.sub(r'<div style="display:none[^>]*>.*?</div>', "", body, flags=re.S)
+        return html_lib.unescape(re.sub(r"<[^>]+>", " ", body))
+
+    def test_code_email_is_laid_out_in_each_language(self):
+        from datetime import datetime, timezone as dt_timezone
+        from .kol_messages import CODE_BUTTON, CODE_HOSTED, CODE_TEXT, PRIVATE, code_email
+        edition = kol_edition()
+        jokkie, = add_creators(edition, names=("Jokkie",))
+        closes = datetime(2026, 12, 2, 22, 59, tzinfo=dt_timezone.utc)
+        for country, language in (("Nigeria", "en"), ("Benin", "fr"), ("Mozambique", "pt")):
+            jokkie.country = country
+            subject, body, got = code_email(jokkie, "KOL-AAAA-BBBB", self.LINK, closes, edition.title)
+            self.assertEqual(got, language)
+            words = CODE_TEXT[language]
+            seen = self.visible(body)
+            self.assertNotIn("x.test", seen, language)                        # no printed link
+            self.assertIn(f'href="{self.LINK}"', body)                         # the button carries the code link
+            self.assertIn('href="https://x.test/awards/kol-awards-2026/nominate"', body)   # fallback: page, no code
+            self.assertIn(f'<html lang="{language}">', body)
+            self.assertIn(words["preheader"].format(title="Garena KOL Awards 2026"), body)
+            self.assertIn(words["hi"].format(name="Jokkie"), seen)
+            for rule in words["rules"]:
+                self.assertIn(rule, seen, language)
+            self.assertIn({"en": "22:59", "fr": "22:59", "pt": "22:59"}[language], seen)
+            # the order the owner asked for: code, button right after, rules, private note, hosted-on footer
+            order = [seen.index("KOL-AAAA-BBBB"), seen.index(CODE_BUTTON[language]), seen.index(words["rules_title"]),
+                     seen.index(PRIVATE[language]), seen.index(CODE_HOSTED[language].split("(")[0].strip())]
+            self.assertEqual(order, sorted(order), language)
+            for banned in ("—", "–", "solid", "box-shadow"):
+                self.assertNotIn(banned, body, (language, banned))
+            self.assertEqual(body.count("<br>"), 1)    # only the shared shell footer's own line break
+
+    def test_picks_email_lists_each_award_and_never_the_code(self):
+        from .kol_messages import PICKS_TEXT, picks_email
+        edition = kol_edition()
+        jokkie, = add_creators(edition, names=("Jokkie",))
+        jokkie.country = "Nigeria"
+        awards = [("Creator of the Year", [("Lord Rex", "lordrex"), ("<b>Ama</b>", "ama")], True),
+                  ("Streamer of the Year", [("Jokkie", "jokkie")], False),
+                  ("Funniest Creator of the Year", [], False)]
+        page = "https://x.test/awards/kol-awards-2026/nominate"
+        _subject, body, _ = picks_email(jokkie, edition.title, awards, closes_at=None, page_link=page)
+        seen = self.visible(body)
+        words = PICKS_TEXT["en"]
+        self.assertIn(words["missing"].format(n=2, total=3), seen)
+        for award, *_rest in awards:
+            self.assertIn(award, seen)
+        self.assertIn(words["none"], seen)
+        self.assertIn(words["only_you"], seen)
+        self.assertIn("&lt;b&gt;Ama&lt;/b&gt;", body)                          # a typed name is escaped
+        self.assertIn(f'href="{page}"', body)
+        self.assertIn(words["button"], seen)
+        self.assertNotIn("#KOL", body)
+        self.assertNotIn("x.test", seen)
+        self.assertEqual(body.count("<br>"), 1)    # only the shared shell footer's own line break
+        _subject, body, _ = picks_email(jokkie, edition.title, awards)              # no page link: no button
+        self.assertNotIn(words["button"], self.visible(body))
 
 
 class KolImportContactsTests(TestCase):
