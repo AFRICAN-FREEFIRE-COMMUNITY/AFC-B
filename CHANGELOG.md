@@ -18,6 +18,12 @@ At release time `node ~/.claude/skills/versioning/scripts/release.mjs next` prin
 rename `## Unreleased` to it, merge, then tag the merge commit. A version tag pushed with the wrong
 number is blocked before the push.
 
+## v7.32.0 - 2026-11-28
+
+### Added
+
+- KOL nominations metrics (#653): the ballot now records when a code is opened (one row per visit), every search (what was typed, how many names came up, who was then picked), how many picks each save changed, and the first save that made the ballot count (KolBallotEvent). New POST polls/kol-nominations/<edition>/search/ for the ballot page, and GET polls/admin/kol-nominations/<edition>/metrics/ for the admin Metrics tab: invite-to-counting steps, time to nominate, most searched creators, searches that found nothing, per-award numbers, activity by day and hour, changes, self-only ballots with a copied reminder in the creator's language, write-ins, devices, countries, codes never opened, emails, and one row per creator for a CSV. Ballots finished before 28 November have their finish time rebuilt from the picks.
+
 ## v7.31.0 - 2026-11-27
 
 ### Changed
