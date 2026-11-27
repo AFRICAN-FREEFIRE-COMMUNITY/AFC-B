@@ -1777,7 +1777,7 @@ class KolEmailLayoutTests(TestCase):
             order = [seen.index("KOL-AAAA-BBBB"), seen.index(CODE_BUTTON[language]), seen.index(words["rules_title"]),
                      seen.index(PRIVATE[language]), seen.index(CODE_HOSTED[language].split("(")[0].strip())]
             self.assertEqual(order, sorted(order), language)
-            for banned in ("—", "–", "solid", "box-shadow"):    # em / en dash written as escapes
+            for banned in (chr(0x2014), chr(0x2013), "solid", "box-shadow"):    # em / en dash written as escapes
                 self.assertNotIn(banned, body, (language, banned))
             self.assertEqual(body.count("<br>"), 1)    # only the shared shell footer's own line break
 
