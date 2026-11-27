@@ -166,10 +166,11 @@ def email_picks(round_, creator, picks, *, send=None):
 
     send = send or _send
     names = {c.pk: (c.name, c.tiktok_handle) for c in KolCreator.objects.filter(edition_id=round_.edition_id)}
-    awards = [
-        (question.prompt, [names[cid] for cid in picks.get(str(question.question_id), []) if cid in names])
-        for question in round_.poll.questions.order_by("order")
-    ]
+    awards = []
+    for question in round_.poll.questions.order_by("order"):
+        ids = [cid for cid in picks.get(str(question.question_id), []) if cid in names]
+        # #652: an award counts only with somebody other than the creator in it
+        awards.append((question.prompt, [names[cid] for cid in ids], any(cid != creator.pk for cid in ids)))
     row = KolEmail.objects.create(creator=creator, kind=KolEmail.PICKS, to_address=creator.email)
     subject, body, language = picks_email(creator, round_.edition.title, awards)
     try:

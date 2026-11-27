@@ -402,7 +402,8 @@ def ballot_payload(round_, creator):
         "saved_at": response.submitted_at if response is not None else None,
         # #643: the ballot counts only once every award has a pick (the same rule as counted_response_ids, read off
         # the picks this payload already holds: active candidates only).
-        "complete": bool(picks) and all(picks.values()),
+        # #652: an award holding only the creator themselves does not count.
+        "complete": bool(picks) and all(any(cid != creator.pk for cid in ids) for ids in picks.values()),
         # #644: the page asks for an email and a WhatsApp number until the creator has given them (contact); the
         # stored values are never sent back, only a masked hint of the email "Email me my picks" writes to (#648).
         "contact_needed": creator.contact_given_at is None,
@@ -1000,30 +1001,44 @@ def merge_write_in(source, target):
 # whose only pick in an award was switched off since, simply stops counting until the creator fills the award, and no
 # flag can drift from the picks. The tally, "Have nominated" (admin tab) and Garena's live page all read it here.
 def _ballot_rows(round_):
-    """Per saved ballot an admin has not removed: response_id, respondent_key and how many awards hold an active
-    pick."""
+    """{response_id: {"key": respondent_key, "awards": number of awards that hold an active pick of somebody OTHER
+    than the voter}} for every saved ballot an admin has not removed.
+
+    #652 (owner, 27 Nov 2026: "if they nominate only themselves, their nomination will be discarded", "Per award"): an
+    award where the creator picked only themselves counts as EMPTY, so a ballot with one counts only once they add
+    somebody else there. A self-pick beside others still counts in the tally like any pick."""
     from .vote_tracking import COUNTED_ANSWER
 
-    return (
+    voter_of = {
+        respondent_key_for(round_, creator): creator.pk
+        for creator in KolCreator.objects.filter(edition_id=round_.edition_id, origin=KolCreator.LIST)
+    }
+    rows = (
         PollAnswer.objects.filter(response__poll=round_.poll, response__status=PollResponse.SUBMITTED,
                                   option__kol_creator_link__creator__active=True)
         .filter(COUNTED_ANSWER)
-        .values("response_id", "response__respondent_key")
-        .annotate(awards=Count("question_id", distinct=True))
+        .values_list("response_id", "response__respondent_key", "question_id", "option__kol_creator_link__creator_id")
     )
+    ballots = {}
+    for response_id, key, question_id, creator_id in rows:
+        entry = ballots.setdefault(response_id, {"key": key, "with_others": set()})
+        if creator_id != voter_of.get(key):
+            entry["with_others"].add(question_id)
+    return {rid: {"key": e["key"], "awards": len(e["with_others"])} for rid, e in ballots.items()}
 
 
 def counted_response_ids(round_):
-    """The ids of the ballots that count: saved, not removed by an admin, an active pick in every award."""
+    """The ids of the ballots that count: saved, not removed by an admin, and in every award an active pick of
+    somebody other than the voter (#643 every award, #652 not only themselves)."""
     total = round_.poll.questions.count()
     if not total:
         return set()
-    return {row["response_id"] for row in _ballot_rows(round_) if row["awards"] >= total}
+    return {rid for rid, row in _ballot_rows(round_).items() if row["awards"] >= total}
 
 
 def awards_done_by_key(round_):
-    """{respondent_key: awards with a pick} for every saved ballot (the admin tab's "4 of 6 awards")."""
-    return {row["response__respondent_key"]: row["awards"] for row in _ballot_rows(round_)}
+    """{respondent_key: awards that count} for every saved ballot (the admin tab's "4 of 6 awards")."""
+    return {row["key"]: row["awards"] for row in _ballot_rows(round_).values()}
 
 
 def tally(round_):

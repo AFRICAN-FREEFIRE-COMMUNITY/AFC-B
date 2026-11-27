@@ -44,7 +44,8 @@ TEMPLATES = {
         "Hi {name}, this is your official invitation to nominate for the {title}, Garena's own official awards "
         "ceremony for Free Fire creators. It is not a third-party award.\n"
         "Nominate the creators you think deserve each award: at least 1 and up to 6 in every award. You can pick "
-        "anyone, yourself included, and add someone who is not on the list.\n"
+        "anyone, yourself included, and add someone who is not on the list. If you nominate only yourself in an award, that nomi"
+        "nation is discarded, so pick at least one other creator in every award.\n"
         "Open your personal ballot here: {link}\n"
         "Your code: {code}\n"
         "{private} {until}"
@@ -53,7 +54,8 @@ TEMPLATES = {
         "Bonjour {name}, ceci est votre invitation officielle à nominer pour les {title}, la cérémonie de remise de "
         "prix officielle de Garena pour les créateurs Free Fire. Ce n'est pas un prix organisé par un tiers.\n"
         "Nominez les créateurs qui méritent chaque prix : au moins 1 et jusqu'à 6 dans chaque prix. Vous pouvez "
-        "choisir n'importe qui, y compris vous-même, et ajouter quelqu'un qui n'est pas sur la liste.\n"
+        "choisir n'importe qui, y compris vous-même, et ajouter quelqu'un qui n'est pas sur la liste. "
+        "Si vous ne nominez que vous-même dans un prix, cette nomination est écartée : choisissez au moins un autre créateur dans chaque prix.\n"
         "Ouvrez votre bulletin personnel ici : {link}\n"
         "Votre code : {code}\n"
         "{private} {until}"
@@ -62,7 +64,8 @@ TEMPLATES = {
         "Olá {name}, este é o seu convite oficial para nomear nos {title}, a cerimónia oficial de prémios da própria "
         "Garena para os criadores de Free Fire. Não é um prémio de terceiros.\n"
         "Nomeie os criadores que merecem cada prémio: pelo menos 1 e até 6 em cada prémio. Pode escolher qualquer "
-        "pessoa, incluindo a si próprio, e acrescentar alguém que não esteja na lista.\n"
+        "pessoa, incluindo a si próprio, e acrescentar alguém que não esteja na lista. "
+        "Se nomear apenas a si próprio num prémio, essa nomeação é descartada, por isso escolha pelo menos outro criador em cada prémio.\n"
         "Abra o seu boletim pessoal aqui: {link}\n"
         "O seu código: {code}\n"
         "{private} {until}"
@@ -130,7 +133,7 @@ SPARE_TEMPLATES = {
         "Hi, this is your official invitation to nominate creators for the {title}, Garena's own official awards "
         "ceremony for Free Fire creators. It is not a third-party award.\n"
         "Nominate at least 1 and up to 6 creators in every award, yourself included, and you can add someone who is "
-        "not on the list.\n"
+        "not on the list. If you nominate only yourself in an award, that nomination is discarded, so pick at least one other creator in every award.\n"
         "Open your ballot here: {link}\n"
         "Your code: {code}. The first time you open it, you say who you are (your name and TikTok @handle); from then "
         "on it is yours.\n"
@@ -140,7 +143,7 @@ SPARE_TEMPLATES = {
         "Bonjour, ceci est votre invitation officielle à nominer des créateurs pour les {title}, la cérémonie de "
         "remise de prix officielle de Garena pour les créateurs Free Fire. Ce n'est pas un prix organisé par un tiers.\n"
         "Nominez au moins 1 et jusqu'à 6 créateurs dans chaque prix, y compris vous-même, et vous pouvez ajouter "
-        "quelqu'un qui n'est pas sur la liste.\n"
+        "quelqu'un qui n'est pas sur la liste. Si vous ne nominez que vous-même dans un prix, cette nomination est écartée : choisissez au moins un autre créateur dans chaque prix.\n"
         "Ouvrez votre bulletin ici : {link}\n"
         "Votre code : {code}. La première fois que vous l'ouvrez, vous dites qui vous êtes (votre nom et votre "
         "@pseudo TikTok) ; ensuite il est à vous.\n"
@@ -150,7 +153,7 @@ SPARE_TEMPLATES = {
         "Olá, este é o seu convite oficial para nomear criadores nos {title}, a cerimónia oficial de prémios da "
         "própria Garena para os criadores de Free Fire. Não é um prémio de terceiros.\n"
         "Nomeie pelo menos 1 e até 6 criadores em cada prémio, incluindo a si próprio, e pode acrescentar alguém que "
-        "não esteja na lista.\n"
+        "não esteja na lista. Se nomear apenas a si próprio num prémio, essa nomeação é descartada, por isso escolha pelo menos outro criador em cada prémio.\n"
         "Abra o seu boletim aqui: {link}\n"
         "O seu código: {code}. Da primeira vez que o abrir, diz quem é (o seu nome e o seu @utilizador do TikTok); a "
         "partir daí é seu.\n"
@@ -200,6 +203,7 @@ PICKS_TEXT = {
     "en": {
         "hi": "Hi {name}, here are your nominations as they are saved now.",
         "none": "No pick yet",
+        "only_you": "Only you: this award counts as empty until you add someone else.",
         "counts": "Every award has a pick, so your nominations count.",
         "missing": ("{n} of the {total} awards still have no pick. Your nominations count only once every award has "
                     "at least one."),
@@ -208,6 +212,7 @@ PICKS_TEXT = {
     "fr": {
         "hi": "Bonjour {name}, voici vos nominations telles qu'elles sont enregistrées.",
         "none": "Aucun choix pour l'instant",
+        "only_you": "Vous seul : ce prix compte comme vide tant que vous n'ajoutez personne d'autre.",
         "counts": "Chaque prix a au moins un choix : vos nominations comptent.",
         "missing": ("{n} des {total} prix n'ont encore aucun choix. Vos nominations ne comptent qu'une fois que chaque "
                     "prix en a au moins un."),
@@ -216,6 +221,7 @@ PICKS_TEXT = {
     "pt": {
         "hi": "Olá {name}, aqui estão as suas nomeações tal como estão guardadas.",
         "none": "Ainda sem escolha",
+        "only_you": "Só o próprio: este prémio conta como vazio até acrescentar outra pessoa.",
         "counts": "Todos os prémios têm uma escolha, por isso as suas nomeações contam.",
         "missing": ("{n} dos {total} prémios ainda não têm escolha. As suas nomeações só contam quando todos os prémios "
                     "tiverem pelo menos uma."),
@@ -260,16 +266,19 @@ def code_email(creator, code, link, closes_at, edition_title):
 
 
 def picks_email(creator, edition_title, awards):
-    """(subject, html, language) of the email with `creator`'s own picks. `awards` = [(award name, [(name, handle)])]
-    in ballot order. No code and no link with a code in it: the email may be forwarded."""
+    """(subject, html, language) of the email with `creator`'s own picks. `awards` = [(award name, [(name, handle)],
+    counts)] in ballot order, `counts` False for an award with no pick or only the creator (#652). No code and no
+    link with a code in it: the email may be forwarded."""
     language = language_for(creator.country)
     words = PICKS_TEXT[language]
     subject = PICKS_SUBJECT[language].format(title=event_name(edition_title))
-    missing = sum(1 for _name, picks in awards if not picks)
+    missing = sum(1 for _name, _picks, counts in awards if not counts)
     blocks = []
-    for name, picks in awards:
+    for name, picks, counts in awards:
         lines = "<br>".join(f"{html.escape(person)} <span style=\"color:#8a978f;\">@{html.escape(handle)}</span>"
                             for person, handle in picks) or f'<span style="color:#f5c518;">{words["none"]}</span>'
+        if picks and not counts:
+            lines += f'<br><span style="color:#f5c518;">{html.escape(words["only_you"])}</span>'
         blocks.append(f"""
   <tr><td style="padding:10px 44px 4px;">
     <div style="font-size:14px;font-weight:700;color:#ffffff;">{html.escape(name)}</div>

@@ -418,16 +418,17 @@ class KolBallotTests(TestCase):
 
     def test_tally_counts_active_only(self):
         # #643: a ballot counts only with a pick in every award, so each fills the rest with one creator.
+        # (#652: never fill with the voter: an award holding only the voter counts as empty)
         save(self.client, self.edition, every_award(self.awards, {self.q(0): [self.others[0].pk, self.others[1].pk]},
-                                                    self.me))
+                                                    self.others[3]))
         second = APIClient()
         door(second, self.edition, new_code(self.others[2]))
-        save(second, self.edition, every_award(self.awards, {self.q(0): [self.others[0].pk]}, self.others[2]))
+        save(second, self.edition, every_award(self.awards, {self.q(0): [self.others[0].pk]}, self.others[4]))
         KolCreator.objects.filter(pk=self.others[1].pk).update(active=False)
         rows = tally(self.round)[self.awards[0].question_id]
         self.assertEqual(rows, [{"creator_id": self.others[0].pk, "name": self.others[0].name, "picks": 2}])
         self.assertEqual([r["name"] for r in tally(self.round)[self.awards[1].question_id]],
-                         [self.me.name, self.others[2].name])
+                         sorted([self.others[3].name, self.others[4].name], key=str.lower))
 
 
 def read_csv(answer):
@@ -1424,6 +1425,20 @@ class KolFullBallotTests(TestCase):
         self.assertEqual(tally(self.round)[self.awards[0].question_id], [])
         self.assertFalse(ballot(self.client, self.edition).json()["complete"])
 
+    def test_an_award_with_only_yourself_counts_as_empty(self):
+        # #652 (owner, 27 Nov 2026: "if they nominate only themselves, their nomination will be discarded", "Per award")
+        picks = self.picks(6, self.rex)
+        picks[str(self.awards[3].question_id)] = [self.jokkie.pk]          # only the voter in award 4
+        answer = save(self.client, self.edition, picks)
+        self.assertFalse(answer.json()["complete"])
+        self.assertEqual((self.row()["voted"], self.row()["awards_done"]), (False, 5))
+        self.assertEqual(tally(self.round)[self.awards[0].question_id], [])
+        picks[str(self.awards[3].question_id)] = [self.jokkie.pk, self.ama.pk]   # themselves beside somebody else
+        self.assertTrue(save(self.client, self.edition, picks).json()["complete"])
+        self.assertEqual((self.row()["voted"], self.row()["awards_done"]), (True, 6))
+        mine = [r for r in tally(self.round)[self.awards[3].question_id] if r["creator_id"] == self.jokkie.pk]
+        self.assertEqual(mine[0]["picks"], 1)                                # the self-pick still counts beside others
+
     def test_emptying_an_award_again_stops_it_counting(self):
         save(self.client, self.edition, self.picks(6, self.rex))
         picks = self.picks(6, self.rex)
@@ -1614,6 +1629,15 @@ class KolEmailMyPicksTests(TestCase):
         door(self.client, self.edition, self.code)
         self.url = f"/polls/kol-nominations/{self.edition.slug}/email-me/"
 
+    def test_an_award_with_only_me_is_counted_as_missing(self):
+        picks = {str(a.question_id): [self.rex.pk] for a in self.awards}
+        picks[str(self.awards[2].question_id)] = [self.jokkie.pk]
+        save(self.client, self.edition, picks)
+        self.assertEqual(self.client.post(self.url, {}, format="json").status_code, 200)
+        [mail] = outbox.drain()
+        self.assertIn("1 of the 6 awards still have no pick", mail["body"])
+        self.assertIn("Only you: this award counts as empty", mail["body"])
+
     def test_sends_the_picks_without_the_code(self):
         save(self.client, self.edition, {str(self.awards[0].question_id): [self.rex.pk]})
         answer = self.client.post(self.url, {}, format="json")
@@ -1680,6 +1704,10 @@ class KolOfficialWordingTests(TestCase):
                 self.assertIn(word.lower(), text, (country, word))
                 self.assertIn(word.lower(), spare, (country, word))
             self.assertNotIn("african", text)             # the copied message still never names AFC
+            # #652: an award where they nominate only themselves is discarded, said in every language
+            self.assertIn({"Nigeria": "only yourself", "Benin": "que vous-même", "Mozambique": "apenas a si próprio"}[country],
+                          text)
+            self.assertIn({"Nigeria": "discarded", "Benin": "écartée", "Mozambique": "descartada"}[country], text)
             # owner, 27 Nov 2026 (#651): "You are one of the creators on Garena's KOL list - No need for this line"
             for gone in ("kol list", "liste kol", "lista kol"):
                 self.assertNotIn(gone, text)
