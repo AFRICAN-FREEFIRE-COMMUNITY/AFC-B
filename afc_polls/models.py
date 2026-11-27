@@ -1297,7 +1297,7 @@ class KolNominationRound(models.Model):
 
 
 class KolCreator(models.Model):
-    """A candidate of the round. Never an email (they stay in Garena's sheet). Two origins:
+    """A candidate of the round. Two origins:
 
     - LIST: a creator on Garena's KOL List, a voter AND a candidate. Imported by `manage.py kol_import_creators`
       from a JSON made out of the private sheet (tools/kol_sheet_to_json.py).
@@ -1307,7 +1307,14 @@ class KolCreator(models.Model):
 
     `active = False` switches a candidate off: their code stops working, the ballot stops listing them, and picks of
     them leave the tally. A duplicate write-in is MERGED into the person it duplicates (kol_nominations.merge_write_in):
-    its picks move there, it is switched off, and `merged_into` remembers where they went."""
+    its picks move there, it is switched off, and `merged_into` remembers where they went.
+
+    CONTACT (owner, 27 Nov 2026, #644: "a field for email and Whatsapp number for us to reach them", "Both, required
+    on ballot"; reverses the design's "no email on the server"). `email` and `whatsapp` are typed by an admin (or
+    loaded from Garena's sheet by `manage.py kol_import_contacts`) and asked of the creator once on the ballot
+    (kol_nominations.contact); `contact_given_at` says the creator gave them, which the ballot requires before any
+    pick is saved. Read only by the admin tab (poll admins and Garena's KOL admins) and the code emails
+    (kol_emails); never sent back to a code holder, so a leaked code never leaks a number."""
 
     LIST = "list"
     WRITE_IN = "write-in"
@@ -1328,6 +1335,10 @@ class KolCreator(models.Model):
     added_by = models.ForeignKey("self", null=True, blank=True, on_delete=models.SET_NULL, related_name="write_ins")
     merged_into = models.ForeignKey("self", null=True, blank=True, on_delete=models.SET_NULL,
                                     related_name="merged_from")
+    # #644: how AFC and Garena reach the creator. `whatsapp` is "+<country code><number>", digits only after the "+".
+    email = models.EmailField(max_length=254, blank=True, default="")
+    whatsapp = models.CharField(max_length=20, blank=True, default="")
+    contact_given_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -1373,3 +1384,38 @@ class KolVoterCode(models.Model):
 
     def __str__(self):
         return f"code {self.code_id} of {self.creator_id}"
+
+
+class KolEmail(models.Model):
+    """One email to a KOL creator (owner, 27 Nov 2026): their personal code (#646: "send individually or ... selected
+    ... or to send to all", queued from the admin tab) or their own picks (#648: "request to send their own votes to
+    their mails", from the ballot). Written by afc_polls.kol_emails, which sends on a paced thread and records how it
+    went here; the admin tab shows the latest CODE email per creator. Never holds the code itself: the sender reads it
+    from the creator's live KolVoterCode when the message goes out."""
+
+    CODE = "code"
+    PICKS = "picks"
+    KIND_CHOICES = [(CODE, "Personal code"), (PICKS, "Their own picks")]
+    QUEUED = "queued"
+    SENT = "sent"
+    FAILED = "failed"
+    STATUS_CHOICES = [(QUEUED, "Queued"), (SENT, "Sent"), (FAILED, "Failed")]
+
+    email_id = models.AutoField(primary_key=True)
+    creator = models.ForeignKey(KolCreator, on_delete=models.CASCADE, related_name="emails")
+    kind = models.CharField(max_length=8, choices=KIND_CHOICES, default=CODE)
+    to_address = models.EmailField(max_length=254)
+    status = models.CharField(max_length=8, choices=STATUS_CHOICES, default=QUEUED)
+    # Why a FAILED one failed, as a code the tab translates (kol_email_send_failed, kol_code_gone, ...).
+    error = models.CharField(max_length=40, blank=True, default="")
+    # The admin who pressed send (NULL for a creator's own request, or once that admin account is gone).
+    sent_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+                                related_name="kol_emails_sent")
+    queued_at = models.DateTimeField(auto_now_add=True)
+    finished_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-queued_at", "-email_id"]
+
+    def __str__(self):
+        return f"kol email {self.email_id} ({self.kind}, {self.status})"

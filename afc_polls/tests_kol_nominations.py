@@ -13,7 +13,9 @@ WHAT IS WORTH TESTING HERE
      person once per award. Self-picks are allowed (owner, 26 Nov 2026, #637).
   5. WRITE-INS. Anybody added by handle is a candidate for every creator, never a voter, capped per creator, and a
      duplicate merges into the person it repeats.
-  4. THE ADMIN SIDE never stores an email and never writes AFC into the message a creator receives.
+  4. THE ADMIN SIDE never writes AFC into the message a creator receives.
+  6. 27 Nov 2026 (#643 to #648): a ballot counts only with a pick in every award; the creator gives an email
+     and a WhatsApp number before picking; codes go out by email, paced; a creator can email their picks.
 
 Run (see memory reference_backend_tests_in_worktree):
     AFC_TEST_DB_NAME=test_afc_kolnom python manage.py test afc_polls.tests_kol_nominations -v 2
@@ -52,10 +54,14 @@ def kol_edition(slug="kol-2026", hidden=True):
 
 
 def add_creators(edition, names=("Jokkie", "Lord Rex", "Ama Plays", "Kwame FF")):
-    """One KolCreator per name; the handle is the name, lower case, without spaces."""
+    """One KolCreator per name; the handle is the name, lower case, without spaces. Each has already given an email
+    and a WhatsApp number on the ballot (#644), so the tests about picks are not stopped at the contact step; the
+    contact tests take it away again."""
     return [
         KolCreator.objects.create(
             edition=edition, name=name, tiktok_handle=name.lower().replace(" ", "_"), country="Nigeria",
+            email=f"{name.lower().replace(' ', '_')}@example.com", whatsapp="+2348000000000",
+            contact_given_at=timezone.now(),
         )
         for name in names
     ]
@@ -318,13 +324,15 @@ class KolBallotTests(TestCase):
         self.assertEqual(save(self.client, self.edition, {self.q(0): [c.pk for c in self.others[:6]]}).status_code, 200)
 
     def test_self_pick_allowed(self):
-        answer = save(self.client, self.edition, {self.q(2): [self.me.pk, self.others[0].pk]})
+        answer = save(self.client, self.edition,
+                      every_award(self.awards, {self.q(2): [self.me.pk, self.others[0].pk]}, self.others[1]))
         self.assertEqual(answer.status_code, 200, answer.content)
         self.assertEqual(answer.json()["picks"][self.q(2)], [self.me.pk, self.others[0].pk])
         self.assertEqual(tally(self.round)[self.awards[2].question_id][0]["picks"], 1)
 
     def test_same_person_twice_in_one_award_saved_once(self):
-        answer = save(self.client, self.edition, {self.q(0): [self.others[0].pk, self.others[0].pk, self.others[1].pk]})
+        answer = save(self.client, self.edition, every_award(
+            self.awards, {self.q(0): [self.others[0].pk, self.others[0].pk, self.others[1].pk]}, self.others[2]))
         self.assertEqual(answer.status_code, 200, answer.content)
         self.assertEqual(answer.json()["picks"][self.q(0)], [self.others[0].pk, self.others[1].pk])
         self.assertEqual(tally(self.round)[self.awards[0].question_id][0]["picks"], 1)
@@ -409,14 +417,17 @@ class KolBallotTests(TestCase):
         self.assertEqual(answer.json()["code"], "kol_save_too_many")
 
     def test_tally_counts_active_only(self):
-        save(self.client, self.edition, {self.q(0): [self.others[0].pk, self.others[1].pk]})
+        # #643: a ballot counts only with a pick in every award, so each fills the rest with one creator.
+        save(self.client, self.edition, every_award(self.awards, {self.q(0): [self.others[0].pk, self.others[1].pk]},
+                                                    self.me))
         second = APIClient()
         door(second, self.edition, new_code(self.others[2]))
-        save(second, self.edition, {self.q(0): [self.others[0].pk]})
+        save(second, self.edition, every_award(self.awards, {self.q(0): [self.others[0].pk]}, self.others[2]))
         KolCreator.objects.filter(pk=self.others[1].pk).update(active=False)
         rows = tally(self.round)[self.awards[0].question_id]
         self.assertEqual(rows, [{"creator_id": self.others[0].pk, "name": self.others[0].name, "picks": 2}])
-        self.assertEqual(tally(self.round)[self.awards[1].question_id], [])
+        self.assertEqual([r["name"] for r in tally(self.round)[self.awards[1].question_id]],
+                         [self.me.name, self.others[2].name])
 
 
 def read_csv(answer):
@@ -503,15 +514,15 @@ class KolAdminTests(TestCase):
         rows = read_csv(self.client.post(f"{self.base}codes/", {}, format="json"))
         creator = APIClient()
         door(creator, self.edition, rows[0]["code"])
-        question = KolNominationRound.objects.get(edition=self.edition).poll.questions.order_by("order").first()
+        questions = list(KolNominationRound.objects.get(edition=self.edition).poll.questions.order_by("order"))
         me = KolCreator.objects.get(tiktok_handle=rows[0]["tiktok_handle"])
         other = KolCreator.objects.exclude(pk=me.pk).first()
-        save(creator, self.edition, {str(question.question_id): [other.pk]})
+        save(creator, self.edition, every_award(questions, {}, other))          # #643: a pick in every award
         data = self.client.get(self.base).json()
         voted = {c["creator_id"]: c["voted"] for c in data["creators"]}
         self.assertTrue(voted[me.pk])
         self.assertEqual(sum(voted.values()), 1)
-        self.assertEqual(data["tally"][str(question.question_id)][0]["creator_id"], other.pk)
+        self.assertEqual(data["tally"][str(questions[0].question_id)][0]["creator_id"], other.pk)
         self.assertNotIn("picks_by_voter", str(data))
 
     def test_switch_off_revokes_code(self):
@@ -550,12 +561,13 @@ class KolAdminTests(TestCase):
             for dash in (chr(0x2013), chr(0x2014)):
                 self.assertNotIn(dash, text)
 
-    def test_import_is_idempotent_and_never_stores_email(self):
+    def test_import_is_idempotent_and_ignores_email(self):
+        # Emails have their own file and command since #646 (kol_import_contacts); this import still ignores them.
         rows = [
             {"name": "Jokkie", "tiktok_handle": "@Jokkie", "country": "Nigeria", "status": "Added", "tiktok_id": "123",
-             "email": "jokkie@example.com"},
+             "email": "jokkie@sheet.example.org"},
             {"name": "Brand New", "tiktok_handle": "brand_new", "country": "Togo", "status": "New", "tiktok_id": "",
-             "email": "new@example.com"},
+             "email": "new@sheet.example.org"},
         ]
         path = pathlib.Path(tempfile.mkdtemp()) / "kol.json"
         path.write_text(json.dumps(rows), encoding="utf-8")
@@ -567,10 +579,10 @@ class KolAdminTests(TestCase):
         self.assertEqual((jokkie.sheet_status, jokkie.tiktok_id), ("Added", "123"))
         self.assertIn("1 created", out.getvalue())
         stored = json.dumps(list(KolCreator.objects.values()), default=str)
-        self.assertNotIn("@example.com", stored)
+        self.assertNotIn("sheet.example.org", stored)
         self.setup_round()
         rows = read_csv(self.client.post(f"{self.base}codes/", {}, format="json"))
-        self.assertNotIn("@example.com", json.dumps(rows))
+        self.assertNotIn("@", json.dumps([row["message"] + row["code"] for row in rows]).replace("@Jokkie", ""))
 
 
 class KolRoundPollIsSealedTests(TestCase):
@@ -719,11 +731,11 @@ class KolWriteInTests(TestCase):
 
     def test_write_in_picks_save_and_count(self):
         new_id = write_in(self.client, self.edition, "new_guy").json()["candidate"]["creator_id"]
-        answer = save(self.client, self.edition, {self.q(0): [new_id, self.rex.pk]})
+        answer = save(self.client, self.edition, every_award(self.awards, {self.q(0): [new_id, self.rex.pk]}, self.rex))
         self.assertEqual(answer.status_code, 200, answer.content)
         other = APIClient()
         door(other, self.edition, new_code(self.ama))
-        save(other, self.edition, {self.q(0): [new_id]})
+        save(other, self.edition, every_award(self.awards, {self.q(0): [new_id]}, self.rex))
         top = tally(self.round)[self.awards[0].question_id][0]
         self.assertEqual((top["creator_id"], top["picks"]), (new_id, 2))
 
@@ -841,10 +853,11 @@ class KolWriteInAdminTests(TestCase):
         self.assertEqual(self.row(self.rex.pk)["write_ins_added"], 0)
 
     def test_merge_moves_picks_and_never_counts_one_person_twice(self):
-        save(self.mine, self.edition, {self.q(0): [self.dup, self.rex.pk], self.q(1): [self.dup]})
+        save(self.mine, self.edition,
+             every_award(self.awards, {self.q(0): [self.dup, self.rex.pk], self.q(1): [self.dup]}, self.rex))
         theirs = APIClient()
         door(theirs, self.edition, new_code(self.ama))
-        save(theirs, self.edition, {self.q(0): [self.dup]})
+        save(theirs, self.edition, every_award(self.awards, {self.q(0): [self.dup]}, self.rex))
         answer = self.admin.patch(f"{self.base}creators/{self.dup}/", {"merge_into": self.rex.pk}, format="json")
         self.assertEqual(answer.status_code, 200, answer.content)
         dup = KolCreator.objects.get(pk=self.dup)
@@ -1058,6 +1071,11 @@ class KolSpareCodeTests(TestCase):
         self.assertEqual((star.origin, star.country, star.active), (KolCreator.LIST, "Ghana", True))
         self.assertEqual(star.options.count(), 6)
         self.assertEqual(KolVoterCode.objects.get(spare=True).creator_id, star.pk)
+        # #644: a new creator gives their email and WhatsApp before their first pick, like everybody.
+        self.assertTrue(answer.json()["contact_needed"])
+        given = client.put(f"/polls/kol-nominations/{self.edition.slug}/contact/",
+                           {"email": "star@example.com", "whatsapp": "+233201234567"}, format="json")
+        self.assertEqual(given.status_code, 200, given.content)
         saved = save(client, self.edition, {str(self.awards[0].question_id): [self.rex.pk, star.pk]})
         self.assertEqual(saved.status_code, 200, saved.content)
         # the same code opens that creator's ballot from now on, on any phone, without asking again
@@ -1285,7 +1303,7 @@ class KolLivePageTests(TestCase):
     def vote(self, voter, picks):
         client = APIClient()
         self.assertEqual(door(client, self.edition, new_code(voter)).status_code, 200)
-        answer = save(client, self.edition, picks)
+        answer = save(client, self.edition, every_award(self.awards, picks, self.rex))   # #643: every award
         self.assertEqual(answer.status_code, 200, answer.content)
         return client
 
@@ -1303,7 +1321,7 @@ class KolLivePageTests(TestCase):
         client = self.vote(self.kwame, {first: [self.rex.pk]})
         write_in(client, self.edition, "new_star", "New Star")
         star = KolCreator.objects.get(tiktok_handle="new_star")
-        save(client, self.edition, {first: [self.rex.pk, star.pk]})
+        save(client, self.edition, every_award(self.awards, {first: [self.rex.pk, star.pk]}, self.rex))
         data = APIClient().get(self.url).json()
         block = data["nominations"]
         self.assertEqual(block["ballots"], 2)
@@ -1334,3 +1352,339 @@ class KolLivePageTests(TestCase):
         other = AwardsEdition.objects.create(slug="afc-awards-2026", title="AFC Awards 2026", year=2026,
                                              live_view_token="lv_" + "b" * 32)
         self.assertIsNone(APIClient().get(f"/polls/live/{other.live_view_token}/").json()["nominations"])
+
+
+# ── 27 NOV 2026 (#643 to #648): full ballots only, contacts, code emails, a creator's own picks by email ──────────
+from afc_auth import outbox  # noqa: E402
+
+from . import kol_emails  # noqa: E402
+from .kol_messages import PRIVATE, spare_message_for  # noqa: E402
+from .models import KolEmail  # noqa: E402
+
+
+def every_award(awards, picks, filler):
+    """`picks` with `filler` picked in each award `picks` leaves empty, so the ballot counts (#643)."""
+    full = {str(award.question_id): [filler.pk] for award in awards}
+    full.update(picks)
+    return full
+
+
+def inline_sender(monkey_sleep=None):
+    """kol_emails.start_sender replaced by an inline send with no waits (no thread in a test)."""
+    return mock.patch.object(kol_emails, "start_sender",
+                             lambda ids: kol_emails.send_code_emails(ids, sleep=monkey_sleep or (lambda s: None)))
+
+
+class KolFullBallotTests(TestCase):
+    """#643: "Don't allow awards stay empty"; "Counts only when full is good"."""
+
+    def setUp(self):
+        cache.clear()
+        self.edition = kol_edition()
+        self.creators = add_creators(self.edition, names=("Jokkie", "Lord Rex", "Ama Plays", "Kwame FF"))
+        self.jokkie, self.rex, self.ama, self.kwame = self.creators
+        self.round = open_round(self.edition)
+        self.awards = list(self.round.poll.questions.order_by("order"))
+        self.client = APIClient()
+        self.assertEqual(door(self.client, self.edition, new_code(self.jokkie)).status_code, 200)
+        self.admin = admin_client("kolfulladmin")
+
+    def picks(self, count, who):
+        return {str(award.question_id): [who.pk] for award in self.awards[:count]}
+
+    def row(self):
+        rows = self.admin.get(f"/polls/admin/kol-nominations/{self.edition.slug}/").json()["creators"]
+        return next(r for r in rows if r["creator_id"] == self.jokkie.pk)
+
+    def test_five_of_six_awards_does_not_count(self):
+        answer = save(self.client, self.edition, self.picks(5, self.rex))
+        self.assertEqual(answer.status_code, 200, answer.content)
+        self.assertFalse(answer.json()["complete"])
+        self.assertEqual(tally(self.round)[self.awards[0].question_id], [])
+        row = self.row()
+        self.assertEqual((row["voted"], row["awards_done"]), (False, 5))
+        AwardsEdition.objects.filter(pk=self.edition.pk).update(live_view_token="lv_" + "c" * 32)
+        self.assertEqual(APIClient().get(f"/polls/live/lv_{'c' * 32}/").json()["nominations"]["ballots"], 0)
+
+    def test_all_six_awards_counts(self):
+        answer = save(self.client, self.edition, self.picks(6, self.rex))
+        self.assertTrue(answer.json()["complete"])
+        self.assertEqual(tally(self.round)[self.awards[0].question_id][0]["picks"], 1)
+        row = self.row()
+        self.assertEqual((row["voted"], row["awards_done"]), (True, 6))
+        self.assertEqual(self.admin.get(f"/polls/admin/kol-nominations/{self.edition.slug}/").json()["award_count"], 6)
+
+    def test_switching_off_the_only_pick_of_an_award_stops_it_counting(self):
+        picks = self.picks(6, self.rex)
+        picks[str(self.awards[5].question_id)] = [self.ama.pk]
+        save(self.client, self.edition, picks)
+        self.assertTrue(self.row()["voted"])
+        KolCreator.objects.filter(pk=self.ama.pk).update(active=False)
+        self.assertEqual((self.row()["voted"], self.row()["awards_done"]), (False, 5))
+        self.assertEqual(tally(self.round)[self.awards[0].question_id], [])
+        self.assertFalse(ballot(self.client, self.edition).json()["complete"])
+
+    def test_emptying_an_award_again_stops_it_counting(self):
+        save(self.client, self.edition, self.picks(6, self.rex))
+        picks = self.picks(6, self.rex)
+        picks[str(self.awards[2].question_id)] = []
+        self.assertFalse(save(self.client, self.edition, picks).json()["complete"])
+        self.assertFalse(self.row()["voted"])
+
+
+class KolContactTests(TestCase):
+    """#644: "a field for email and Whatsapp number for us to reach them"; "Both, required on ballot"."""
+
+    def setUp(self):
+        cache.clear()
+        self.edition = kol_edition()
+        self.creators = add_creators(self.edition, names=("Jokkie", "Lord Rex"))
+        self.jokkie, self.rex = self.creators
+        KolCreator.objects.filter(pk=self.jokkie.pk).update(contact_given_at=None, email="", whatsapp="")
+        self.round = open_round(self.edition)
+        self.awards = list(self.round.poll.questions.order_by("order"))
+        self.client = APIClient()
+        self.assertEqual(door(self.client, self.edition, new_code(self.jokkie)).status_code, 200)
+        self.url = f"/polls/kol-nominations/{self.edition.slug}/contact/"
+
+    def put(self, email, whatsapp):
+        return self.client.put(self.url, {"email": email, "whatsapp": whatsapp}, format="json")
+
+    def test_ballot_asks_and_refuses_picks_until_given(self):
+        data = ballot(self.client, self.edition).json()
+        self.assertTrue(data["contact_needed"])
+        self.assertEqual(data["email_hint"], "")
+        first = str(self.awards[0].question_id)
+        answer = save(self.client, self.edition, {first: [self.rex.pk]})
+        self.assertEqual((answer.status_code, answer.json()["code"]), (403, "kol_contact_needed"))
+        added = write_in(self.client, self.edition, "new_star", "New Star")
+        self.assertEqual((added.status_code, added.json()["code"]), (403, "kol_contact_needed"))
+        self.assertFalse(KolCreator.objects.filter(tiktok_handle="new_star").exists())
+
+    def test_bad_values_are_refused_with_codes(self):
+        for email, whatsapp, code in (
+            ("not-an-email", "+2348012345678", "kol_bad_email"),
+            ("", "+2348012345678", "kol_bad_email"),
+            ("layo@example.com", "", "kol_bad_whatsapp"),
+            ("layo@example.com", "08012345678", "kol_whatsapp_country_code"),
+            ("layo@example.com", "+23 4", "kol_bad_whatsapp"),
+            ("layo@example.com", "call me", "kol_bad_whatsapp"),
+        ):
+            answer = self.put(email, whatsapp)
+            self.assertEqual((answer.status_code, answer.json()["code"]), (400, code), (email, whatsapp))
+        self.assertIsNone(KolCreator.objects.get(pk=self.jokkie.pk).contact_given_at)
+
+    def test_good_values_are_kept_normalised_and_never_sent_back(self):
+        answer = self.put("Layo.Creator@Example.COM", "+234 801-234 (5678)")
+        self.assertEqual(answer.status_code, 200, answer.content)
+        creator = KolCreator.objects.get(pk=self.jokkie.pk)
+        self.assertEqual((creator.email, creator.whatsapp), ("Layo.Creator@example.com", "+2348012345678"))
+        self.assertIsNotNone(creator.contact_given_at)
+        data = answer.json()
+        self.assertFalse(data["contact_needed"])
+        self.assertEqual(data["email_hint"], "L***@example.com")
+        text = json.dumps(ballot(self.client, self.edition).json())
+        self.assertNotIn("Layo.Creator", text)
+        self.assertNotIn("8012345678", text)
+        first = str(self.awards[0].question_id)
+        self.assertEqual(save(self.client, self.edition, {first: [self.rex.pk]}).status_code, 200)
+        self.assertEqual(self.put("layo@example.com", "00351912345678").status_code, 200)
+        self.assertEqual(KolCreator.objects.get(pk=self.jokkie.pk).whatsapp, "+351912345678")
+
+    def test_admin_types_and_clears_contact_without_answering_for_the_creator(self):
+        admin = admin_client("kolcontactadmin")
+        url = f"/polls/admin/kol-nominations/{self.edition.slug}/creators/{self.jokkie.pk}/"
+        answer = admin.patch(url, {"email": "jk@example.com", "whatsapp": "+2348011111111"}, format="json")
+        self.assertEqual(answer.status_code, 200, answer.content)
+        bad = admin.patch(url, {"whatsapp": "0801"}, format="json")
+        self.assertEqual(bad.json()["code"], "kol_whatsapp_country_code")
+        row = next(r for r in admin.get(f"/polls/admin/kol-nominations/{self.edition.slug}/").json()["creators"]
+                   if r["creator_id"] == self.jokkie.pk)
+        self.assertEqual((row["email"], row["whatsapp"], row["contact_given_at"]),
+                         ("jk@example.com", "+2348011111111", None))
+        self.assertTrue(ballot(self.client, self.edition).json()["contact_needed"])
+        self.assertEqual(admin.patch(url, {"email": ""}, format="json").status_code, 200)
+        self.assertEqual(KolCreator.objects.get(pk=self.jokkie.pk).email, "")
+        player = client_for(make_user("kolcontactplayer"))
+        self.assertEqual(player.patch(url, {"email": "x@example.com"}, format="json").status_code, 403)
+
+
+class KolCodeEmailTests(TestCase):
+    """#646: "send individually or to add and send selected once or to send to all"; sender "African Freefire
+    Community"."""
+
+    def setUp(self):
+        cache.clear()
+        outbox.drain()
+        self.edition = kol_edition()
+        self.creators = add_creators(self.edition, names=("Jokkie", "Lord Rex", "Ines Jogos", "Kwame FF"))
+        self.jokkie, self.rex, self.ines, self.kwame = self.creators
+        KolCreator.objects.filter(pk=self.ines.pk).update(country="Mozambique")
+        KolCreator.objects.filter(pk=self.kwame.pk).update(email="")
+        self.round = open_round(self.edition)
+        self.admin = admin_client("kolemailadmin")
+        self.url = f"/polls/admin/kol-nominations/{self.edition.slug}/emails/"
+        self.star = KolCreator.objects.create(edition=self.edition, name="New Star", tiktok_handle="new_star",
+                                              origin=KolCreator.WRITE_IN, email="star@example.com")
+
+    def send(self, body, client=None):
+        with inline_sender():
+            return (client or self.admin).post(self.url, body, format="json")
+
+    def test_selected_creators_get_their_own_code(self):
+        new_code(self.jokkie)
+        answer = self.send({"creator_ids": [self.jokkie.pk, self.ines.pk, self.kwame.pk, self.star.pk]})
+        self.assertEqual(answer.status_code, 200, answer.content)
+        self.assertEqual(answer.json(), {"queued": 2, "no_email": 1, "not_voters": 1, "already_sending": 0})
+        sent = {m["to"]: m for m in outbox.drain()}
+        self.assertEqual(set(sent), {"jokkie@example.com", "ines_jogos@example.com"})
+        for creator in (self.jokkie, self.ines):
+            code = KolVoterCode.objects.get(creator=creator, revoked_at__isnull=True)
+            from .kol_nominations import unseal_code
+            plain = unseal_code(code.code_sealed)
+            self.assertIn(plain, sent[creator.email]["body"])
+            self.assertIn(f"/awards/{self.edition.slug}/nominate#{plain}", sent[creator.email]["body"])
+        self.assertIn("boletim pessoal", sent["ines_jogos@example.com"]["subject"])
+        self.assertIn("Este link e este código são só seus", sent["ines_jogos@example.com"]["body"])
+        self.assertEqual(set(KolEmail.objects.values_list("status", flat=True)), {KolEmail.SENT})
+
+    def test_everyone_with_an_address_and_the_sender_name(self):
+        with mock.patch("afc_auth.views.send_email", return_value=True) as fake:
+            answer = self.send({"all": True})
+        self.assertEqual(answer.json()["queued"], 3)
+        self.assertEqual(answer.json()["no_email"], 1)
+        self.assertEqual(fake.call_count, 3)
+        for call in fake.call_args_list:
+            self.assertEqual(call.kwargs["from_name"], "African Freefire Community")
+            self.assertTrue(call.kwargs["prelocalized"])
+
+    def test_a_creator_already_being_emailed_is_not_queued_twice(self):
+        KolEmail.objects.create(creator=self.jokkie, to_address=self.jokkie.email)
+        answer = self.send({"creator_ids": [self.jokkie.pk, self.rex.pk]})
+        self.assertEqual((answer.json()["queued"], answer.json()["already_sending"]), (1, 1))
+
+    def test_a_refused_send_is_tried_three_times_then_failed(self):
+        waits = []
+        with mock.patch("afc_auth.views.send_email", return_value=False) as fake:
+            with inline_sender(waits.append):
+                self.admin.post(self.url, {"creator_ids": [self.jokkie.pk]}, format="json")
+        self.assertEqual(fake.call_count, 3)
+        self.assertEqual(waits, [20, 60])
+        row = KolEmail.objects.get(creator=self.jokkie)
+        self.assertEqual((row.status, row.error), (KolEmail.FAILED, "kol_email_send_failed"))
+        last = next(r for r in self.admin.get(f"/polls/admin/kol-nominations/{self.edition.slug}/").json()["creators"]
+                    if r["creator_id"] == self.jokkie.pk)["last_email"]
+        self.assertEqual((last["status"], last["error"]), ("failed", "kol_email_send_failed"))
+
+    def test_a_code_revoked_before_sending_is_never_sent(self):
+        with mock.patch.object(kol_emails, "start_sender", lambda ids: None):
+            self.admin.post(self.url, {"creator_ids": [self.jokkie.pk]}, format="json")
+        KolVoterCode.objects.filter(creator=self.jokkie).update(revoked_at=timezone.now())
+        kol_emails.send_code_emails(list(KolEmail.objects.values_list("pk", flat=True)), sleep=lambda s: None)
+        self.assertEqual(outbox.drain(), [])
+        self.assertEqual(KolEmail.objects.get().error, "kol_code_gone")
+
+    def test_a_queued_row_left_by_a_restart_reads_as_not_sent(self):
+        row = KolEmail.objects.create(creator=self.jokkie, to_address=self.jokkie.email)
+        KolEmail.objects.filter(pk=row.pk).update(queued_at=timezone.now() - timedelta(hours=1))
+        self.assertEqual(kol_emails.last_code_emails([self.jokkie.pk])[self.jokkie.pk]["error"], "kol_email_interrupted")
+        self.assertEqual(self.send({"creator_ids": [self.jokkie.pk]}).json()["queued"], 1)
+
+    def test_who_may_send(self):
+        self.assertEqual(APIClient().post(self.url, {"all": True}, format="json").status_code, 401)
+        self.assertEqual(self.send({"all": True}, client_for(make_user("kolemailplayer"))).status_code, 403)
+        self.assertEqual(self.send({"all": True}, client_for(kol_admin_user("kolemailgarena"))).status_code, 200)
+        self.assertEqual(self.send({"creator_ids": []}).json()["code"], "kol_bad_creator_ids")
+        self.assertEqual(self.send({"creator_ids": [True]}).json()["code"], "kol_bad_creator_ids")
+
+
+class KolEmailMyPicksTests(TestCase):
+    """#648: "They should also be able to request to send to their own votes to their mails"."""
+
+    def setUp(self):
+        cache.clear()
+        outbox.drain()
+        self.edition = kol_edition()
+        self.jokkie, self.rex = add_creators(self.edition, names=("Jokkie", "Lord Rex"))
+        self.round = open_round(self.edition)
+        self.awards = list(self.round.poll.questions.order_by("order"))
+        self.client = APIClient()
+        self.code = new_code(self.jokkie)
+        door(self.client, self.edition, self.code)
+        self.url = f"/polls/kol-nominations/{self.edition.slug}/email-me/"
+
+    def test_sends_the_picks_without_the_code(self):
+        save(self.client, self.edition, {str(self.awards[0].question_id): [self.rex.pk]})
+        answer = self.client.post(self.url, {}, format="json")
+        self.assertEqual(answer.status_code, 200, answer.content)
+        self.assertEqual(answer.json()["email_hint"], "j***@example.com")
+        [mail] = outbox.drain()
+        self.assertEqual(mail["to"], "jokkie@example.com")
+        self.assertIn("Lord Rex", mail["body"])
+        self.assertIn("5 of the 6 awards still have no pick", mail["body"])
+        self.assertNotIn(self.code, mail["body"])
+        self.assertNotIn("#KOL-", mail["body"])
+
+    def test_limits_and_refusals(self):
+        for _ in range(3):
+            self.assertEqual(self.client.post(self.url, {}, format="json").status_code, 200)
+        answer = self.client.post(self.url, {}, format="json")
+        self.assertEqual((answer.status_code, answer.json()["code"]), (429, "kol_email_too_many"))
+        KolEmail.objects.all().delete()
+        with mock.patch("afc_auth.views.send_email", return_value=False):
+            answer = self.client.post(self.url, {}, format="json")
+        self.assertEqual((answer.status_code, answer.json()["code"]), (502, "kol_email_send_failed"))
+        KolCreator.objects.filter(pk=self.jokkie.pk).update(contact_given_at=None)
+        answer = self.client.post(self.url, {}, format="json")
+        self.assertEqual((answer.status_code, answer.json()["code"]), (403, "kol_contact_needed"))
+        self.assertEqual(APIClient().post(self.url, {}, format="json").status_code, 401)
+
+
+class KolMessageWordingTests(TestCase):
+    """#645: "the links works only for them and if they share It to others, what the others vote for, will just
+    replace theirs"; #643: "tell them that they must vote in each"."""
+
+    def test_every_language_says_it(self):
+        edition = kol_edition()
+        jokkie, = add_creators(edition, names=("Jokkie",))
+        for country, language, every in (("Nigeria", "en", "at least 1 and up to 6 in every award"),
+                                         ("Benin", "fr", "au moins 1 et jusqu'à 6 dans chaque prix"),
+                                         ("Mozambique", "pt", "pelo menos 1 e até 6 em cada prémio")):
+            jokkie.country = country
+            text = message_for(jokkie, "KOL-AAAA-BBBB", "https://x.test/l", None, edition.title)
+            self.assertIn(PRIVATE[language], text)
+            self.assertIn(every, text)
+            spare = spare_message_for("KOL-AAAA-BBBB", "https://x.test/l", None, edition.title, language)
+            self.assertIn(PRIVATE[language], spare)
+        self.assertIn("replaces yours", PRIVATE["en"])
+
+
+class KolImportContactsTests(TestCase):
+    """manage.py kol_import_contacts: the emails Garena's sheet already has (#646), never over one already set."""
+
+    def test_loads_without_overwriting(self):
+        edition = kol_edition()
+        jokkie, rex, ama = add_creators(edition, names=("Jokkie", "Lord Rex", "Ama Plays"))
+        KolCreator.objects.filter(pk__in=[jokkie.pk, rex.pk]).update(email="")
+        rows = [
+            {"tiktok_handle": "@Jokkie", "email": "jk@example.com"},
+            {"tiktok_handle": "ama_plays", "email": "other@example.com"},     # Ama already has one: kept
+            {"tiktok_handle": "lord_rex", "email": "not an email"},
+            {"tiktok_handle": "nobody_here", "email": "n@example.com"},
+        ]
+        with tempfile.TemporaryDirectory() as folder:
+            path = pathlib.Path(folder) / "contacts.json"
+            path.write_text(json.dumps(rows), encoding="utf-8")
+            out = io.StringIO()
+            call_command("kol_import_contacts", str(path), edition=edition.slug, dry_run=True, stdout=out)
+            self.assertIn("DRY RUN", out.getvalue())
+            self.assertEqual(KolCreator.objects.get(pk=jokkie.pk).email, "")
+            out = io.StringIO()
+            call_command("kol_import_contacts", str(path), edition=edition.slug, stdout=out)
+        self.assertIn("1 emails set", out.getvalue())
+        self.assertIn("1 kept (already set)", out.getvalue())
+        self.assertIn("1 bad values", out.getvalue())
+        self.assertIn("1 not in the round", out.getvalue())
+        self.assertNotIn("@example.com", out.getvalue())
+        self.assertEqual(KolCreator.objects.get(pk=jokkie.pk).email, "jk@example.com")
+        self.assertEqual(KolCreator.objects.get(pk=ama.pk).email, "ama_plays@example.com")

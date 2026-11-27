@@ -4,8 +4,8 @@ manage.py kol_import_creators <file.json> --edition <slug>
 Loads the creators of Garena's KOL List into a KOL edition for the nomination round (inbox #633 / #634).
 
 THE FILE is made on a workstation from the private master sheet by tools/kol_sheet_to_json.py: a JSON list of
-{name, tiktok_handle, country, status, tiktok_id}. Any other key (an email, a game UID) is IGNORED: the server never
-stores a creator's email (design 6; the emails stay in Garena's sheet).
+{name, tiktok_handle, country, status, tiktok_id}. Any other key (an email, a game UID) is IGNORED here. Emails and
+WhatsApp numbers have their own file and command since 27 Nov 2026 (#644 / #646): kol_import_contacts.
 
 Upserts by TikTok handle (lower case, "@" dropped), so running it twice changes nothing and a corrected sheet
 updates names, countries and statuses in place. A write-in (a person a creator added, #637) whose handle is on the

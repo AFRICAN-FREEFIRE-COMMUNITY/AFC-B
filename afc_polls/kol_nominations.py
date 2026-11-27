@@ -12,6 +12,10 @@ THE ASK
     Owner, later on 26 Nov (#638 to #640): every award explained on the page (AWARD_KEYS: the page writes the
     explanation in the reader's language), SPARE codes with nobody behind them for creators found later (claim),
     and codes readable by poll admins so they can be copied from the site (code_sealed, admin_code).
+    Owner, 27 Nov 2026 (#643 to #648): "Don't allow awards stay empty" (a ballot COUNTS only once every award has a
+    pick: counted_response_ids), "a field for email and Whatsapp number for us to reach them" (KolCreator contact,
+    asked once on the ballot before any pick is saved: contact), the codes by email from the admin tab and a
+    creator's own picks by email (afc_polls.kol_emails: admin_emails, email_me).
     Design: WEBSITE/tasks/kol-nominations-design-2026-11-25.md (sections 10 and 11 for the write-ins).
     Plan: WEBSITE/tasks/plan-kol-nominations-2026-11-26.md.
 
@@ -396,7 +400,75 @@ def ballot_payload(round_, creator):
         "candidates": [candidate_row(c) for c in candidates],
         "picks": picks,
         "saved_at": response.submitted_at if response is not None else None,
+        # #643: the ballot counts only once every award has a pick (the same rule as counted_response_ids, read off
+        # the picks this payload already holds: active candidates only).
+        "complete": bool(picks) and all(picks.values()),
+        # #644: the page asks for an email and a WhatsApp number until the creator has given them (contact); the
+        # stored values are never sent back, only a masked hint of the email "Email me my picks" writes to (#648).
+        "contact_needed": creator.contact_given_at is None,
+        "email_hint": mask_email(creator.email) if creator.contact_given_at else "",
     }
+
+
+def mask_email(address):
+    """"l***@gmail.com" for "layo@gmail.com": enough for a creator to recognise their address, too little for a
+    stranger holding a leaked code to learn it."""
+    local, _, domain = (address or "").partition("@")
+    if not local or not domain:
+        return ""
+    return f"{local[0]}***@{domain}"
+
+
+# CONTACT (owner, 27 Nov 2026, #644: "a field for email and Whatsapp number for us to reach them"; "Both, required on
+# ballot"). One validation for the ballot (contact) and the admin tab (admin_creator), so the two never accept
+# different things.
+WHATSAPP_RE = re.compile(r"^\d{8,15}$")      # E.164: a country code and the number, 8 to 15 digits in all
+_PHONE_PUNCTUATION = re.compile(r"[\s().\-]")
+CONTACT_PER_MINUTE = 10
+
+
+def clean_email(raw):
+    """(address, refusal code): the address trimmed with its domain in lower case, or "" and kol_bad_email. An empty
+    value is ("", "") so the admin tab can clear a field."""
+    from afc_auth.views import is_deliverable_address
+
+    text = raw.strip() if isinstance(raw, str) else ""
+    if not text:
+        return "", ""
+    local, at, domain = text.rpartition("@")
+    address = f"{local}@{domain.lower()}" if at else text
+    if len(address) > 254 or not is_deliverable_address(address):
+        return "", "kol_bad_email"
+    return address, ""
+
+
+def clean_whatsapp(raw):
+    """(number, refusal code): "+<digits>" from what was typed ("+234 801 234 5678", "00234...", "234-801..."), or ""
+    and kol_bad_whatsapp, or kol_whatsapp_country_code for a local number that starts with a single 0 (WhatsApp needs
+    the country code). An empty value is ("", "")."""
+    text = _PHONE_PUNCTUATION.sub("", raw) if isinstance(raw, str) else ""
+    if not text:
+        return "", ""
+    if text.startswith("+"):
+        text = text[1:]
+    elif text.startswith("00"):
+        text = text[2:]
+    elif text.startswith("0"):
+        return "", "kol_whatsapp_country_code"
+    if not WHATSAPP_RE.match(text):
+        return "", "kol_bad_whatsapp"
+    return f"+{text}", ""
+
+
+CONTACT_REFUSALS = {
+    "kol_bad_email": "Type a valid email address.",
+    "kol_bad_whatsapp": "Type your WhatsApp number with its country code, like +234 801 234 5678.",
+    "kol_whatsapp_country_code": "Start your WhatsApp number with your country code, like +234.",
+}
+
+
+def _contact_needed():
+    return _refuse("Give your email and WhatsApp number first.", "kol_contact_needed", status.HTTP_403_FORBIDDEN)
 
 
 # ENDPOINTS (afc_polls/urls.py, prefix polls/). No Bearer token: the creator is known by the code, then the cookie.
@@ -463,6 +535,76 @@ def signout(request, edition_slug):
     response = Response({"message": "Signed out of the ballot"}, status=status.HTTP_200_OK)
     response.delete_cookie(COOKIE_NAME, path=COOKIE_PATH, samesite="Lax")
     return response
+
+
+@api_view(["PUT"])
+@authentication_classes([])
+def contact(request, edition_slug):
+    """PUT polls/kol-nominations/<edition_slug>/contact/  {email, whatsapp}  (kol_ballot cookie)
+
+    #644 (owner, 27 Nov 2026): the creator's email and WhatsApp number, both required, asked once before their first
+    pick; again whenever they choose "Change my email or WhatsApp". 200 the ballot payload (contact_needed false).
+    400 kol_bad_email / kol_bad_whatsapp / kol_whatsapp_country_code, 429 kol_contact_too_fast, 401 kol_code_needed /
+    kol_code_replaced, 404 kol_round_not_found. Any state of the round: a closed round still wants to reach its
+    creators. Consumed by KolNominate.tsx (lib/kolNominations saveContact)."""
+    round_ = round_for_edition_slug(edition_slug)
+    if round_ is None:
+        return _no_round()
+    code, reason = code_from_cookie(request, round_)
+    if code is None:
+        return _refuse("Enter your code to open your ballot.", reason, status.HTTP_401_UNAUTHORIZED)
+    if code.creator_id is None:
+        return _claim_needed()
+    if _minute_limited("kol_contact", code, CONTACT_PER_MINUTE):
+        return _refuse("Too many tries. Wait a moment.", "kol_contact_too_fast", status.HTTP_429_TOO_MANY_REQUESTS)
+    data = request.data if isinstance(request.data, dict) else {}
+    email, bad_email = clean_email(data.get("email"))
+    whatsapp, bad_whatsapp = clean_whatsapp(data.get("whatsapp"))
+    if not email and not bad_email:
+        bad_email = "kol_bad_email"                 # both are required here (the admin tab may clear one)
+    if not whatsapp and not bad_whatsapp:
+        bad_whatsapp = "kol_bad_whatsapp"
+    for problem in (bad_email, bad_whatsapp):
+        if problem:
+            return _refuse(CONTACT_REFUSALS[problem], problem)
+    creator = code.creator
+    creator.email, creator.whatsapp, creator.contact_given_at = email, whatsapp, timezone.now()
+    creator.save(update_fields=["email", "whatsapp", "contact_given_at"])
+    KolVoterCode.objects.filter(pk=code.pk).update(last_used_at=timezone.now())
+    return Response(ballot_payload(round_, creator), status=status.HTTP_200_OK)
+
+
+@api_view(["POST"])
+@authentication_classes([])
+def email_me(request, edition_slug):
+    """POST polls/kol-nominations/<edition_slug>/email-me/  (kol_ballot cookie)
+
+    #648 (owner, 27 Nov 2026: "They should also be able to request to send to their own votes to their mails"): the
+    creator's picks as saved now, to the email they gave, at once (kol_emails.email_picks). No code in the email.
+    200 {message, email_hint}; 403 kol_contact_needed (no email given yet); 429 kol_email_too_many (3 in 10
+    minutes); 502 kol_email_send_failed (the mail server refused); 401 kol_code_needed / kol_code_replaced; 404
+    kol_round_not_found. Consumed by KolNominate.tsx (lib/kolNominations emailMe)."""
+    from .kol_emails import email_picks, picks_limited
+
+    round_ = round_for_edition_slug(edition_slug)
+    if round_ is None:
+        return _no_round()
+    code, reason = code_from_cookie(request, round_)
+    if code is None:
+        return _refuse("Enter your code to open your ballot.", reason, status.HTTP_401_UNAUTHORIZED)
+    if code.creator_id is None:
+        return _claim_needed()
+    creator = code.creator
+    if creator.contact_given_at is None or not creator.email:
+        return _contact_needed()
+    if picks_limited(creator):
+        return _refuse("You have asked for this email a few times already. Try again in a few minutes.",
+                       "kol_email_too_many", status.HTTP_429_TOO_MANY_REQUESTS)
+    row = email_picks(round_, creator, ballot_payload(round_, creator)["picks"])
+    if row.status != row.SENT:
+        return _refuse("The email could not be sent just now. Try again later.", "kol_email_send_failed",
+                       status.HTTP_502_BAD_GATEWAY)
+    return Response({"message": "Sent", "email_hint": mask_email(creator.email)}, status=status.HTTP_200_OK)
 
 
 # SAVING A BALLOT. One PollResponse per creator (respondent_key_for), the whole sheet replaced on each save, in
@@ -616,10 +758,13 @@ def _write_ballot(request, round_, creator, picks):
 
 
 def _save(request, round_, code):
-    """PUT body {picks: {"<question_id>": [creator_id]}, device_key?} for the creator behind `code`."""
+    """PUT body {picks: {"<question_id>": [creator_id]}, device_key?} for the creator behind `code`. 403
+    kol_contact_needed until the creator has given their email and WhatsApp (#644)."""
     refusal = _closed_refusal(round_)
     if refusal:
         return refusal
+    if code.creator.contact_given_at is None:
+        return _contact_needed()
     if _minute_limited("kol_save", code, SAVES_PER_MINUTE):
         return _refuse("Saving too fast. Wait a moment.", "kol_save_too_many", status.HTTP_429_TOO_MANY_REQUESTS)
     data = request.data if isinstance(request.data, dict) else {}
@@ -709,7 +854,8 @@ def write_in(request, edition_slug):
     """POST polls/kol-nominations/<edition_slug>/write-in/  {handle, name?}  (kol_ballot cookie)
 
     200 {candidate, created}: the candidate this handle is in the round, made now when nobody had it (created =
-    true). The page adds them to the award's picks and saves the sheet as usual (PUT ballot). 400 kol_bad_handle
+    true). The page adds them to the award's picks and saves the sheet as usual (PUT ballot). 403 kol_contact_needed
+    before the creator gave their email and WhatsApp (#644). 400 kol_bad_handle
     (not a TikTok handle) / kol_handle_unavailable (an admin took that person out); 403 kol_round_closed /
     kol_round_not_open; 429 kol_write_in_too_fast / kol_write_ins_too_many; 401 kol_code_needed /
     kol_code_replaced; 404 kol_round_not_found. Consumed by KolNominate.tsx (lib/kolNominations addWriteIn)."""
@@ -724,6 +870,8 @@ def write_in(request, edition_slug):
     refusal = _closed_refusal(round_)
     if refusal:
         return refusal
+    if code.creator.contact_given_at is None:
+        return _contact_needed()
     if _minute_limited("kol_write_in", code, WRITE_INS_PER_MINUTE):
         return _refuse("Adding too fast. Wait a moment.", "kol_write_in_too_fast", status.HTTP_429_TOO_MANY_REQUESTS)
 
@@ -847,16 +995,44 @@ def merge_write_in(source, target):
     KolCreator.objects.filter(pk=source.pk).update(active=False, merged_into=target)
 
 
-def tally(round_):
-    """{question_id: [{creator_id, name, picks}]}, most picks first then by name, counting only submitted ballots
-    an admin has not removed (vote_tracking.COUNTED_ANSWER) and only creators still switched on. Read by the admin
-    tab and Garena's live page; never by a creator."""
+# A BALLOT COUNTS ONLY WHEN EVERY AWARD HAS A PICK (owner, 27 Nov 2026, #643: "Don't allow awards stay empty";
+# "Counts only when full is good"). Read at the moment of asking, never stored: a ballot saved before this rule, or one
+# whose only pick in an award was switched off since, simply stops counting until the creator fills the award, and no
+# flag can drift from the picks. The tally, "Have nominated" (admin tab) and Garena's live page all read it here.
+def _ballot_rows(round_):
+    """Per saved ballot an admin has not removed: response_id, respondent_key and how many awards hold an active
+    pick."""
     from .vote_tracking import COUNTED_ANSWER
 
-    rows = (
+    return (
         PollAnswer.objects.filter(response__poll=round_.poll, response__status=PollResponse.SUBMITTED,
                                   option__kol_creator_link__creator__active=True)
         .filter(COUNTED_ANSWER)
+        .values("response_id", "response__respondent_key")
+        .annotate(awards=Count("question_id", distinct=True))
+    )
+
+
+def counted_response_ids(round_):
+    """The ids of the ballots that count: saved, not removed by an admin, an active pick in every award."""
+    total = round_.poll.questions.count()
+    if not total:
+        return set()
+    return {row["response_id"] for row in _ballot_rows(round_) if row["awards"] >= total}
+
+
+def awards_done_by_key(round_):
+    """{respondent_key: awards with a pick} for every saved ballot (the admin tab's "4 of 6 awards")."""
+    return {row["response__respondent_key"]: row["awards"] for row in _ballot_rows(round_)}
+
+
+def tally(round_):
+    """{question_id: [{creator_id, name, picks}]}, most picks first then by name, counting only the ballots that
+    count (counted_response_ids: every award has a pick, not removed by an admin) and only creators still switched
+    on. Read by the admin tab and Garena's live page; never by a creator."""
+    rows = (
+        PollAnswer.objects.filter(response_id__in=list(counted_response_ids(round_)),
+                                  option__kol_creator_link__creator__active=True)
         .values("question_id", "option__kol_creator_link__creator_id", "option__kol_creator_link__creator__name")
         .annotate(picks=Count("answer_id"))
     )
@@ -882,9 +1058,8 @@ def live_block(edition):
 
     Counts only, the same ones the admin tab shows (tally): no creator id, no voter, no code, nothing that says who
     nominated whom. `ballots` = creators who have saved a ballot an admin has not removed; `voters` = creators on the
-    KOL List who may vote (a write-in is a candidate, never a voter). A candidate with no pick is left out."""
-    from .vote_tracking import COUNTED
-
+    KOL List who may vote (a write-in is a candidate, never a voter). A candidate with no pick is left out. Since
+    #643 a ballot counts only once every award has a pick (counted_response_ids)."""
     round_ = KolNominationRound.objects.select_related("poll").filter(edition=edition).first()
     if round_ is None:
         return None
@@ -905,7 +1080,7 @@ def live_block(edition):
         "state": round_.state(),
         "opens_at": round_.opens_at,
         "closes_at": round_.closes_at,
-        "ballots": PollResponse.objects.filter(COUNTED, poll=round_.poll, status=PollResponse.SUBMITTED).count(),
+        "ballots": len(counted_response_ids(round_)),
         "voters": KolCreator.objects.filter(edition=edition, active=True, origin=KolCreator.LIST).count(),
         "awards": awards,
     }
@@ -919,7 +1094,10 @@ def live_block(edition):
 #   POST  polls/admin/kol-nominations/<edition_slug>/                          {opens_at, closes_at}: set the round up
 #   POST  polls/admin/kol-nominations/<edition_slug>/codes/                    {creator_ids?}: new codes as a CSV
 #   PATCH polls/admin/kol-nominations/<edition_slug>/creators/<creator_id>/    {active} switch a candidate on or off,
-#                                                                              {merge_into} merge a duplicate write-in
+#                                                                              {merge_into} merge a duplicate write-in,
+#                                                                              {email, whatsapp} their contact (#644)
+#   POST  polls/admin/kol-nominations/<edition_slug>/emails/                   {creator_ids} or {all: true}: email
+#                                                                              their codes (#646, kol_emails)
 # An admin sees WHO has voted and how many picks each creator got, never which creator picked whom. For the same
 # reason a write-in row never says who added it: only a count of additions per list creator, to spot a spammer.
 
@@ -970,9 +1148,10 @@ def admin_editions(request):
     ]}, status=status.HTTP_200_OK)
 
 
-def _creator_row(creator, live_codes, voted_keys, round_, added_counts):
+def _creator_row(creator, live_codes, voted_keys, round_, added_counts, awards_done, emails):
     """One creator on the admin tab. `live_codes` maps creator_id to their live code's id, which the tab passes to
-    admin_code to copy the code (#640)."""
+    admin_code to copy the code (#640). `voted_keys` holds the ballots that COUNT (#643); `awards_done` how many awards
+    each saved ballot fills, so a started ballot reads "4 of 6". Contact (#644) and the latest code email (#646)."""
     last_used = (
         KolVoterCode.objects.filter(creator=creator).exclude(last_used_at=None)
         .order_by("-last_used_at").values_list("last_used_at", flat=True).first()
@@ -990,7 +1169,12 @@ def _creator_row(creator, live_codes, voted_keys, round_, added_counts):
         "has_code": creator.pk in live_codes,
         "code_id": live_codes.get(creator.pk),
         "voted": bool(round_) and respondent_key_for(round_, creator) in voted_keys,
+        "awards_done": awards_done.get(respondent_key_for(round_, creator), 0) if round_ else 0,
         "last_used_at": last_used,
+        "email": creator.email,
+        "whatsapp": creator.whatsapp,
+        "contact_given_at": creator.contact_given_at,
+        "last_email": emails.get(creator.pk),                        # {status, at, error, to} or None
     }
 
 
@@ -1001,10 +1185,14 @@ def _admin_payload(edition):
         KolVoterCode.objects.filter(creator__edition=edition, revoked_at__isnull=True)
         .values_list("creator_id", "code_id")
     )
-    voted_keys = set()
+    from .kol_emails import last_code_emails
+
+    voted_keys, awards_done = set(), {}
     if round_ is not None:
-        voted_keys = set(PollResponse.objects.filter(poll=round_.poll, status=PollResponse.SUBMITTED)
+        voted_keys = set(PollResponse.objects.filter(pk__in=list(counted_response_ids(round_)))
                          .values_list("respondent_key", flat=True))
+        awards_done = awards_done_by_key(round_)
+    emails = last_code_emails([creator.pk for creator in creators])
     added_counts = dict(
         KolCreator.objects.filter(edition=edition, added_by__isnull=False)
         .values("added_by").annotate(n=Count("creator_id")).values_list("added_by", "n")
@@ -1019,7 +1207,9 @@ def _admin_payload(edition):
             "awards": [{"question_id": q.question_id, "prompt": q.prompt, "key": award_key(q)}
                        for q in round_.poll.questions.order_by("order")],
         },
-        "creators": [_creator_row(creator, live_codes, voted_keys, round_, added_counts) for creator in creators],
+        "creators": [_creator_row(creator, live_codes, voted_keys, round_, added_counts, awards_done, emails)
+                     for creator in creators],
+        "award_count": round_.poll.questions.count() if round_ is not None else 0,
         "tally": tally(round_) if round_ is not None else {},
         "failed_attempts": round_.failed_attempts if round_ is not None else 0,
         # Spare codes (#639), live ones only, oldest first; claimed_by once somebody has said who they are.
@@ -1194,7 +1384,11 @@ def admin_code(request, edition_slug, code_id):
 
 @api_view(["PATCH"])
 def admin_creator(request, edition_slug, creator_id):
-    """PATCH {active: bool} or {merge_into: creator_id}.
+    """PATCH {active: bool}, {merge_into: creator_id} or {email?, whatsapp?}.
+
+    email / whatsapp (#644): the creator's contact as an admin types it, validated like the ballot's (clean_email,
+    clean_whatsapp); "" clears one. 400 kol_bad_email / kol_bad_whatsapp / kol_whatsapp_country_code. It does not
+    count as the creator giving it: the ballot still asks them once.
 
     active: switching a candidate off revokes their live codes at once (their cookie stops working), takes them off
     every ballot and out of the tally; switching one back on makes them a plain candidate again (a merge undone by
@@ -1211,6 +1405,8 @@ def admin_creator(request, edition_slug, creator_id):
     data = request.data if isinstance(request.data, dict) else {}
     if "merge_into" in data:
         return _merge(edition, creator, data.get("merge_into"))
+    if "email" in data or "whatsapp" in data:
+        return _admin_contact(creator, data)
     active = data.get("active")
     if not isinstance(active, bool):
         return _refuse("active must be true or false", "kol_bad_active")
@@ -1245,3 +1441,74 @@ def _merge(edition, source, raw_target):
         ensure_round(edition)              # both have an option in every award before picks move
     merge_write_in(source, target)
     return Response({"message": "Merged", "active": False, "merged_into": target.pk}, status=status.HTTP_200_OK)
+
+
+def _admin_contact(creator, data):
+    """admin_creator's contact branch (#644). Only the keys sent change."""
+    fields = []
+    if "email" in data:
+        email, problem = clean_email(data.get("email"))
+        if problem:
+            return _refuse(CONTACT_REFUSALS[problem], problem)
+        creator.email = email
+        fields.append("email")
+    if "whatsapp" in data:
+        whatsapp, problem = clean_whatsapp(data.get("whatsapp"))
+        if problem:
+            return _refuse(CONTACT_REFUSALS[problem], problem)
+        creator.whatsapp = whatsapp
+        fields.append("whatsapp")
+    creator.save(update_fields=fields)
+    return Response({"message": "Saved", "email": creator.email, "whatsapp": creator.whatsapp},
+                    status=status.HTTP_200_OK)
+
+
+@api_view(["POST"])
+def admin_emails(request, edition_slug):
+    """POST polls/admin/kol-nominations/<edition_slug>/emails/  {creator_ids: [int]} or {all: true}
+
+    #646 (owner, 27 Nov 2026: "send individually or to add and send selected once or to send to all"): email each
+    chosen creator their personal code, link and message (afc_polls.kol_emails). Only switched-on creators of the KOL
+    List with an address are emailed; `all` means every one of them. A creator with no live readable code gets one
+    first (which, like "New code", replaces an old unreadable one). A creator whose email is still on its way is not
+    queued twice. Answers at once: {queued, no_email, not_voters, already_sending}; the sending happens on a paced
+    thread and the tab reads each row's result (last_email). 400 kol_round_missing / kol_bad_creator_ids; the usual
+    401 / 403 / 404 of the admin addresses. Auth: AFC poll admins and KOL admins (can_run_kol_round). Consumed by
+    KolNominationsAdmin.tsx (lib/kolNominations sendCodeEmails)."""
+    from .kol_emails import queue_code_emails, queued_now
+    from .views import _user_from_request
+
+    edition, refusal = _admin_edition(request, edition_slug)
+    if refusal:
+        return refusal
+    if not KolNominationRound.objects.filter(edition=edition).exists():
+        return _refuse("Set the round up first.", "kol_round_missing")
+    data = request.data if isinstance(request.data, dict) else {}
+    everyone = KolCreator.objects.filter(edition=edition)
+    if data.get("all") is True:
+        chosen = list(everyone.filter(active=True, origin=KolCreator.LIST))
+    else:
+        raw = data.get("creator_ids")
+        if not isinstance(raw, list) or not raw or any(isinstance(value, bool) for value in raw):
+            return _refuse("Choose at least one creator.", "kol_bad_creator_ids")
+        try:
+            ids = {int(value) for value in raw}
+        except (TypeError, ValueError):
+            return _refuse("creator_ids must be numbers", "kol_bad_creator_ids")
+        chosen = list(everyone.filter(pk__in=ids))
+    voters = [c for c in chosen if c.active and c.origin == KolCreator.LIST]
+    with_address = [c for c in voters if c.email]
+    sending = queued_now(c.pk for c in with_address)
+    ready = [c for c in with_address if c.pk not in sending]
+    for creator in ready:
+        code = (KolVoterCode.objects.filter(creator=creator, revoked_at__isnull=True)
+                .order_by("-created_at", "-code_id").first())
+        if code is None or not unseal_code(code.code_sealed):
+            new_code(creator)
+    queue_code_emails(ready, _user_from_request(request))
+    return Response({
+        "queued": len(ready),
+        "no_email": len(voters) - len(with_address),
+        "not_voters": len(chosen) - len(voters),
+        "already_sending": len(sending),
+    }, status=status.HTTP_200_OK)
