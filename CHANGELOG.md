@@ -18,6 +18,11 @@ At release time `node ~/.claude/skills/versioning/scripts/release.mjs next` prin
 rename `## Unreleased` to it, merge, then tag the merge commit. A version tag pushed with the wrong
 number is blocked before the push.
 
+## v7.29.0 - 2026-11-27
+
+### Changed
+- KOL nominations: an award where the creator picks only themselves counts as empty, so the ballot counts only once they add somebody else there (a self-pick beside others still counts). The messages and emails say so in every language, and the picks email marks such an award.
+
 ## v7.28.1 - 2026-11-27
 
 ### Fixed
