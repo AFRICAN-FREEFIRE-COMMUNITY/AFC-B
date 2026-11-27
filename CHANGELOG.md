@@ -18,7 +18,7 @@ At release time `node ~/.claude/skills/versioning/scripts/release.mjs next` prin
 rename `## Unreleased` to it, merge, then tag the merge commit. A version tag pushed with the wrong
 number is blocked before the push.
 
-## Unreleased
+## v7.27.0 - 2026-11-27
 
 ### Changed
 - Converted amounts use the Central Bank of Nigeria's official daily rates for every currency it publishes (US dollar, euro, pound, CFA franc, yen, yuan, Swiss franc, Danish krone, rand, riyal, dirham). The dollar uses the CBN's official NFEM rate of the day. All other currencies keep the rates they had.
