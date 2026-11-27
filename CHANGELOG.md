@@ -18,6 +18,11 @@ At release time `node ~/.claude/skills/versioning/scripts/release.mjs next` prin
 rename `## Unreleased` to it, merge, then tag the merge commit. A version tag pushed with the wrong
 number is blocked before the push.
 
+## v7.28.0 - 2026-11-27
+
+### Changed
+- KOL nominations: the copied messages, the code emails and their subject now say plainly that this is the official nomination round of the Garena KOL Awards, Garena's own awards ceremony, not a third-party award; the email also says it is hosted on the African Freefire Community website, which sends it.
+
 ## v7.27.0 - 2026-11-27
 
 ### Changed

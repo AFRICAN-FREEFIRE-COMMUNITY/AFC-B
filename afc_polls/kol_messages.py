@@ -13,6 +13,11 @@ afc_polls.kol_emails (the same text as an email: code_email, and the creator's o
 Owner, 27 Nov 2026: every message says the link and code are the creator's alone and that whoever they share them
 with replaces their picks (#645: "if they share It to others, what the others vote for, will just replace theirs"),
 and that every award needs at least one pick (#643: "tell them that they must vote in each").
+
+Owner, 27 Nov 2026 (#650): "I need the wording of the mail sent to the KOLs for the nominee awards to be clear that this
+is an official nomination for the official Garena awards is not a third party one..it's the official awards ceremony".
+So every message opens by saying it is the OFFICIAL nomination round of Garena's own awards ceremony (event_name), and
+the email adds where it is hosted, because it arrives from info@africanfreefirecommunity.com.
 """
 import html
 
@@ -36,25 +41,31 @@ MONTHS = {
 # pick, and PRIVATE says what sharing the link does.
 TEMPLATES = {
     "en": (
-        "Hi {name}, you are one of the creators in the {title}. Nominate the creators you think deserve each award: "
-        "at least 1 and up to 6 in every award. You can pick anyone, yourself included, and add someone who is not "
-        "on the list.\n"
+        "Hi {name}, this is your official invitation to nominate for the {title}, Garena's own official awards "
+        "ceremony for Free Fire creators. It is not a third-party award. You are one of the creators on Garena's KOL "
+        "list.\n"
+        "Nominate the creators you think deserve each award: at least 1 and up to 6 in every award. You can pick "
+        "anyone, yourself included, and add someone who is not on the list.\n"
         "Open your personal ballot here: {link}\n"
         "Your code: {code}\n"
         "{private} {until}"
     ),
     "fr": (
-        "Bonjour {name}, vous faites partie des créateurs des {title}. Nominez les créateurs qui "
-        "méritent chaque prix : au moins 1 et jusqu'à 6 dans chaque prix. Vous pouvez choisir n'importe qui, y compris "
-        "vous-même, et ajouter quelqu'un qui n'est pas sur la liste.\n"
+        "Bonjour {name}, ceci est votre invitation officielle à nominer pour les {title}, la cérémonie de remise de "
+        "prix officielle de Garena pour les créateurs Free Fire. Ce n'est pas un prix organisé par un tiers. Vous "
+        "faites partie des créateurs de la liste KOL de Garena.\n"
+        "Nominez les créateurs qui méritent chaque prix : au moins 1 et jusqu'à 6 dans chaque prix. Vous pouvez "
+        "choisir n'importe qui, y compris vous-même, et ajouter quelqu'un qui n'est pas sur la liste.\n"
         "Ouvrez votre bulletin personnel ici : {link}\n"
         "Votre code : {code}\n"
         "{private} {until}"
     ),
     "pt": (
-        "Olá {name}, é um dos criadores dos {title}. Nomeie os criadores que merecem cada prémio: "
-        "pelo menos 1 e até 6 em cada prémio. Pode escolher qualquer pessoa, incluindo a si próprio, e acrescentar "
-        "alguém que não esteja na lista.\n"
+        "Olá {name}, este é o seu convite oficial para nomear nos {title}, a cerimónia oficial de prémios da própria "
+        "Garena para os criadores de Free Fire. Não é um prémio de terceiros. É um dos criadores da lista KOL da "
+        "Garena.\n"
+        "Nomeie os criadores que merecem cada prémio: pelo menos 1 e até 6 em cada prémio. Pode escolher qualquer "
+        "pessoa, incluindo a si próprio, e acrescentar alguém que não esteja na lista.\n"
         "Abra o seu boletim pessoal aqui: {link}\n"
         "O seu código: {code}\n"
         "{private} {until}"
@@ -104,32 +115,45 @@ def message_for(creator, code, link, closes_at, edition_title):
     language = language_for(creator.country)
     with_date, without_date = UNTIL[language]
     until = with_date.format(date=_date(closes_at, language)) if closes_at else without_date
-    return TEMPLATES[language].format(name=creator.name, title=edition_title, link=link, code=code, until=until,
-                                      private=PRIVATE[language])
+    return TEMPLATES[language].format(name=creator.name, title=event_name(edition_title), link=link, code=code,
+                                      until=until, private=PRIVATE[language])
+
+
+def event_name(edition_title):
+    """"Garena KOL Awards 2026" for the edition "KOL Awards 2026" (#650: the message says whose ceremony it is); a
+    title that already names Garena is left as it is."""
+    title = (edition_title or "").strip()
+    return title if "garena" in title.lower() else f"Garena {title}"
 
 
 # A SPARE code's message (#639, owner 26 Nov 2026): it goes to a creator found after the list was made, so it has no
 # name, and it tells them that the first time they open it they say who they are. The admin tab picks the language.
 SPARE_TEMPLATES = {
     "en": (
-        "Hi, you are invited to nominate creators for the {title}: at least 1 and up to 6 in every award, yourself "
-        "included, and you can add someone who is not on the list.\n"
+        "Hi, this is your official invitation to nominate creators for the {title}, Garena's own official awards "
+        "ceremony for Free Fire creators. It is not a third-party award.\n"
+        "Nominate at least 1 and up to 6 creators in every award, yourself included, and you can add someone who is "
+        "not on the list.\n"
         "Open your ballot here: {link}\n"
         "Your code: {code}. The first time you open it, you say who you are (your name and TikTok @handle); from then "
         "on it is yours.\n"
         "{private} {until}"
     ),
     "fr": (
-        "Bonjour, vous êtes invité à nominer des créateurs pour les {title} : au moins 1 et jusqu'à 6 dans chaque "
-        "prix, y compris vous-même, et vous pouvez ajouter quelqu'un qui n'est pas sur la liste.\n"
+        "Bonjour, ceci est votre invitation officielle à nominer des créateurs pour les {title}, la cérémonie de "
+        "remise de prix officielle de Garena pour les créateurs Free Fire. Ce n'est pas un prix organisé par un tiers.\n"
+        "Nominez au moins 1 et jusqu'à 6 créateurs dans chaque prix, y compris vous-même, et vous pouvez ajouter "
+        "quelqu'un qui n'est pas sur la liste.\n"
         "Ouvrez votre bulletin ici : {link}\n"
         "Votre code : {code}. La première fois que vous l'ouvrez, vous dites qui vous êtes (votre nom et votre "
         "@pseudo TikTok) ; ensuite il est à vous.\n"
         "{private} {until}"
     ),
     "pt": (
-        "Olá, está convidado a nomear criadores para os {title}: pelo menos 1 e até 6 em cada prémio, incluindo a si "
-        "próprio, e pode acrescentar alguém que não esteja na lista.\n"
+        "Olá, este é o seu convite oficial para nomear criadores nos {title}, a cerimónia oficial de prémios da "
+        "própria Garena para os criadores de Free Fire. Não é um prémio de terceiros.\n"
+        "Nomeie pelo menos 1 e até 6 criadores em cada prémio, incluindo a si próprio, e pode acrescentar alguém que "
+        "não esteja na lista.\n"
         "Abra o seu boletim aqui: {link}\n"
         "O seu código: {code}. Da primeira vez que o abrir, diz quem é (o seu nome e o seu @utilizador do TikTok); a "
         "partir daí é seu.\n"
@@ -143,7 +167,7 @@ def spare_message_for(code, link, closes_at, edition_title, language="en"):
     language = language if language in SPARE_TEMPLATES else "en"
     with_date, without_date = UNTIL[language]
     until = with_date.format(date=_date(closes_at, language)) if closes_at else without_date
-    return SPARE_TEMPLATES[language].format(title=edition_title, link=link, code=code, until=until,
+    return SPARE_TEMPLATES[language].format(title=event_name(edition_title), link=link, code=code, until=until,
                                             private=PRIVATE[language])
 
 
@@ -155,9 +179,18 @@ def spare_message_for(code, link, closes_at, edition_title, language="en"):
 # their own name. Built here, sent by afc_polls.kol_emails.
 
 CODE_SUBJECT = {
-    "en": "Your personal ballot for the {title} nominations",
-    "fr": "Votre bulletin personnel pour les nominations des {title}",
-    "pt": "O seu boletim pessoal para as nomeações dos {title}",
+    "en": "Official invitation: nominate for the {title}",
+    "fr": "Invitation officielle : nominez pour les {title}",
+    "pt": "Convite oficial: nomeie nos {title}",
+}
+# #650: the email arrives from info@africanfreefirecommunity.com, so it says where the official nominations are hosted.
+CODE_HOSTED = {
+    "en": "The official nominations for Garena's KOL Awards are hosted on the African Freefire Community website "
+          "(africanfreefirecommunity.com), which sends this email.",
+    "fr": "Les nominations officielles des KOL Awards de Garena sont hébergées sur le site d'African Freefire Community "
+          "(africanfreefirecommunity.com), qui vous envoie cet e-mail.",
+    "pt": "As nomeações oficiais dos KOL Awards da Garena estão alojadas no site da African Freefire Community "
+          "(africanfreefirecommunity.com), que lhe envia este email.",
 }
 CODE_BUTTON = {"en": "Open my ballot", "fr": "Ouvrir mon bulletin", "pt": "Abrir o meu boletim"}
 
@@ -212,7 +245,7 @@ def code_email(creator, code, link, closes_at, edition_title):
     """(subject, html, language) of the email carrying `creator`'s personal code: the same words as message_for,
     with the link as a button too."""
     language = language_for(creator.country)
-    subject = CODE_SUBJECT[language].format(title=edition_title)
+    subject = CODE_SUBJECT[language].format(title=event_name(edition_title))
     body = message_for(creator, code, link, closes_at, edition_title)
     rows = f"""
   <tr><td style="padding:6px 44px 18px;">
@@ -222,6 +255,9 @@ def code_email(creator, code, link, closes_at, edition_title):
     <table role="presentation" cellpadding="0" cellspacing="0"><tr><td style="background:#34d27b;border-radius:10px;">
       <a href="{html.escape(link, quote=True)}" style="display:inline-block;padding:14px 40px;font-size:15px;font-weight:700;color:#062012;text-decoration:none;">{CODE_BUTTON[language]}</a>
     </td></tr></table>
+  </td></tr>
+  <tr><td style="padding:0 44px 34px;">
+    <div style="font-size:13px;line-height:1.6;color:#8a978f;">{html.escape(CODE_HOSTED[language])}</div>
   </td></tr>"""
     return subject, _shell(subject, rows), language
 
@@ -231,7 +267,7 @@ def picks_email(creator, edition_title, awards):
     in ballot order. No code and no link with a code in it: the email may be forwarded."""
     language = language_for(creator.country)
     words = PICKS_TEXT[language]
-    subject = PICKS_SUBJECT[language].format(title=edition_title)
+    subject = PICKS_SUBJECT[language].format(title=event_name(edition_title))
     missing = sum(1 for _name, picks in awards if not picks)
     blocks = []
     for name, picks in awards:
