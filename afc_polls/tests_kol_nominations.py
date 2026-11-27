@@ -1439,6 +1439,25 @@ class KolFullBallotTests(TestCase):
         mine = [r for r in tally(self.round)[self.awards[3].question_id] if r["creator_id"] == self.jokkie.pk]
         self.assertEqual(mine[0]["picks"], 1)                                # the self-pick still counts beside others
 
+    def test_ballot_counts_switch_leaves_only_their_own_ballot_out(self):
+        # #657 (owner, 27 Nov 2026: "do a separate switch for that")
+        save(self.client, self.edition, self.picks(6, self.rex))
+        self.assertTrue(self.row()["voted"])
+        url = f"/polls/admin/kol-nominations/{self.edition.slug}/creators/{self.jokkie.pk}/"
+        self.assertEqual(self.admin.patch(url, {"ballot_counts": "no"}, format="json").json()["code"],
+                         "kol_bad_ballot_counts")
+        self.assertEqual(client_for(make_user("kolballotplayer")).patch(url, {"ballot_counts": False},
+                                                                        format="json").status_code, 403)
+        self.assertEqual(self.admin.patch(url, {"ballot_counts": False}, format="json").status_code, 200)
+        row = self.row()
+        self.assertEqual((row["voted"], row["ballot_counts"], row["active"]), (False, False, True))
+        self.assertEqual(tally(self.round)[self.awards[0].question_id], [])
+        # still a voter and a nominee: their code works and they stay on every ballot
+        self.assertEqual(ballot(self.client, self.edition).status_code, 200)
+        self.admin.patch(url, {"ballot_counts": True}, format="json")
+        self.assertTrue(self.row()["voted"])
+        self.assertEqual(tally(self.round)[self.awards[0].question_id][0]["picks"], 1)
+
     def test_emptying_an_award_again_stops_it_counting(self):
         save(self.client, self.edition, self.picks(6, self.rex))
         picks = self.picks(6, self.rex)
