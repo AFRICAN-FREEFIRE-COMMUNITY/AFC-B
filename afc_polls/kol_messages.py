@@ -42,8 +42,7 @@ MONTHS = {
 TEMPLATES = {
     "en": (
         "Hi {name}, this is your official invitation to nominate for the {title}, Garena's own official awards "
-        "ceremony for Free Fire creators. It is not a third-party award. You are one of the creators on Garena's KOL "
-        "list.\n"
+        "ceremony for Free Fire creators. It is not a third-party award.\n"
         "Nominate the creators you think deserve each award: at least 1 and up to 6 in every award. You can pick "
         "anyone, yourself included, and add someone who is not on the list.\n"
         "Open your personal ballot here: {link}\n"
@@ -52,8 +51,7 @@ TEMPLATES = {
     ),
     "fr": (
         "Bonjour {name}, ceci est votre invitation officielle à nominer pour les {title}, la cérémonie de remise de "
-        "prix officielle de Garena pour les créateurs Free Fire. Ce n'est pas un prix organisé par un tiers. Vous "
-        "faites partie des créateurs de la liste KOL de Garena.\n"
+        "prix officielle de Garena pour les créateurs Free Fire. Ce n'est pas un prix organisé par un tiers.\n"
         "Nominez les créateurs qui méritent chaque prix : au moins 1 et jusqu'à 6 dans chaque prix. Vous pouvez "
         "choisir n'importe qui, y compris vous-même, et ajouter quelqu'un qui n'est pas sur la liste.\n"
         "Ouvrez votre bulletin personnel ici : {link}\n"
@@ -62,8 +60,7 @@ TEMPLATES = {
     ),
     "pt": (
         "Olá {name}, este é o seu convite oficial para nomear nos {title}, a cerimónia oficial de prémios da própria "
-        "Garena para os criadores de Free Fire. Não é um prémio de terceiros. É um dos criadores da lista KOL da "
-        "Garena.\n"
+        "Garena para os criadores de Free Fire. Não é um prémio de terceiros.\n"
         "Nomeie os criadores que merecem cada prémio: pelo menos 1 e até 6 em cada prémio. Pode escolher qualquer "
         "pessoa, incluindo a si próprio, e acrescentar alguém que não esteja na lista.\n"
         "Abra o seu boletim pessoal aqui: {link}\n"

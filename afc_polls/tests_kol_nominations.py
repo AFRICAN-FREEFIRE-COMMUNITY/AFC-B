@@ -1680,6 +1680,9 @@ class KolOfficialWordingTests(TestCase):
                 self.assertIn(word.lower(), text, (country, word))
                 self.assertIn(word.lower(), spare, (country, word))
             self.assertNotIn("african", text)             # the copied message still never names AFC
+            # owner, 27 Nov 2026 (#651): "You are one of the creators on Garena's KOL list - No need for this line"
+            for gone in ("kol list", "liste kol", "lista kol"):
+                self.assertNotIn(gone, text)
             subject, body, _ = code_email(jokkie, "KOL-AAAA-BBBB", "https://x.test/l", None, edition.title)
             self.assertIn("Garena KOL Awards 2026", subject)
             self.assertIn("africanfreefirecommunity.com", body)    # the email says where it is hosted
