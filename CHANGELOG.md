@@ -18,6 +18,11 @@ At release time `node ~/.claude/skills/versioning/scripts/release.mjs next` prin
 rename `## Unreleased` to it, merge, then tag the merge commit. A version tag pushed with the wrong
 number is blocked before the push.
 
+## v7.28.1 - 2026-11-27
+
+### Fixed
+- KOL nominations: the messages no longer say "You are one of the creators on Garena's KOL list" (owner: not needed).
+
 ## v7.28.0 - 2026-11-27
 
 ### Changed
